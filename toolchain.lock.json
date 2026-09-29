@@ -1,0 +1,24 @@
+{
+  "microkit": {
+    "version": "2.3.1",
+    "archive": "microkit-sdk-2.3.1-macos-aarch64.tar.gz",
+    "url": "https://github.com/seL4/microkit/releases/download/2.3.1/microkit-sdk-2.3.1-macos-aarch64.tar.gz",
+    "sha256": "359c2172f789267e55f651106c8a7e87b2f2b94b5284b111daf09f3181a09475"
+  },
+  "sddf": {
+    "revision": "fe758631a9e99d97669f937bb6704a2f34a4a578",
+    "archive": "sddf-fe758631a9e99d97669f937bb6704a2f34a4a578.tar.gz",
+    "url": "https://github.com/au-ts/sddf/archive/fe758631a9e99d97669f937bb6704a2f34a4a578.tar.gz",
+    "sha256": "db86ff1c7d5aded52b4d7c5b25d3da117295c0a601af2cd3e0d393678a884614",
+    "sdfgen": "0.35.0"
+  },
+  "tested_host": "macOS arm64",
+  "tested_llvm": "23.1.2",
+  "tested_qemu": "11.1.1",
+  "board": "qemu_virt_aarch64",
+  "configuration": "debug",
+  "machine": "virt,virtualization=on,gic-version=2",
+  "cpu": "cortex-a53",
+  "memory": "2G",
+  "load_address": "0x70000000"
+}

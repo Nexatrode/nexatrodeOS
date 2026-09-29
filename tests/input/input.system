@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+ Copyright 2026, Personal OS contributors
+ SPDX-License-Identifier: BSD-2-Clause
+-->
+<system>
+    <memory_region name="input_queues" size="0x4_000" page_size="0x1_000" />
+    <memory_region name="input_handoff" size="0x1_000" page_size="0x1_000" />
+    <memory_region name="ui_focus" size="0x1_000" page_size="0x1_000" />
+    <memory_region name="calculator_view" size="0x1_000" page_size="0x1_000" />
+
+    <protection_domain name="input_driver" priority="254" budget="1_000" period="10_000" stack_size="0x10000">
+        <program_image path="input_driver.elf" />
+        <map mr="virtio_regs" vaddr="0x2_000_000" perms="rw" cached="false" setvar_vaddr="virtio_regs" />
+        <map mr="input_queues" vaddr="0x40_000_000" perms="rw" cached="false" setvar_vaddr="input_queues" />
+        <map mr="input_handoff" vaddr="0x41_000_000" perms="rw" cached="false" setvar_vaddr="input_handoff" />
+        <setvar symbol="input_queues_paddr" region_paddr="input_queues" />
+        <irq irq="78" id="0" trigger="edge" />
+        <irq irq="77" id="1" trigger="edge" />
+    </protection_domain>
+    <protection_domain name="input_service" priority="95" budget="1_000" period="10_000">
+        <program_image path="input_service.elf" />
+        <map mr="input_handoff" vaddr="0x41_000_000" perms="rw" cached="false" setvar_vaddr="input_handoff" />
+        <map mr="ui_focus" vaddr="0x42_000_000" perms="rw" cached="false" setvar_vaddr="ui_focus" />
+        <!-- Row hit-testing needs one mode word, not private Notes text. -->
+        <map mr="notes_touch_mode" vaddr="0x43_000_000" perms="r" cached="false" setvar_vaddr="notes_touch_mode" />
+    </protection_domain>
+    <!-- The calculator is an isolated, transient app with no storage authority. -->
+    <protection_domain name="calculator_app" priority="100" passive="true">
+        <program_image path="rust_calculator_app.elf" />
+        <map mr="calculator_view" vaddr="0x43_000_000" perms="rw" cached="false" setvar_vaddr="calculator_view" />
+    </protection_domain>
+    <channel>
+        <end pd="input_driver" id="2" />
+        <end pd="input_service" id="0" notify="false" />
+    </channel>
+    <!-- Only this trusted router can deliver events into the application PDs. -->
+    <channel>
+        <end pd="input_service" id="2" pp="true" notify="false" />
+        <end pd="notes_app" id="2" notify="false" />
+    </channel>
+    <channel>
+        <end pd="input_service" id="3" pp="true" notify="false" />
+        <end pd="contacts_app" id="2" notify="false" />
+    </channel>
+    <channel>
+        <end pd="input_service" id="5" pp="true" notify="false" />
+        <end pd="calculator_app" id="2" notify="false" />
+    </channel>
+    <channel>
+        <end pd="input_service" id="4" />
+        <end pd="gpu_client" id="2" />
+    </channel>
+</system>

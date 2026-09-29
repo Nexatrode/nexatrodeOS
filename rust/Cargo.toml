@@ -1,0 +1,107 @@
+[package]
+name = "personal-os-rust-server"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+budget-pressure = []
+development-crypto = []
+storage-test = ["development-crypto"]
+host-backup = ["development-crypto"]
+
+[[bin]]
+name = "rust_server"
+path = "src/main.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rust_crasher"
+path = "src/crasher.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rust_clock"
+path = "src/clock.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rust_client"
+path = "src/client.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rust_console"
+path = "src/console.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rust_vault"
+path = "src/vault.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rust_vault_disk"
+path = "src/vault_disk.rs"
+required-features = ["development-crypto"]
+test = false
+bench = false
+
+[[bin]]
+name = "rust_entropy_rng"
+path = "src/entropy_rng.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rust_input_service"
+path = "src/input_service.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rust_vault_test_client"
+path = "src/vault_disk_test.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rust_vault_notes_test"
+path = "src/vault_notes_test.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rust_vault_contacts_test"
+path = "src/vault_contacts_test.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rust_calculator_app"
+path = "src/calculator_app.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "vault_backup_cli"
+path = "src/bin/vault_backup_cli.rs"
+required-features = ["host-backup"]
+test = false
+bench = false
+
+[dependencies]
+aes-gcm-siv = { version = "=0.12.1", default-features = false, features = ["aes"] }
+
+[target.'cfg(target_os = "none")'.dependencies]
+sel4 = { git = "https://github.com/seL4/rust-sel4", rev = "891b59622306e94ad428193838f0d6214bb5c7aa" }
+sel4-microkit = { git = "https://github.com/seL4/rust-sel4", rev = "891b59622306e94ad428193838f0d6214bb5c7aa" }
+
+[lib]
+path = "src/lib.rs"

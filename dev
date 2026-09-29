@@ -1,0 +1,2882 @@
+#!/usr/bin/env python3
+"""Build and run the first personal-OS experiment; Python standard library only."""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import plistlib
+import pty
+import re
+import signal
+import selectors
+import shutil
+import socket
+import subprocess
+import struct
+import sys
+import tarfile
+import tempfile
+import time
+import uuid
+
+ROOT = Path(__file__).resolve().parent
+LOCK = json.loads((ROOT / "toolchain.lock.json").read_text())
+BUILD = ROOT / "build"
+CACHE = ROOT / ".cache"
+SDK = CACHE / ("microkit-sdk-" + LOCK["microkit"]["version"])
+SDDF_PINNED = CACHE / "sddf"
+SDDF = CACHE / "sddf-personal-os"
+SDDF_VENV = CACHE / "sddf-venv"
+STORAGE_BUILD = BUILD / "storage-test"
+PERSISTENT_DISK = BUILD / "personal-os-disk.img"
+TEST_DISK = BUILD / "test-disk.img"
+MIGRATION_DISK = BUILD / "migration-test-disk.img"
+
+
+def run(args, **kwargs):
+    subprocess.run([str(arg) for arg in args], check=True, **kwargs)
+
+
+def sha256(path):
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def tool(name, llvm=False):
+    directories = []
+    if llvm:
+        if os.environ.get("LLVM_BIN"):
+            directories.append(Path(os.environ["LLVM_BIN"]))
+        directories.extend([Path("/opt/homebrew/opt/llvm/bin"),
+                            Path("/usr/local/opt/llvm/bin")])
+    for directory in directories:
+        path = directory / name
+        if path.is_file():
+            return str(path)
+    path = shutil.which(name)
+    if path:
+        return path
+    raise RuntimeError(f"Missing {name}. On macOS: brew install llvm lld qemu")
+
+
+def setup():
+    if platform.system() != "Darwin" or platform.machine() != "arm64":
+        raise RuntimeError("This initial SDK lock targets Apple Silicon macOS.")
+    for name, llvm in [("clang", True), ("ld.lld", True), ("llvm-nm", True),
+                       ("qemu-system-aarch64", False)]:
+        tool(name, llvm)
+    if not shutil.which("rustup"):
+        raise RuntimeError("Missing rustup. Install the official Rust toolchain from https://rustup.rs")
+    if not shutil.which("cargo"):
+        raise RuntimeError("Missing cargo. Install the official Rust toolchain from https://rustup.rs")
+    spec = LOCK["microkit"]
+    CACHE.mkdir(exist_ok=True)
+    archive = CACHE / spec["archive"]
+    marker = SDK / ".verified-archive-sha256"
+    if marker.exists() and marker.read_text().strip() == spec["sha256"]:
+        return
+    if not archive.exists():
+        print(f"Downloading Microkit {spec['version']} (about 70 MiB)...", flush=True)
+        partial = archive.with_suffix(".download")
+        run(["curl", "--fail", "--location", "--retry", "3", "--output", partial, spec["url"]])
+        if sha256(partial) != spec["sha256"]:
+            raise RuntimeError(f"SDK checksum mismatch: {partial}")
+        partial.replace(archive)
+    if sha256(archive) != spec["sha256"]:
+        raise RuntimeError(f"SDK checksum mismatch: remove {archive} and retry")
+    if SDK.exists():
+        raise RuntimeError(f"Unverified SDK directory exists: {SDK}; move it aside and retry")
+    print("SDK checksum verified; extracting...", flush=True)
+    with tempfile.TemporaryDirectory(dir=CACHE) as temporary:
+        with tarfile.open(archive) as bundle:
+            bundle.extractall(temporary, filter="data")
+        shutil.move(str(Path(temporary) / SDK.name), SDK)
+    marker.write_text(spec["sha256"] + "\n")
+
+
+def build(budget_pressure=False):
+    setup()
+    print("WARNING: QEMU image uses the embedded development key; it does not protect data from source or image holders.", flush=True)
+    python = setup_sddf()
+    for name in ("make", "dtc", "gdisk", "mkfs.fat"):
+        tool(name)
+    BUILD.mkdir(exist_ok=True)
+    board = SDK / "board" / LOCK["board"] / LOCK["configuration"]
+    compiler, linker = tool("clang", True), tool("ld.lld", True)
+    rust_env = os.environ.copy()
+    rust_env["SEL4_INCLUDE_DIRS"] = str(board / "include")
+    features = ["development-crypto"]
+    if budget_pressure:
+        features.append("budget-pressure")
+    cargo_build = [tool("cargo"), "build", "--locked", "--release", "--target",
+                   "aarch64-sel4-microkit", "--target-dir", BUILD / "rust-target",
+                   "--features", ",".join(features)]
+    # The supervisor embeds the crasher's post-fault restart entry address.
+    # Build that image first, then generate the Rust constant before compiling
+    # the remaining binaries.
+    run(cargo_build + ["--bin", "rust_crasher"], cwd=ROOT / "rust", env=rust_env)
+    rust_release = BUILD / "rust-target" / "aarch64-sel4-microkit" / "release"
+    crasher_path = rust_release / "rust_crasher.elf"
+    crasher_elf = crasher_path.read_bytes()
+    if crasher_elf[:6] != b"\x7fELF\x02\x01":
+        raise RuntimeError("Rust crasher is not a little-endian ELF64 binary")
+    symbols = subprocess.check_output(
+        [tool("llvm-nm", True), "--defined-only", crasher_path], text=True
+    )
+    restart_entries = [int(line.split()[0], 16) for line in symbols.splitlines()
+                       if len(line.split()) >= 3 and
+                       line.split()[-1] == "rust_crasher_restart_entry"]
+    if len(restart_entries) != 1:
+        raise RuntimeError("Could not locate the Rust crasher restart entry point")
+    crasher_restart_entry = restart_entries[0]
+    if crasher_restart_entry < 0x200000 or crasher_restart_entry % 4 != 0:
+        raise RuntimeError(f"Unexpected Rust crasher restart entry: {crasher_restart_entry:#x}")
+    (BUILD / "crasher_entry.h").write_text(
+        "#pragma once\n"
+        f"#define CRASHER_RESTART_ENTRY ((seL4_Word)0x{crasher_restart_entry:x})\n"
+    )
+    (BUILD / "crasher_entry.rs").write_text(
+        f"const CRASHER_RESTART_ENTRY: usize = 0x{crasher_restart_entry:x};\n"
+    )
+    run(cargo_build + ["--bins"], cwd=ROOT / "rust", env=rust_env)
+    for component in ["rust_server", "rust_crasher", "rust_clock", "rust_client",
+                      "rust_console", "rust_vault", "rust_vault_disk",
+                      "rust_entropy_rng", "rust_input_service",
+                      "rust_vault_test_client", "rust_vault_notes_test",
+                      "rust_vault_contacts_test", "rust_calculator_app"]:
+        shutil.copy2(rust_release / f"{component}.elf", BUILD / f"{component}.elf")
+    c_server_obj = BUILD / "c_server.o"
+    run([compiler, "--target=aarch64-none-elf", "-mcpu=cortex-a53", "-mstrict-align",
+         "-ffreestanding", "-fno-stack-protector", "-fno-pic", "-g", "-O2",
+         "-Wall", "-Wextra", "-Werror", "-I", board / "include",
+         "-c", ROOT / "src/server.c", "-o", c_server_obj])
+    run([linker, "-L", board / "lib", c_server_obj, "-lmicrokit", "-Tmicrokit.ld",
+         "-o", BUILD / "c_server.elf"])
+
+    build_env = os.environ.copy()
+    build_env["SEL4_INCLUDE_DIRS"] = str(board / "include")
+    build_env["PATH"] = os.pathsep.join([
+        "/opt/homebrew/opt/llvm/bin", "/opt/homebrew/sbin", build_env.get("PATH", "")
+    ])
+    storage_system = BUILD / "storage-components.system"
+    make_args = [tool("make"), "-C", SDDF / "examples/blk",
+                 f"MICROKIT_SDK={SDK}", f"MICROKIT_BOARD={LOCK['board']}",
+                 f"MICROKIT_CONFIG={LOCK['configuration']}", f"SDDF={SDDF}",
+                 f"PYTHON={python}", f"BUILD_DIR={BUILD}",
+                 f"METAPROGRAM={ROOT / 'tests/storage_meta.py'}",
+                 f"SYSTEM_FILE={storage_system.name}", "all"]
+    run(make_args, cwd=ROOT, env=build_env)
+    run([tool("llvm-objcopy", True), "--update-section",
+         f".blk_client_config={BUILD / 'blk_client_vault.data'}",
+         BUILD / "rust_vault_disk.elf"])
+    run([python, ROOT / "tests/merge_storage_system.py", "--base", ROOT / "system.system",
+         "--storage", storage_system, "--output", BUILD / "system.system"])
+    run([SDK / "bin/microkit", BUILD / "system.system", "--search-path", BUILD,
+         "--board", LOCK["board"], "--config", LOCK["configuration"],
+         "-o", BUILD / "loader.img", "-r", BUILD / "report.txt"])
+    run([compiler, "--target=aarch64-none-elf", "-c", ROOT / "src/boot-image.S",
+         "-o", BUILD / "boot-image.o"], cwd=ROOT)
+    run([linker, "-Ttext=" + LOCK["load_address"], "--entry=_start",
+         BUILD / "boot-image.o", "-o", BUILD / "loader.elf"])
+    versions = {name: subprocess.check_output([path, "--version"], text=True).splitlines()[0]
+                for name, path in [("clang", compiler), ("linker", linker),
+                                   ("qemu", tool("qemu-system-aarch64"))]}
+    versions["rustc"] = subprocess.check_output(
+        [tool("rustc"), "--version"], cwd=ROOT / "rust", text=True
+    ).splitlines()[0]
+    (BUILD / "build-info.json").write_text(json.dumps({
+        "toolchain": LOCK, "actual_versions": versions,
+        "loader_sha256": sha256(BUILD / "loader.img"),
+        "elf_sha256": sha256(BUILD / "loader.elf"),
+    }, indent=2) + "\n")
+    prepare_vault_disk(PERSISTENT_DISK, reset=False, env=build_env)
+    print(f"Built {BUILD / 'loader.img'}", flush=True)
+
+
+def setup_sddf():
+    """Fetch the pinned sDDF source and install its pinned meta-tool package."""
+    spec = LOCK["sddf"]
+    marker = SDDF_PINNED / ".verified-archive-sha256"
+    if SDDF_PINNED.exists():
+        if marker.exists() and marker.read_text().strip() == spec["sha256"]:
+            pass
+        elif (SDDF_PINNED / ".git").exists():
+            revision = subprocess.check_output(
+                ["git", "-C", SDDF_PINNED, "rev-parse", "HEAD"], text=True
+            ).strip()
+            dirty = subprocess.check_output(
+                ["git", "-C", SDDF_PINNED, "status", "--porcelain"], text=True
+            ).strip()
+            if revision != spec["revision"] or dirty:
+                raise RuntimeError(
+                    f"Refusing to use unpinned or modified sDDF source at {SDDF_PINNED}"
+                )
+        else:
+            raise RuntimeError(
+                f"Unverified sDDF directory exists at {SDDF_PINNED}; move it aside and retry"
+            )
+    else:
+        CACHE.mkdir(exist_ok=True)
+        archive = CACHE / spec["archive"]
+        if not archive.exists():
+            partial = archive.with_suffix(".download")
+            print("Downloading pinned sDDF source (about 4 MiB)...", flush=True)
+            run(["curl", "--fail", "--location", "--retry", "3", "--output", partial, spec["url"]])
+            if sha256(partial) != spec["sha256"]:
+                raise RuntimeError(f"sDDF archive checksum mismatch: {partial}")
+            partial.replace(archive)
+        if sha256(archive) != spec["sha256"]:
+            raise RuntimeError(f"sDDF archive checksum mismatch: remove {archive} and retry")
+        root = f"sddf-{spec['revision']}"
+        with tempfile.TemporaryDirectory(dir=CACHE) as temporary:
+            with tarfile.open(archive) as bundle:
+                bundle.extractall(temporary, filter="data")
+            shutil.move(str(Path(temporary) / root), SDDF_PINNED)
+        marker.write_text(spec["sha256"] + "\n")
+
+    prepare_sddf_overlay()
+
+    python = SDDF_VENV / "bin" / "python"
+    if not python.exists():
+        run([sys.executable, "-m", "venv", SDDF_VENV])
+    try:
+        installed = subprocess.check_output(
+            [python, "-c", "import importlib.metadata; print(importlib.metadata.version('sdfgen'))"],
+            text=True,
+        ).strip()
+    except subprocess.CalledProcessError:
+        installed = ""
+    if installed != spec["sdfgen"]:
+        run([python, "-m", "pip", "install", f"sdfgen=={spec['sdfgen']}"])
+    return python
+
+
+def prepare_sddf_overlay():
+    """Copy verified sDDF and apply repository-owned driver fixes."""
+    patch_file = ROOT / "patches" / "sddf-personal-os.patch"
+    state = f"{LOCK['sddf']['sha256']} {sha256(patch_file)}\n"
+    state_file = SDDF / ".personal-os-overlay-state"
+    if state_file.exists() and state_file.read_text() == state:
+        return
+    if SDDF.exists():
+        if not state_file.exists():
+            raise RuntimeError(f"Refusing to overwrite an unmanaged sDDF overlay at {SDDF}")
+        shutil.rmtree(SDDF)
+
+    shutil.copytree(SDDF_PINNED, SDDF, ignore=shutil.ignore_patterns(".git"))
+    try:
+        run([tool("patch"), "--batch", "--forward", "-p1", "-i", patch_file], cwd=SDDF)
+        state_file.write_text(state)
+    except BaseException:
+        shutil.rmtree(SDDF)
+        raise
+
+
+def prepare_vault_disk(path, reset, env=None):
+    """Create a GPT image and clear the namespace area and legacy gap."""
+    path = Path(path)
+    if path.exists() and not reset:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    run([SDDF / "tools/mkvirtdisk", path, "1", "512", "16777216", "GPT"],
+        cwd=path.parent, env=env)
+    with path.open("r+b") as disk:
+        disk.seek(2048 * 512)
+        disk.write(bytes(8 * 4096))
+        disk.flush()
+        os.fsync(disk.fileno())
+
+
+def storage_qemu_command(loader=None, disk=None, qmp_socket=None, disk_format="raw",
+                        paused=False):
+    loader = Path(loader) if loader else STORAGE_BUILD / "loader.img"
+    disk = Path(disk) if disk else STORAGE_BUILD / "disk"
+    command = [tool("qemu-system-aarch64"), "-machine", "virt,virtualization=on",
+            "-accel", "tcg", "-cpu", "cortex-a53", "-smp", "1", "-m", "2G",
+            "-serial", "mon:stdio", "-global", "virtio-mmio.force-legacy=false",
+            "-device", f"loader,file={loader},addr=0x70000000,cpu-num=0",
+            "-device", "virtio-blk-device,drive=hd,bus=virtio-mmio-bus.1",
+            "-device", "virtio-rng-device,bus=virtio-mmio-bus.8",
+            "-nographic", "-d", "guest_errors",
+            "-drive", f"file={disk},if=none,format={disk_format},id=hd"]
+    if paused:
+        command.append("-S")
+    if qmp_socket is not None:
+        command.extend(["-qmp", f"unix:{qmp_socket},server=on,wait=on"])
+    return command
+
+
+def qmp_connect(path, process, timeout):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise RuntimeError(f"QEMU exited before opening its QMP socket ({process.returncode})")
+        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        connection.settimeout(5)
+        try:
+            connection.connect(str(path))
+            stream = connection.makefile("rwb", buffering=0)
+            greeting = json.loads(stream.readline())
+            if "QMP" not in greeting:
+                raise RuntimeError("QEMU QMP socket did not send its greeting")
+            qmp_execute(stream, "qmp_capabilities")
+            return connection, stream
+        except (FileNotFoundError, ConnectionRefusedError):
+            connection.close()
+            time.sleep(0.02)
+    raise RuntimeError(f"timed out waiting for QEMU QMP socket at {path}")
+
+
+def qmp_execute(stream, command, arguments=None):
+    request = {"execute": command}
+    if arguments is not None:
+        request["arguments"] = arguments
+    stream.write(json.dumps(request).encode() + b"\r\n")
+    while True:
+        line = stream.readline()
+        if not line:
+            raise RuntimeError(f"QMP closed while waiting for {command}")
+        response = json.loads(line)
+        if "error" in response:
+            raise RuntimeError(f"QMP {command} failed: {response['error']}")
+        if "return" in response:
+            return response["return"]
+
+
+def qmp_hmp(stream, command_line):
+    result = qmp_execute(stream, "human-monitor-command",
+                         {"command-line": command_line})
+    if isinstance(result, str) and result.lstrip().startswith("Error"):
+        raise RuntimeError(f"QEMU monitor {command_line!r} failed: {result.strip()}")
+    return result
+
+
+def storage_boot(expected, log_name, timeout):
+    output = bytearray()
+    master, slave = pty.openpty()
+    process = subprocess.Popen(storage_qemu_command(), cwd=STORAGE_BUILD,
+                               stdin=slave, stdout=slave, stderr=subprocess.STDOUT,
+                               close_fds=True)
+    os.close(slave)
+    deadline = time.monotonic() + timeout
+    completed_at = None
+    forbidden = [b"FAIL:", b"MON|ERROR", b"Kernel panic"]
+    try:
+        with selectors.DefaultSelector() as selector:
+            selector.register(master, selectors.EVENT_READ)
+            while time.monotonic() < deadline:
+                for key, _ in selector.select(timeout=0.1):
+                    try:
+                        data = os.read(key.fd, 65536)
+                    except OSError:
+                        data = b""
+                    if data:
+                        output.extend(data)
+                        sys.stdout.buffer.write(data)
+                        sys.stdout.buffer.flush()
+                if any(token in output for token in forbidden):
+                    break
+                if all(token.encode() in output for token in expected):
+                    completed_at = completed_at or time.monotonic()
+                    if time.monotonic() - completed_at > 0.4:
+                        break
+                if process.poll() is not None:
+                    raise RuntimeError(f"Storage QEMU exited unexpectedly ({process.returncode})")
+    finally:
+        if process.poll() is None:
+            process.send_signal(signal.SIGTERM)
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        try:
+            while True:
+                data = os.read(master, 65536)
+                if not data:
+                    break
+                output.extend(data)
+        except OSError:
+            pass
+        os.close(master)
+        (STORAGE_BUILD / log_name).write_bytes(output)
+
+    trace = output.decode(errors="replace")
+    missing = [token for token in expected if token not in trace]
+    if missing or any(token.decode() in trace for token in forbidden):
+        raise RuntimeError(f"Storage boot failed; missing or out-of-order evidence: {missing}; see {STORAGE_BUILD / log_name}")
+
+
+def storage_interruption_boot(point, case_dir, timeout):
+    names = {
+        1: "BEFORE_STAGE_FLUSH",
+        2: "AFTER_STAGE_FLUSH",
+        3: "BEFORE_COMMIT_FLUSH",
+        4: "AFTER_COMMIT_FLUSH",
+        5: "BEFORE_STAGE_FLUSH",
+        6: "AFTER_STAGE_FLUSH",
+        7: "BEFORE_COMMIT_FLUSH",
+        8: "AFTER_COMMIT_FLUSH",
+    }
+    reset_marker = f"STORAGE|RESET_POINT|{names[point]}"
+    recovery_marker = f"STORAGE|INTERRUPTION_RECOVERY_OK: point={point} generation="
+    entropy_marker = "STORAGE|ENTROPY|PASS: fresh samples delivered"
+    log_path = case_dir / "qmp-reset.log"
+    qmp_directory = tempfile.TemporaryDirectory(prefix="psq-", dir="/tmp")
+    qmp_path = Path(qmp_directory.name) / "q.sock"
+
+    output = bytearray()
+    master, slave = pty.openpty()
+    process = subprocess.Popen(
+        storage_qemu_command(case_dir / "loader.img", case_dir / "disk", qmp_path),
+        cwd=case_dir, stdin=slave, stdout=slave, stderr=subprocess.STDOUT,
+        close_fds=True,
+    )
+    os.close(slave)
+    qmp_connection = qmp_stream = None
+    deadline = time.monotonic() + timeout
+    reset_sent = False
+    recovered_at = None
+    forbidden = (b"FAIL:", b"MON|ERROR", b"Kernel panic")
+    try:
+        qmp_connection, qmp_stream = qmp_connect(qmp_path, process, timeout)
+        with selectors.DefaultSelector() as selector:
+            selector.register(master, selectors.EVENT_READ)
+            while time.monotonic() < deadline:
+                for key, _ in selector.select(timeout=0.1):
+                    try:
+                        data = os.read(key.fd, 65536)
+                    except OSError:
+                        data = b""
+                    if data:
+                        output.extend(data)
+                        sys.stdout.buffer.write(data)
+                        sys.stdout.buffer.flush()
+                trace = output.decode(errors="replace")
+                if any(token.decode() in trace for token in forbidden):
+                    break
+                if reset_marker in trace and not reset_sent:
+                    qmp_execute(qmp_stream, "system_reset")
+                    reset_sent = True
+                if reset_sent and recovery_marker in trace:
+                    recovered_at = recovered_at or time.monotonic()
+                    if time.monotonic() - recovered_at > 0.4:
+                        break
+                if process.poll() is not None:
+                    raise RuntimeError(
+                        f"QEMU exited during flush-interruption test ({process.returncode})"
+                    )
+    finally:
+        if qmp_stream is not None:
+            qmp_stream.close()
+        if qmp_connection is not None:
+            qmp_connection.close()
+        if process.poll() is None:
+            process.send_signal(signal.SIGTERM)
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        try:
+            while True:
+                data = os.read(master, 65536)
+                if not data:
+                    break
+                output.extend(data)
+        except OSError:
+            pass
+        os.close(master)
+        log_path.write_bytes(output)
+        qmp_directory.cleanup()
+
+    trace = output.decode(errors="replace")
+    entropy_after_reset = trace.rfind(entropy_marker) > trace.rfind(reset_marker)
+    if (not reset_sent or reset_marker not in trace or recovery_marker not in trace or
+            not entropy_after_reset or
+            any(token.decode() in trace for token in forbidden)):
+        raise RuntimeError(
+            f"QMP interruption point {names[point]} failed; see {log_path}"
+        )
+
+
+def storage_interruption_tests(timeout, pristine_disk):
+    names = {
+        1: "before-stage-flush",
+        2: "after-stage-flush",
+        3: "before-commit-flush",
+        4: "after-commit-flush",
+        5: "blob-before-stage-flush",
+        6: "blob-after-stage-flush",
+        7: "blob-before-commit-flush",
+        8: "blob-after-commit-flush",
+    }
+    llvm_objcopy = tool("llvm-objcopy", llvm=True)
+    microkit = SDK / "bin/microkit"
+    required_images = (
+        "storage.system", "rust_vault_disk.elf", "rust_vault_test_client.elf",
+        "rust_entropy_rng.elf",
+        "blk_driver.elf", "blk_virt.elf", "serial_driver.elf", "serial_virt_tx.elf",
+    )
+    for point, name in names.items():
+        case_dir = STORAGE_BUILD / "flush-interruptions" / name
+        if case_dir.exists():
+            shutil.rmtree(case_dir)
+        case_dir.mkdir(parents=True)
+        for filename in required_images:
+            shutil.copy2(STORAGE_BUILD / filename, case_dir / filename)
+        config = case_dir / "interrupt-point.bin"
+        config.write_bytes(struct.pack("<I", point))
+        run([llvm_objcopy, "--update-section",
+             f".storage_test_config={config}",
+             case_dir / "rust_vault_test_client.elf"])
+        run([microkit, case_dir / "storage.system", "--search-path", case_dir,
+             "--board", LOCK["board"], "--config", LOCK["configuration"],
+             "-o", case_dir / "loader.img", "-r", case_dir / "report.txt"])
+        shutil.copyfile(pristine_disk, case_dir / "disk")
+        storage_interruption_boot(point, case_dir, timeout)
+        outcomes = {
+            1: "the old generation before the stage flush",
+            2: "the old generation after the stage flush",
+            3: "a valid old or new generation before the commit flush",
+            4: "the new generation after the commit flush",
+            5: "the old blob before the stage flush",
+            6: "the old blob after the stage flush",
+            7: "a valid old or new blob before the commit flush",
+            8: "the new blob after the commit flush",
+        }
+        print(f"Flush interruption check: PASS. {name} reset recovered {outcomes[point]}.")
+
+
+def storage_snapshot_replay_test(timeout, pristine_disk):
+    """Restore a complete pre-boot VM snapshot and compare short RNG fingerprints."""
+    qemu_img = tool("qemu-img")
+    case_dir = STORAGE_BUILD / "snapshot-replay"
+    if case_dir.exists():
+        shutil.rmtree(case_dir)
+    case_dir.mkdir(parents=True)
+    snapshot_disk = case_dir / "snapshot-disk.qcow2"
+    run([qemu_img, "convert", "-f", "raw", "-O", "qcow2", pristine_disk,
+         snapshot_disk])
+    qmp_directory = tempfile.TemporaryDirectory(prefix="pssr-", dir="/tmp")
+    qmp_path = Path(qmp_directory.name) / "q.sock"
+    log_path = case_dir / "qmp-snapshot-replay.log"
+    output = bytearray()
+    master, slave = pty.openpty()
+    process = subprocess.Popen(
+        storage_qemu_command(STORAGE_BUILD / "loader.img", snapshot_disk, qmp_path,
+                             disk_format="qcow2", paused=True),
+        cwd=case_dir, stdin=slave, stdout=slave, stderr=subprocess.STDOUT,
+        close_fds=True,
+    )
+    os.close(slave)
+    qmp_connection = qmp_stream = None
+    fingerprints = []
+    forbidden = (b"FAIL:", b"MON|ERROR", b"Kernel panic")
+    fingerprint_re = re.compile(rb"STORAGE\|ENTROPY\|FINGERPRINT:([0-9a-f]{16})")
+    deadline = time.monotonic() + timeout
+
+    def collect_until_fingerprint(count):
+        with selectors.DefaultSelector() as selector:
+            selector.register(master, selectors.EVENT_READ)
+            while time.monotonic() < deadline:
+                for key, _ in selector.select(timeout=0.1):
+                    try:
+                        data = os.read(key.fd, 65536)
+                    except OSError:
+                        data = b""
+                    if data:
+                        output.extend(data)
+                        sys.stdout.buffer.write(data)
+                        sys.stdout.buffer.flush()
+                        found = fingerprint_re.findall(output)
+                        if len(found) >= count:
+                            return [value.decode("ascii") for value in found]
+                if any(token in output for token in forbidden):
+                    raise RuntimeError("guest reported a failure during snapshot replay test")
+                if process.poll() is not None:
+                    raise RuntimeError(
+                        f"QEMU exited during snapshot replay test ({process.returncode})"
+                    )
+        raise RuntimeError(f"timed out waiting for RNG fingerprint {count}")
+
+    try:
+        qmp_connection, qmp_stream = qmp_connect(qmp_path, process, timeout)
+        qmp_hmp(qmp_stream, "savevm entropy-before-boot")
+        qmp_execute(qmp_stream, "cont")
+        fingerprints = collect_until_fingerprint(1)
+        qmp_execute(qmp_stream, "stop")
+        qmp_hmp(qmp_stream, "loadvm entropy-before-boot")
+        qmp_execute(qmp_stream, "cont")
+        fingerprints = collect_until_fingerprint(2)
+    finally:
+        if qmp_stream is not None:
+            qmp_stream.close()
+        if qmp_connection is not None:
+            qmp_connection.close()
+        if process.poll() is None:
+            process.send_signal(signal.SIGTERM)
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        try:
+            while True:
+                data = os.read(master, 65536)
+                if not data:
+                    break
+                output.extend(data)
+        except OSError:
+            pass
+        os.close(master)
+        log_path.write_bytes(output)
+        qmp_directory.cleanup()
+
+    if len(fingerprints) < 2 or fingerprints[0] == fingerprints[1]:
+        raise RuntimeError(
+            f"VM snapshot replayed the RNG fingerprint ({fingerprints}); see {log_path}"
+        )
+    print("VM snapshot replay check: PASS. Restoring the pre-boot VM snapshot delivered a different 64-bit RNG fingerprint.")
+
+
+def storage_snapshot_clone_test(timeout, pristine_disk):
+    """Boot two independent QEMU clones from the same saved pre-boot VM state."""
+    qemu_img = tool("qemu-img")
+    case_dir = STORAGE_BUILD / "snapshot-clones"
+    if case_dir.exists():
+        shutil.rmtree(case_dir)
+    case_dir.mkdir(parents=True)
+    template_disk = case_dir / "snapshot-template.qcow2"
+    run([qemu_img, "convert", "-f", "raw", "-O", "qcow2", pristine_disk,
+         template_disk])
+    qmp_directory = tempfile.TemporaryDirectory(prefix="pssc-", dir="/tmp")
+    fingerprint_re = re.compile(rb"STORAGE\|ENTROPY\|FINGERPRINT:([0-9a-f]{16})")
+    names = ("clone-a", "clone-b")
+    vms = []
+
+    def start_vm(name, disk):
+        qmp_path = Path(qmp_directory.name) / f"{name}.sock"
+        log_path = case_dir / f"{name}.log"
+        master, slave = pty.openpty()
+        process = subprocess.Popen(
+            storage_qemu_command(STORAGE_BUILD / "loader.img", disk, qmp_path,
+                                 disk_format="qcow2", paused=True),
+            cwd=case_dir, stdin=slave, stdout=slave, stderr=subprocess.STDOUT,
+            close_fds=True,
+        )
+        os.close(slave)
+        return {"name": name, "master": master, "process": process,
+                "qmp_path": qmp_path, "qmp_connection": None, "qmp_stream": None,
+                "output": bytearray(), "log_path": log_path}
+
+    def stop_vm(vm):
+        stream = vm["qmp_stream"]
+        connection = vm["qmp_connection"]
+        if stream is not None:
+            stream.close()
+        if connection is not None:
+            connection.close()
+        process = vm["process"]
+        if process.poll() is None:
+            process.send_signal(signal.SIGTERM)
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        try:
+            while True:
+                data = os.read(vm["master"], 65536)
+                if not data:
+                    break
+                vm["output"].extend(data)
+        except OSError:
+            pass
+        os.close(vm["master"])
+        vm["log_path"].write_bytes(vm["output"])
+
+    seed_disk = template_disk
+    seed = start_vm("snapshot-seed", seed_disk)
+    vms.append(seed)
+    try:
+        seed["qmp_connection"], seed["qmp_stream"] = qmp_connect(
+            seed["qmp_path"], seed["process"], timeout
+        )
+        qmp_hmp(seed["qmp_stream"], "savevm entropy-before-boot")
+    finally:
+        stop_vm(seed)
+        vms.remove(seed)
+
+    fingerprints = {}
+    forbidden = (b"FAIL:", b"MON|ERROR", b"Kernel panic")
+    deadline = time.monotonic() + timeout
+    try:
+        for name in names:
+            clone_disk = case_dir / f"{name}.qcow2"
+            shutil.copyfile(template_disk, clone_disk)
+            vms.append(start_vm(name, clone_disk))
+        for vm in vms:
+            vm["qmp_connection"], vm["qmp_stream"] = qmp_connect(
+                vm["qmp_path"], vm["process"], timeout
+            )
+            qmp_hmp(vm["qmp_stream"], "loadvm entropy-before-boot")
+        for vm in vms:
+            qmp_execute(vm["qmp_stream"], "cont")
+
+        with selectors.DefaultSelector() as selector:
+            for vm in vms:
+                selector.register(vm["master"], selectors.EVENT_READ, vm)
+            while time.monotonic() < deadline and len(fingerprints) < len(vms):
+                for key, _ in selector.select(timeout=0.1):
+                    vm = key.data
+                    try:
+                        data = os.read(key.fd, 65536)
+                    except OSError:
+                        data = b""
+                    if data:
+                        vm["output"].extend(data)
+                        sys.stdout.buffer.write(data)
+                        sys.stdout.buffer.flush()
+                        found = fingerprint_re.findall(vm["output"])
+                        if found:
+                            fingerprints[vm["name"]] = found[0].decode("ascii")
+                for vm in vms:
+                    if any(token in vm["output"] for token in forbidden):
+                        raise RuntimeError(f"{vm['name']} reported a guest failure")
+                    if vm["process"].poll() is not None:
+                        raise RuntimeError(
+                            f"{vm['name']} QEMU exited ({vm['process'].returncode})"
+                        )
+        if len(fingerprints) != len(vms):
+            raise RuntimeError(
+                f"timed out waiting for both clone fingerprints: {fingerprints}"
+            )
+    finally:
+        for vm in vms:
+            stop_vm(vm)
+        qmp_directory.cleanup()
+
+    if fingerprints[names[0]] == fingerprints[names[1]]:
+        raise RuntimeError(
+            f"independent VM clones returned the same RNG fingerprint: {fingerprints}"
+        )
+    print("VM snapshot clone check: PASS. Independent QEMU instances restored from the same VM snapshot delivered different 64-bit RNG fingerprints.")
+
+
+def storage_test(timeout):
+    setup()
+    python = setup_sddf()
+    for name in ("make", "dtc", "gdisk", "mkfs.fat"):
+        tool(name)
+    STORAGE_BUILD.mkdir(parents=True, exist_ok=True)
+    board = SDK / "board" / LOCK["board"] / LOCK["configuration"]
+    env = os.environ.copy()
+    env["SEL4_INCLUDE_DIRS"] = str(board / "include")
+    env["PATH"] = os.pathsep.join([
+        "/opt/homebrew/opt/llvm/bin", "/opt/homebrew/sbin", env.get("PATH", "")
+    ])
+    cargo_target = STORAGE_BUILD / "rust-target"
+    cargo_build = [tool("cargo"), "build", "--locked", "--release", "--target",
+                   "aarch64-sel4-microkit", "--target-dir", cargo_target,
+                   "--features", "storage-test", "--bin", "rust_vault_disk",
+                   "--bin", "rust_vault_test_client", "--bin", "rust_entropy_rng"]
+    run(cargo_build, cwd=ROOT / "rust", env=env)
+    rust_release = cargo_target / "aarch64-sel4-microkit" / "release"
+    for component in ("rust_vault_disk", "rust_vault_test_client", "rust_entropy_rng"):
+        shutil.copy2(rust_release / f"{component}.elf", STORAGE_BUILD / f"{component}.elf")
+
+    llvm_objcopy = tool("llvm-objcopy", llvm=True)
+    make_args = [tool("make"), "-C", SDDF / "examples/blk",
+                 f"MICROKIT_SDK={SDK}", f"MICROKIT_BOARD={LOCK['board']}",
+                 f"MICROKIT_CONFIG={LOCK['configuration']}", f"SDDF={SDDF}",
+                 f"PYTHON={python}", f"BUILD_DIR={STORAGE_BUILD}",
+                 f"METAPROGRAM={ROOT / 'tests/storage_meta.py'}",
+                 "SYSTEM_FILE=storage.system", "all"]
+    run(make_args, cwd=ROOT, env=env)
+    run([llvm_objcopy, "--update-section",
+         f".blk_client_config={STORAGE_BUILD / 'blk_client_vault.data'}",
+         STORAGE_BUILD / "rust_vault_disk.elf"])
+    run([SDK / "bin/microkit", STORAGE_BUILD / "storage.system",
+         "--search-path", STORAGE_BUILD, "--board", LOCK["board"],
+         "--config", LOCK["configuration"], "-o", STORAGE_BUILD / "loader.img",
+         "-r", STORAGE_BUILD / "report.txt"])
+
+    run([SDDF / "tools/mkvirtdisk", STORAGE_BUILD / "disk", "1", "512",
+         "16777216", "GPT"], cwd=STORAGE_BUILD, env=env)
+    # This is a raw vault partition, so remove the FAT boot sector that the
+    # upstream disk helper initially creates; keep the GPT partition table.
+    with (STORAGE_BUILD / "disk").open("r+b") as disk:
+        disk.seek(2048 * 512)
+        disk.write(bytes(8 * 4096))
+        disk.flush()
+        os.fsync(disk.fileno())
+    pristine_disk = STORAGE_BUILD / "pristine-disk.img"
+    shutil.copyfile(STORAGE_BUILD / "disk", pristine_disk)
+
+    boot_scenarios = [
+        ("storage-first-boot.log", ["STORAGE|FIRST_BOOT_OK", "STORAGE|COMMIT_OK",
+                                    "STORAGE|MISSING_COMMIT_STAGED"]),
+        ("storage-partial-body.log", ["STORAGE|REBOOT_RECOVERY_OK",
+                                      "STORAGE|PARTIAL_BODY_STAGED"]),
+        ("storage-bad-auth-tag.log", ["STORAGE|REBOOT_RECOVERY_OK",
+                                      "STORAGE|BAD_AUTH_TAG_STAGED"]),
+        ("storage-torn-commit.log", ["STORAGE|REBOOT_RECOVERY_OK",
+                                     "STORAGE|TORN_COMMIT_STAGED"]),
+        ("storage-final-recovery.log", ["STORAGE|REBOOT_RECOVERY_OK",
+                                        "STORAGE|ALL_CASES_RECOVERED"]),
+    ]
+    for log_name, expected in boot_scenarios:
+        storage_boot(["STORAGE|ENTROPY|PASS: fresh samples delivered", *expected],
+                     log_name, timeout)
+    storage_interruption_tests(timeout, pristine_disk)
+    storage_snapshot_replay_test(timeout, pristine_disk)
+    storage_snapshot_clone_test(timeout, pristine_disk)
+    print("Storage test: PASS. Entropy delivery survived QEMU boots, four scalar and four blob QMP resets, a full VM snapshot restore, and independent VM clones; malformed slots were rejected and interrupted writes recovered a valid old or new record.")
+
+
+def integrated_graphics_test(timeout, gpu_build, expected_pixels, converter):
+    """Run the GPU demo alongside the regular OS services and vault."""
+    build()
+    for source_name, target_name in (
+        ("gpu_driver.elf", "gpu_driver.elf"),
+        ("gpu_virt.elf", "gpu_virt.elf"),
+        ("timer_driver.elf", "timer_driver.elf"),
+        ("client.elf", "gpu_client.elf"),
+    ):
+        shutil.copy2(gpu_build / source_name, BUILD / target_name)
+
+    merged_system = gpu_build / "graphics-system.system"
+    run([tool("python3"), ROOT / "tests/merge_graphics_system.py",
+         "--base", BUILD / "system.system",
+         "--graphics", SDDF / "examples/gpu/board/qemu_virt_aarch64/gpu.system",
+         "--output", merged_system])
+    loader = gpu_build / "graphics-system-loader.img"
+    run([SDK / "bin/microkit", merged_system, "--search-path", BUILD,
+         "--board", LOCK["board"], "--config", LOCK["configuration"],
+         "-o", loader, "-r", gpu_build / "graphics-system-report.txt"])
+    prepare_vault_disk(TEST_DISK, reset=True)
+
+    serial_log = gpu_build / "graphics-system-serial.log"
+    qemu_log = gpu_build / "graphics-system-qemu.stderr"
+    frame_path = gpu_build / "graphics-system-frame.ppm"
+    screenshot = gpu_build / "graphics-system-smoke.ppm"
+    qmp_path = Path(tempfile.gettempdir()) / f"pgpuos-{uuid.uuid4().hex[:8]}.sock"
+    qemu_command = [
+        tool("qemu-system-aarch64"), "-machine", "virt,virtualization=on",
+        "-accel", "tcg", "-cpu", LOCK["cpu"], "-smp", "1",
+        "-m", LOCK["memory"], "-serial", f"file:{serial_log}",
+        "-monitor", "none", "-nic", "none", "-global",
+        "virtio-mmio.force-legacy=false", "-device",
+        f"loader,file={loader},addr={LOCK['load_address']},cpu-num=0",
+        "-device", "virtio-blk-device,drive=hd,bus=virtio-mmio-bus.1",
+        "-device", "virtio-rng-device,bus=virtio-mmio-bus.8",
+        "-device", "virtio-gpu-device,bus=virtio-mmio-bus.31,edid=off,blob=off,max_outputs=1,indirect_desc=off,event_idx=off",
+        "-display", "none", "-d", "guest_errors",
+        "-drive", f"file={TEST_DISK},if=none,format=raw,id=hd",
+        "-qmp", f"unix:{qmp_path},server=on,wait=off",
+    ]
+    deadline = time.monotonic() + timeout
+    process = None
+    rendered = False
+    try:
+        with qemu_log.open("wb") as errors:
+            process = subprocess.Popen(qemu_command, stdout=subprocess.DEVNULL, stderr=errors)
+            while not qmp_path.exists():
+                if process.poll() is not None:
+                    raise RuntimeError(f"Integrated graphics QEMU exited during startup; see {qemu_log}")
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("Timed out waiting for integrated graphics QMP socket")
+                time.sleep(0.05)
+
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as qmp_socket:
+                qmp_socket.settimeout(3)
+                qmp_socket.connect(str(qmp_path))
+                with qmp_socket.makefile("rwb", buffering=0) as qmp_stream:
+                    greeting = json.loads(qmp_stream.readline())
+                    if "QMP" not in greeting:
+                        raise RuntimeError("Integrated graphics QEMU returned an invalid QMP greeting")
+
+                    def qmp_command(command, arguments=None):
+                        request = {"execute": command}
+                        if arguments is not None:
+                            request["arguments"] = arguments
+                        qmp_stream.write(json.dumps(request).encode() + b"\r\n")
+                        while True:
+                            line = qmp_stream.readline()
+                            if not line:
+                                raise RuntimeError("Integrated graphics QEMU closed its QMP connection")
+                            response = json.loads(line)
+                            if "event" in response:
+                                continue
+                            if "error" in response:
+                                raise RuntimeError(f"Integrated QEMU command failed: {response['error']}")
+                            if "return" in response:
+                                return response["return"]
+
+                    qmp_command("qmp_capabilities")
+                    while time.monotonic() < deadline:
+                        qmp_command("human-monitor-command", {
+                            "command-line": f"screendump {frame_path}"
+                        })
+                        frame = frame_path.read_bytes() if frame_path.exists() else b""
+                        parts = frame.split(b"\n", 3)
+                        if len(parts) == 4 and parts[0] == b"P6" and parts[2] == b"255":
+                            try:
+                                width, height = map(int, parts[1].split())
+                            except ValueError:
+                                width = height = 0
+                            if (width == 300 and height == 400 and
+                                    parts[3] == expected_pixels and
+                                    "ISOLATION COMPLETE: 25 checks passed" in
+                                    (serial_log.read_text(errors="replace") if serial_log.exists() else "")):
+                                shutil.copy2(frame_path, screenshot)
+                                rendered = True
+                                break
+                        trace = serial_log.read_text(errors="replace") if serial_log.exists() else ""
+                        if any(marker in trace for marker in ("faulting PD:", "Failed assertion", "MON|ERROR")):
+                            raise RuntimeError(f"Integrated graphics guest faulted; inspect {serial_log}")
+                        time.sleep(0.15)
+    finally:
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        qmp_path.unlink(missing_ok=True)
+
+    trace = serial_log.read_text(errors="replace") if serial_log.exists() else ""
+    if "ISOLATION COMPLETE: 25 checks passed" not in trace:
+        raise RuntimeError(f"Regular OS checks did not finish; inspect {serial_log}")
+    if "PD 'timer_driver' is now passive!" not in trace:
+        raise RuntimeError(f"Integrated GPU timer service did not start; inspect {serial_log}")
+    if not rendered:
+        raise RuntimeError(
+            f"The regular OS did not render the full GPU sample before timeout; inspect {serial_log} and {qemu_log}"
+        )
+    png = gpu_build / "graphics-system-smoke.png"
+    run([converter, screenshot, png], stdout=subprocess.DEVNULL)
+    print(f"Integrated graphics test: PASS; regular OS checks passed and GPU frame saved to {png}")
+
+
+def graphics_test(timeout):
+    """Build the pinned sDDF GPU example and require a real rendered frame."""
+    setup()
+    setup_sddf()
+    for name in ("make", "convert"):
+        tool(name)
+
+    gpu_build = BUILD / "sddf-gpu-spike"
+    compat = ROOT / "tools" / "sddf-gpu-compat"
+    flags = (f"-mstrict-align -I{compat} "
+             f"-include {compat / 'ialloc_compat.h'}")
+    env = os.environ.copy()
+    env["PATH"] = os.pathsep.join([
+        "/opt/homebrew/opt/llvm/bin", "/opt/homebrew/sbin",
+        env.get("PATH", "")
+    ])
+    make_args = [
+        tool("make"), "-C", SDDF / "examples/gpu",
+        f"MICROKIT_SDK={SDK}", f"MICROKIT_BOARD={LOCK['board']}",
+        f"MICROKIT_CONFIG={LOCK['configuration']}", f"SDDF={SDDF}",
+        f"BUILD_DIR={gpu_build}",
+        f"FB_IMG={SDDF / 'examples/gpu/fb_img.jpeg'}",
+        "BLOB=0", f"CFLAGS_gpu={flags}",
+    ]
+    # The sample Makefile does not track all client header dependencies, and
+    # its clobber target can fail while removing a non-empty util directory.
+    # Recreate only this disposable graphics-spike build directory.
+    if gpu_build.exists():
+        shutil.rmtree(gpu_build)
+    run(make_args + ["all"], cwd=ROOT, env=env)
+
+    # This older sample has a direct SDF but predates current sDDF's
+    # device_resources metadata injection. Its ARM generic timer uses IRQ id 0
+    # and no MMIO regions. This encodes the pinned device_resources_t layout.
+    resource_size = 0x648
+    irq_array_offset = 0x608
+    resources = bytearray(resource_size)
+    resources[:7] = b"sDDF\x01\x00\x01"
+    resources[irq_array_offset] = 0
+    resource_blob = gpu_build / "timer_device_resources.data"
+    resource_blob.write_bytes(resources)
+    run([tool("llvm-objcopy", llvm=True), "--update-section",
+         f".device_resources={resource_blob}", gpu_build / "timer_driver.elf"])
+
+    gpu_system = SDDF / "examples/gpu/board/qemu_virt_aarch64/gpu.system"
+    run([SDK / "bin/microkit", gpu_system, "--search-path", gpu_build,
+         "--board", LOCK["board"], "--config", LOCK["configuration"],
+         "-o", gpu_build / "loader.img", "-r", gpu_build / "report.txt"], cwd=ROOT)
+
+    serial_log = gpu_build / "graphics-serial.log"
+    qemu_log = gpu_build / "graphics-qemu.stderr"
+    frame_path = gpu_build / "graphics-frame.ppm"
+    screenshot = gpu_build / "graphics-smoke.ppm"
+    converter = shutil.which("magick") or tool("convert")
+    expected_pixels_path = gpu_build / "graphics-expected.rgb"
+    run([converter, SDDF / "examples/gpu/fb_img.jpeg", "-auto-orient",
+         "-depth", "8", f"rgb:{expected_pixels_path}"], stdout=subprocess.DEVNULL)
+    expected_pixels = expected_pixels_path.read_bytes()
+    if len(expected_pixels) != 300 * 400 * 3:
+        raise RuntimeError("GPU sample input did not convert to the expected 300x400 RGB image")
+    qmp_path = Path(tempfile.gettempdir()) / f"pgpu-{uuid.uuid4().hex[:10]}.sock"
+    qemu_command = [
+        tool("qemu-system-aarch64"), "-machine", "virt,virtualization=on",
+        "-accel", "tcg", "-cpu", LOCK["cpu"], "-smp", "1",
+        "-m", LOCK["memory"], "-serial", f"file:{serial_log}",
+        "-monitor", "none", "-nic", "none", "-global",
+        "virtio-mmio.force-legacy=false", "-device",
+        f"loader,file={gpu_build / 'loader.img'},addr={LOCK['load_address']},cpu-num=0",
+        "-device", "virtio-gpu-device,edid=off,blob=off,max_outputs=1,indirect_desc=off,event_idx=off",
+        "-display", "none", "-d", "guest_errors",
+        "-qmp", f"unix:{qmp_path},server=on,wait=off",
+    ]
+    deadline = time.monotonic() + timeout
+    process = None
+    rendered = False
+    try:
+        with qemu_log.open("wb") as errors:
+            process = subprocess.Popen(qemu_command, stdout=subprocess.DEVNULL, stderr=errors)
+            while not qmp_path.exists():
+                if process.poll() is not None:
+                    raise RuntimeError(f"Graphics QEMU exited during startup; see {qemu_log}")
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("Timed out waiting for the graphics QEMU control socket")
+                time.sleep(0.05)
+
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as qmp_socket:
+                qmp_socket.settimeout(3)
+                qmp_socket.connect(str(qmp_path))
+                with qmp_socket.makefile("rwb", buffering=0) as qmp_stream:
+                    greeting = json.loads(qmp_stream.readline())
+                    if "QMP" not in greeting:
+                        raise RuntimeError("Graphics QEMU returned an invalid QMP greeting")
+
+                    def qmp_command(command, arguments=None):
+                        request = {"execute": command}
+                        if arguments is not None:
+                            request["arguments"] = arguments
+                        qmp_stream.write(json.dumps(request).encode() + b"\r\n")
+                        while True:
+                            line = qmp_stream.readline()
+                            if not line:
+                                raise RuntimeError("Graphics QEMU closed its QMP connection")
+                            response = json.loads(line)
+                            if "event" in response:
+                                continue
+                            if "error" in response:
+                                raise RuntimeError(f"Graphics QEMU command failed: {response['error']}")
+                            if "return" in response:
+                                return response["return"]
+
+                    qmp_command("qmp_capabilities")
+                    while time.monotonic() < deadline:
+                        qmp_command("human-monitor-command", {
+                            "command-line": f"screendump {frame_path}"
+                        })
+                        frame = frame_path.read_bytes() if frame_path.exists() else b""
+                        parts = frame.split(b"\n", 3)
+                        if len(parts) == 4 and parts[0] == b"P6" and parts[2] == b"255":
+                            try:
+                                width, height = map(int, parts[1].split())
+                            except ValueError:
+                                width = height = 0
+                            pixels = parts[3]
+                            if (width == 300 and height == 400 and
+                                    len(pixels) == width * height * 3 and
+                                    len(set(pixels)) > 32 and
+                                    pixels == expected_pixels):
+                                shutil.copy2(frame_path, screenshot)
+                                rendered = True
+                                break
+                        time.sleep(0.15)
+    finally:
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        qmp_path.unlink(missing_ok=True)
+
+    trace = serial_log.read_text(errors="replace") if serial_log.exists() else ""
+    if any(marker in trace for marker in ("faulting PD:", "Failed assertion", "MON|ERROR")):
+        raise RuntimeError(f"Graphics guest faulted; inspect {serial_log}")
+    if not rendered:
+        raise RuntimeError(
+            f"No full 300x400 GPU frame was rendered before timeout; inspect {serial_log} and {qemu_log}"
+        )
+    png = gpu_build / "graphics-smoke.png"
+    run([converter, screenshot, png], stdout=subprocess.DEVNULL)
+    print(f"VirtIO GPU smoke test: PASS; rendered 300x400 frame saved to {png}")
+    integrated_graphics_test(timeout, gpu_build, expected_pixels, converter)
+
+
+def input_frame_key(focus, text="", scroll_start_line=None, notes_mode="edit",
+                    note_count=1, selected_note=0, delete_armed=False,
+                    notes_field="body"):
+    if (focus != "notes" or
+            (notes_mode == "edit" and note_count == 1 and selected_note == 0 and
+             not delete_armed and notes_field == "body")):
+        return (focus, text) if scroll_start_line is None else (
+            focus, text, scroll_start_line
+        )
+    return (focus, text, notes_mode, note_count, selected_note,
+            scroll_start_line, delete_armed, notes_field)
+
+
+def rgb_matches_outside_rect(actual, expected, x, y, width, height,
+                             frame_width=300, frame_height=400):
+    """Compare an RGB frame exactly except for a dynamic rectangular field."""
+    if len(actual) != len(expected) or len(actual) != frame_width * frame_height * 3:
+        return False
+    stride = frame_width * 3
+    left = max(0, x) * 3
+    right = min(frame_width, x + width) * 3
+    top = max(0, y)
+    bottom = min(frame_height, y + height)
+    for row in range(frame_height):
+        row_start = row * stride
+        if row < top or row >= bottom:
+            if actual[row_start:row_start + stride] != expected[row_start:row_start + stride]:
+                return False
+            continue
+        if (actual[row_start:row_start + left] !=
+                expected[row_start:row_start + left] or
+                actual[row_start + right:row_start + stride] !=
+                expected[row_start + right:row_start + stride]):
+            return False
+    return True
+
+
+def verify_input_text_cold_boot(qemu_command, gpu_build, expected_pixels, timeout):
+    """Restart the same disk and prove both app-owned fields were saved."""
+    reboot_serial = gpu_build / "input-reboot-serial.log"
+    reboot_errors = gpu_build / "input-reboot-qemu.stderr"
+    reboot_frame = gpu_build / "input-reboot-frame.ppm"
+    reboot_qmp = Path(tempfile.gettempdir()) / f"pgpuos-input-reboot-{uuid.uuid4().hex[:8]}.sock"
+    command = list(qemu_command)
+    command[command.index("-serial") + 1] = f"file:{reboot_serial}"
+    command[command.index("-qmp") + 1] = f"unix:{reboot_qmp},server=on,wait=off"
+    reboot_serial.unlink(missing_ok=True)
+    reboot_frame.unlink(missing_ok=True)
+    process = None
+    try:
+        with reboot_errors.open("wb") as errors:
+            process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=errors)
+            connection, stream = qmp_connect(reboot_qmp, process, timeout)
+            with connection, stream:
+                deadline = time.monotonic() + timeout
+                while time.monotonic() < deadline:
+                    trace = reboot_serial.read_text(errors="replace") if reboot_serial.exists() else ""
+                    if "faulting PD:" in trace or "Failed assertion" in trace or "MON|ERROR" in trace:
+                        raise RuntimeError(f"QEMU cold-boot persistence run faulted; inspect {reboot_serial}")
+                    if ("UIINPUT|READY:" in trace and
+                            "ISOLATION COMPLETE: 25 checks passed" in trace):
+                        break
+                    time.sleep(0.05)
+                else:
+                    raise RuntimeError(f"QEMU cold-boot persistence run did not initialize; inspect {reboot_serial}")
+
+                def tap(x, y):
+                    qmp_execute(stream, "input-send-event", {"events": [
+                        {"type": "abs", "data": {"axis": "x", "value": x}},
+                        {"type": "abs", "data": {"axis": "y", "value": y}},
+                        {"type": "btn", "data": {"down": True, "button": "left"}},
+                        {"type": "btn", "data": {"down": False, "button": "left"}},
+                    ]})
+
+                def tap_pixel(x, y):
+                    tap((x * 32767 + 298) // 299, (y * 32767 + 398) // 399)
+
+                def wait_for_saved_frame(focus, text="", scroll_start_line=None,
+                                         notes_mode="edit", note_count=1,
+                                         selected_note=0, delete_armed=False,
+                                         notes_field="body"):
+                    expected_key = input_frame_key(
+                        focus, text, scroll_start_line, notes_mode, note_count,
+                        selected_note, delete_armed, notes_field
+                    )
+                    deadline = time.monotonic() + timeout
+                    while time.monotonic() < deadline:
+                        qmp_hmp(stream, f"screendump {reboot_frame}")
+                        frame = reboot_frame.read_bytes() if reboot_frame.exists() else b""
+                        parts = frame.split(b"\n", 3)
+                        if (len(parts) == 4 and parts[0] == b"P6" and parts[2] == b"255" and
+                                parts[3] == expected_pixels[expected_key]):
+                            return
+                        time.sleep(0.05)
+                    raise RuntimeError(
+                        f"{focus} field did not restore as {text!r} after QEMU cold boot; inspect {reboot_serial}"
+                    )
+
+                tap_pixel(91, 84)  # Open the Notes card from the launcher.
+                wait_for_saved_frame("notes", "AB", note_count=2, selected_note=1)
+                tap_pixel(44, 208)  # Open the saved note list.
+                wait_for_saved_frame("notes", "1 NOTE 1\n2 TWO", notes_mode="list",
+                                     note_count=2, selected_note=1)
+                tap_pixel(100, 137)  # Reopen the original multiline note.
+                wait_for_saved_frame("notes", "AB\nCD\nEF\nGH", 1,
+                                     note_count=2, selected_note=0)
+                tap_pixel(44, 208)
+                wait_for_saved_frame("notes", "1 NOTE 1\n2 TWO", notes_mode="list",
+                                     note_count=2, selected_note=0)
+                tap_pixel(255, 208)
+                wait_for_saved_frame("notes", "1 NOTE 1\n2 TWO", notes_mode="list",
+                                     note_count=2, selected_note=0, delete_armed=True)
+                tap_pixel(255, 208)
+                wait_for_saved_frame("notes", "1 TWO", notes_mode="list",
+                                     note_count=1, selected_note=0)
+                tap_pixel(194, 24)  # Open the persisted Contacts list.
+                wait_for_saved_frame("contacts", "CONTACT 1 OF 2\nNAME B\nPHONE 5551234")
+                tap_pixel(146, 208)  # Select the next contact with the DOWN control.
+                wait_for_saved_frame("contacts", "CONTACT 2 OF 2\nNAME C\nPHONE 8675309")
+                tap_pixel(235, 208)  # Remove the selected contact with DELETE.
+                wait_for_saved_frame("contacts", "CONTACT 1 OF 1\nNAME B\nPHONE 5551234")
+                qmp_execute(stream, "quit")
+                process.wait(timeout=5)
+    finally:
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        reboot_qmp.unlink(missing_ok=True)
+
+    trace = reboot_serial.read_text(errors="replace") if reboot_serial.exists() else ""
+    if "ISOLATION COMPLETE: 25 checks passed" not in trace or "FAIL:" in trace:
+        raise RuntimeError(f"QEMU cold-boot persistence run failed; inspect {reboot_serial}")
+
+
+def input_test(timeout):
+    """Test the bounded VirtIO input handoff beside the GPU and regular OS."""
+    graphics_test(timeout)
+    gpu_build = BUILD / "sddf-gpu-spike"
+    converter = shutil.which("magick") or tool("convert")
+    touch_surfaces = gpu_build / "touch-surfaces.ppm"
+    run([tool("python3"), ROOT / "tests" / "input" / "make_touch_surfaces.py",
+         touch_surfaces])
+
+    # Rebuild the sample framebuffer client with visible targets whose bounds
+    # are shared with the Rust router's trusted touch hit-test.
+    compat = ROOT / "tools" / "sddf-gpu-compat"
+    gpu_overlay = gpu_build / "gpu-client-overlay"
+    (gpu_overlay / "include").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(ROOT / "tests" / "input" / "gpu_client.c", gpu_overlay / "client.c")
+    shutil.copy2(SDDF / "examples/gpu/fb_img.S", gpu_overlay / "fb_img.S")
+    shutil.copy2(SDDF / "examples/gpu/include/gpu_config.h",
+                 gpu_overlay / "include/gpu_config.h")
+    flags = f"-mstrict-align -I{compat} -include {compat / 'ialloc_compat.h'}"
+    graphics_env = os.environ.copy()
+    graphics_env["PATH"] = os.pathsep.join([
+        "/opt/homebrew/opt/llvm/bin", "/opt/homebrew/sbin",
+        graphics_env.get("PATH", "")
+    ])
+    graphics_make_args = [
+        tool("make"), "-C", SDDF / "examples/gpu",
+        f"MICROKIT_SDK={SDK}", f"MICROKIT_BOARD={LOCK['board']}",
+        f"MICROKIT_CONFIG={LOCK['configuration']}", f"SDDF={SDDF}",
+        f"BUILD_DIR={gpu_build}", f"FB_IMG={touch_surfaces}", "BLOB=0",
+        f"CFLAGS_gpu={flags}", f"TOP={gpu_overlay}",
+        f"SYSTEM_FILE={SDDF / 'examples/gpu/board/qemu_virt_aarch64/gpu.system'}",
+    ]
+    run(graphics_make_args + ["clean"], cwd=ROOT, env=graphics_env)
+    run(graphics_make_args + ["all"], cwd=ROOT, env=graphics_env)
+    shutil.copy2(gpu_build / "client.elf", BUILD / "gpu_client.elf")
+
+    expected_pixels = {}
+    frame_cases = [
+        ("none", ""),
+        ("notes", ""),
+        ("notes", "A"),
+        ("notes", "AN"),
+        ("notes", "AB"),
+        ("notes", "AB\n"),
+        ("notes", "AB\nC"),
+        ("notes", "AB\nCD"),
+        ("contacts", "NO CONTACTS\nENTER TO ADD"),
+        ("contacts", "ADD NAME\nNAME \nPHONE "),
+        ("contacts", "ADD NAME\nNAME B\nPHONE "),
+        ("contacts", "ADD PHONE\nNAME B\nPHONE "),
+        ("contacts", "ADD PHONE\nNAME B\nPHONE 5551234"),
+        ("contacts", "CONTACT 1 OF 1\nNAME B\nPHONE 5551234"),
+        ("contacts", "ADD NAME\nNAME C\nPHONE "),
+        ("contacts", "ADD PHONE\nNAME C\nPHONE "),
+        ("contacts", "ADD PHONE\nNAME C\nPHONE 8675309"),
+        ("contacts", "CONTACT 2 OF 2\nNAME C\nPHONE 8675309"),
+        ("contacts", "CONTACT 1 OF 2\nNAME B\nPHONE 5551234"),
+        ("calculator", "0"),
+        ("calculator", "12"),
+        ("calculator", "10"),
+        ("clock", "00 00 00"),
+    ]
+    for focus, app_text in frame_cases:
+        label = app_text.replace("\n", "-") or "empty"
+        frame = gpu_build / f"touch-surfaces-{focus}-{label}.ppm"
+        pixels = gpu_build / f"input-ui-{focus}-{label}.rgb"
+        render_args = [tool("python3"), ROOT / "tests" / "input" / "make_touch_surfaces.py",
+                       frame, focus]
+        if app_text:
+            render_args.append(app_text)
+        run(render_args)
+        run([converter, frame, "-auto-orient", "-depth", "8",
+             f"rgb:{pixels}"], stdout=subprocess.DEVNULL)
+        expected_key = input_frame_key(focus, app_text)
+        expected_pixels[expected_key] = pixels.read_bytes()
+        if len(expected_pixels[expected_key]) != 300 * 400 * 3:
+            raise RuntimeError(f"Touch-target {focus}/{app_text} frame is not 300x400 RGB")
+
+    notes_scroll_text = "AB\nCD\nEF\nGH"
+    notes_older_frame = gpu_build / "touch-surfaces-notes-older.ppm"
+    notes_older_pixels = gpu_build / "input-ui-notes-older.rgb"
+    run([tool("python3"), ROOT / "tests" / "input" / "make_touch_surfaces.py",
+         notes_older_frame, "notes", notes_scroll_text, "0"])
+    run([converter, notes_older_frame, "-auto-orient", "-depth", "8",
+         f"rgb:{notes_older_pixels}"], stdout=subprocess.DEVNULL)
+    expected_pixels[input_frame_key("notes", notes_scroll_text, 0)] = notes_older_pixels.read_bytes()
+    notes_bottom_frame = gpu_build / "touch-surfaces-notes-bottom.ppm"
+    notes_bottom_pixels = gpu_build / "input-ui-notes-bottom.rgb"
+    run([tool("python3"), ROOT / "tests" / "input" / "make_touch_surfaces.py",
+         notes_bottom_frame, "notes", notes_scroll_text, "1"])
+    run([converter, notes_bottom_frame, "-auto-orient", "-depth", "8",
+         f"rgb:{notes_bottom_pixels}"], stdout=subprocess.DEVNULL)
+    expected_pixels[input_frame_key("notes", notes_scroll_text, 1)] = notes_bottom_pixels.read_bytes()
+
+    custom_note_frames = [
+        ("1 NOTE 1", "list", 1, 0, None, False, "body"),
+        ("", "edit", 2, 1, None, False, "body"),
+        ("", "edit", 2, 1, None, False, "title"),
+        ("TWO", "edit", 2, 1, None, False, "title"),
+        ("", "edit", 2, 1, None, False, "body"),
+        ("AB", "edit", 2, 1, None, False, "body"),
+        ("1 NOTE 1\n2 TWO", "list", 2, 1, None, False, "body"),
+        (notes_scroll_text, "edit", 2, 0, 1, False, "body"),
+        ("AB", "edit", 2, 1, None, False, "body"),
+        ("1 NOTE 1\n2 TWO", "list", 2, 0, None, False, "body"),
+        ("1 NOTE 1\n2 TWO", "list", 2, 1, None, True, "body"),
+        ("1 NOTE 1\n2 TWO", "list", 2, 0, None, True, "body"),
+        ("1 TWO", "list", 1, 0, None, False, "body"),
+    ]
+    for index, (text, mode, count, selected, scroll, delete_armed, notes_field) in enumerate(custom_note_frames):
+        frame = gpu_build / f"touch-surfaces-notes-collection-{index}.ppm"
+        pixels = gpu_build / f"input-ui-notes-collection-{index}.rgb"
+        run([tool("python3"), ROOT / "tests" / "input" / "make_touch_surfaces.py",
+             frame, "notes", text, mode, str(count), str(selected),
+             "-1" if scroll is None else str(scroll), str(int(delete_armed)),
+             notes_field])
+        run([converter, frame, "-auto-orient", "-depth", "8",
+             f"rgb:{pixels}"], stdout=subprocess.DEVNULL)
+        expected_key = input_frame_key("notes", text, scroll, mode, count,
+                                       selected, delete_armed, notes_field)
+        expected_pixels[expected_key] = pixels.read_bytes()
+    multi_note_frame_keys = {
+        input_frame_key("notes", "1 NOTE 1", notes_mode="list"),
+        input_frame_key("notes", "", note_count=2, selected_note=1),
+        input_frame_key("notes", "", note_count=2, selected_note=1,
+                        notes_field="title"),
+        input_frame_key("notes", "TWO", note_count=2, selected_note=1,
+                        notes_field="title"),
+        input_frame_key("notes", "AB", note_count=2, selected_note=1),
+        input_frame_key("notes", "1 NOTE 1\n2 TWO", notes_mode="list",
+                        note_count=2, selected_note=1),
+        input_frame_key("notes", notes_scroll_text, 1, note_count=2,
+                        selected_note=0),
+        input_frame_key("notes", "1 NOTE 1\n2 TWO", notes_mode="list",
+                        note_count=2, selected_note=0),
+    }
+
+    ring_test = gpu_build / "input-ring-test"
+    run([tool("cc"), "-std=c11", "-Wall", "-Wextra", "-Werror",
+         "-I", ROOT / "tests" / "input",
+         ROOT / "tests" / "input" / "ring_test.c", "-o", ring_test])
+    run([ring_test])
+    print("Input event ring: PASS; bounded overflow accounting and counter wrap verified")
+    notes_test = gpu_build / "notes-model-test"
+    run([tool("rustc"), "--edition=2024", "--test",
+         ROOT / "tests" / "input" / "notes_model_test.rs", "-o", notes_test])
+    run([notes_test])
+    print("Notes model: PASS; legacy migration, collection encoding, editing, and confirmed deletion verified")
+    calculator_test = gpu_build / "calculator-model-test"
+    run([tool("rustc"), "--edition=2024", "--test",
+         ROOT / "tests" / "input" / "calculator_model_test.rs", "-o", calculator_test])
+    run([calculator_test])
+    print("Calculator model: PASS; checked arithmetic, bounded input, and error recovery verified")
+    protocol_test = gpu_build / "input-protocol-test"
+    run([tool("rustc"), "--edition=2024", "--test",
+         ROOT / "tests" / "input" / "protocol_test.rs", "-o", protocol_test])
+    run([protocol_test])
+    print("Input event policy: PASS; supported events accepted and invalid combinations rejected")
+    run([tool("make"), "-C", ROOT / "tests" / "input",
+         f"MICROKIT_SDK={SDK}", f"MICROKIT_BOARD={LOCK['board']}",
+         f"MICROKIT_CONFIG={LOCK['configuration']}", f"SDDF={SDDF}",
+         f"BUILD_DIR={gpu_build}"], cwd=ROOT)
+    shutil.copy2(gpu_build / "input_driver.elf", BUILD / "input_driver.elf")
+    shutil.copy2(BUILD / "rust_input_service.elf", BUILD / "input_service.elf")
+
+    merged_system = gpu_build / "input-system.system"
+    run([tool("python3"), ROOT / "tests" / "merge_graphics_system.py",
+         "--base", BUILD / "system.system",
+         "--graphics", SDDF / "examples/gpu/board/qemu_virt_aarch64/gpu.system",
+         "--input", ROOT / "tests" / "input" / "input.system",
+         "--output", merged_system])
+    loader = gpu_build / "input-system-loader.img"
+    run([SDK / "bin/microkit", merged_system, "--search-path", BUILD,
+         "--board", LOCK["board"], "--config", LOCK["configuration"],
+         "-o", loader, "-r", gpu_build / "input-system-report.txt"])
+
+    prepare_vault_disk(TEST_DISK, reset=True)
+    serial_log = gpu_build / "input-serial.log"
+    qemu_log = gpu_build / "input-qemu.stderr"
+    frame_path = gpu_build / "input-frame.ppm"
+    screenshot = gpu_build / "input-system-smoke.ppm"
+    text_screenshots = {
+        ("notes", "A"): gpu_build / "input-notes-text.ppm",
+        ("notes", "AN"): gpu_build / "input-notes-multi-text.ppm",
+        ("notes", "AB\nCD"): gpu_build / "input-notes-multiline-text.ppm",
+        input_frame_key("notes", notes_scroll_text, 0): gpu_build / "input-notes-older-lines.ppm",
+        input_frame_key("notes", "1 NOTE 1\n2 TWO", notes_mode="list",
+                        note_count=2, selected_note=1): gpu_build / "input-notes-list.ppm",
+        input_frame_key("notes", "TWO", note_count=2, selected_note=1,
+                        notes_field="title"): gpu_build / "input-notes-title.ppm",
+        ("contacts", "CONTACT 1 OF 2\nNAME B\nPHONE 5551234"): gpu_build / "input-contacts-text.ppm",
+        ("calculator", "12"): gpu_build / "input-calculator-touch-result.ppm",
+        ("calculator", "10"): gpu_build / "input-calculator-keyboard-result.ppm",
+    }
+    qmp_path = Path(tempfile.gettempdir()) / f"pgpuos-input-{uuid.uuid4().hex[:8]}.sock"
+    qemu_command = [
+        tool("qemu-system-aarch64"), "-machine", "virt,virtualization=on",
+        "-accel", "tcg", "-cpu", LOCK["cpu"], "-smp", "1",
+        "-m", LOCK["memory"], "-serial", f"file:{serial_log}",
+        "-monitor", "none", "-nic", "none", "-global",
+        "virtio-mmio.force-legacy=false", "-device",
+        f"loader,file={loader},addr={LOCK['load_address']},cpu-num=0",
+        "-device", "virtio-blk-device,drive=hd,bus=virtio-mmio-bus.1",
+        "-device", "virtio-rng-device,bus=virtio-mmio-bus.8",
+        "-device", "virtio-gpu-device,bus=virtio-mmio-bus.31,edid=off,blob=off,max_outputs=1,indirect_desc=off,event_idx=off",
+        "-device", "virtio-keyboard-device,bus=virtio-mmio-bus.30,indirect_desc=off,event_idx=off",
+        "-device", "virtio-tablet-device,bus=virtio-mmio-bus.29,indirect_desc=off,event_idx=off",
+        "-display", "none", "-d", "guest_errors",
+        "-drive", f"file={TEST_DISK},if=none,format=raw,id=hd",
+        "-qmp", f"unix:{qmp_path},server=on,wait=off",
+    ]
+    deadline = time.monotonic() + timeout
+    process = None
+    rendered = set()
+    received = set()
+    expected_events = {
+        "UIROUTER|FOCUS: NOTES touch=(80, 90)",
+        "UIROUTER|FOCUS: CONTACTS touch=(220, 90)",
+        "UIROUTER|FOCUS: CALCULATOR touch=(80, 160)",
+        "UIROUTER|FOCUS: CLOCK touch=(220, 160)",
+        "UIROUTER|FOCUS: CONTACTS key=TAB",
+        "UIROUTER|FOCUS: CALCULATOR key=TAB",
+        "UIROUTER|FOCUS: CLOCK key=TAB",
+        "UIROUTER|FOCUS: NOTES key=TAB",
+        "UIROUTER|NAV: CONTACTS touch",
+        "UIROUTER|NAV: CALCULATOR touch",
+        "UIROUTER|NAV: CLOCK touch",
+        "UIROUTER|NAV: NOTES touch",
+        "UIROUTER|NAV: HOME touch",
+        "UIROUTER|NAV: HOME key=ESC",
+        "UIROUTER|VKEY: NOTES code=49",
+        "UIROUTER|VKEY: NOTES code=14",
+        "UIROUTER|VKEY: NOTES code=57",
+        "UIROUTER|VKEY: NOTES code=28",
+        "UIROUTER|VKEY: NOTES code=64",
+        "UIROUTER|VKEY: NOTES code=65",
+        "UIROUTER|VKEY: NOTES code=103",
+        "UIROUTER|VKEY: NOTES code=108",
+        "UIROUTER|VKEY: NOTES code=63",
+        "UIROUTER|VKEY: NOTES code=110",
+        "UIROUTER|VKEY: NOTES row-code=59",
+        "UIROUTER|VKEY: NOTES row-code=60",
+        "UIROUTER|VKEY: CONTACTS code=28",
+        "UIROUTER|VKEY: CONTACTS code=48",
+        "UIROUTER|VKEY: CONTACTS code=46",
+        "UIROUTER|VKEY: CONTACTS code=103",
+        "UIROUTER|VKEY: CONTACTS code=108",
+        "UIROUTER|VKEY: CALCULATOR code=8",
+        "UIROUTER|VKEY: CALCULATOR code=59",
+        "UIROUTER|VKEY: CALCULATOR code=6",
+        "UIROUTER|VKEY: CALCULATOR code=63",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=30 value=1",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=30 value=0",
+        "UIAPP|NOTES|VIEW: revision=4 length=1",
+        "UIAPP|NOTES|VIEW: revision=6 length=2",
+        "UIAPP|NOTES|VIEW: revision=8 length=1",
+        "UIAPP|NOTES|VIEW: revision=10 length=2",
+        "UIAPP|NOTES|VIEW: revision=12 length=1",
+        "UIAPP|NOTES|VIEW: revision=14 length=2",
+        "UIAPP|NOTES|VIEW: revision=16 length=3",
+        "UIAPP|NOTES|VIEW: revision=18 length=4",
+        "UIAPP|NOTES|VIEW: revision=20 length=5",
+        "UIAPP|CALCULATOR|VIEW: revision=8 length=2",
+        "UIAPP|CALCULATOR|VIEW: revision=14 length=2",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=49 value=1",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=49 value=0",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=14 value=1",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=14 value=0",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=57 value=1",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=57 value=0",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=28 value=1",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=28 value=0",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=48 value=1",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=48 value=0",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=18 value=1",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=18 value=0",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=33 value=1",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=33 value=0",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=34 value=1",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=34 value=0",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=35 value=1",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=35 value=0",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=20 value=1",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=20 value=0",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=17 value=1",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=17 value=0",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=24 value=1",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=24 value=0",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=64 value=1",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=64 value=0",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=65 value=1",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=65 value=0",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=103 value=1",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=103 value=0",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=108 value=1",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=108 value=0",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=63 value=1",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=63 value=0",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=110 value=1",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=110 value=0",
+        # The serial console may insert its heartbeat between `code=59` and
+        # `value=1`; keep this event check on the stable prefix and let the
+        # router's row-code marker verify that the key was handled.
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=59",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=59 value=0",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=60 value=1",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=60 value=0",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=46 value=1",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=46 value=0",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=32 value=1",
+        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=32 value=0",
+        "UIAPP|CONTACTS|EVENT: device=keyboard type=1 code=28 value=1",
+        "UIAPP|CONTACTS|EVENT: device=keyboard type=1 code=28 value=0",
+        "UIAPP|CONTACTS|EVENT: device=keyboard type=1 code=48 value=1",
+        "UIAPP|CONTACTS|EVENT: device=keyboard type=1 code=48 value=0",
+        "UIAPP|CONTACTS|EVENT: device=keyboard type=1 code=46 value=1",
+        "UIAPP|CONTACTS|EVENT: device=keyboard type=1 code=46 value=0",
+        "UIAPP|CONTACTS|EVENT: device=keyboard type=1 code=2 value=1",
+        "UIAPP|CONTACTS|EVENT: device=keyboard type=1 code=3 value=1",
+        "UIAPP|CONTACTS|EVENT: device=keyboard type=1 code=4 value=1",
+        "UIAPP|CONTACTS|EVENT: device=keyboard type=1 code=5 value=1",
+        "UIAPP|CONTACTS|EVENT: device=keyboard type=1 code=6 value=1",
+        "UIAPP|CONTACTS|EVENT: device=keyboard type=1 code=7 value=1",
+        "UIAPP|CONTACTS|EVENT: device=keyboard type=1 code=8 value=1",
+        "UIAPP|CONTACTS|EVENT: device=keyboard type=1 code=9 value=1",
+        "UIAPP|CONTACTS|EVENT: device=keyboard type=1 code=10 value=1",
+        "UIAPP|CONTACTS|EVENT: device=keyboard type=1 code=11 value=1",
+        "UIAPP|CONTACTS|EVENT: device=keyboard type=1 code=103 value=1",
+        "UIAPP|CONTACTS|EVENT: device=keyboard type=1 code=108 value=1",
+        "UIAPP|CONTACTS|EVENT: device=tablet type=1 code=272 value=1",
+        "UIAPP|CONTACTS|EVENT: device=tablet type=1 code=272 value=0",
+    }
+    expected_events.update(
+        f"UIROUTER|VKEY: CONTACTS code={code}" for code in range(2, 12)
+    )
+    try:
+        with qemu_log.open("wb") as errors:
+            process = subprocess.Popen(qemu_command, stdout=subprocess.DEVNULL, stderr=errors)
+            connection, stream = qmp_connect(qmp_path, process, timeout)
+            with connection, stream:
+                while time.monotonic() < deadline:
+                    trace = serial_log.read_text(errors="replace") if serial_log.exists() else ""
+                    if "faulting PD:" in trace or "Failed assertion" in trace or "MON|ERROR" in trace:
+                        raise RuntimeError(f"Input integration guest faulted; inspect {serial_log}")
+                    ready = (
+                        "UIINPUT|READY:" in trace and
+                        "ISOLATION COMPLETE: 25 checks passed" in trace
+                    )
+                    if ready:
+                        break
+                    time.sleep(0.05)
+                else:
+                    raise RuntimeError(f"Input devices did not initialize; inspect {serial_log}")
+
+                def wait_for_frame(focus, app_text="", scroll_start_line=None,
+                                   notes_mode="edit", note_count=1,
+                                   selected_note=0, delete_armed=False,
+                                   notes_field="body"):
+                    expected_key = input_frame_key(
+                        focus, app_text, scroll_start_line, notes_mode, note_count,
+                        selected_note, delete_armed, notes_field
+                    )
+                    while time.monotonic() < deadline:
+                        qmp_hmp(stream, f"screendump {frame_path}")
+                        frame = frame_path.read_bytes() if frame_path.exists() else b""
+                        parts = frame.split(b"\n", 3)
+                        if len(parts) == 4 and parts[0] == b"P6" and parts[2] == b"255":
+                            try:
+                                width, height = map(int, parts[1].split())
+                            except ValueError:
+                                width = height = 0
+                            pixels_match = parts[3] == expected_pixels[expected_key]
+                            if focus == "clock":
+                                pixels_match = rgb_matches_outside_rect(
+                                    parts[3], expected_pixels[expected_key],
+                                    100, 140, 100, 24
+                                )
+                            if (width == 300 and height == 400 and
+                                    pixels_match):
+                                shutil.copy2(frame_path, screenshot)
+                                if expected_key in text_screenshots:
+                                    shutil.copy2(frame_path, text_screenshots[expected_key])
+                                rendered.add(expected_key)
+                                return
+                        time.sleep(0.05)
+                    raise RuntimeError(
+                        f"GPU did not render the expected {focus}/{app_text} frame; inspect {serial_log}"
+                    )
+
+                def wait_for_log(marker):
+                    while time.monotonic() < deadline:
+                        trace = serial_log.read_text(errors="replace") if serial_log.exists() else ""
+                        if marker in trace:
+                            return
+                        if "faulting PD:" in trace or "MON|ERROR" in trace:
+                            raise RuntimeError(f"Input integration guest faulted; inspect {serial_log}")
+                        time.sleep(0.05)
+                    raise RuntimeError(f"Guest did not emit {marker!r}; inspect {serial_log}")
+
+                def wait_for_log_count(marker, count):
+                    while time.monotonic() < deadline:
+                        trace = serial_log.read_text(errors="replace") if serial_log.exists() else ""
+                        if trace.count(marker) >= count:
+                            return
+                        if "faulting PD:" in trace or "MON|ERROR" in trace:
+                            raise RuntimeError(f"Input integration guest faulted; inspect {serial_log}")
+                        time.sleep(0.01)
+                    raise RuntimeError(f"Guest did not emit another {marker!r}; inspect {serial_log}")
+
+                def tap(x, y):
+                    qmp_execute(stream, "input-send-event", {"events": [
+                        {"type": "abs", "data": {"axis": "x", "value": x}},
+                        {"type": "abs", "data": {"axis": "y", "value": y}},
+                        {"type": "btn", "data": {"down": True, "button": "left"}},
+                        {"type": "btn", "data": {"down": False, "button": "left"}},
+                    ]})
+
+                def tap_pixel(x, y):
+                    # Round up so the guest's integer axis conversion lands on
+                    # the requested pixel instead of the preceding one.
+                    tap((x * 32767 + 298) // 299, (y * 32767 + 398) // 399)
+
+                def tap_digit(digit):
+                    column = "1234567890".index(digit)
+                    code = column + 2
+                    routed_key = f"UIROUTER|VKEY: CONTACTS code={code}"
+                    trace = serial_log.read_text(errors="replace") if serial_log.exists() else ""
+                    expected_keys = trace.count(routed_key) + 1
+                    tap_pixel(16 + column * 27 + 12, 236)
+                    wait_for_log_count(routed_key, expected_keys)
+
+                def tap_letter(letter):
+                    rows = (
+                        ("QWERTYUIOP", 16, 16, 258),
+                        ("ASDFGHJKL", 30, 29, 280),
+                        ("ZXCVBNM", 44, 56, 302),
+                    )
+                    letter = letter.upper()
+                    for letters, first_code, first_x, center_y in rows:
+                        if letter in letters:
+                            column = letters.index(letter)
+                            code = first_code + column
+                            routed_key = f"UIROUTER|VKEY: CONTACTS code={code}"
+                            trace = serial_log.read_text(errors="replace") if serial_log.exists() else ""
+                            expected_keys = trace.count(routed_key) + 1
+                            tap_pixel(first_x + column * 27 + 12, center_y)
+                            wait_for_log_count(routed_key, expected_keys)
+                            return
+                    raise ValueError(f"No on-screen letter key for {letter!r}")
+
+                def tap_contacts_control(label):
+                    x, code = {
+                        "UP": (60, 103),
+                        "DOWN": (146, 108),
+                        "DELETE": (235, 111),
+                    }[label]
+                    routed_key = f"UIROUTER|VKEY: CONTACTS code={code}"
+                    trace = serial_log.read_text(errors="replace") if serial_log.exists() else ""
+                    expected_keys = trace.count(routed_key) + 1
+                    tap_pixel(x, 208)
+                    wait_for_log_count(routed_key, expected_keys)
+
+                def tap_notes_control(label):
+                    x, code = {
+                        "LIST": (44, 63), "OPEN": (44, 63),
+                        "TITLE": (96, 64), "BODY": (148, 65),
+                        "OLDER": (200, 103), "NEWER": (255, 108),
+                        "UP": (96, 103), "DOWN": (148, 108),
+                        "NEW": (200, 110), "DELETE": (255, 111),
+                    }[label]
+                    routed_key = f"UIROUTER|VKEY: NOTES code={code}"
+                    trace = serial_log.read_text(errors="replace") if serial_log.exists() else ""
+                    expected_keys = trace.count(routed_key) + 1
+                    tap_pixel(x, 208)
+                    wait_for_log_count(routed_key, expected_keys)
+
+                def tap_notes_row(index):
+                    if index < 0 or index >= 4:
+                        raise ValueError(f"Notes row outside supported range: {index}")
+                    code = 59 + index
+                    routed_key = f"UIROUTER|VKEY: NOTES row-code={code}"
+                    trace = serial_log.read_text(errors="replace") if serial_log.exists() else ""
+                    expected_keys = trace.count(routed_key) + 1
+                    tap_pixel(100, 137 + index * 15)
+                    wait_for_log_count(routed_key, expected_keys)
+
+                # Confirm initial state before interaction, then require each
+                # tap to produce its own distinct, exact framebuffer.
+                wait_for_frame("none")
+
+                tap_pixel(80, 90)  # Open Notes from the compact launcher card.
+                wait_for_frame("notes")
+                qmp_execute(stream, "send-key", {
+                    "keys": [{"type": "qcode", "data": "a"}], "hold-time": 150,
+                })
+                wait_for_frame("notes", "A")
+                tap(22_250, 24_900)  # On-screen N key.
+                wait_for_frame("notes", "AN")
+                tap(25_000, 27_750)  # On-screen Backspace key.
+                wait_for_frame("notes", "A")
+                tap(6_800, 27_700)  # On-screen Space key.
+                wait_for_log("UIAPP|NOTES|VIEW: revision=10 length=2")
+                tap(25_000, 27_750)  # Remove the trailing space.
+                wait_for_log("UIAPP|NOTES|VIEW: revision=12 length=1")
+                wait_for_frame("notes", "A")
+                qmp_execute(stream, "send-key", {
+                    "keys": [{"type": "qcode", "data": "b"}], "hold-time": 150,
+                })
+                wait_for_frame("notes", "AB")
+                tap(15_900, 27_750)  # On-screen Enter key inserts a new note line.
+                wait_for_frame("notes", "AB\n")
+                qmp_execute(stream, "send-key", {
+                    "keys": [{"type": "qcode", "data": "c"}], "hold-time": 150,
+                })
+                wait_for_frame("notes", "AB\nC")
+                qmp_execute(stream, "send-key", {
+                    "keys": [{"type": "qcode", "data": "d"}], "hold-time": 150,
+                })
+                wait_for_frame("notes", "AB\nCD")
+                for key in ("ret", "e", "f", "ret", "g", "h"):
+                    qmp_execute(stream, "send-key", {
+                        "keys": [{"type": "qcode", "data": key}], "hold-time": 150,
+                    })
+                wait_for_frame("notes", notes_scroll_text, 1)
+                tap_notes_control("OLDER")
+                wait_for_frame("notes", notes_scroll_text, 0)
+                tap_notes_control("NEWER")
+                wait_for_frame("notes", notes_scroll_text, 1)
+                tap_notes_control("LIST")
+                wait_for_frame("notes", "1 NOTE 1", notes_mode="list")
+                tap_notes_control("NEW")
+                wait_for_frame("notes", "", note_count=2, selected_note=1)
+                tap_notes_control("TITLE")
+                wait_for_frame("notes", "", note_count=2, selected_note=1,
+                               notes_field="title")
+                for key in ("t", "w", "o"):
+                    qmp_execute(stream, "send-key", {
+                        "keys": [{"type": "qcode", "data": key}], "hold-time": 150,
+                    })
+                wait_for_frame("notes", "TWO", note_count=2, selected_note=1,
+                               notes_field="title")
+                tap_notes_control("BODY")
+                wait_for_frame("notes", "", note_count=2, selected_note=1)
+                for key in ("a", "b"):
+                    qmp_execute(stream, "send-key", {
+                        "keys": [{"type": "qcode", "data": key}], "hold-time": 150,
+                    })
+                wait_for_frame("notes", "AB", note_count=2, selected_note=1)
+                tap_notes_control("LIST")
+                wait_for_frame("notes", "1 NOTE 1\n2 TWO", notes_mode="list",
+                               note_count=2, selected_note=1)
+                tap_notes_row(0)
+                wait_for_frame("notes", notes_scroll_text, 1,
+                               note_count=2, selected_note=0)
+                tap_notes_control("LIST")
+                wait_for_frame("notes", "1 NOTE 1\n2 TWO", notes_mode="list",
+                               note_count=2, selected_note=0)
+                tap_notes_row(1)
+                wait_for_frame("notes", "AB", note_count=2, selected_note=1)
+                qmp_execute(stream, "send-key", {
+                    "keys": [{"type": "qcode", "data": "tab"}], "hold-time": 150,
+                })
+                wait_for_frame("contacts", "NO CONTACTS\nENTER TO ADD")
+                qmp_execute(stream, "send-key", {
+                    "keys": [{"type": "qcode", "data": "tab"}], "hold-time": 150,
+                })
+                wait_for_frame("calculator", "0")
+                qmp_execute(stream, "send-key", {
+                    "keys": [{"type": "qcode", "data": "tab"}], "hold-time": 150,
+                })
+                wait_for_frame("clock", "00 00 00")
+                qmp_execute(stream, "send-key", {
+                    "keys": [{"type": "qcode", "data": "tab"}], "hold-time": 150,
+                })
+                wait_for_frame("notes", "AB", note_count=2, selected_note=1)
+                tap(17_000, 2_000)  # Contacts tab in the five-item navigation bar.
+                wait_for_frame("contacts", "NO CONTACTS\nENTER TO ADD")
+                tap(15_900, 27_750)  # Start the first contact with the touch keyboard.
+                wait_for_frame("contacts", "ADD NAME\nNAME \nPHONE ")
+                tap_letter("B")
+                wait_for_frame("contacts", "ADD NAME\nNAME B\nPHONE ")
+                tap(15_900, 27_750)  # Enter advances from the name to the phone field.
+                wait_for_frame("contacts", "ADD PHONE\nNAME B\nPHONE ")
+                for digit in "5551234":
+                    tap_digit(digit)
+                wait_for_frame("contacts", "ADD PHONE\nNAME B\nPHONE 5551234")
+                tap(15_900, 27_750)  # Commit the first contact.
+                wait_for_frame("contacts", "CONTACT 1 OF 1\nNAME B\nPHONE 5551234")
+
+                qmp_execute(stream, "send-key", {
+                    "keys": [{"type": "qcode", "data": "ret"}], "hold-time": 150,
+                })
+                wait_for_frame("contacts", "ADD NAME\nNAME \nPHONE ")
+                tap_letter("C")
+                wait_for_frame("contacts", "ADD NAME\nNAME C\nPHONE ")
+                qmp_execute(stream, "send-key", {
+                    "keys": [{"type": "qcode", "data": "ret"}], "hold-time": 150,
+                })
+                wait_for_frame("contacts", "ADD PHONE\nNAME C\nPHONE ")
+                for digit in "8675309":
+                    tap_digit(digit)
+                wait_for_frame("contacts", "ADD PHONE\nNAME C\nPHONE 8675309")
+                qmp_execute(stream, "send-key", {
+                    "keys": [{"type": "qcode", "data": "ret"}], "hold-time": 150,
+                })
+                wait_for_frame("contacts", "CONTACT 2 OF 2\nNAME C\nPHONE 8675309")
+                tap_contacts_control("UP")
+                wait_for_frame("contacts", "CONTACT 1 OF 2\nNAME B\nPHONE 5551234")
+                tap_contacts_control("DOWN")
+                wait_for_frame("contacts", "CONTACT 2 OF 2\nNAME C\nPHONE 8675309")
+
+                # Exercise both the touch keypad and physical UTM keyboard in
+                # the calculator app's own protection domain.
+                tap(10_000, 2_000)
+                wait_for_frame("notes", "AB", note_count=2, selected_note=1)
+                tap(24_000, 2_000)  # Calculator tab.
+                wait_for_frame("calculator", "0")
+                tap_pixel(30, 237)   # 7
+                tap_pixel(245, 315)  # Add
+                tap_pixel(113, 263)  # 5
+                tap_pixel(150, 341)  # Enter / equals
+                wait_for_frame("calculator", "12")
+                for key in ("8", "f1", "2", "ret"):
+                    qmp_execute(stream, "send-key", {
+                        "keys": [{"type": "qcode", "data": key}], "hold-time": 150,
+                    })
+                wait_for_frame("calculator", "10")
+                tap_pixel(266, 24)  # Open Clock from the in-app navigation strip.
+                wait_for_frame("clock", "00 00 00")
+                tap_pixel(40, 24)  # Home tab.
+                wait_for_frame("none")
+                tap_pixel(80, 90)  # Open Notes from the launcher.
+                wait_for_frame("notes", "AB", note_count=2, selected_note=1)
+                qmp_execute(stream, "send-key", {
+                    "keys": [{"type": "qcode", "data": "esc"}], "hold-time": 150,
+                })
+                wait_for_frame("none")
+                tap_pixel(220, 90)  # Open Contacts from the launcher.
+                wait_for_frame("contacts", "CONTACT 2 OF 2\nNAME C\nPHONE 8675309")
+                tap_pixel(40, 24)
+                wait_for_frame("none")
+                tap_pixel(80, 160)  # Open Calculator from the launcher.
+                wait_for_frame("calculator", "10")
+                tap_pixel(40, 24)
+                wait_for_frame("none")
+                tap_pixel(220, 160)  # Open Clock from the launcher.
+                wait_for_frame("clock", "00 00 00")
+
+                converter = shutil.which("magick") or tool("convert")
+                while time.monotonic() < deadline:
+                    trace = serial_log.read_text(errors="replace") if serial_log.exists() else ""
+                    received.update(event for event in expected_events if event in trace)
+                    if "faulting PD:" in trace or "Failed assertion" in trace or "MON|ERROR" in trace:
+                        raise RuntimeError(f"Input integration guest faulted; inspect {serial_log}")
+                    forbidden_events = (
+                        "UIAPP|NOTES|EVENT: device=keyboard type=1 code=50",
+                        "UIAPP|CONTACTS|EVENT: device=keyboard type=1 code=30",
+                    )
+                    if any(marker in trace for marker in forbidden_events):
+                        raise RuntimeError(
+                            "Input router delivered an event to an unfocused app; "
+                            f"inspect {serial_log}"
+                        )
+                    expected_frames = {
+                        ("none", ""), ("notes", ""), ("notes", "A"),
+                        ("notes", "AN"), ("notes", "AB"),
+                        ("notes", "AB\n"), ("notes", "AB\nC"),
+                        ("notes", "AB\nCD"),
+                        ("notes", notes_scroll_text, 0),
+                        ("notes", notes_scroll_text, 1),
+                        ("contacts", "NO CONTACTS\nENTER TO ADD"),
+                        ("contacts", "ADD NAME\nNAME \nPHONE "),
+                        ("contacts", "ADD NAME\nNAME B\nPHONE "),
+                        ("contacts", "ADD PHONE\nNAME B\nPHONE "),
+                        ("contacts", "ADD PHONE\nNAME B\nPHONE 5551234"),
+                        ("contacts", "CONTACT 1 OF 1\nNAME B\nPHONE 5551234"),
+                        ("contacts", "ADD NAME\nNAME C\nPHONE "),
+                        ("contacts", "ADD PHONE\nNAME C\nPHONE "),
+                        ("contacts", "ADD PHONE\nNAME C\nPHONE 8675309"),
+                        ("contacts", "CONTACT 2 OF 2\nNAME C\nPHONE 8675309"),
+                        ("contacts", "CONTACT 1 OF 2\nNAME B\nPHONE 5551234"),
+                        ("calculator", "0"), ("calculator", "12"), ("calculator", "10"),
+                        ("clock", "00 00 00"),
+                    }
+                    expected_frames.update(multi_note_frame_keys)
+                    if received == expected_events and rendered == expected_frames:
+                        break
+                    time.sleep(0.05)
+    finally:
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        qmp_path.unlink(missing_ok=True)
+
+    trace = serial_log.read_text(errors="replace") if serial_log.exists() else ""
+    if "ISOLATION COMPLETE: 25 checks passed" not in trace:
+        raise RuntimeError(f"Regular OS checks did not finish; inspect {serial_log}")
+    expected_frames = {
+        ("none", ""), ("notes", ""), ("notes", "A"),
+        ("notes", "AN"), ("notes", "AB"),
+        ("notes", "AB\n"), ("notes", "AB\nC"),
+        ("notes", "AB\nCD"),
+        ("notes", notes_scroll_text, 0),
+        ("notes", notes_scroll_text, 1),
+        ("contacts", "NO CONTACTS\nENTER TO ADD"),
+        ("contacts", "ADD NAME\nNAME \nPHONE "),
+        ("contacts", "ADD NAME\nNAME B\nPHONE "),
+        ("contacts", "ADD PHONE\nNAME B\nPHONE "),
+        ("contacts", "ADD PHONE\nNAME B\nPHONE 5551234"),
+        ("contacts", "CONTACT 1 OF 1\nNAME B\nPHONE 5551234"),
+        ("contacts", "ADD NAME\nNAME C\nPHONE "),
+        ("contacts", "ADD PHONE\nNAME C\nPHONE "),
+        ("contacts", "ADD PHONE\nNAME C\nPHONE 8675309"),
+        ("contacts", "CONTACT 2 OF 2\nNAME C\nPHONE 8675309"),
+        ("contacts", "CONTACT 1 OF 2\nNAME B\nPHONE 5551234"),
+        ("calculator", "0"), ("calculator", "12"), ("calculator", "10"),
+        ("clock", "00 00 00"),
+    }
+    expected_frames.update(multi_note_frame_keys)
+    if received != expected_events or rendered != expected_frames:
+        missing = sorted(expected_events - received)
+        raise RuntimeError(
+            f"Input integration incomplete (missing {missing}, rendered={sorted(rendered, key=repr)}); inspect {serial_log}"
+        )
+    png = gpu_build / "input-system-smoke.png"
+    run([converter, screenshot, png], stdout=subprocess.DEVNULL)
+    text_pngs = []
+    for name, ppm in text_screenshots.items():
+        output = ppm.with_suffix(".png")
+        run([converter, ppm, output], stdout=subprocess.DEVNULL)
+        text_pngs.append(output)
+    batches = re.findall(
+        r"UIROUTER\|BATCH: accepted=(\d+) forwarded=(\d+) unfocused=(\d+) "
+        r"rejected=(\d+) call_errors=(\d+) dropped=(\d+)", trace
+    )
+    if (not any(int(forwarded) >= 8 for _accepted, forwarded, _unfocused,
+                 _rejected, _call_errors, _dropped in batches) or
+            any(rejected != "0" or call_errors != "0" or dropped != "0"
+                for _accepted, _forwarded, _unfocused, rejected, call_errors, dropped in batches)):
+        raise RuntimeError(f"Input event service rejected or dropped test events; inspect {serial_log}")
+    verify_input_text_cold_boot(qemu_command, gpu_build, expected_pixels, timeout)
+    print(f"VirtIO input integration: PASS; typed text appeared in its owning app, both encrypted app fields restored after a QEMU cold boot, focus changes preserved independent views, and input stayed isolated; frames saved to {png} and {', '.join(map(str, text_pngs))}")
+
+
+def qemu_command(disk_image=TEST_DISK):
+    return [tool("qemu-system-aarch64"), "-machine", LOCK["machine"],
+            "-accel", "tcg", "-cpu", LOCK["cpu"], "-smp", "1",
+            "-m", LOCK["memory"], "-nographic", "-nic", "none",
+            "-kernel", str(BUILD / "loader.elf"),
+            "-global", "virtio-mmio.force-legacy=false",
+            "-device", "virtio-blk-device,drive=hd,bus=virtio-mmio-bus.1",
+            "-device", "virtio-rng-device,bus=virtio-mmio-bus.8",
+            "-drive", f"file={Path(disk_image).resolve()},if=none,format=raw,id=hd"]
+
+
+def export_utm():
+    bundle = ROOT / "dist" / "Personal OS.utm"
+    ensure_utm_bundle_stopped(bundle)
+    data = bundle / "Data"
+    config = bundle / "config.plist"
+    if bundle.exists() and not (bundle / ".personal-os-export").exists():
+        raise RuntimeError(f"Refusing to overwrite an unrelated bundle: {bundle}")
+    data.mkdir(parents=True, exist_ok=True)
+    if not config.exists():
+        profile = {
+            "Backend": "QEMU", "ConfigurationVersion": 4,
+            "Information": {"Name": "Personal OS", "UUID": str(uuid.uuid4()).upper(),
+                            "IconCustom": False,
+                            "Notes": "seL4 Microkit: isolated services, RTC heartbeat, interactive serial console. Built by sel4-personal-os/dev."},
+            "System": {"Architecture": "aarch64", "Target": "virt", "CPU": LOCK["cpu"],
+                       "CPUFlagsAdd": [], "CPUFlagsRemove": [], "CPUCount": 1,
+                       "ForceMulticore": False, "MemorySize": 2048, "JITCacheSize": 128},
+            "QEMU": {"DebugLog": True, "UEFIBoot": False, "RNGDevice": False,
+                     "BalloonDevice": False, "TPMDevice": False, "Hypervisor": False,
+                     "TSO": False, "RTCLocalTime": False, "PS2Controller": False,
+                     "MachinePropertyOverride": "virtualization=on,gic-version=2",
+                     "AdditionalArguments": []},
+            "Input": {"UsbBusSupport": "Disabled", "UsbSharing": False, "MaximumUsbShare": 0},
+            "Sharing": {"DirectoryShareMode": "None", "DirectoryShareReadOnly": True,
+                        "ClipboardSharing": False},
+            "Display": [], "Network": [], "Sound": [],
+            "Drive": [{"ImageName": "loader.elf", "ImageType": "LinuxKernel",
+                       "Interface": "None", "InterfaceVersion": 1, "ReadOnly": True,
+                       "Identifier": str(uuid.uuid4()).upper()}],
+            "Serial": [{"Mode": "Terminal", "Target": "Auto",
+                        "Terminal": {"Font": "Menlo", "FontSize": 14, "CursorBlink": False,
+                                     "ForegroundColor": "#D7E5E3", "BackgroundColor": "#101A22"}}],
+        }
+    else:
+        # Refresh descriptions originally generated by this exporter, while
+        # preserving notes the user has edited since the bundle was created.
+        with config.open("rb") as stream:
+            profile = plistlib.load(stream)
+        information = profile.get("Information", {})
+        generated_notes = {
+            "seL4 Microkit: two isolated components, six IPC checks. Console only. Built by sel4-personal-os/dev.",
+            "seL4 Microkit: two isolated components, six IPC checks. Console only.",
+            "seL4 Microkit: three components; IPC and fault isolation. Console only. Built by sel4-personal-os/dev.",
+        }
+        if information.get("Notes") in generated_notes:
+            information["Notes"] = (
+                "seL4 Microkit: isolated services, RTC heartbeat, interactive serial console. "
+                "Built by sel4-personal-os/dev."
+            )
+    ensure_utm_storage_profile(profile)
+    # Copy the CLI disk only when creating the UTM disk. Later exports keep the
+    # UTM guest's own vault data instead of replacing it with the CLI disk.
+    disk_image = data / "personal-os-disk.img"
+    if not disk_image.exists():
+        temporary_disk = disk_image.with_name(disk_image.name + ".new")
+        shutil.copy2(PERSISTENT_DISK, temporary_disk)
+        temporary_disk.replace(disk_image)
+
+    updated_config = config.with_name(config.name + ".new")
+    with updated_config.open("wb") as stream:
+        plistlib.dump(profile, stream)
+    updated_config.replace(config)
+
+    # Atomic replacement; stop this VM before exporting a new build.
+    shutil.copy2(BUILD / "loader.elf", data / "loader.elf.new")
+    (data / "loader.elf.new").replace(data / "loader.elf")
+    (bundle / ".personal-os-export").write_text("Generated by sel4-personal-os/dev\n")
+    print(f"UTM bundle: {bundle}\nOpen it in UTM and press Play. Stop the VM before rebuilding this export.")
+
+
+def export_utm_graphics(timeout, output_bundle=None):
+    """Create an isolated UTM profile for the proven sDDF graphics build."""
+    bundle = output_bundle or (ROOT / "dist" / "Personal OS Graphics.utm")
+    if not bundle.is_absolute():
+        bundle = ROOT / bundle
+    ensure_utm_bundle_stopped(bundle)
+    input_test(timeout)
+
+    base_bundle = ROOT / "dist" / "Personal OS.utm"
+    base_config = base_bundle / "config.plist"
+    if not base_config.exists():
+        export_utm()
+
+    if bundle.exists() and not (bundle / ".personal-os-graphics-export").exists():
+        raise RuntimeError(f"Refusing to overwrite an unrelated bundle: {bundle}")
+
+    with base_config.open("rb") as stream:
+        profile = plistlib.load(stream)
+    profile["Information"]["Name"] = bundle.stem
+    profile["Information"]["UUID"] = str(uuid.uuid4()).upper()
+    profile["Information"]["Notes"] = (
+        "Experimental graphical seL4 build: sDDF VirtIO GPU plus the regular isolated services. "
+        "Uses a disposable vault disk. Built by sel4-personal-os/dev."
+    )
+    profile["Display"] = [{
+        "DownscalingFilter": "Linear",
+        "DynamicResolution": False,
+        "Hardware": "virtio-gpu-device",
+        # The framebuffer client uses a fixed 300x400 surface. Preserve the
+        # Retina pixel dimensions so UTM does not alternate its SPICE scanout
+        # between the perceived 150x200 size and the guest's native frame.
+        "NativeResolution": True,
+        "UpscalingFilter": "Nearest",
+    }]
+    ensure_utm_storage_profile(profile)
+    arguments = profile["QEMU"]["AdditionalArguments"]
+    gpu_defaults = [
+        "-global virtio-gpu-device.edid=off",
+        "-global virtio-gpu-device.indirect_desc=off",
+        "-global virtio-gpu-device.event_idx=off",
+        "-device virtio-keyboard-device,indirect_desc=off,event_idx=off",
+        "-device virtio-tablet-device,indirect_desc=off,event_idx=off",
+    ]
+    for argument in gpu_defaults:
+        if argument not in arguments:
+            arguments.append(argument)
+
+    data = bundle / "Data"
+    data.mkdir(parents=True, exist_ok=True)
+    disk_image = data / "personal-os-disk.img"
+    if not disk_image.exists():
+        # Use a fresh test vault, never copy potentially personal CLI or UTM data.
+        prepare_vault_disk(TEST_DISK, reset=True)
+        temporary_disk = disk_image.with_name(disk_image.name + ".new")
+        shutil.copy2(TEST_DISK, temporary_disk)
+        temporary_disk.replace(disk_image)
+
+    loader = BUILD / "sddf-gpu-spike" / "input-system-loader.img"
+    if not loader.is_file():
+        raise RuntimeError(f"Integrated graphics image is missing: {loader}")
+    temporary_loader = data / "loader.elf.new"
+    shutil.copy2(loader, temporary_loader)
+    temporary_loader.replace(data / "loader.elf")
+
+    temporary_config = bundle / "config.plist.new"
+    with temporary_config.open("wb") as stream:
+        plistlib.dump(profile, stream)
+    temporary_config.replace(bundle / "config.plist")
+    (bundle / ".personal-os-graphics-export").write_text(
+        "Generated by sel4-personal-os/dev; separate experimental graphics profile.\n"
+    )
+    print(f"Graphical UTM bundle: {bundle}\nThe default Personal OS profile remains serial-only.")
+
+
+def ensure_utm_bundle_stopped(bundle):
+    """Avoid replacing an image that an active UTM QEMU process has loaded."""
+    loader = str((bundle / "Data" / "loader.elf").resolve())
+    processes = subprocess.check_output(["ps", "-axo", "args="], text=True)
+    active = any(loader in command and "qemu" in command.lower()
+                 for command in processes.splitlines())
+    if active:
+        raise RuntimeError(
+            f"Refusing to update the running UTM VM at {bundle}; stop Personal OS first"
+        )
+
+
+def ensure_utm_storage_profile(profile):
+    """Attach the QEMU virtio-mmio disk expected by the generated system."""
+    drives = profile.setdefault("Drive", [])
+    disk = next((item for item in drives
+                 if item.get("ImageName") == "personal-os-disk.img"), None)
+    if disk is None:
+        disk = {
+            "Identifier": str(uuid.uuid4()).upper(),
+            "ImageName": "personal-os-disk.img",
+            "ImageType": "Disk",
+            "Interface": "None",
+            "InterfaceVersion": 1,
+            "ReadOnly": False,
+        }
+        drives.append(disk)
+    identifier = disk.get("Identifier")
+    if not identifier:
+        raise RuntimeError("UTM data disk is missing its stable Identifier")
+    disk.update({"ImageType": "Disk", "Interface": "None",
+                 "InterfaceVersion": 1, "ReadOnly": False})
+
+    qemu = profile.setdefault("QEMU", {})
+    arguments = qemu.setdefault("AdditionalArguments", [])
+    # Earlier exporter builds wrote the newer scripting-style dictionary
+    # representation. The UTM 5.0.x bundle format uses plain strings.
+    normalized_arguments = []
+    for item in arguments:
+        if isinstance(item, dict):
+            item = item.get("argumentString", item)
+        if isinstance(item, str) and item in normalized_arguments:
+            continue
+        normalized_arguments.append(item)
+    arguments = normalized_arguments
+    obsolete_rng = "-device virtio-rng-device,bus=virtio-mmio-bus.2"
+    arguments = [argument for argument in arguments if argument != obsolete_rng]
+    required = [
+        "-global virtio-mmio.force-legacy=false",
+        f"-device virtio-blk-device,drive=drive{identifier},bus=virtio-mmio-bus.1",
+        "-device virtio-rng-device,bus=virtio-mmio-bus.8",
+    ]
+    for argument in required:
+        if argument not in arguments:
+            arguments.append(argument)
+    qemu["AdditionalArguments"] = arguments
+
+
+def test(timeout, reset_disk=True, disk_image=TEST_DISK, prepare_disk=None,
+         app_generation=None, log_name=None):
+    if prepare_disk is None:
+        prepare_disk = reset_disk
+    if prepare_disk:
+        prepare_vault_disk(disk_image, reset=True)
+    if app_generation is None:
+        app_generation = 1 if reset_disk else 2
+    if log_name is None:
+        log_name = "serial.log" if reset_disk else "persistent-reboot.log"
+    expected = [
+        "ENTROPY|READY: QEMU VirtIO RNG initialized",
+        "PASS: QEMU VirtIO RNG delivers fresh samples",
+        "ENTROPY|PASS: four distinct 128-bit samples received",
+        "PASS: Rust server computes 19 + 23 = 42",
+        "PASS: Rust server rejects missing operands",
+        "PASS: Rust server rejects unknown operation",
+        "PASS: Rust server rejects integer overflow",
+        "PASS: rejected requests leave Rust server state unchanged",
+        "PASS: Rust server responds after malformed requests",
+        "PASS: Rust server private page initialized",
+        "PASS: C reference server answers protected call",
+        "PASS: C reference server rejects wrong message length",
+        "PASS: C reference server rejects unknown operation",
+        "PASS: C reference server rejects unsigned overflow",
+        "PASS: vault reads latest committed record",
+        "PASS: vault accepts versioned owner update",
+        "PASS: vault reads back committed version",
+        "PASS: vault rejects stale version",
+        "PASS: vault keeps latest version after stale write",
+        "NAMESPACE|NOTES|PASS: reads its own namespace",
+        "NAMESPACE|NOTES|PASS: writes and reads back its own namespace",
+        f"NAMESPACE|NOTES|GENERATION:{app_generation}",
+        "NAMESPACE|NOTES|PASS: rejects caller-selected namespace fields",
+        "NAMESPACE|NOTES|PASS: malformed requests left its namespace unchanged",
+        "PASS: Notes app is confined to its own vault namespace",
+        "NAMESPACE|CONTACTS|PASS: reads its own namespace",
+        "NAMESPACE|CONTACTS|PASS: writes and reads back its own namespace",
+        f"NAMESPACE|CONTACTS|GENERATION:{app_generation}",
+        "NAMESPACE|CONTACTS|PASS: rejects caller-selected namespace fields",
+        "NAMESPACE|CONTACTS|PASS: malformed requests left its namespace unchanged",
+        "PASS: Contacts app is confined to its own vault namespace",
+        "CLIENT: baseline passed; triggering isolated crash",
+        "CRASHER: attempt 1; private state initialized",
+        "PASS: vault denied untrusted child read",
+        "PASS: vault denied untrusted child write",
+        "CRASHER: attempting forbidden write at 0x40000000",
+        "PASS: kernel blocked crasher write at 0x40000000",
+        "CLIENT: crasher stopped; checking independent server",
+        "PASS: server private page unchanged after fault",
+        "PASS: server counter preserved after fault",
+        "PASS: vault record unchanged after denied child write",
+        "PASS: independent server computes 100 + 23 after fault",
+        "PASS: independent server state advances after fault",
+        "ISOLATION COMPLETE: 25 checks passed; crasher stopped, services alive",
+    ]
+    namespace_markers = [
+        "NAMESPACE|NOTES|PASS: reads its own namespace",
+        "NAMESPACE|NOTES|PASS: writes and reads back its own namespace",
+        "NAMESPACE|NOTES|PASS: rejects caller-selected namespace fields",
+        "NAMESPACE|NOTES|PASS: malformed requests left its namespace unchanged",
+        "NAMESPACE|CONTACTS|PASS: reads its own namespace",
+        "NAMESPACE|CONTACTS|PASS: writes and reads back its own namespace",
+        "NAMESPACE|CONTACTS|PASS: rejects caller-selected namespace fields",
+        "NAMESPACE|CONTACTS|PASS: malformed requests left its namespace unchanged",
+    ]
+    output = bytearray()
+    process = subprocess.Popen(qemu_command(disk_image), stdin=subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    deadline = time.monotonic() + timeout
+    completed_at = None
+    forbidden = [b"FAIL:", b"MON|ERROR", b"Kernel panic"]
+    try:
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            while time.monotonic() < deadline:
+                for key, _ in selector.select(timeout=0.1):
+                    data = os.read(key.fileobj.fileno(), 65536)
+                    if not data:
+                        break
+                    output.extend(data)
+                    sys.stdout.buffer.write(data)
+                    sys.stdout.buffer.flush()
+                # Allow the guest to finish its diagnostic line after either
+                # outcome; debug-console characters can arrive one at a time.
+                namespace_tests_done = all(marker.encode() in output
+                                           for marker in namespace_markers)
+                if ((expected[-1].encode() in output and namespace_tests_done) or
+                        any(token in output for token in forbidden)) and completed_at is None:
+                    completed_at = time.monotonic()
+                if process.poll() is not None:
+                    raise RuntimeError(f"QEMU exited unexpectedly ({process.returncode})")
+                if completed_at is not None and time.monotonic() - completed_at > 0.5:
+                    break
+    finally:
+        process.terminate()
+        try:
+            tail, _ = process.communicate(timeout=3)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            tail, _ = process.communicate()
+        output.extend(tail)
+        (BUILD / log_name).write_bytes(output)
+    text = output.decode(errors="replace")
+    cursor = 0
+    missing = []
+    for line in expected:
+        position = text.find(line, cursor)
+        if position < 0:
+            missing.append(line)
+        else:
+            cursor = position + len(line)
+    missing_namespaces = [marker for marker in namespace_markers if marker not in text]
+    recovered = "VAULT: recovered committed namespace records from disk" in text
+    if (missing or missing_namespaces or any(token in output for token in forbidden) or
+            (not reset_disk and not recovered)):
+        raise RuntimeError(f"Boot test failed; missing/out of order: {missing}; "
+                           f"missing namespace checks: {missing_namespaces}; "
+                           f"disk recovery observed: {recovered}. See build/{log_name}")
+    if reset_disk:
+        print("Host and namespace checks: PASS. Saved build/serial.log and build/build-info.json.")
+    else:
+        print("Persistence check: PASS. The regular system recovered its committed vault record on a second QEMU boot.")
+
+
+def verify_encrypted_disk(path):
+    image = Path(path).read_bytes()
+    partition_offset = 2048 * 512
+    namespace_first_blocks = [0, 4, 6]
+    small_commit_salt = 0x6A09E667F3BCC909
+    blob_commit_salt = 0x3C6EF372FE94F82B
+    demo_values = [
+        0x4E4F5445,
+        0x4E4F544553415050,
+        0x434F4E5441435453,
+    ]
+    found = []
+    for namespace, first_block in enumerate(namespace_first_blocks):
+        for slot_index in range(2):
+            block = first_block + slot_index
+            start = partition_offset + block * 4096
+            slot = image[start:start + 4096]
+            if len(slot) != 4096:
+                raise RuntimeError(f"vault disk block {block} is truncated")
+            if slot[:8] == b"PVLTREC1":
+                version = int.from_bytes(slot[8:12], "little")
+                generation = int.from_bytes(slot[12:20], "little")
+                marker = int.from_bytes(slot[56:64], "little")
+                expected_nonce = b"PV1" + bytes([namespace]) + generation.to_bytes(8, "little")
+                if (version != 1 or generation == 0 or
+                        marker != (generation ^ small_commit_salt) or
+                        slot[20:32] != expected_nonce or any(slot[64:])):
+                    raise RuntimeError(f"vault disk block {block} has invalid scalar metadata")
+                encrypted_record = slot[:72]
+            elif slot[:8] == b"PVLTBLB1":
+                version = int.from_bytes(slot[8:12], "little")
+                generation = int.from_bytes(slot[12:20], "little")
+                length = int.from_bytes(slot[20:24], "little")
+                marker_offset = 36 + length + 16
+                if (version != 1 or generation == 0 or length > 4036 or
+                        marker_offset + 8 > 4096):
+                    raise RuntimeError(f"vault disk block {block} has invalid blob metadata")
+                marker = int.from_bytes(slot[marker_offset:marker_offset + 8], "little")
+                expected_nonce = b"PB1" + bytes([namespace]) + generation.to_bytes(8, "little")
+                if (marker != (generation ^ blob_commit_salt) or
+                        slot[24:36] != expected_nonce or any(slot[marker_offset + 8:])):
+                    raise RuntimeError(f"vault disk block {block} has invalid blob metadata")
+                encrypted_record = slot[36:marker_offset - 8]
+            else:
+                raise RuntimeError(f"vault disk block {block} is not an encrypted record")
+            if any(value.to_bytes(8, "little") in encrypted_record for value in demo_values):
+                raise RuntimeError(f"vault disk block {block} contains a plaintext demo value")
+            found.append((namespace, generation))
+    if len(found) != 6:
+        raise RuntimeError("vault disk inspection did not find six encrypted slots")
+    print("Encrypted disk check: PASS. Six committed scalar/blob records contain ciphertext, not the demo values.")
+
+
+def run_backup_cli(*arguments):
+    run(backup_cli_command(*arguments), cwd=ROOT)
+
+
+def backup_cli_command(*arguments):
+    return [tool("cargo"), "+nightly-2026-09-25", "run", "--locked", "--features",
+            "host-backup", "--bin", "vault_backup_cli", "--manifest-path",
+            ROOT / "rust/Cargo.toml", "--", *arguments]
+
+
+def run_backup_cli_expect_failure(expected, *arguments):
+    result = subprocess.run(backup_cli_command(*arguments), cwd=ROOT, text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if result.returncode == 0 or expected not in result.stdout:
+        raise RuntimeError(
+            f"backup CLI failure check did not match {expected!r}; output:\n{result.stdout}"
+        )
+
+
+def ensure_disk_stopped(path):
+    resolved = str(Path(path).resolve())
+    processes = subprocess.check_output(["ps", "-axo", "args="], text=True)
+    active = any("qemu" in command.lower() and resolved in command
+                 for command in processes.splitlines())
+    if active:
+        raise RuntimeError(
+            f"Refusing to back up an active disk image at {resolved}; stop its QEMU/UTM VM first"
+        )
+
+
+def backup_round_trip_test(timeout):
+    archive = BUILD / "test-vault-backup.pvlt"
+    restored_disk = BUILD / "backup-restored-disk.img"
+    older_source = BUILD / "rollback-older-source.img"
+    older_archive = BUILD / "rollback-older-backup.pvlt"
+    rejected_restore = BUILD / "rollback-rejected.img"
+    allowed_restore = BUILD / "rollback-allowed.img"
+    for path in (archive, restored_disk, older_source, older_archive,
+                 rejected_restore, allowed_restore):
+        if path.exists():
+            path.unlink()
+    source_digest = sha256(TEST_DISK)
+    run_backup_cli("export", TEST_DISK, archive)
+    if archive.stat().st_size != 16 + 3 * 4096:
+        raise RuntimeError("vault backup archive is not the expected full-block format")
+    run_backup_cli("restore", archive, TEST_DISK, restored_disk)
+    if sha256(TEST_DISK) != source_digest:
+        raise RuntimeError("backup restore modified its source disk image")
+    test(timeout, reset_disk=False, disk_image=restored_disk, prepare_disk=False,
+         app_generation=3, log_name="backup-restore.log")
+    verify_encrypted_disk(restored_disk)
+    print("Backup round-trip check: PASS. Exported records restored into a new disk image and recovered by QEMU.")
+
+    make_older_generation_copy(TEST_DISK, older_source)
+    run_backup_cli("export", older_source, older_archive)
+    rollback_error = "backup would roll back"
+    source_digest = sha256(TEST_DISK)
+    run_backup_cli_expect_failure(
+        rollback_error, "restore", older_archive, TEST_DISK, rejected_restore
+    )
+    if rejected_restore.exists() or sha256(TEST_DISK) != source_digest:
+        raise RuntimeError("rollback refusal created an output or modified the source disk")
+    run_backup_cli("restore", older_archive, TEST_DISK, allowed_restore, "--allow-rollback")
+    if not allowed_restore.exists() or sha256(TEST_DISK) != source_digest:
+        raise RuntimeError("explicit rollback restore failed or modified the source disk")
+    print("Rollback guard check: PASS. Older generations are refused unless explicitly allowed.")
+
+
+def make_older_generation_copy(source, output):
+    shutil.copyfile(source, output)
+    partition_start = 2048 * 512
+    namespace_blocks = (0, 4, 6)
+    small_commit_salt = 0x6A09E667F3BCC909
+    blob_commit_salt = 0x3C6EF372FE94F82B
+    with Path(output).open("r+b") as disk:
+        for namespace, first_block in enumerate(namespace_blocks):
+            committed = []
+            for slot_index in range(2):
+                block = first_block + slot_index
+                disk.seek(partition_start + block * 4096)
+                slot = disk.read(4096)
+                if len(slot) == 4096 and slot[:8] == b"PVLTREC1":
+                    generation = int.from_bytes(slot[12:20], "little")
+                    marker = int.from_bytes(slot[56:64], "little")
+                    if generation ^ small_commit_salt == marker:
+                        committed.append((generation, slot_index, block))
+                elif len(slot) == 4096 and slot[:8] == b"PVLTBLB1":
+                    generation = int.from_bytes(slot[12:20], "little")
+                    length = int.from_bytes(slot[20:24], "little")
+                    marker_offset = 36 + length + 16
+                    if (length <= 4036 and marker_offset + 8 <= 4096 and
+                            generation ^ blob_commit_salt == int.from_bytes(
+                                slot[marker_offset:marker_offset + 8], "little")):
+                        committed.append((generation, slot_index, block))
+            if len(committed) != 2 or committed[0][0] == committed[1][0]:
+                raise RuntimeError(
+                    f"namespace {namespace} does not have two generations for rollback test"
+                )
+            _, _, newest_block = max(committed)
+            disk.seek(partition_start + newest_block * 4096)
+            disk.write(bytes(4096))
+        disk.flush()
+        os.fsync(disk.fileno())
+
+
+def prepare_legacy_test_disk(path):
+    prepare_vault_disk(path, reset=True)
+    mask = (1 << 64) - 1
+    commit_salt = 0x6A09E667F3BCC909
+    checksum_salt = 0xBB67AE8584CAA73B
+    legacy = [
+        (0, 1, 9, 0x4E4F5445),
+        (1, 5, 2, 0x4E4F544553415050),
+        (2, 7, 2, 0x434F4E5441435453),
+    ]
+    with Path(path).open("r+b") as disk:
+        for _namespace, block, generation, value in legacy:
+            rotate_left = ((generation << 17) | (generation >> 47)) & mask
+            rotate_right = ((value >> 9) | (value << 55)) & mask
+            checksum = rotate_left ^ rotate_right ^ checksum_salt
+            body = struct.pack(
+                "<QQQQ", generation, value, checksum, generation ^ commit_salt
+            )
+            disk.seek(2048 * 512 + block * 4096)
+            disk.write(body + bytes(4096 - len(body)))
+        disk.flush()
+        os.fsync(disk.fileno())
+
+
+def legacy_migration_test(timeout):
+    prepare_legacy_test_disk(MIGRATION_DISK)
+    legacy_archive = BUILD / "test-legacy-vault-backup.pvlt"
+    legacy_restored = BUILD / "legacy-backup-restored-disk.img"
+    for path in (legacy_archive, legacy_restored):
+        if path.exists():
+            path.unlink()
+    legacy_digest = sha256(MIGRATION_DISK)
+    run_backup_cli("export", MIGRATION_DISK, legacy_archive)
+    run_backup_cli("restore", legacy_archive, MIGRATION_DISK, legacy_restored)
+    if sha256(MIGRATION_DISK) != legacy_digest:
+        raise RuntimeError("legacy-format backup export modified its source disk image")
+    test(timeout, reset_disk=False, disk_image=legacy_restored, prepare_disk=False,
+         app_generation=4, log_name="legacy-backup-restore.log")
+    verify_encrypted_disk(legacy_restored)
+    print("Legacy backup check: PASS. Export converted valid plaintext records to authenticated slots while preserving values.")
+
+    test(timeout, reset_disk=True, disk_image=MIGRATION_DISK, prepare_disk=False,
+         app_generation=4)
+    trace = (BUILD / "serial.log").read_text(errors="replace")
+    migration_markers = [
+        "VAULT: migrating legacy plaintext namespace 0",
+        "VAULT: migrating legacy plaintext namespace 1",
+        "VAULT: migrating legacy plaintext namespace 2",
+    ]
+    if any(marker not in trace for marker in migration_markers):
+        raise RuntimeError("legacy vault migration was not observed for all namespaces")
+    test(timeout, reset_disk=False, disk_image=MIGRATION_DISK, prepare_disk=False,
+         app_generation=5)
+    verify_encrypted_disk(MIGRATION_DISK)
+    print("Legacy migration check: PASS. All three plaintext demo records migrated and survived a second boot.")
+
+
+def interactive_test(timeout):
+    prepare_vault_disk(TEST_DISK, reset=True)
+    master, slave = pty.openpty()
+    process = subprocess.Popen(qemu_command(), stdin=slave, stdout=slave,
+                               stderr=subprocess.STDOUT, close_fds=True)
+    os.close(slave)
+    output = bytearray()
+    deadline = time.monotonic() + timeout
+    sent_status = sent_integer_overflow = sent_trailing_input = False
+    sent_overlong_line = sent_server_overflow = sent_calculation = False
+    status_prompt_count = integer_prompt_count = trailing_prompt_count = 0
+    overlong_prompt_count = server_overflow_prompt_count = 0
+    status_heartbeat_count = integer_heartbeat_count = trailing_heartbeat_count = 0
+    overlong_heartbeat_count = server_overflow_heartbeat_count = 0
+    status_sent_at = integer_sent_at = trailing_sent_at = 0.0
+    overlong_sent_at = server_overflow_sent_at = 0.0
+    crash_requests = crash_completions = 0
+    completed_at = None
+    crash_complete = "CRASH COMPLETE: crasher stopped; server remains active"
+    restart_ack = "crasher restarted; watching the supervisor handle its fault"
+    forbidden = ["FAIL:", "MON|ERROR", "Kernel panic", "Reply object already",
+                 "error: clock service did not respond"]
+    try:
+        with selectors.DefaultSelector() as selector:
+            selector.register(master, selectors.EVENT_READ)
+            while time.monotonic() < deadline:
+                for key, _ in selector.select(timeout=0.05):
+                    try:
+                        data = os.read(key.fd, 65536)
+                    except OSError:
+                        data = b""
+                    if data:
+                        output.extend(data)
+                trace = output.decode(errors="replace")
+                if any(marker in trace for marker in forbidden):
+                    raise RuntimeError(
+                        f"Interactive QEMU test emitted an error; see build/interactive.log"
+                    )
+                prompt_count = trace.count("> ")
+                heartbeat_count = trace.count("[heartbeat:")
+                if "[boot isolation checks complete; console ready]" in trace and not sent_status:
+                    os.write(master, b"status\n")
+                    sent_status = True
+                    status_prompt_count = prompt_count
+                    status_heartbeat_count = heartbeat_count
+                    status_sent_at = time.monotonic()
+                usage_count = trace.count("usage: calc NUMBER + NUMBER")
+                if (sent_status and "isolated faults handled:" in trace and
+                        (prompt_count > status_prompt_count or
+                         heartbeat_count > status_heartbeat_count or
+                         time.monotonic() - status_sent_at > 0.5) and
+                        not sent_integer_overflow):
+                    os.write(master, b"calc 18446744073709551616 + 1\n")
+                    sent_integer_overflow = True
+                    integer_prompt_count = prompt_count
+                    integer_heartbeat_count = heartbeat_count
+                    integer_sent_at = time.monotonic()
+                if (sent_integer_overflow and usage_count >= 1 and
+                        (prompt_count > integer_prompt_count or
+                         heartbeat_count > integer_heartbeat_count or
+                         time.monotonic() - integer_sent_at > 0.5) and
+                        not sent_trailing_input):
+                    os.write(master, b"calc 1 + 1 trailing\n")
+                    sent_trailing_input = True
+                    trailing_prompt_count = prompt_count
+                    trailing_heartbeat_count = heartbeat_count
+                    trailing_sent_at = time.monotonic()
+                if (sent_trailing_input and usage_count >= 2 and
+                        (prompt_count > trailing_prompt_count or
+                         heartbeat_count > trailing_heartbeat_count or
+                         time.monotonic() - trailing_sent_at > 0.5) and
+                        not sent_overlong_line):
+                    os.write(master, b"x" * 70 + b"\n")
+                    sent_overlong_line = True
+                    overlong_prompt_count = prompt_count
+                    overlong_heartbeat_count = heartbeat_count
+                    overlong_sent_at = time.monotonic()
+                if (sent_overlong_line and "error: command is too long" in trace and
+                        (prompt_count > overlong_prompt_count or
+                         heartbeat_count > overlong_heartbeat_count or
+                         time.monotonic() - overlong_sent_at > 0.5) and
+                        not sent_server_overflow):
+                    os.write(master, b"calc 18446744073709551615 + 1\n")
+                    sent_server_overflow = True
+                    server_overflow_prompt_count = prompt_count
+                    server_overflow_heartbeat_count = heartbeat_count
+                    server_overflow_sent_at = time.monotonic()
+                if (sent_server_overflow and "error: unsigned addition overflow" in trace and
+                        (prompt_count > server_overflow_prompt_count or
+                         heartbeat_count > server_overflow_heartbeat_count or
+                         time.monotonic() - server_overflow_sent_at > 0.5) and
+                        not sent_calculation):
+                    os.write(master, b"calc 21 + 21\n")
+                    sent_calculation = True
+                if (sent_calculation and "= 42" in trace and "[heartbeat:" in trace and
+                        crash_requests == 0):
+                    os.write(master, b"crash\n")
+                    crash_requests = 1
+                # Console prompts and passive-domain debug output can share the
+                # serial stream. A prompt may land in the middle of this line.
+                observed_completions = trace.replace("> ", "").count(crash_complete)
+                if observed_completions > crash_completions:
+                    crash_completions = observed_completions
+                if (crash_completions == 1 and crash_requests == 1 and
+                        trace.count(restart_ack) >= 1):
+                    os.write(master, b"crash\n")
+                    crash_requests += 1
+                if crash_completions >= 2 and trace.count(restart_ack) >= 2:
+                    completed_at = completed_at or time.monotonic()
+                    if time.monotonic() - completed_at > 0.3:
+                        break
+                if process.poll() is not None:
+                    raise RuntimeError("QEMU exited during interactive test")
+    finally:
+        if process.poll() is None:
+            process.terminate()
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        try:
+            while True:
+                data = os.read(master, 65536)
+                if not data:
+                    break
+                output.extend(data)
+        except OSError:
+            pass
+        os.close(master)
+        (BUILD / "interactive.log").write_bytes(output)
+
+    trace = output.decode(errors="replace")
+    namespace_markers = [
+        "NAMESPACE|NOTES|PASS: malformed requests left its namespace unchanged",
+        "NAMESPACE|CONTACTS|PASS: malformed requests left its namespace unchanged",
+    ]
+    if (not sent_status or not sent_integer_overflow or not sent_trailing_input or
+            not sent_overlong_line or not sent_server_overflow or not sent_calculation or
+            trace.count("usage: calc NUMBER + NUMBER") < 2 or
+            "error: command is too long" not in trace or
+            "error: unsigned addition overflow" not in trace or
+            crash_requests < 2 or crash_completions < 2 or
+            any(marker not in trace for marker in namespace_markers) or
+            not re.search(r"uptime: [0-9]+ seconds", trace) or
+            "[heartbeat:" not in trace or "= 42" not in trace or
+            trace.replace("> ", "").count(crash_complete) < 2 or
+            trace.count(restart_ack) < 2 or
+            trace.count("CRASHER: restart attempt 2; private state retained") < 1 or
+            trace.count("CRASHER: restart attempt 3; private state retained") < 1 or
+            trace.count("PASS: kernel blocked crasher write at 0x40000000") < 3):
+        raise RuntimeError("Interactive checks or crasher state persistence failed; see build/interactive.log")
+    print("Interactive check: PASS. RTC, malformed-input rejection, calculator, and repeated fault recovery work.")
+
+
+def budget_pressure_test(timeout):
+    prepare_vault_disk(TEST_DISK, reset=True)
+    master, slave = pty.openpty()
+    process = subprocess.Popen(qemu_command(), stdin=slave, stdout=slave,
+                               stderr=subprocess.STDOUT, close_fds=True)
+    os.close(slave)
+    output = bytearray()
+    deadline = time.monotonic() + timeout
+    sent_status = sent_calculation = False
+    completed_at = None
+    pressure_marker = "CRASHER: CPU budget pressure test started"
+    forbidden = ["FAIL:", "MON|ERROR", "Kernel panic", "error: clock service did not respond"]
+    try:
+        with selectors.DefaultSelector() as selector:
+            selector.register(master, selectors.EVENT_READ)
+            while time.monotonic() < deadline:
+                for key, _ in selector.select(timeout=0.05):
+                    try:
+                        data = os.read(key.fd, 65536)
+                    except OSError:
+                        data = b""
+                    if data:
+                        output.extend(data)
+                trace = output.decode(errors="replace")
+                if any(marker in trace for marker in forbidden):
+                    raise RuntimeError(
+                        "Budget pressure QEMU test emitted an error; see build/budget-pressure.log"
+                    )
+                if ("CLIENT: baseline passed; triggering isolated crash" in trace and
+                        pressure_marker in trace and
+                        "[boot isolation checks complete; console ready]" in trace and
+                        not sent_status):
+                    os.write(master, b"status\n")
+                    sent_status = True
+                if sent_status and "isolated faults handled:" in trace and not sent_calculation:
+                    os.write(master, b"calc 21 + 21\n")
+                    sent_calculation = True
+                pressure_position = trace.find(pressure_marker)
+                heartbeat_after_pressure = (
+                    pressure_position >= 0 and
+                    trace.find("[heartbeat:", pressure_position) >= 0
+                )
+                if sent_calculation and "= 42" in trace and heartbeat_after_pressure:
+                    completed_at = completed_at or time.monotonic()
+                    if time.monotonic() - completed_at > 0.3:
+                        break
+                if process.poll() is not None:
+                    raise RuntimeError("QEMU exited during budget pressure test")
+    finally:
+        if process.poll() is None:
+            process.terminate()
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        try:
+            while True:
+                data = os.read(master, 65536)
+                if not data:
+                    break
+                output.extend(data)
+        except OSError:
+            pass
+        os.close(master)
+        (BUILD / "budget-pressure.log").write_bytes(output)
+
+    trace = output.decode(errors="replace")
+    if (not sent_status or not sent_calculation or pressure_marker not in trace or
+            "CLIENT: baseline passed; triggering isolated crash" not in trace or
+            "ISOLATION COMPLETE:" in trace or "isolated faults handled:" not in trace or
+            "uptime:" not in trace or "= 42" not in trace or
+            trace.find("[heartbeat:", trace.find(pressure_marker)) < 0 or
+            any(marker in trace for marker in forbidden)):
+        raise RuntimeError("CPU budget did not preserve console/clock progress; see build/budget-pressure.log")
+    print("Budget pressure check: PASS. Console, clock, and calculator progress while the crasher spins.")
+
+
+def crypto_unit_test():
+    run([tool("cargo"), "+nightly-2026-09-25", "test", "--locked", "--lib",
+         "--manifest-path", ROOT / "rust/Cargo.toml"], cwd=ROOT)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("command", choices=["setup", "build", "run", "test", "test-storage",
+                                             "test-graphics", "test-input", "utm-graphics",
+                                             "backup-export", "backup-restore", "utm"])
+    parser.add_argument("--timeout", type=float, default=20,
+                        help="boot-test timeout in seconds (default: 20)")
+    parser.add_argument("--disk", type=Path, default=PERSISTENT_DISK,
+                        help="raw vault disk image (default: build/personal-os-disk.img)")
+    parser.add_argument("--archive", type=Path, help="backup archive for backup-restore")
+    parser.add_argument("--output", type=Path,
+                        help="new archive or disk-image path; existing files are not overwritten")
+    parser.add_argument("--profile", type=Path,
+                        help="UTM output bundle path for utm-graphics; default is dist/Personal OS Graphics.utm")
+    parser.add_argument("--allow-rollback", action="store_true",
+                        help="explicitly restore generations older than the selected source disk")
+    parser.add_argument("--budget-pressure", action="store_true",
+                        help="run the CPU-hog scheduling test instead of normal QEMU checks")
+    args = parser.parse_args()
+    if args.command == "setup":
+        setup()
+        print(f"Ready: {SDK}")
+        return
+    if args.budget_pressure and args.command != "test":
+        parser.error("--budget-pressure is only valid with the test command")
+    if args.allow_rollback and args.command != "backup-restore":
+        parser.error("--allow-rollback is only valid with the backup-restore command")
+    if args.command == "test-storage":
+        storage_test(args.timeout)
+        return
+    if args.command == "test-graphics":
+        graphics_test(args.timeout)
+        return
+    if args.command == "test-input":
+        input_test(args.timeout)
+        return
+    if args.command == "utm-graphics":
+        export_utm_graphics(args.timeout, args.profile)
+        return
+    if args.command == "backup-export":
+        if args.output is None:
+            parser.error("backup-export requires --output <new-archive-file>")
+        ensure_disk_stopped(args.disk)
+        run_backup_cli("export", args.disk.resolve(), args.output.resolve())
+        return
+    if args.command == "backup-restore":
+        if args.archive is None or args.output is None:
+            parser.error("backup-restore requires --archive <file> and --output <new-disk-image>")
+        ensure_disk_stopped(args.disk)
+        restore_args = ["restore", args.archive.resolve(), args.disk.resolve(), args.output.resolve()]
+        if args.allow_rollback:
+            restore_args.append("--allow-rollback")
+        run_backup_cli(*restore_args)
+        return
+    build(budget_pressure=args.budget_pressure)
+    if args.command == "run":
+        print("Commands: help, status, calc A + B, crash. QEMU exits with Ctrl-A then X.", flush=True)
+        command = qemu_command(args.disk)
+        os.execv(command[0], command)
+    elif args.command == "test":
+        if args.budget_pressure:
+            try:
+                budget_pressure_test(args.timeout)
+            finally:
+                # Leave build/ with the normal, non-hog image after this test.
+                build()
+        else:
+            crypto_unit_test()
+            test(args.timeout)
+            test(args.timeout, reset_disk=False)
+            verify_encrypted_disk(TEST_DISK)
+            backup_round_trip_test(args.timeout)
+            legacy_migration_test(args.timeout)
+            interactive_test(args.timeout)
+    elif args.command == "utm":
+        export_utm()
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (RuntimeError, subprocess.CalledProcessError, OSError) as error:
+        print(f"Error: {error}", file=sys.stderr)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        sys.exit(130)

@@ -1,0 +1,238 @@
+--- a/drivers/blk/virtio/block.c
++++ b/drivers/blk/virtio/block.c
+@@ -56,6 +56,8 @@
+ uint32_t descriptors[QUEUE_SIZE_MAX];
+ 
+ uint16_t last_seen_used = 0;
++static bool flush_supported;
++static bool flush_inflight;
+ 
+ /* Block device configuration, populated during initiliastion. */
+ volatile struct virtio_blk_config *virtio_config;
+@@ -78,25 +80,35 @@
+         LOG_DRIVER("response header addr: 0x%lx, len: %d\n", hdr_desc.addr, hdr_desc.len);
+ 
+         assert(hdr_desc.len == VIRTIO_BLK_REQ_HDR_SIZE);
+-        struct virtio_blk_req *hdr = &virtio_headers[virtq_idx];
++        struct virtio_blk_req *hdr = &virtio_headers[hdr_used.id];
+         virtio_blk_print_req(hdr);
+ 
+         uint16_t data_desc_idx = virtq.desc[hdr_used.id].next;
+-        struct virtq_desc data_desc = virtq.desc[data_desc_idx % virtq.num];
+-        uint32_t data_len = data_desc.len;
++        bool is_flush = hdr->type == VIRTIO_BLK_T_FLUSH;
++        if (is_flush) {
++            flush_inflight = false;
++        }
++        uint32_t success_count = 0;
++        uint16_t footer_desc_idx = data_desc_idx;
++        if (!is_flush) {
++            struct virtq_desc data_desc = virtq.desc[data_desc_idx];
++            uint32_t data_len = data_desc.len;
+ #ifdef DEBUG_DRIVER
+-        LOG_DRIVER("response data addr: 0x%lx, data len: %d\n", data_desc.addr, data_len);
++            LOG_DRIVER("response data addr: 0x%lx, data len: %d\n", data_desc.addr, data_len);
+ #endif
++            footer_desc_idx = virtq.desc[data_desc_idx].next;
++            success_count = data_len / BLK_TRANSFER_SIZE;
++        }
+ 
+-        uint16_t footer_desc_idx = virtq.desc[data_desc_idx].next;
+-
+         blk_resp_status_t status;
+         if (hdr->status == VIRTIO_BLK_S_OK) {
+             status = BLK_RESP_OK;
++        } else if (hdr->status == VIRTIO_BLK_S_IOERR) {
++            status = BLK_RESP_ERR_IO;
+         } else {
+             status = BLK_RESP_ERR_UNSPEC;
+         }
+-        int err = blk_enqueue_resp(&blk_queue, status, data_len / BLK_TRANSFER_SIZE, virtio_header_to_id[hdr_used.id]);
++        int err = blk_enqueue_resp(&blk_queue, status, success_count, virtio_header_to_id[hdr_used.id]);
+         assert(!err);
+ 
+         /* Free up the descriptors we used */
+@@ -104,8 +116,10 @@
+         assert(!err);
+         err = ialloc_free(&ialloc_desc, data_desc_idx);
+         assert(!err);
+-        err = ialloc_free(&ialloc_desc, footer_desc_idx);
+-        assert(!err);
++        if (!is_flush) {
++            err = ialloc_free(&ialloc_desc, footer_desc_idx);
++            assert(!err);
++        }
+ 
+         i += 1;
+         notify = true;
+@@ -126,7 +140,23 @@
+ 
+     /* Consume all requests and put them in the 'avail' ring of the virtq. We do not
+      * dequeue unless we know we can put the request in the virtq. */
+-    while (!blk_queue_empty_req(&blk_queue) && ialloc_num_free(&ialloc_desc) >= 3) {
++    while (!blk_queue_empty_req(&blk_queue)) {
++        if (flush_inflight) {
++            break;
++        }
++        THREAD_MEMORY_ACQUIRE();
++        struct blk_req_queue *request_queue = blk_queue.req_queue;
++        struct blk_req *next_request =
++            &request_queue->buffers[request_queue->head % blk_queue.capacity];
++        bool next_is_flush = next_request->code == BLK_REQ_FLUSH ||
++                             next_request->code == BLK_REQ_BARRIER;
++        uint32_t descriptors_needed = next_is_flush ? 2 : 3;
++        uint32_t descriptors_free = ialloc_num_free(&ialloc_desc);
++        if (descriptors_free < descriptors_needed ||
++            (next_is_flush && descriptors_free != virtq.num)) {
++            break;
++        }
++
+         blk_req_code_t req_code;
+         uintptr_t phys_addr;
+         uint64_t block_number;
+@@ -230,16 +260,46 @@
+ 
+             break;
+         }
+-        case BLK_REQ_FLUSH: {
+-            int err = blk_enqueue_resp(&blk_queue, BLK_RESP_OK, 0, id);
+-            assert(!err);
+-            sddf_notify(config.virt.id);
+-            break;
+-        }
++        case BLK_REQ_FLUSH:
+         case BLK_REQ_BARRIER: {
+-            int err = blk_enqueue_resp(&blk_queue, BLK_RESP_OK, 0, id);
+-            assert(!err);
+-            sddf_notify(config.virt.id);
++            if (!flush_supported) {
++                int err = blk_enqueue_resp(&blk_queue, BLK_RESP_ERR_IO, 0, id);
++                assert(!err);
++                sddf_notify(config.virt.id);
++                break;
++            }
++
++            uint32_t hdr_desc_idx = -1;
++            uint32_t status_desc_idx = -1;
++            int err = ialloc_alloc(&ialloc_desc, &hdr_desc_idx);
++            assert(!err && hdr_desc_idx != -1);
++            err = ialloc_alloc(&ialloc_desc, &status_desc_idx);
++            assert(!err && status_desc_idx != -1);
++
++            struct virtio_blk_req *hdr = &virtio_headers[hdr_desc_idx];
++            hdr->type = VIRTIO_BLK_T_FLUSH;
++            hdr->reserved = 0;
++            hdr->sector = 0;
++            hdr->status = 0xff;
++            uint64_t hdr_addr = virtio_headers_paddr +
++                                (hdr_desc_idx * sizeof(struct virtio_blk_req));
++            virtq.desc[hdr_desc_idx] = (struct virtq_desc) {
++                .addr = hdr_addr,
++                .len = VIRTIO_BLK_REQ_HDR_SIZE,
++                .flags = VIRTQ_DESC_F_NEXT,
++                .next = status_desc_idx,
++            };
++            virtq.desc[status_desc_idx] = (struct virtq_desc) {
++                .addr = hdr_addr + VIRTIO_BLK_REQ_HDR_SIZE,
++                .len = 1,
++                .flags = VIRTQ_DESC_F_WRITE,
++            };
++
++            virtq.avail->ring[virtq.avail->idx % virtq.num] = hdr_desc_idx;
++            virtq.avail->idx++;
++            virtio_queue_notify = true;
++            virtio_header_to_id[hdr_desc_idx] = id;
++            flush_inflight = true;
+             break;
+         }
+         default:
+@@ -306,9 +366,15 @@
+     uint64_t features = features_low | ((uint64_t)features_high << 32);
+     virtio_blk_print_features(features);
+ #endif
+-    /* Select features we want from the device */
+-    virtio_transport_set_driver_features(&dev, 0, 0);
++    /* Negotiate flush only when the device offers the actual command. */
++    uint32_t device_features_low = virtio_transport_get_device_features(&dev, 0);
++    flush_supported = (device_features_low & (1U << VIRTIO_BLK_F_FLUSH)) != 0;
++    uint32_t driver_features_low = flush_supported ? (1U << VIRTIO_BLK_F_FLUSH) : 0;
++    virtio_transport_set_driver_features(&dev, 0, driver_features_low);
+     virtio_transport_set_driver_features(&dev, 1, 0);
++    if (!flush_supported) {
++        LOG_DRIVER_ERR("device does not offer VIRTIO_BLK_F_FLUSH; flush requests will fail\n");
++    }
+ 
+     virtio_transport_set_status(&dev, VIRTIO_DEVICE_STATUS_FEATURES_OK);
+     if (!(virtio_transport_get_status(&dev) & VIRTIO_DEVICE_STATUS_FEATURES_OK)) {
+@@ -341,6 +407,15 @@
+     virtq.avail = (struct virtq_avail *)(requests_vaddr + avail_off);
+     virtq.used = (struct virtq_used *)(requests_vaddr + used_off);
+ 
++    /* A system reset can reset virtio while leaving guest RAM intact. Clear
++     * the shared ring before the device sees it again, and restart our cursor. */
++    volatile uint8_t *ring = (volatile uint8_t *)requests_vaddr;
++    for (size_t offset = 0; offset < size; offset++) {
++        ring[offset] = 0;
++    }
++    last_seen_used = 0;
++
++
+     virtio_transport_queue_setup(&dev, 0, driver_q_capacity, requests_paddr + desc_off, requests_paddr + avail_off,
+                                  requests_paddr + used_off);
+ 
+--- a/drivers/blk/virtio/block.h
++++ b/drivers/blk/virtio/block.h
+@@ -42,6 +42,7 @@
+ #define VIRTIO_BLK_S_IOERR 1
+ #define VIRTIO_BLK_S_UNSUPP 2
+ 
++#define VIRTIO_BLK_F_FLUSH          9  /* Flush command supported */
+ #define VIRTIO_BLK_F_SIZE_MAX        1  /* Indicates maximum segment size */
+ #define VIRTIO_BLK_F_SEG_MAX         2  /* Indicates maximum # of segments */
+ #define VIRTIO_BLK_F_GEOMETRY        4  /* Legacy geometry available  */
+--- a/include/sddf/blk/queue.h
++++ b/include/sddf/blk/queue.h
+@@ -90,5 +90,12 @@
+     h->req_queue = request;
+     h->resp_queue = response;
+     h->capacity = capacity;
++
++    /* Reset shared counters when a guest reboots without losing RAM. */
++    request->head = 0;
++    request->tail = 0;
++    request->plugged = false;
++    response->head = 0;
++    response->tail = 0;
+ }
+
+--- a/examples/gpu/include/gpu_config.h
++++ b/examples/gpu/include/gpu_config.h
+@@ -15,7 +15,7 @@
+ #define GPU_NAME_CLI0                       "client"
+ 
+ #define GPU_QUEUE_CAPACITY_CLI0             1024
+-#define GPU_QUEUE_CAPACITY_DRV              1024
++#define GPU_QUEUE_CAPACITY_DRV              64
+ 
+ #define GPU_DATA_REGION_SIZE_CLI0           0x200000
+ #define GPU_DATA_REGION_SIZE_DRV            0x1000
+--- a/include/sddf/gpu/queue.h
++++ b/include/sddf/gpu/queue.h
+@@ -203,9 +203,16 @@ static inline int gpu_enqueue_req(gpu_queue_handle_t *h, gpu_req_t req)
+     }
+ 
+     gpu_req_q = h->req_queue;
+     gpu_req = gpu_req_q->buffers + (gpu_req_q->tail % h->capacity);
+-    memcpy(gpu_req, &req, sizeof(gpu_req_t));
++    /* The shared queue is uncached device memory, where unaligned wide stores
++     * can fault. Keep this copy byte-sized regardless of record field layout.
++     */
++    const uint8_t *src = (const uint8_t *)&req;
++    volatile uint8_t *dst = (volatile uint8_t *)gpu_req;
++    for (size_t i = 0; i < sizeof(gpu_req_t); i++) {
++        dst[i] = src[i];
++    }
+ 
+     gpu_req_q->tail++;
+ 
+ /**

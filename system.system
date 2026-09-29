@@ -1,0 +1,142 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<system>
+    <!-- The serial console alone reads host keystrokes from QEMU's PL011 UART. -->
+    <memory_region name="uart0" size="0x1000" phys_addr="0x09000000" />
+    <memory_region name="rtc" size="0x1000" phys_addr="0x09010000" />
+    <!-- RNG uses slot 8, on its own 4 KiB page separate from the block device. -->
+    <memory_region name="rng_mmio" size="0x1000" phys_addr="0x0a001000" />
+    <!-- Private, uncached split-ring page and device-writable entropy buffer. -->
+    <memory_region name="rng_dma" size="0x2000" phys_addr="0x5fddc000" />
+
+    <!-- Each server owns a separate private frame. Neither client maps either. -->
+    <memory_region name="server_private" size="0x1000" />
+    <memory_region name="c_reference_private" size="0x1000" />
+    <memory_region name="vault_private" size="0x1000" />
+    <!-- Each app owns a bounded render snapshot, isolated from its sibling. -->
+    <memory_region name="notes_view" size="0x1000" />
+    <memory_region name="contacts_view" size="0x1000" />
+    <!-- The trusted RTC service publishes only a formatted read-only clock face. -->
+    <memory_region name="clock_view" size="0x1000" />
+    <!-- Expose only Notes' current screen mode to the input router. -->
+    <memory_region name="notes_touch_mode" size="0x1000" />
+    <!-- Private app/vault pages for bounded authenticated blob transfers. -->
+    <memory_region name="notes_transfer" size="0x1000" />
+    <memory_region name="contacts_transfer" size="0x1000" />
+    <protection_domain name="server" priority="100" passive="true">
+        <program_image path="rust_server.elf" />
+        <map mr="server_private" vaddr="0x40000000" perms="rw" setvar_vaddr="server_private_start" />
+    </protection_domain>
+    <protection_domain name="c_reference" priority="100" passive="true">
+        <program_image path="c_server.elf" />
+        <map mr="c_reference_private" vaddr="0x41000000" perms="rw" />
+    </protection_domain>
+    <protection_domain name="vault" priority="101" passive="true" stack_size="0x10000">
+        <program_image path="rust_vault_disk.elf" />
+        <map mr="vault_private" vaddr="0x42000000" perms="rw" setvar_vaddr="vault_private_start" />
+        <map mr="notes_transfer" vaddr="0x45000000" perms="rw" cached="false" setvar_vaddr="notes_transfer" />
+        <map mr="contacts_transfer" vaddr="0x46000000" perms="rw" cached="false" setvar_vaddr="contacts_transfer" />
+    </protection_domain>
+    <!-- Each app gets one capability endpoint, which the vault binds to a fixed namespace. -->
+    <protection_domain name="notes_app" priority="100" passive="true">
+        <program_image path="rust_vault_notes_test.elf" />
+        <map mr="notes_view" vaddr="0x43_000_000" perms="rw" cached="false" setvar_vaddr="app_view" />
+        <map mr="notes_transfer" vaddr="0x44_000_000" perms="rw" cached="false" setvar_vaddr="blob_transfer" />
+        <map mr="notes_touch_mode" vaddr="0x47_000_000" perms="rw" cached="false" setvar_vaddr="notes_touch_mode" />
+    </protection_domain>
+    <protection_domain name="contacts_app" priority="100" passive="true">
+        <program_image path="rust_vault_contacts_test.elf" />
+        <map mr="contacts_view" vaddr="0x43_000_000" perms="rw" cached="false" setvar_vaddr="app_view" />
+        <map mr="contacts_transfer" vaddr="0x44_000_000" perms="rw" cached="false" setvar_vaddr="blob_transfer" />
+    </protection_domain>
+    <!-- Explicit MCS CPU budgets, in microseconds; 3 ms per 10 ms = 30%. -->
+    <protection_domain name="client" priority="99" budget="3_000" period="10_000">
+        <program_image path="rust_client.elf" />
+        <!-- Parent receives kernel faults from this child and can stop it. -->
+        <protection_domain name="crasher" priority="98" id="1"
+                           budget="1_000" period="10_000">
+            <program_image path="rust_crasher.elf" />
+        </protection_domain>
+    </protection_domain>
+    <protection_domain name="clock" priority="98" budget="1_000" period="10_000">
+        <program_image path="rust_clock.elf" />
+        <!-- QEMU virt's PL031 alarm is an independent one-second time source. -->
+        <map mr="rtc" vaddr="0x50000000" perms="rw" cached="false" setvar_vaddr="rtc_regs" />
+        <map mr="clock_view" vaddr="0x50100000" perms="rw" cached="false" setvar_vaddr="clock_view" />
+        <irq irq="34" id="0" />
+    </protection_domain>
+    <protection_domain name="entropy_rng" priority="102" passive="true" stack_size="0x4000">
+        <program_image path="rust_entropy_rng.elf" />
+        <map mr="rng_mmio" vaddr="0x52000000" perms="rw" cached="false" setvar_vaddr="rng_regs" />
+        <map mr="rng_dma" vaddr="0x53000000" perms="rw" cached="false" setvar_vaddr="rng_dma" />
+    </protection_domain>
+    <protection_domain name="console" priority="96" budget="3_000" period="10_000">
+        <program_image path="rust_console.elf" />
+        <map mr="uart0" vaddr="0x51000000" perms="rw" cached="false" setvar_vaddr="uart_regs" />
+        <irq irq="33" id="2" />
+    </protection_domain>
+    <channel>
+        <end pd="server" id="0" notify="false" />
+        <end pd="client" id="0" pp="true" notify="false" />
+    </channel>
+    <channel>
+        <end pd="c_reference" id="0" notify="false" />
+        <end pd="client" id="4" pp="true" notify="false" />
+    </channel>
+    <!-- Endpoint identity is the vault's caller identity; it is not in request data. -->
+    <channel>
+        <end pd="vault" id="1" notify="false" />
+        <end pd="client" id="6" pp="true" notify="false" />
+    </channel>
+    <channel>
+        <end pd="vault" id="2" notify="false" />
+        <end pd="crasher" id="1" pp="true" notify="false" />
+    </channel>
+    <channel>
+        <end pd="vault" id="3" notify="false" />
+        <end pd="notes_app" id="0" pp="true" notify="false" />
+    </channel>
+    <channel>
+        <end pd="vault" id="4" notify="false" />
+        <end pd="contacts_app" id="0" pp="true" notify="false" />
+    </channel>
+    <channel>
+        <end pd="client" id="7" pp="true" notify="false" />
+        <end pd="notes_app" id="1" notify="false" />
+    </channel>
+    <channel>
+        <end pd="client" id="8" pp="true" notify="false" />
+        <end pd="contacts_app" id="1" notify="false" />
+    </channel>
+    <channel>
+        <end pd="client" id="1" />
+        <end pd="crasher" id="0" notify="false" />
+    </channel>
+    <!-- The console calls the supervisor, which mediates calculator/crash policy. -->
+    <channel>
+        <end pd="console" id="0" pp="true" notify="false" />
+        <end pd="client" id="2" notify="false" />
+    </channel>
+    <channel>
+        <end pd="clock" id="1" />
+        <end pd="console" id="1" notify="false" />
+    </channel>
+    <channel>
+        <end pd="client" id="3" />
+        <end pd="console" id="3" notify="false" />
+    </channel>
+    <channel>
+        <end pd="console" id="4" pp="true" notify="false" />
+        <end pd="clock" id="2" notify="false" />
+    </channel>
+    <!-- The console asks the supervisor to restart the child only after its
+         protected call has returned, so the child cannot fault over a pending reply. -->
+    <channel>
+        <end pd="console" id="5" />
+        <end pd="client" id="5" notify="false" />
+    </channel>
+    <!-- Only the supervisor can request guest entropy; the vault gets no device access. -->
+    <channel>
+        <end pd="entropy_rng" id="0" notify="false" />
+        <end pd="client" id="9" pp="true" notify="false" />
+    </channel>
+</system>
