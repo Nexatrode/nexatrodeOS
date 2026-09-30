@@ -26,7 +26,8 @@ UTM does **not** replace Pixel boot, GENI UART, Wi‑Fi, modem, or power.
    Settings).
 4. **Keyboard path:** Tab between workspaces; Calculator `8 + 2` → `10`.
 5. **Settings** shows local-only status (`LOCAL ONLY` / `VAULT LOCAL` /
-   `NO NET YET` / `NO ALERTS YET`).
+   `NO NET YET`) and alert counts after modem smoke (`ALERTS RING N SMS M`, or
+   `NO ALERTS YET` if nothing was injected).
 6. **Messages** compose → `SEALED N` locally (still offline in the UTM image).
 7. **Serial profile** remains separate: `./dev utm` / `dist/Personal OS.utm`
    for non-graphics work.
@@ -36,10 +37,10 @@ UTM does **not** replace Pixel boot, GENI UART, Wi‑Fi, modem, or power.
 
 ## Still later on UTM
 
-- Dialer UI / Settings alert counts on top of [modem-spike.md](modem-spike.md)
+- Dialer UI on top of [modem-spike.md](modem-spike.md)
 - Camera backends
 - Graphics + net in one image (`timer_driver` name clash)
-- Real notification delivery (Settings currently shows `NO ALERTS YET`)
+- Richer notification delivery beyond Settings alert counts
 - Production TLS/PKI beyond the test-net TOFU smoke
 
 ## Pixel handoff (when UART adapter + backup ready)

@@ -3,6 +3,7 @@
 
 mod entropy_protocol;
 mod modem_protocol;
+mod settings_protocol;
 mod vault_protocol;
 
 use entropy_protocol::{
@@ -12,6 +13,10 @@ use entropy_protocol::{
 use modem_protocol::{
     CLIENT_CHANNEL as MODEM_CHANNEL, REPLY_BAD_REQUEST as MODEM_BAD, REPLY_OK as MODEM_OK,
     REQUEST_RING as MODEM_RING, REQUEST_SMS as MODEM_SMS, SMS_MAX_BYTES,
+};
+use settings_protocol::{
+    CLIENT_CHANNEL as SETTINGS_CHANNEL, REPLY_OK as SETTINGS_OK,
+    REQUEST_SET_ALERTS as SETTINGS_SET_ALERTS,
 };
 use sel4::{Fault, UserContext};
 use sel4_microkit::{
@@ -46,6 +51,7 @@ const CONSOLE_START_CRASHER: Channel = Channel::new(5);
 const CRASHER_CHILD: Child = Child::new(1);
 const ENTROPY: Channel = Channel::new(ENTROPY_CHANNEL);
 const MODEM: Channel = Channel::new(MODEM_CHANNEL);
+const SETTINGS_APP: Channel = Channel::new(SETTINGS_CHANNEL);
 
 const REQUEST_ADD: MessageLabel = 1;
 const REQUEST_COUNT: MessageLabel = 2;
@@ -81,6 +87,8 @@ fn init() -> Supervisor {
         counter_before_crash: 0,
         vault_generation: 0,
         vault_value: 0,
+        modem_rings: 0,
+        modem_sms: 0,
     };
     supervisor.run_baseline();
     supervisor
@@ -96,9 +104,18 @@ struct Supervisor {
     counter_before_crash: MessageRegisterValue,
     vault_generation: MessageRegisterValue,
     vault_value: MessageRegisterValue,
+    modem_rings: MessageRegisterValue,
+    modem_sms: MessageRegisterValue,
 }
 
 impl Supervisor {
+    fn push_settings_alerts(&self) -> bool {
+        set_mr(0, self.modem_rings);
+        set_mr(1, self.modem_sms);
+        let reply = SETTINGS_APP.pp_call(MessageInfo::new(SETTINGS_SET_ALERTS, 2));
+        reply.label() == SETTINGS_OK && reply.count() == 0
+    }
+
     fn record(&mut self, passed: bool, name: &str) {
         self.checks += 1;
         if !passed {
@@ -162,6 +179,8 @@ impl Supervisor {
         self.record(modem_passed, "fake modem accepts RING and SMS inject");
         if modem_passed {
             debug_println!("MODEM|PASS: RING and SMS inject accepted");
+            self.modem_rings = 1;
+            self.modem_sms = 1;
         }
 
         set_mr(0, 19);
@@ -464,10 +483,19 @@ impl Supervisor {
                 self.counter_before_crash.wrapping_add(1),
                 "independent server state advances after fault",
             );
+            // Push Settings alerts after the crash/isolation checks so the busy
+            // modem smoke path does not race VirtIO input attach on graphics.
+            let alerts_pushed = self.modem_rings > 0
+                && self.modem_sms > 0
+                && self.push_settings_alerts();
+            self.record(alerts_pushed, "Settings shows modem alert counts");
+            if alerts_pushed {
+                debug_println!("SETTINGS|PASS: alert counts pushed after modem smoke");
+            }
             debug_println!(
                 "{}",
-                if self.failures == 0 && self.checks == 28 {
-                    "ISOLATION COMPLETE: 28 checks passed; crasher stopped, services alive"
+                if self.failures == 0 && self.checks == 29 {
+                    "ISOLATION COMPLETE: 29 checks passed; crasher stopped, services alive"
                 } else {
                     "FAIL: isolation checks failed"
                 }
@@ -671,6 +699,10 @@ impl Handler for Supervisor {
         if operation == REQUEST_CONSOLE_MODEMRING && count == 0 {
             let reply = MODEM.pp_call(MessageInfo::new(MODEM_RING, 0));
             if reply.label() == MODEM_OK && reply.count() == 0 {
+                self.modem_rings = self.modem_rings.wrapping_add(1);
+                if !self.push_settings_alerts() {
+                    return Ok(MessageInfo::new(REPLY_CONSOLE_ERROR, 0));
+                }
                 return Ok(MessageInfo::new(REPLY_OK, 0));
             }
             return Ok(MessageInfo::new(REPLY_CONSOLE_ERROR, 0));
@@ -678,6 +710,10 @@ impl Handler for Supervisor {
         if operation == REQUEST_CONSOLE_MODEMSMS && count == 3 {
             let reply = MODEM.pp_call(MessageInfo::new(MODEM_SMS, 3));
             if reply.label() == MODEM_OK && reply.count() == 0 {
+                self.modem_sms = self.modem_sms.wrapping_add(1);
+                if !self.push_settings_alerts() {
+                    return Ok(MessageInfo::new(REPLY_CONSOLE_ERROR, 0));
+                }
                 return Ok(MessageInfo::new(REPLY_OK, 0));
             }
             return Ok(MessageInfo::new(REPLY_CONSOLE_ERROR, 0));

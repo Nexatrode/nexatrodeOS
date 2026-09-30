@@ -28,6 +28,8 @@
     <memory_region name="messages_transfer" size="0x1000" />
     <!-- Shared sealed-datagram page for Messages → dhcp_client (net merge maps the peer). -->
     <memory_region name="messages_net_tx" size="0x1000" />
+    <!-- Settings display snapshot (serial + graphics); supervisor pushes alert counts. -->
+    <memory_region name="settings_view" size="0x1000" />
     <protection_domain name="server" priority="100" passive="true">
         <program_image path="rust_server.elf" />
         <map mr="server_private" vaddr="0x40000000" perms="rw" setvar_vaddr="server_private_start" />
@@ -45,7 +47,7 @@
         <map mr="messages_transfer" vaddr="0x48000000" perms="rw" cached="false" setvar_vaddr="messages_transfer" />
     </protection_domain>
     <!-- Each app gets one capability endpoint, which the vault binds to a fixed namespace. -->
-    <protection_domain name="notes_app" priority="100" passive="true">
+    <protection_domain name="notes_app" priority="100" passive="true" stack_size="0x10000">
         <program_image path="rust_vault_notes_test.elf" />
         <map mr="notes_view" vaddr="0x43_000_000" perms="rw" cached="false" setvar_vaddr="app_view" />
         <map mr="notes_transfer" vaddr="0x44_000_000" perms="rw" cached="false" setvar_vaddr="blob_transfer" />
@@ -66,6 +68,11 @@
         <map mr="messages_view" vaddr="0x43_000_000" perms="rw" cached="false" setvar_vaddr="messages_view" />
         <map mr="messages_transfer" vaddr="0x44_000_000" perms="rw" cached="false" setvar_vaddr="blob_transfer" />
         <map mr="messages_net_tx" vaddr="0x49_000_000" perms="rw" setvar_vaddr="messages_net_tx" />
+    </protection_domain>
+    <!-- Read-only Settings stub; alert line updated only by the supervisor. -->
+    <protection_domain name="settings_app" priority="100" passive="true">
+        <program_image path="rust_settings_app.elf" />
+        <map mr="settings_view" vaddr="0x43_000_000" perms="rw" cached="false" setvar_vaddr="settings_view" />
     </protection_domain>
     <!-- Explicit MCS CPU budgets, in microseconds; 3 ms per 10 ms = 30%. -->
     <protection_domain name="client" priority="99" budget="3_000" period="10_000">
@@ -182,5 +189,10 @@
     <channel>
         <end pd="fake_modem" id="0" notify="false" />
         <end pd="client" id="12" pp="true" notify="false" />
+    </channel>
+    <!-- Only the supervisor pushes Settings alert counts. -->
+    <channel>
+        <end pd="settings_app" id="0" notify="false" />
+        <end pd="client" id="13" pp="true" notify="false" />
     </channel>
 </system>

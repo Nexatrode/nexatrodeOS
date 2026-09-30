@@ -10,7 +10,7 @@
     <!-- Trusted tablet pointer snapshot for the guest-drawn UTM cursor. -->
     <memory_region name="ui_pointer" size="0x1_000" page_size="0x1_000" />
     <memory_region name="calculator_view" size="0x1_000" page_size="0x1_000" />
-    <memory_region name="settings_view" size="0x1_000" page_size="0x1_000" />
+    <!-- settings_view / settings_app live in the base system.system. -->
 
     <protection_domain name="input_driver" priority="254" budget="1_000" period="10_000" stack_size="0x10000">
         <program_image path="input_driver.elf" />
@@ -33,11 +33,6 @@
     <protection_domain name="calculator_app" priority="100" passive="true">
         <program_image path="rust_calculator_app.elf" />
         <map mr="calculator_view" vaddr="0x43_000_000" perms="rw" cached="false" setvar_vaddr="calculator_view" />
-    </protection_domain>
-    <!-- Settings is a read-only local-device stub (no cloud, no app endpoint). -->
-    <protection_domain name="settings_app" priority="100" passive="true">
-        <program_image path="rust_settings_app.elf" />
-        <map mr="settings_view" vaddr="0x43_000_000" perms="rw" cached="false" setvar_vaddr="settings_view" />
     </protection_domain>
     <channel>
         <end pd="input_driver" id="2" />

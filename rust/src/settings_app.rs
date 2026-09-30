@@ -2,20 +2,28 @@
 #![no_main]
 
 mod app_view;
+mod settings_protocol;
 
 use app_view::AppViewState;
 use core::ptr::NonNull;
-use personal_os_rust_server::settings::SETTINGS_TEXT;
+use personal_os_rust_server::settings::{SETTINGS_TEXT_CAPACITY, format_settings_text};
 use sel4_microkit::{
-    Channel, ChannelSet, Handler, Infallible, MessageInfo, debug_println, memory_region_symbol,
-    protection_domain,
+    Channel, ChannelSet, Handler, Infallible, MessageInfo, MessageRegisterValue, debug_println,
+    get_mr, memory_region_symbol, protection_domain,
 };
+use settings_protocol::{REPLY_BAD_REQUEST, REPLY_OK, REQUEST_SET_ALERTS};
+
+const SUPERVISOR: Channel = Channel::new(0);
 
 #[protection_domain]
 fn init() -> SettingsService {
     let view = memory_region_symbol!(settings_view: *mut AppViewState);
     unsafe { view.as_ptr().write(AppViewState::new()) };
-    let mut service = SettingsService { view };
+    let mut service = SettingsService {
+        view,
+        rings: 0,
+        sms: 0,
+    };
     if !service.publish() {
         debug_println!("UIAPP|SETTINGS|ERROR: invalid settings display snapshot");
     }
@@ -25,11 +33,33 @@ fn init() -> SettingsService {
 
 struct SettingsService {
     view: NonNull<AppViewState>,
+    rings: MessageRegisterValue,
+    sms: MessageRegisterValue,
 }
 
 impl SettingsService {
     fn publish(&mut self) -> bool {
-        unsafe { self.view.as_mut().set_display_text(SETTINGS_TEXT) }
+        let mut buffer = [0u8; SETTINGS_TEXT_CAPACITY];
+        let Some(length) = format_settings_text(self.rings as u64, self.sms as u64, &mut buffer)
+        else {
+            return false;
+        };
+        unsafe { self.view.as_mut().set_display_text(&buffer[..length]) }
+    }
+
+    fn set_alerts(&mut self, rings: MessageRegisterValue, sms: MessageRegisterValue) -> MessageInfo {
+        self.rings = rings;
+        self.sms = sms;
+        if !self.publish() {
+            debug_println!("UIAPP|SETTINGS|ERROR: alert display rejected");
+            return MessageInfo::new(REPLY_BAD_REQUEST, 0);
+        }
+        debug_println!(
+            "UIAPP|SETTINGS|ALERTS|RING={} SMS={}",
+            self.rings,
+            self.sms
+        );
+        MessageInfo::new(REPLY_OK, 0)
     }
 }
 
@@ -43,10 +73,16 @@ impl Handler for SettingsService {
 
     fn protected(
         &mut self,
-        _channel: Channel,
-        _request: MessageInfo,
+        channel: Channel,
+        request: MessageInfo,
     ) -> Result<MessageInfo, Self::Error> {
-        // Read-only stub: the trusted router never forwards input here.
-        Ok(MessageInfo::new(0, 0))
+        if channel != SUPERVISOR {
+            return Ok(MessageInfo::new(REPLY_BAD_REQUEST, 0));
+        }
+        if request.label() == REQUEST_SET_ALERTS && request.count() == 2 {
+            return Ok(self.set_alerts(get_mr(0), get_mr(1)));
+        }
+        // Read-only for other callers; input router never forwards keys here.
+        Ok(MessageInfo::new(REPLY_BAD_REQUEST, 0))
     }
 }

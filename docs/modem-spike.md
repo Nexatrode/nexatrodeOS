@@ -9,15 +9,20 @@ identity for Messages (see [explicit-contact-messaging.md](explicit-contact-mess
   channel (`client` id 12).
 - Boot: `MODEM|READY: fake telephony stub online`
 - Supervisor smoke in `./dev test`: `MODEM|RING`, `MODEM|SMS IN|HELLO`, reject
-  empty SMS; isolation count is **28**.
-- Console (mediated): `modemring`, `modemsms BODY` (1–16 alphanumeric).
+  empty SMS; then push counts to Settings (`ALERTS RING 1 SMS 1`); isolation
+  count is **29**.
+- Console (mediated): `modemring`, `modemsms BODY` (1–16 alphanumeric) — also
+  refreshes Settings.
+- Settings PD (`settings_app`, channel 13): line 4 is `NO ALERTS YET` or
+  `ALERTS RING N SMS M` after supervisor `REQUEST_SET_ALERTS`.
 
 ## Pass
 
-`./dev test` green with `MODEM|READY`, `MODEM|RING`, `MODEM|SMS IN|HELLO`, and
-`MODEM|PASS: RING and SMS inject accepted`.
+`./dev test` green with modem PASS lines plus `SETTINGS|PASS: alert counts
+pushed after modem smoke`. `./dev test-input` Settings frames show
+`ALERTS RING 1 SMS 1` after boot smoke.
 
 ## Out of scope
 
-Phone/dialer UI, Settings alert counts, auto-timer RING, AT/Qualcomm realism,
-graphics+net merge (`timer_driver` clash), Messages vault SMS.
+Phone/dialer UI, auto-timer RING, AT/Qualcomm realism, graphics+net merge
+(`timer_driver` clash), Messages vault SMS.
