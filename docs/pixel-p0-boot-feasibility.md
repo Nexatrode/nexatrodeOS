@@ -50,8 +50,8 @@ Do not re-run unlock/lock. Do not include the device serial in project logs.
 | Boot handoff / image shape | **Answered for planning:** Android boot v2 `boot.img` with LZ4 kernel + separate DTB + AVB footer |
 | Early UART without flashing | **Partial:** bootloader reports UART `disabled`; enable syntax known; **no SBU cable capture yet** |
 | DT → seL4 map | **Credible candidates documented** (GIC/timer/UART/memory); GENI UART not in seL4 `hardware.yml`; desk scaffold in [`platforms/sunfish/`](../platforms/sunfish/README.md) |
-| Lineage return path | **Kit on disk** under `docs/pixel-p0-assets/lineage-ref/20260924/` (SHA256 verified listing); restore runbook drafted; **userdata backup still unconfirmed on host** |
-| P1 go/no-go | **Conditional go** after UART cable proof + userdata backup + live slot dumps; **not ready to flash** |
+| Lineage return path | **Kit on disk** under `docs/pixel-p0-assets/lineage-ref/20260924/` (SHA256 verified listing); restore runbook drafted; **shared `/sdcard` backup on host** (`~/Backups/pixel-sunfish-20260929/`); app-private `/data` / 2FA still on user |
+| P1 go/no-go | **Conditional go** after UART cable proof + remaining app-private backup + live slot dumps; **not ready to flash** |
 
 ---
 
@@ -170,7 +170,11 @@ Reinstall will move the phone forward to 20260924 (or whatever build you sideloa
 
 Checklist:
 
-- [ ] User data backed up off-device
+- [x] Shared storage (`/sdcard`) backed up off-device — host path
+  `~/Backups/pixel-sunfish-20260929/` (~172 MiB, 111 files + SHA-256;
+  2026-09-29). Does **not** include app-private `/data` (no root).
+- [ ] Authenticator / 2FA and other app-private data exported (manual /
+  Seedvault; Android Backup Manager is disabled on this build)
 - [x] Lineage ZIP + boot/dtbo/vbmeta + checksums retained
 - [x] Restore sequence documented
 - [x] A/B awareness noted (current slot `b`)
@@ -238,7 +242,7 @@ See [pixel-key-feasibility.md](pixel-key-feasibility.md).
 | Device identity | `sunfish`, unlocked, Lineage recoverable | **Pass** |
 | Boot container understood | boot v2 + DTB + AVB notes; flash vs `fastboot boot` decided | **Pass** (assume flash may be required) |
 | Debug channel | UART enabled; serial capture of bootloader or kernel | **Fail / pending** — need SBU adapter + enable test |
-| Rollback kit | ZIP + images + checksums; data backed up | **Partial** — kit yes; **userdata backup not confirmed** |
+| Rollback kit | ZIP + images + checksums; data backed up | **Partial** — kit yes; `/sdcard` yes (`~/Backups/pixel-sunfish-20260929/`); app-private/2FA not fully covered |
 | Hardware map | DRAM/GIC/timer/UART from DT | **Pass** |
 | Privilege story | Explicit EL1 vs EL2 assumption | **Pass** (EL1-first) |
 | Scope discipline | First goal UART hello | **Pass** |
@@ -259,9 +263,10 @@ much later milestone after P1 hello.
 
 Ordered blockers (do these before any flash):
 
-1. **Userdata backup (host)** — photos, 2FA, app exports off-device. No confirmed
-   Pixel/`sunfish` backup tree was found on this Mac in a shallow search
-   (2026-09-29). Record the path here once it exists.
+1. **Userdata backup (host)** — **partial:** shared storage pulled to
+   `~/Backups/pixel-sunfish-20260929/` (2026-09-29). Still export authenticator /
+   2FA and any app-private data (Seedvault is installed but Backup Manager is
+   disabled; no root for a full `/data` dump).
 2. **USB-C SBU UART adapter** — ~1.8 V, 115200; label plug orientation. Do **not**
    run `fastboot oem uart enable` until the adapter is attached and a serial
    client is listening.
@@ -277,8 +282,9 @@ Optional (not blocking P0 sign-off):
 6. Continue desk-only seL4 overlay / GENI putchar under [`platforms/sunfish/`](../platforms/sunfish/README.md)
    (still no flash).
 
-Mark P0 complete in the roadmap when (1)–(3) pass and (4) is done or explicitly
-scheduled as the first step of P1.
+Mark P0 complete in the roadmap when UART proof (2)–(3) passes, app-private
+backup risk is accepted or mitigated, and (4) is done or explicitly scheduled as
+the first step of P1.
 
 Keep UTM / `./dev test-net` as the daily software loop. Dual-UTM Shared Network
 manual `SEAL OK` remains optional and independent of Pixel.
