@@ -36,10 +36,10 @@ UTM does **not** replace Pixel boot, GENI UART, Wi‑Fi, modem, or power.
 
 ## Still later on UTM
 
-- Messages UI over TLS (UDP UI sealed TX + cert/TOFU smoke are done on `test-net`)
 - Fake modem / camera backends
 - Graphics + net in one image (`timer_driver` name clash)
 - Real notification delivery (Settings currently shows `NO ALERTS YET`)
+- Production TLS/PKI beyond the test-net TOFU smoke
 
 ## Pixel handoff (when Cereal / backup ready)
 

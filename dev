@@ -1373,6 +1373,7 @@ def integrated_net_test(timeout, python, env):
                 )
 
             ui_seal_marker = "PASS: UI sealed packet handed to dhcp_client"
+            msg_tls_marker = "MSG TLS TX"
             while time.monotonic() < deadline:
                 if process.poll() is not None:
                     raise RuntimeError(
@@ -1384,12 +1385,15 @@ def integrated_net_test(timeout, python, env):
                         f"Integrated network guest faulted waiting for UI sealed TX; "
                         f"inspect {serial_log}"
                     )
-                if ui_seal_marker in trace and trace.count(msg_tx_marker) >= 2:
+                if (ui_seal_marker in trace
+                        and trace.count(msg_tx_marker) >= 2
+                        and msg_tls_marker in trace):
                     break
                 time.sleep(0.05)
             else:
                 raise RuntimeError(
-                    f"Integrated network guest missed UI sealed TX; inspect {serial_log}"
+                    f"Integrated network guest missed UI sealed TX / {msg_tls_marker}; "
+                    f"inspect {serial_log}"
                 )
 
             payload = b"PERSONAL-OS-NET-MERGE"
@@ -1490,6 +1494,7 @@ def integrated_net_test(timeout, python, env):
             or tls_seal_marker not in trace
             or seal_marker not in trace
             or msg_tx_marker not in trace
+            or "MSG TLS TX" not in trace
             or seal_marker not in trace_b):
         raise RuntimeError(
             f"Integrated network checks incomplete; inspect {serial_log} and {guest_b_serial}"
@@ -1497,7 +1502,7 @@ def integrated_net_test(timeout, python, env):
     print(
         f"Integrated VirtIO network: PASS; Personal OS isolation completed with "
         f"dhcp_client DHCP, DNS OK, TLS OK, TLS SEAL OK, Messages sealed TX, "
-        f"Messages UI sealed TX, "
+        f"Messages UI sealed TX (UDP + TLS), "
         f"toy router → guest B SEAL OK, UDP echo, TCP echo, and guest A SEAL OK; "
         f"serial saved to {serial_log}"
     )

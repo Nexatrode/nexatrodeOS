@@ -1,8 +1,10 @@
-//! Shared page for Messages → dhcp_client sealed UDP transmit (test-net merge).
+//! Shared page for Messages → dhcp_client sealed UDP/TLS transmit (test-net merge).
 
 pub const PAGE_SIZE: usize = 4096;
 pub const MAX_DATAGRAM: usize = 128;
 pub const NET_READY_MAGIC: u32 = u32::from_le_bytes(*b"NET1");
+/// Also queue the datagram on the open guest TLS session (`MSG TLS TX`).
+pub const TX_FLAG_TLS: u16 = 0x1;
 
 /// Default SLIRP host gateway used by `./dev test-net` + toy_router.
 pub const DEMO_PEER_IP: [u8; 4] = [10, 0, 2, 2];
@@ -44,6 +46,12 @@ impl MessagesNetTxPage {
 
     pub fn set_demo_peer(&mut self) {
         self.set_peer(DEMO_PEER_IP, DEMO_PEER_PORT);
+    }
+
+    /// Demo peer over UDP plus TLS when the guest TLS session is up.
+    pub fn set_demo_peer_tls(&mut self) {
+        self.set_peer(DEMO_PEER_IP, DEMO_PEER_PORT);
+        self.reserved = TX_FLAG_TLS;
     }
 
     /// Resolved destination for dhcp_client. Empty IP or port 0 → demo host gateway.

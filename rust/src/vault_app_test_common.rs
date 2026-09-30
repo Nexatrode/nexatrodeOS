@@ -202,7 +202,7 @@ impl NamespaceTest {
         }
         let mut packet = [0u8; MAX_PACKET];
         let length = message_seal::demo_udp_packet(&mut packet);
-        match self.tx_sealed_datagram(&packet[..length]) {
+        match self.tx_sealed_datagram(&packet[..length], false) {
             Ok(()) => {
                 log(self.name, "PASS: sealed demo handed to dhcp_client");
                 MessageInfo::new(REPLY_SEND_SEAL_DEMO_OK, 0)
@@ -240,7 +240,7 @@ impl NamespaceTest {
             log(self.name, "FAIL: vault could not persist UI sealed peer");
             return MessageInfo::new(REPLY_BAD_REQUEST, 0);
         }
-        match self.tx_sealed_datagram(&copy[..length]) {
+        match self.tx_sealed_datagram(&copy[..length], true) {
             Ok(()) => {
                 let _ = self.render_messages_snapshot();
                 log(self.name, "PASS: UI sealed packet handed to dhcp_client");
@@ -276,7 +276,7 @@ impl NamespaceTest {
         unsafe { page.as_ref().net_ready() }
     }
 
-    fn tx_sealed_datagram(&mut self, bytes: &[u8]) -> Result<(), MessageLabel> {
+    fn tx_sealed_datagram(&mut self, bytes: &[u8], over_tls: bool) -> Result<(), MessageLabel> {
         let Some(mut page) = self.messages_net_tx else {
             return Err(REPLY_NO_NET);
         };
@@ -284,7 +284,11 @@ impl NamespaceTest {
         if !page.net_ready() {
             return Err(REPLY_NO_NET);
         }
-        page.set_demo_peer();
+        if over_tls {
+            page.set_demo_peer_tls();
+        } else {
+            page.set_demo_peer();
+        }
         if !page.set_datagram(bytes) {
             return Err(REPLY_BAD_REQUEST);
         }
@@ -303,7 +307,7 @@ impl NamespaceTest {
         let mut copy = [0u8; MAX_PACKET];
         let length = packet.len();
         copy[..length].copy_from_slice(packet);
-        let _ = self.tx_sealed_datagram(&copy[..length]);
+        let _ = self.tx_sealed_datagram(&copy[..length], true);
     }
 
     fn handle_routed_input(&mut self, request: MessageInfo) -> MessageInfo {

@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: BSD-2-Clause
 """TLS 1.2 ECDHE-ECDSA stub with pinned demo cert for ./dev test-net.
 
-Echoes PSL1 sealed demo datagrams. Matches tests/net/tls_smoke.c TOFU pin.
+Echoes PSL1 sealed datagrams on one connection (demo then optional UI packets).
+Matches tests/net/tls_smoke.c TOFU pin.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ def main() -> int:
     parser.add_argument("--save", type=Path,
                         help="Write the last sealed datagram to this path")
     parser.add_argument("--expect", type=Path,
-                        help="Require received sealed bytes to match this file")
+                        help="Require the first sealed datagram to match this file")
     parser.add_argument("--cert", type=Path, default=CERT)
     parser.add_argument("--key", type=Path, default=KEY)
     args = parser.parse_args()
@@ -61,21 +62,28 @@ def main() -> int:
             continue
         try:
             with ctx.wrap_socket(conn, server_side=True) as tls:
-                data = tls.recv(512)
-                if not data:
-                    continue
-                if not data.startswith(PSL1_MAGIC):
-                    print(f"tls_stub: ignored non-PSL1 payload from {addr}", flush=True)
-                    continue
-                if expected is not None and data != expected:
-                    print(f"tls_stub: sealed mismatch from {addr}", flush=True)
-                    continue
-                tls.sendall(data)
-                last = data
-                if args.save is not None:
-                    args.save.write_bytes(last)
-                answered += 1
-                print(f"tls_stub: echoed sealed {len(data)} bytes for {addr}", flush=True)
+                tls.settimeout(1.0)
+                while args.count == 0 or answered < args.count:
+                    try:
+                        data = tls.recv(512)
+                    except socket.timeout:
+                        continue
+                    if not data:
+                        break
+                    if not data.startswith(PSL1_MAGIC):
+                        print(f"tls_stub: ignored non-PSL1 payload from {addr}", flush=True)
+                        continue
+                    # Strict match only for the first sealed datagram (fixed demo).
+                    if answered == 0 and expected is not None and data != expected:
+                        print(f"tls_stub: sealed mismatch from {addr}", flush=True)
+                        continue
+                    tls.sendall(data)
+                    last = data
+                    # Preserve the first (demo) datagram for test-net byte checks.
+                    if args.save is not None and answered == 0:
+                        args.save.write_bytes(last)
+                    answered += 1
+                    print(f"tls_stub: echoed sealed {len(data)} bytes for {addr}", flush=True)
         except ssl.SSLError as error:
             print(f"tls_stub: ssl error from {addr}: {error}", flush=True)
         finally:

@@ -4,11 +4,13 @@
  *
  * Guest TLS 1.2 ECDHE-ECDSA smoke with a pinned self-signed cert (TOFU demo):
  * connect to 10.0.2.2:1239, verify the leaf SHA-256 pin, send the fixed PSL1
- * sealed demo datagram, require echo, print TLS OK / TLS SEAL OK.
+ * sealed demo datagram, require echo, print TLS OK / TLS SEAL OK, then keep the
+ * session open so Messages can queue UI sealed datagrams (MSG TLS TX).
  */
 
 #include <stdbool.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <string.h>
 #include <os/sddf.h>
 
@@ -31,6 +33,7 @@
 
 #define TLS_RX_CAP 4096
 #define TLS_HEAP_BYTES (128 * 1024)
+#define TLS_PENDING_MAX MESSAGES_NET_TX_MAX
 
 static unsigned char tls_heap[TLS_HEAP_BYTES];
 static unsigned char tls_rx[TLS_RX_CAP];
@@ -48,6 +51,34 @@ static bool tls_done;
 static bool tls_mbedtls_ready;
 static bool tls_handshaken;
 static bool tls_sent;
+static bool tls_seal_ok;
+
+static uint8_t tls_pending[TLS_PENDING_MAX];
+static size_t tls_pending_len;
+static bool tls_pending_active;
+static bool tls_pending_written;
+
+static uint8_t tls_deferred[TLS_PENDING_MAX];
+static size_t tls_deferred_len;
+static bool tls_deferred_active;
+
+static void tls_activate_pending(const uint8_t *data, size_t len)
+{
+    memcpy(tls_pending, data, len);
+    tls_pending_len = len;
+    tls_pending_active = true;
+    tls_pending_written = false;
+}
+
+static void tls_promote_deferred(void)
+{
+    if (!tls_deferred_active || tls_pending_active || !tls_seal_ok) {
+        return;
+    }
+    tls_activate_pending(tls_deferred, tls_deferred_len);
+    tls_deferred_active = false;
+    tls_deferred_len = 0;
+}
 
 int mbedtls_hardware_poll(void *data, unsigned char *output, size_t len, size_t *olen)
 {
@@ -181,6 +212,43 @@ static int tls_bio_recv(void *ctx, unsigned char *buf, size_t len)
     return (int)len;
 }
 
+static void tls_drive_pending(void)
+{
+    int ret;
+
+    if (!tls_pending_active) {
+        return;
+    }
+
+    if (!tls_pending_written) {
+        ret = mbedtls_ssl_write(&ssl, tls_pending, tls_pending_len);
+        if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
+            return;
+        }
+        if (ret < 0) {
+            sddf_dprintf("TLS|LOG: UI sealed write failed: -0x%04x\n", (unsigned)-ret);
+            tls_pending_active = false;
+            return;
+        }
+        tls_pending_written = true;
+    }
+
+    unsigned char got[TLS_PENDING_MAX];
+    ret = mbedtls_ssl_read(&ssl, got, tls_pending_len);
+    if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
+        return;
+    }
+    if (ret == (int)tls_pending_len
+        && memcmp(got, tls_pending, tls_pending_len) == 0) {
+        sddf_printf("MSG TLS TX\n");
+    } else {
+        sddf_dprintf("TLS|LOG: bad UI sealed echo (%d)\n", ret);
+    }
+    tls_pending_active = false;
+    tls_pending_written = false;
+    tls_pending_len = 0;
+}
+
 static void tls_drive(void)
 {
     int ret;
@@ -193,7 +261,7 @@ static void tls_drive(void)
         if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
             return;
         }
-        sddf_dprintf("TLS|LOG: handshake failed: -0x%04x\n", (unsigned)-ret);
+        sddf_printf("TLS|LOG: handshake failed: -0x%04x\n", (unsigned)-ret);
         tls_done = true;
         return;
     }
@@ -203,31 +271,66 @@ static void tls_drive(void)
         sddf_printf("TLS OK\n");
     }
 
-    if (!tls_sent) {
-        ret = mbedtls_ssl_write(&ssl, PSL1_DEMO_PACKET, PSL1_DEMO_PACKET_LEN);
+    if (!tls_seal_ok) {
+        if (!tls_sent) {
+            ret = mbedtls_ssl_write(&ssl, PSL1_DEMO_PACKET, PSL1_DEMO_PACKET_LEN);
+            if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
+                return;
+            }
+            if (ret < 0) {
+                sddf_dprintf("TLS|LOG: sealed write failed: -0x%04x\n", (unsigned)-ret);
+                tls_done = true;
+                return;
+            }
+            tls_sent = true;
+        }
+
+        unsigned char got[PSL1_DEMO_PACKET_LEN];
+        ret = mbedtls_ssl_read(&ssl, got, PSL1_DEMO_PACKET_LEN);
         if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
             return;
         }
-        if (ret < 0) {
-            sddf_dprintf("TLS|LOG: sealed write failed: -0x%04x\n", (unsigned)-ret);
+        if (ret == (int)PSL1_DEMO_PACKET_LEN
+            && memcmp(got, PSL1_DEMO_PACKET, PSL1_DEMO_PACKET_LEN) == 0) {
+            sddf_printf("TLS SEAL OK\n");
+            tls_seal_ok = true;
+            tls_promote_deferred();
+        } else {
+            sddf_dprintf("TLS|LOG: bad sealed echo (%d)\n", ret);
             tls_done = true;
             return;
         }
-        tls_sent = true;
     }
 
-    unsigned char got[PSL1_DEMO_PACKET_LEN];
-    ret = mbedtls_ssl_read(&ssl, got, PSL1_DEMO_PACKET_LEN);
-    if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
-        return;
+    tls_drive_pending();
+}
+
+bool tls_session_ready(void)
+{
+    return tls_seal_ok && tls_pcb != NULL && !tls_done;
+}
+
+int tls_queue_sealed(const uint8_t *data, size_t len)
+{
+    if (tls_done || data == NULL || len == 0 || len > TLS_PENDING_MAX) {
+        return -1;
     }
-    if (ret == (int)PSL1_DEMO_PACKET_LEN
-        && memcmp(got, PSL1_DEMO_PACKET, PSL1_DEMO_PACKET_LEN) == 0) {
-        sddf_printf("TLS SEAL OK\n");
-    } else {
-        sddf_dprintf("TLS|LOG: bad sealed echo (%d)\n", ret);
+    if (tls_session_ready()) {
+        if (tls_pending_active) {
+            return -1;
+        }
+        tls_activate_pending(data, len);
+        tls_drive();
+        return 0;
     }
-    tls_done = true;
+    /* Isolation can fire UI TX before the TLS demo seal finishes — defer once. */
+    if (tls_deferred_active || tls_pending_active) {
+        return -1;
+    }
+    memcpy(tls_deferred, data, len);
+    tls_deferred_len = len;
+    tls_deferred_active = true;
+    return 0;
 }
 
 static err_t tls_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
@@ -251,20 +354,31 @@ static err_t tls_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
 static void tls_err(void *arg, err_t err)
 {
     (void)arg;
-    sddf_dprintf("TLS|LOG: tcp err %d\n", (int)err);
+    sddf_printf("TLS|LOG: tcp err %d\n", (int)err);
     tls_pcb = NULL;
     tls_done = true;
+    tls_pending_active = false;
+}
+
+static err_t tls_on_sent(void *arg, struct tcp_pcb *pcb, u16_t len)
+{
+    (void)arg;
+    (void)pcb;
+    (void)len;
+    tls_drive();
+    return ERR_OK;
 }
 
 static err_t tls_connected(void *arg, struct tcp_pcb *pcb, err_t err)
 {
     (void)arg;
     if (err != ERR_OK) {
-        sddf_dprintf("TLS|LOG: connect failed %d\n", (int)err);
+        sddf_printf("TLS|LOG: connect failed %d\n", (int)err);
         tls_done = true;
         return err;
     }
     tcp_recv(pcb, tls_recv);
+    tcp_sent(pcb, tls_on_sent);
     mbedtls_ssl_set_bio(&ssl, pcb, tls_bio_send, tls_bio_recv, NULL);
     tls_drive();
     return ERR_OK;
@@ -314,14 +428,14 @@ void start_tls_smoke(void)
     tls_started = true;
 
     if (tls_setup_mbedtls() != 0) {
-        sddf_dprintf("TLS|LOG: mbedtls setup failed\n");
+        sddf_printf("TLS|LOG: mbedtls setup failed\n");
         tls_done = true;
         return;
     }
 
     tls_pcb = tcp_new_ip_type(IPADDR_TYPE_V4);
     if (tls_pcb == NULL) {
-        sddf_dprintf("TLS|LOG: tcp_new failed\n");
+        sddf_printf("TLS|LOG: tcp_new failed\n");
         tls_done = true;
         return;
     }
@@ -330,7 +444,7 @@ void start_tls_smoke(void)
     IP_ADDR4(&dest, 10, 0, 2, 2);
     err_t err = tcp_connect(tls_pcb, &dest, TLS_SMOKE_PORT, tls_connected);
     if (err != ERR_OK) {
-        sddf_dprintf("TLS|LOG: tcp_connect failed %d\n", (int)err);
+        sddf_printf("TLS|LOG: tcp_connect failed %d\n", (int)err);
         tls_done = true;
     }
 }

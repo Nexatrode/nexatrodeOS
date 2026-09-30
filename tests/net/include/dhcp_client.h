@@ -5,6 +5,9 @@
 
 #pragma once
 
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <os/sddf.h>
 
 #define UDP_ECHO_PORT 1235
@@ -21,7 +24,12 @@
 #define REQUEST_NET_TX 0x413
 #define REPLY_NET_TX_OK 0x414
 
+/* messages_net_tx.reserved: also send the datagram over the open TLS session. */
+#define MESSAGES_NET_TX_TLS 0x1u
+
 int setup_udp_socket(void);
 int setup_tcp_socket(void);
 void start_dns_smoke(void);
 void start_tls_smoke(void);
+bool tls_session_ready(void);
+int tls_queue_sealed(const uint8_t *data, size_t len);

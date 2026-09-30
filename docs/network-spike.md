@@ -34,6 +34,9 @@ Default / UTM images stay offline. The net merge injects:
   dhcp_client, which `udp_sendto`s that peer and prints `MSG NET TX`. Offline
   builds reply `REPLY_NO_NET` when magic `NET1` is absent. Dual-UTM can retarget
   the peer IP/port on the shared page without rebuilding dhcp_client.
+- Client `SEND_UI_SEALED` / live compose: same UDP path, plus
+  `reserved |= TX_FLAG_TLS` so dhcp_client also queues the sealed datagram on the
+  open TLS session (`MSG TLS TX` after echo).
 
 ## PSL1 sealed UDP smoke (non-production)
 
@@ -69,10 +72,13 @@ the guest embeds the demo leaf DER and its SHA-256
 certs under [`tests/net/certs/`](../tests/net/certs/)). After DHCP the guest
 connects to `10.0.2.2:1239`, verifies the pin (`TLS OK`), sends the fixed
 PSL1 sealed demo datagram over that session, requires an echo, and prints
-`TLS SEAL OK`. Host helper: [`tls_stub.py`](../tests/net/tls_stub.py) loads the
-demo cert/key. Entropy for the smoke is a deterministic hardware-poll stub;
-validity-window checks are cleared in the verify callback (no guest wall clock)
-— not a production RNG/PKI story.
+`TLS SEAL OK`. The session stays open so Messages UI sealed TX can reuse it
+(`MSG TLS TX`). Fragment-only guest B skips TLS (no `messages_net_tx`) so the
+host stub is free for the merged guest. Host helper:
+[`tls_stub.py`](../tests/net/tls_stub.py) loads the demo cert/key and echoes
+multiple sealed datagrams on one connection. Entropy for the smoke is a
+deterministic hardware-poll stub; validity-window checks are cleared in the
+verify callback (no guest wall clock) — not a production RNG/PKI story.
 
 ## Toy LAN router
 
@@ -123,17 +129,18 @@ guest A can address guest B directly.
   Fall back to QEMU + `toy_router`; do not block U5 apps on this experiment.
 
 The sealed TX peer IP/port is already on the shared `messages_net_tx` page
-(demo default `10.0.2.2:1237`). Guest TLS carries the PSL1 demo over a pinned-cert
-session (`TLS SEAL OK`); Messages UI over TLS remains later. Messages UI compose
-already hands sealed packets to `dhcp_client` over UDP when the net page is
-ready (`SEND_UI_SEALED` / live compose).
+(demo default `10.0.2.2:1237`). Guest TLS carries the fixed PSL1 demo
+(`TLS SEAL OK`) and Messages UI sealed packets (`MSG TLS TX`) on the same
+pinned-cert session. Messages UI compose also still hands sealed packets to
+`dhcp_client` over UDP when the net page is ready (`SEND_UI_SEALED` / live
+compose).
 
 ## What passed
 
 - Standalone: both echo clients DHCP + UDP echo through SLIRP.
 - Integrated: isolation, DHCP, `DNS OK`, `TLS OK`, `TLS SEAL OK` (TOFU-pinned
   ECDHE-ECDSA), Messages
-  `MSG NET TX` (demo + UI compose seal), toy router → guest B `SEAL OK`, host UDP echo on 1235, host TCP
+  `MSG NET TX` (demo + UI compose seal) + `MSG TLS TX` (UI over TLS), toy router → guest B `SEAL OK`, host UDP echo on 1235, host TCP
   echo on 1238, guest A `SEAL OK` on 1236.
 
 ## Limits
@@ -147,6 +154,6 @@ ready (`SEND_UI_SEALED` / live compose).
 ## Next
 
 1. Run the dual-UTM Shared Network experiment when convenient; record results here.
-2. Messages UI sending sealed traffic over TLS (UDP UI TX + cert TOFU smoke are done).
-3. Fake modem / audio / camera backends as needed.
-4. Optional Messages UI / IPC to set peer IP without a rebuild (page fields already exist).
+2. Fake modem / audio / camera backends as needed.
+3. Optional Messages UI / IPC to set peer IP without a rebuild (page fields already exist).
+4. Production TLS/PKI (real entropy, clock, pin UX) when leaving smoke territory.

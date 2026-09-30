@@ -54,7 +54,11 @@ void netif_status_callback(char *ip_addr)
     sddf_printf("DHCP request finished, IP address for netif %s is: %s\n",
                 sddf_get_pd_name(), ip_addr);
     start_dns_smoke();
-    start_tls_smoke();
+    /* Fragment-only guest B has no messages_net_tx; skip TLS so the host stub
+     * stays free for the merged Personal OS guest. */
+    if (messages_net_tx != 0) {
+        start_tls_smoke();
+    }
     if (pending_messages_tx && send_messages_datagram() == 0) {
         pending_messages_tx = false;
     }
@@ -104,6 +108,14 @@ static int send_messages_datagram(void)
         return -1;
     }
     sddf_printf("MSG NET TX\n");
+
+    if ((page->reserved & MESSAGES_NET_TX_TLS) != 0) {
+        uint8_t copy[MESSAGES_NET_TX_MAX];
+        memcpy(copy, (const void *)page->payload, length);
+        if (tls_queue_sealed(copy, length) != 0) {
+            sddf_dprintf("DHCP_CLIENT|LOG: TLS sealed queue failed\n");
+        }
+    }
     return 0;
 }
 
