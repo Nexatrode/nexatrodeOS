@@ -63,10 +63,11 @@ and does not use the public Internet.
 
 Pinned Mbed TLS **3.6.2** (see `toolchain.lock.json`) builds into the net
 fragment as a TLS 1.2 **PSK** client (`PSK-AES128-CCM8`). After DHCP the guest
-connects to `10.0.2.2:1239`, completes the handshake with a fixed demo PSK
-(identity `personal-os`), echoes `PERSONAL-OS-TLS`, and prints `TLS OK`. Host
-helper: [`tls_stub.py`](../tests/net/tls_stub.py). Entropy for the smoke is a
-deterministic hardware-poll stub — not a production RNG/cert story.
+connects to `10.0.2.2:1239`, completes the handshake (`TLS OK`), sends the fixed
+PSL1 sealed demo datagram over that session, requires an echo, and prints
+`TLS SEAL OK`. Host helper: [`tls_stub.py`](../tests/net/tls_stub.py) (verifies
+bytes against the demo packet). Entropy for the smoke is a deterministic
+hardware-poll stub — not a production RNG/cert story.
 
 ## Toy LAN router
 
@@ -117,15 +118,15 @@ guest A can address guest B directly.
   Fall back to QEMU + `toy_router`; do not block U5 apps on this experiment.
 
 The sealed TX peer IP/port is already on the shared `messages_net_tx` page
-(demo default `10.0.2.2:1237`). Guest TLS 1.2 PSK smoke exists; certificate-based
-TLS / Messages-over-TLS remain later.
+(demo default `10.0.2.2:1237`). Guest TLS can carry the PSL1 demo (`TLS SEAL OK`);
+certificate/TOFU TLS and Messages UI over TLS remain later.
 
 ## What passed
 
 - Standalone: both echo clients DHCP + UDP echo through SLIRP.
-- Integrated: isolation, DHCP, `DNS OK`, `TLS OK`, Messages `MSG NET TX`, toy
-  router → guest B `SEAL OK`, host UDP echo on 1235, host TCP echo on 1238,
-  guest A `SEAL OK` on 1236.
+- Integrated: isolation, DHCP, `DNS OK`, `TLS OK`, `TLS SEAL OK`, Messages
+  `MSG NET TX`, toy router → guest B `SEAL OK`, host UDP echo on 1235, host TCP
+  echo on 1238, guest A `SEAL OK` on 1236.
 
 ## Limits
 
@@ -138,6 +139,6 @@ TLS / Messages-over-TLS remain later.
 ## Next
 
 1. Run the dual-UTM Shared Network experiment when convenient; record results here.
-2. Certificate / TOFU TLS and Messages sealed traffic over TLS.
+2. Certificate / TOFU TLS; Messages UI sending sealed traffic over TLS (not only the fixed demo).
 3. Fake modem / audio / camera backends as needed.
 4. Optional Messages UI / IPC to set peer IP without a rebuild (page fields already exist).

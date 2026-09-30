@@ -2,7 +2,8 @@
  * Copyright 2026, Personal OS contributors
  * SPDX-License-Identifier: BSD-2-Clause
  *
- * Guest TLS 1.2 PSK smoke: connect to 10.0.2.2:1239, echo PERSONAL-OS-TLS, print TLS OK.
+ * Guest TLS 1.2 PSK smoke: connect to 10.0.2.2:1239, send the fixed PSL1
+ * sealed demo datagram, require echo, print TLS OK / TLS SEAL OK.
  */
 
 #include <stdbool.h>
@@ -22,11 +23,11 @@
 
 #include <sddf/util/printf.h>
 #include "dhcp_client.h"
+#include "psl1_demo_packet.h"
 
 #define TLS_RX_CAP 2048
 #define TLS_HEAP_BYTES (48 * 1024)
 
-static const char TLS_PAYLOAD[] = "PERSONAL-OS-TLS";
 static const char TLS_PSK_ID[] = "personal-os";
 /* Demo only — not a production secret. */
 static const unsigned char TLS_PSK[16] = {
@@ -47,6 +48,7 @@ static struct tcp_pcb *tls_pcb;
 static bool tls_started;
 static bool tls_done;
 static bool tls_mbedtls_ready;
+static bool tls_handshaken;
 static bool tls_sent;
 
 int mbedtls_hardware_poll(void *data, unsigned char *output, size_t len, size_t *olen)
@@ -179,30 +181,34 @@ static void tls_drive(void)
         return;
     }
 
+    if (!tls_handshaken) {
+        tls_handshaken = true;
+        sddf_printf("TLS OK\n");
+    }
+
     if (!tls_sent) {
-        ret = mbedtls_ssl_write(&ssl, (const unsigned char *)TLS_PAYLOAD,
-                                sizeof(TLS_PAYLOAD) - 1);
+        ret = mbedtls_ssl_write(&ssl, PSL1_DEMO_PACKET, PSL1_DEMO_PACKET_LEN);
         if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
             return;
         }
         if (ret < 0) {
-            sddf_dprintf("TLS|LOG: write failed: -0x%04x\n", (unsigned)-ret);
+            sddf_dprintf("TLS|LOG: sealed write failed: -0x%04x\n", (unsigned)-ret);
             tls_done = true;
             return;
         }
         tls_sent = true;
     }
 
-    unsigned char got[sizeof(TLS_PAYLOAD)];
-    ret = mbedtls_ssl_read(&ssl, got, sizeof(TLS_PAYLOAD) - 1);
+    unsigned char got[PSL1_DEMO_PACKET_LEN];
+    ret = mbedtls_ssl_read(&ssl, got, PSL1_DEMO_PACKET_LEN);
     if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
         return;
     }
-    if (ret == sizeof(TLS_PAYLOAD) - 1
-        && memcmp(got, TLS_PAYLOAD, sizeof(TLS_PAYLOAD) - 1) == 0) {
-        sddf_printf("TLS OK\n");
+    if (ret == (int)PSL1_DEMO_PACKET_LEN
+        && memcmp(got, PSL1_DEMO_PACKET, PSL1_DEMO_PACKET_LEN) == 0) {
+        sddf_printf("TLS SEAL OK\n");
     } else {
-        sddf_dprintf("TLS|LOG: bad echo (%d)\n", ret);
+        sddf_dprintf("TLS|LOG: bad sealed echo (%d)\n", ret);
     }
     tls_done = true;
 }

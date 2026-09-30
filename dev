@@ -1157,7 +1157,8 @@ def integrated_net_test(timeout, python, env):
     guest_b_serial = net_build / "guest-b-serial.log"
     guest_b_qemu = net_build / "guest-b-qemu.stderr"
     router_save = net_build / "toy-router-datagram.bin"
-    for path in (serial_log, qemu_log, guest_b_serial, guest_b_qemu, router_save):
+    tls_seal_save = net_build / "tls-seal-datagram.bin"
+    for path in (serial_log, qemu_log, guest_b_serial, guest_b_qemu, router_save, tls_seal_save):
         path.unlink(missing_ok=True)
 
     expected_sealed = subprocess.check_output(
@@ -1175,6 +1176,8 @@ def integrated_net_test(timeout, python, env):
         [
             tool("python3"), ROOT / "tests" / "net" / "tls_stub.py",
             "--listen", "1239", "--count", "0",
+            "--expect", str(ROOT / "tests" / "net" / "psl1_demo_packet.bin"),
+            "--save", str(tls_seal_save),
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -1231,6 +1234,7 @@ def integrated_net_test(timeout, python, env):
     msg_tx_marker = "MSG NET TX"
     dns_marker = "DNS OK"
     tls_marker = "TLS OK"
+    tls_seal_marker = "TLS SEAL OK"
     forbidden = ("faulting PD:", "Failed assertion", "MON|ERROR", "Kernel panic", "FAIL:")
     try:
         with guest_b_qemu.open("wb") as errors:
@@ -1303,6 +1307,29 @@ def integrated_net_test(timeout, python, env):
             else:
                 raise RuntimeError(
                     f"Integrated network guest missed {tls_marker}; inspect {serial_log}"
+                )
+
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    raise RuntimeError(
+                        f"Integrated network QEMU exited before TLS seal; inspect {qemu_log}"
+                    )
+                trace = serial_log.read_text(errors="replace") if serial_log.exists() else ""
+                if any(marker in trace for marker in forbidden):
+                    raise RuntimeError(
+                        f"Integrated network guest faulted waiting for TLS seal; "
+                        f"inspect {serial_log}"
+                    )
+                if tls_seal_marker in trace and tls_seal_save.exists():
+                    break
+                time.sleep(0.05)
+            else:
+                raise RuntimeError(
+                    f"Integrated network guest missed {tls_seal_marker}; inspect {serial_log}"
+                )
+            if tls_seal_save.read_bytes() != expected_sealed:
+                raise RuntimeError(
+                    f"TLS sealed datagram mismatch; inspect {tls_seal_save} and {serial_log}"
                 )
 
             while time.monotonic() < deadline:
@@ -1440,6 +1467,7 @@ def integrated_net_test(timeout, python, env):
             or any(marker not in trace for marker in dhcp_markers)
             or dns_marker not in trace
             or tls_marker not in trace
+            or tls_seal_marker not in trace
             or seal_marker not in trace
             or msg_tx_marker not in trace
             or seal_marker not in trace_b):
@@ -1448,8 +1476,9 @@ def integrated_net_test(timeout, python, env):
         )
     print(
         f"Integrated VirtIO network: PASS; Personal OS isolation completed with "
-        f"dhcp_client DHCP, DNS OK, TLS OK, Messages sealed TX, toy router → guest B SEAL OK, "
-        f"UDP echo, TCP echo, and guest A SEAL OK; serial saved to {serial_log}"
+        f"dhcp_client DHCP, DNS OK, TLS OK, TLS SEAL OK, Messages sealed TX, "
+        f"toy router → guest B SEAL OK, UDP echo, TCP echo, and guest A SEAL OK; "
+        f"serial saved to {serial_log}"
     )
 
 
