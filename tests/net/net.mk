@@ -52,12 +52,14 @@ CFLAGS += -Wno-tautological-constant-out-of-range-compare
 LDFLAGS := -L$(BOARD_DIR)/lib
 LIBS := --start-group -lmicrokit -Tmicrokit.ld libsddf_util_debug.a --end-group
 
-DHCP_OBJS := dhcp_client.o udp_echo_socket.o tcp_echo_socket.o dns_smoke.o
+DHCP_OBJS := dhcp_client.o udp_echo_socket.o tcp_echo_socket.o dns_smoke.o tls_smoke.o
 DEPS := $(DHCP_OBJS:.o=.d)
 
 all: $(SYSTEM_FILE)
 
-dhcp_client.elf: $(DHCP_OBJS) libsddf_util_debug.a lib_sddf_lwip.a
+include $(NET_SRC)/mbedtls.mk
+
+dhcp_client.elf: $(DHCP_OBJS) libsddf_util_debug.a lib_sddf_lwip.a libmbedtls_psk.a
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 ${IMAGES}: libsddf_util_debug.a

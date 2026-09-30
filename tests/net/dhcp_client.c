@@ -54,6 +54,7 @@ void netif_status_callback(char *ip_addr)
     sddf_printf("DHCP request finished, IP address for netif %s is: %s\n",
                 sddf_get_pd_name(), ip_addr);
     start_dns_smoke();
+    start_tls_smoke();
     if (pending_messages_tx && send_messages_datagram() == 0) {
         pending_messages_tx = false;
     }

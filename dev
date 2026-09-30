@@ -29,6 +29,7 @@ SDK = CACHE / ("microkit-sdk-" + LOCK["microkit"]["version"])
 SDDF_PINNED = CACHE / "sddf"
 SDDF = CACHE / "sddf-personal-os"
 SDDF_VENV = CACHE / "sddf-venv"
+MBEDTLS = CACHE / ("mbedtls-" + LOCK["mbedtls"]["version"])
 STORAGE_BUILD = BUILD / "storage-test"
 PERSISTENT_DISK = BUILD / "personal-os-disk.img"
 TEST_DISK = BUILD / "test-disk.img"
@@ -252,6 +253,39 @@ def setup_sddf():
     if installed != spec["sdfgen"]:
         run([python, "-m", "pip", "install", f"sdfgen=={spec['sdfgen']}"])
     return python
+
+
+def setup_mbedtls():
+    """Fetch the pinned Mbed TLS tree used by the net-fragment TLS smoke."""
+    spec = LOCK["mbedtls"]
+    marker = MBEDTLS / ".verified-archive-sha256"
+    if MBEDTLS.exists() and marker.exists() and marker.read_text().strip() == spec["sha256"]:
+        return MBEDTLS
+    if MBEDTLS.exists():
+        raise RuntimeError(
+            f"Unverified Mbed TLS directory exists at {MBEDTLS}; move it aside and retry"
+        )
+    CACHE.mkdir(exist_ok=True)
+    archive = CACHE / spec["archive"]
+    if not archive.exists():
+        partial = Path(str(archive) + ".download")
+        print("Downloading pinned Mbed TLS (about 5 MiB)...", flush=True)
+        run(["curl", "--fail", "--location", "--retry", "3", "--output", partial, spec["url"]])
+        if sha256(partial) != spec["sha256"]:
+            raise RuntimeError(f"Mbed TLS archive checksum mismatch: {partial}")
+        partial.replace(archive)
+    if sha256(archive) != spec["sha256"]:
+        raise RuntimeError(f"Mbed TLS archive checksum mismatch: remove {archive} and retry")
+    root = f"mbedtls-{spec['version']}"
+    with tempfile.TemporaryDirectory(dir=CACHE) as temporary:
+        with tarfile.open(archive) as bundle:
+            bundle.extractall(temporary, filter="data")
+        extracted = Path(temporary) / root
+        if not extracted.exists():
+            raise RuntimeError(f"Mbed TLS archive missing {root}")
+        shutil.move(str(extracted), MBEDTLS)
+    marker.write_text(spec["sha256"] + "\n")
+    return MBEDTLS
 
 
 def prepare_sddf_overlay():
@@ -1082,6 +1116,7 @@ def net_test(timeout):
 def integrated_net_test(timeout, python, env):
     """Merge the serial-free dhcp_client fragment into Personal OS and re-check DHCP."""
     build()
+    mbedtls_dir = setup_mbedtls()
     net_build = BUILD / "sddf-net-spike"
     fragment_build = net_build / "fragment"
     if fragment_build.exists():
@@ -1091,6 +1126,7 @@ def integrated_net_test(timeout, python, env):
         f"MICROKIT_SDK={SDK}", f"MICROKIT_BOARD={LOCK['board']}",
         f"MICROKIT_CONFIG={LOCK['configuration']}", f"SDDF={SDDF}",
         f"PYTHON={python}", f"BUILD_DIR={fragment_build}",
+        f"MBEDTLS_DIR={mbedtls_dir}",
         str(fragment_build / "loader.img"),
     ], cwd=ROOT, env=env)
 
@@ -1131,6 +1167,14 @@ def integrated_net_test(timeout, python, env):
         [
             tool("python3"), ROOT / "tests" / "net" / "dns_stub.py",
             "--listen", "53535", "--count", "0",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    tls_stub = subprocess.Popen(
+        [
+            tool("python3"), ROOT / "tests" / "net" / "tls_stub.py",
+            "--listen", "1239", "--count", "0",
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -1186,6 +1230,7 @@ def integrated_net_test(timeout, python, env):
     seal_marker = "SEAL OK"
     msg_tx_marker = "MSG NET TX"
     dns_marker = "DNS OK"
+    tls_marker = "TLS OK"
     forbidden = ("faulting PD:", "Failed assertion", "MON|ERROR", "Kernel panic", "FAIL:")
     try:
         with guest_b_qemu.open("wb") as errors:
@@ -1240,6 +1285,24 @@ def integrated_net_test(timeout, python, env):
             else:
                 raise RuntimeError(
                     f"Integrated network guest missed {dns_marker}; inspect {serial_log}"
+                )
+
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    raise RuntimeError(
+                        f"Integrated network QEMU exited before TLS; inspect {qemu_log}"
+                    )
+                trace = serial_log.read_text(errors="replace") if serial_log.exists() else ""
+                if any(marker in trace for marker in forbidden):
+                    raise RuntimeError(
+                        f"Integrated network guest faulted waiting for TLS; inspect {serial_log}"
+                    )
+                if tls_marker in trace:
+                    break
+                time.sleep(0.05)
+            else:
+                raise RuntimeError(
+                    f"Integrated network guest missed {tls_marker}; inspect {serial_log}"
                 )
 
             while time.monotonic() < deadline:
@@ -1362,7 +1425,7 @@ def integrated_net_test(timeout, python, env):
                     f"Integrated network guest missed {seal_marker}; inspect {serial_log}"
                 )
     finally:
-        for proc in (process, guest_b, router, dns_stub):
+        for proc in (process, guest_b, router, dns_stub, tls_stub):
             if proc is not None and proc.poll() is None:
                 proc.terminate()
                 try:
@@ -1376,6 +1439,7 @@ def integrated_net_test(timeout, python, env):
     if (isolation_marker not in trace
             or any(marker not in trace for marker in dhcp_markers)
             or dns_marker not in trace
+            or tls_marker not in trace
             or seal_marker not in trace
             or msg_tx_marker not in trace
             or seal_marker not in trace_b):
@@ -1384,7 +1448,7 @@ def integrated_net_test(timeout, python, env):
         )
     print(
         f"Integrated VirtIO network: PASS; Personal OS isolation completed with "
-        f"dhcp_client DHCP, DNS OK, Messages sealed TX, toy router → guest B SEAL OK, "
+        f"dhcp_client DHCP, DNS OK, TLS OK, Messages sealed TX, toy router → guest B SEAL OK, "
         f"UDP echo, TCP echo, and guest A SEAL OK; serial saved to {serial_log}"
     )
 

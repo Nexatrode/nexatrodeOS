@@ -133,7 +133,7 @@ with either one.
 | `./dev test-storage` | Verify entropy delivery across QEMU boots, four scalar and four blob QMP write/flush resets, a full VM snapshot restore, and two cloned VM instances; check recovery from malformed encrypted slots |
 | `./dev test-graphics` | Verify the sDDF GPU sample renders exactly on QEMU `virt`, then merge it with the regular OS and rerun isolation checks |
 | `./dev test-input` | Test isolated app input routing, exact Notes/Contacts/Calculator/Clock/Calendar/Messages/Settings frames, calculator arithmetic by touch and keyboard, and Notes/Contacts/Calendar cold-boot persistence in QEMU |
-| `./dev test-net` | Standalone sDDF echo_server DHCP+UDP, then merge serial-free `tests/net` `dhcp_client` into Personal OS; require isolation complete, DHCP, DNS OK, UDP/TCP echo, Messages sealed TX, and toy-router guest B `SEAL OK` (default/UTM images stay offline) |
+| `./dev test-net` | Standalone sDDF echo_server DHCP+UDP, then merge serial-free `tests/net` `dhcp_client` into Personal OS; require isolation complete, DHCP, DNS OK, TLS OK, UDP/TCP echo, Messages sealed TX, and toy-router guest B `SEAL OK` (default/UTM images stay offline) |
 | `./dev utm-graphics` | Verify graphics and input, then create a separate experimental `dist/Personal OS Graphics.utm` bundle; pass `--profile <path>` to create a side-by-side profile |
 | `./dev backup-export --output vault.pvlt` | Export the latest authenticated records from the default CLI disk into a new archive |
 | `./dev backup-restore --archive vault.pvlt --output restored.img [--allow-rollback]` | Restore into a new copy of the default CLI disk; older authenticated generations require the explicit override |

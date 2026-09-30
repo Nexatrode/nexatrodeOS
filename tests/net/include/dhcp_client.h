@@ -12,6 +12,7 @@
 #define UDP_HOST_TX_PORT 1237
 #define TCP_ECHO_PORT 1238
 #define TCP_ECHO_MAX_CONNS 1
+#define TLS_SMOKE_PORT 1239
 
 #define MESSAGES_NET_CHANNEL 3
 #define MESSAGES_NET_TX_MAX 128
@@ -23,3 +24,4 @@
 int setup_udp_socket(void);
 int setup_tcp_socket(void);
 void start_dns_smoke(void);
+void start_tls_smoke(void);

@@ -12,6 +12,12 @@
     "sha256": "db86ff1c7d5aded52b4d7c5b25d3da117295c0a601af2cd3e0d393678a884614",
     "sdfgen": "0.35.0"
   },
+  "mbedtls": {
+    "version": "3.6.2",
+    "archive": "mbedtls-3.6.2.tar.bz2",
+    "url": "https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.2/mbedtls-3.6.2.tar.bz2",
+    "sha256": "8b54fb9bcf4d5a7078028e0520acddefb7900b3e66fec7f7175bb5b7d85ccdca"
+  },
   "tested_host": "macOS arm64",
   "tested_llvm": "23.1.2",
   "tested_qemu": "11.1.1",
