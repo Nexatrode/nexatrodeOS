@@ -217,7 +217,7 @@ Today the graphics profile is a **six-card home** (not a full phone springboard)
 | Clock | Done — read-only UTC date/time from the RTC service |
 | Calendar / reminders | Done — isolated UI + encrypted vault blob (title + optional MMDD/HHMM) |
 | Messages | Interactive peer-key shell with vaulted PMS2 sealed stubs (ns 4, blocks 8–9); on-wire peer delivery / toy router remain U6 |
-| Settings | Done as read-only stub — isolated UI, local-only copy; real options come later |
+| Settings | Done as read-only stub — isolated UI, local/vault/net/alerts status; real options come later |
 | Phone / dialer | Planned UI later; real calls need U6 fake modem then Pixel P4 |
 
 Home is `FocusTarget::None`: tap a card or use Tab / the top app bar. Escape returns
@@ -243,7 +243,8 @@ UTM stays offline. Dual-UTM Shared Network LAN is a manual sketch (see
 [network-spike.md](network-spike.md)); not part of `./dev test-net`.
 
 **Settings** is a seventh Clock-style workspace under the 2×3 grid: isolated PD,
-static “local only / no cloud yet” copy, no input endpoint and no vault.
+static local-only status (`LOCAL ONLY` / `VAULT LOCAL` / `NO NET YET` /
+`NO ALERTS YET`), no input endpoint and no vault.
 
 ### How we “port” apps on seL4
 

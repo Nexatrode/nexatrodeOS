@@ -26,7 +26,7 @@ UTM does **not** replace Pixel boot, GENI UART, Wi‑Fi, modem, or power.
    Settings).
 4. **Keyboard path:** Tab between workspaces; Calculator `8 + 2` → `10`.
 5. **Settings** shows local-only status (`LOCAL ONLY` / `VAULT LOCAL` /
-   `NO NET YET`).
+   `NO NET YET` / `NO ALERTS YET`).
 6. **Messages** compose → `SEALED N` locally (still offline in the UTM image).
 7. **Serial profile** remains separate: `./dev utm` / `dist/Personal OS.utm`
    for non-graphics work.
@@ -39,7 +39,7 @@ UTM does **not** replace Pixel boot, GENI UART, Wi‑Fi, modem, or power.
 - Cert/TOFU TLS and Messages UI over TLS
 - Fake modem / camera backends
 - Graphics + net in one image (`timer_driver` name clash)
-- Notifications
+- Real notification delivery (Settings currently shows `NO ALERTS YET`)
 
 ## Pixel handoff (when Cereal / backup ready)
 

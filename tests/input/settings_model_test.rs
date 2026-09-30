@@ -9,7 +9,7 @@ mod host_tests {
 
     #[test]
     fn stub_copy_is_stable_and_displayable() {
-        assert_eq!(SETTINGS_TEXT, b"LOCAL ONLY\nVAULT LOCAL\nNO NET YET");
+        assert_eq!(SETTINGS_TEXT, b"LOCAL ONLY\nVAULT LOCAL\nNO NET YET\nNO ALERTS YET");
         assert_eq!(SETTINGS_TEXT_LENGTH, SETTINGS_TEXT.len());
         assert!(SETTINGS_TEXT_LENGTH <= 128);
         assert!(

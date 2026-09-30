@@ -1782,7 +1782,7 @@ def verify_input_text_cold_boot(qemu_command, gpu_build, expected_pixels, timeou
                 tap_pixel(30, 24)
                 wait_for_saved_frame("none")
                 tap_pixel(150, 206)  # Open Settings stub from the launcher.
-                wait_for_saved_frame("settings", "LOCAL ONLY\nVAULT LOCAL\nNO NET YET")
+                wait_for_saved_frame("settings", "LOCAL ONLY\nVAULT LOCAL\nNO NET YET\nNO ALERTS YET")
                 qmp_execute(stream, "quit")
                 process.wait(timeout=5)
     finally:
@@ -1882,7 +1882,7 @@ def input_test(timeout):
         ("messages", "COMPOSE\n"),
         ("messages", "COMPOSE\nHI"),
         ("messages", "- KEY BE12CD34\n  SEALED 1"),
-        ("settings", "LOCAL ONLY\nVAULT LOCAL\nNO NET YET"),
+        ("settings", "LOCAL ONLY\nVAULT LOCAL\nNO NET YET\nNO ALERTS YET"),
     ]
     for focus, app_text in frame_cases:
         label = app_text.replace("\n", "-") or "empty"
@@ -2453,7 +2453,7 @@ def input_test(timeout):
                 qmp_execute(stream, "send-key", {
                     "keys": [{"type": "qcode", "data": "tab"}], "hold-time": 150,
                 })
-                wait_for_frame("settings", "LOCAL ONLY\nVAULT LOCAL\nNO NET YET")
+                wait_for_frame("settings", "LOCAL ONLY\nVAULT LOCAL\nNO NET YET\nNO ALERTS YET")
                 qmp_execute(stream, "send-key", {
                     "keys": [{"type": "qcode", "data": "tab"}], "hold-time": 150,
                 })
@@ -2612,7 +2612,7 @@ def input_test(timeout):
                 tap_pixel(30, 24)
                 wait_for_frame("none")
                 tap_pixel(150, 206)  # Open Settings from the launcher.
-                wait_for_frame("settings", "LOCAL ONLY\nVAULT LOCAL\nNO NET YET")
+                wait_for_frame("settings", "LOCAL ONLY\nVAULT LOCAL\nNO NET YET\nNO ALERTS YET")
 
                 converter = shutil.which("magick") or tool("convert")
                 # Frame waits use their own deadlines; refresh for serial marker collection.
@@ -2672,7 +2672,7 @@ def input_test(timeout):
                         ("messages", "COMPOSE\n"),
                         ("messages", "COMPOSE\nHI"),
                         ("messages", "- KEY BE12CD34\n  SEALED 1"),
-                        ("settings", "LOCAL ONLY\nVAULT LOCAL\nNO NET YET"),
+                        ("settings", "LOCAL ONLY\nVAULT LOCAL\nNO NET YET\nNO ALERTS YET"),
                     }
                     expected_frames.update(multi_note_frame_keys)
                     if received == expected_events and rendered == expected_frames:
@@ -2732,7 +2732,7 @@ def input_test(timeout):
         ("messages", "COMPOSE\n"),
         ("messages", "COMPOSE\nHI"),
         ("messages", "- KEY BE12CD34\n  SEALED 1"),
-        ("settings", "LOCAL ONLY\nVAULT LOCAL\nNO NET YET"),
+        ("settings", "LOCAL ONLY\nVAULT LOCAL\nNO NET YET\nNO ALERTS YET"),
     }
     expected_frames.update(multi_note_frame_keys)
     if received != expected_events or rendered != expected_frames:
