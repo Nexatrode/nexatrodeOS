@@ -211,6 +211,13 @@ impl InputService {
             }
         }
 
+        // Keep ABS samples in-router for the guest cursor. Forwarding every
+        // move into the focused app burns a protected call per sample on a
+        // small ring and drops pointer updates under UTM tablet flood.
+        if event.device == DEVICE_TABLET && event.event_type == EVENT_ABS {
+            return;
+        }
+
         let target = self.key_owners.target_for_event(event, self.focus);
         self.dispatch_event(target, event);
     }
@@ -378,6 +385,6 @@ const fn screen_name(focus: FocusTarget) -> &'static str {
 }
 
 const _: () = assert!(core::mem::size_of::<UnsafeCell<input_protocol::EventRecord>>() == 12);
-const _: () = assert!(core::mem::size_of::<EventRing>() == 400);
+const _: () = assert!(core::mem::size_of::<EventRing>() == 1552);
 const _: () = assert!(core::mem::align_of::<EventRing>() == 4);
 const _: () = assert!(BTN_LEFT == 272 && DEVICE_TABLET == 1 && EVENT_ABS == 3);

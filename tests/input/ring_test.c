@@ -39,7 +39,7 @@ int main(void)
         assert(input_ring_try_push(&ring, event));
     }
     assert(!input_ring_try_push(&ring, (struct input_event_record){0}));
-    assert(__atomic_load_n(&ring.head, __ATOMIC_ACQUIRE) == 48);
+    assert(__atomic_load_n(&ring.head, __ATOMIC_ACQUIRE) == INPUT_EVENT_CAPACITY + 16);
     assert(__atomic_load_n(&ring.dropped, __ATOMIC_ACQUIRE) == 2);
     assert(ring.events[15].code == 0);
     assert(ring.events[15].value == 15);
@@ -53,7 +53,7 @@ int main(void)
     assert(__atomic_load_n(&ring.head, __ATOMIC_ACQUIRE) == 0);
     assert((uint32_t)(__atomic_load_n(&ring.head, __ATOMIC_ACQUIRE) -
                       __atomic_load_n(&ring.tail, __ATOMIC_ACQUIRE)) == 2);
-    assert(ring.events[30].value == 11);
-    assert(ring.events[31].value == 12);
+    assert(ring.events[INPUT_EVENT_CAPACITY - 2].value == 11);
+    assert(ring.events[INPUT_EVENT_CAPACITY - 1].value == 12);
     return 0;
 }
