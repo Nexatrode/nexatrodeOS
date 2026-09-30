@@ -41,7 +41,8 @@ UTM does **not** replace Pixel boot, GENI UART, Wi‑Fi, modem, or power.
 - Real notification delivery (Settings currently shows `NO ALERTS YET`)
 - Production TLS/PKI beyond the test-net TOFU smoke
 
-## Pixel handoff (when Cereal / backup ready)
+## Pixel handoff (when UART adapter + backup ready)
 
-Do not flash until P0 go/no-go: UART capture + userdata backup. Until then,
-plain USB‑C can still do ADB/fastboot inventory and backups only.
+Do not flash until P0 go/no-go: SBU UART capture + userdata backup (+ live slot
+dumps). Until then, plain USB‑C can still do ADB/fastboot inventory and backups
+only. See [pixel-p0-boot-feasibility.md](pixel-p0-boot-feasibility.md) §7.

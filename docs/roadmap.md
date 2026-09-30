@@ -301,10 +301,11 @@ already on the merged net image. See
 
 Begin P0 as a bounded feasibility study alongside U3. Follow the
 [P0 boot/debug checklist](pixel-p0-boot-feasibility.md); keep partition writes
-out of scope until that report’s go/no-go table is filled. As of 28 September
+out of scope until that report’s go/no-go table is filled. As of 29 September
 2026 the desk half of P0 is largely done (boot v2 anatomy, DT map, Lineage
-20260924 rollback kit) with a **conditional go**: still need a USB-C SBU UART
-capture and a confirmed userdata backup before any flash. A desk platform
+20260924 rollback kit on disk, sunfish scaffold) with a **conditional go**:
+ADB refresh still shows `console=null` / UART disabled path; still need a USB-C
+SBU UART capture and a confirmed userdata backup before any flash. A desk platform
 scaffold lives in [`platforms/sunfish/`](../platforms/sunfish/README.md) (overlay
 DTS + GENI putchar stubs; not linked into the QEMU build). The [Pixel key
 feasibility note](pixel-key-feasibility.md) finds Titan M/StrongBox support in

@@ -1,9 +1,10 @@
 # Pixel 4a P0: boot and debug feasibility checklist
 
-Planning baseline: 28 September 2026. This is the bounded **P0** study from the
-[roadmap](roadmap.md). It produces a written go/no-go for a later **P1** minimal
-seL4/Microkit boot on the physical Pixel 4a (`sunfish`). It does **not** flash
-OS partitions and does not replace the UTM development loop.
+Planning baseline: 28 September 2026 (refreshed **29 September 2026**). This is
+the bounded **P0** study from the [roadmap](roadmap.md). It produces a written
+go/no-go for a later **P1** minimal seL4/Microkit boot on the physical Pixel 4a
+(`sunfish`). It does **not** flash OS partitions and does not replace the UTM
+development loop.
 
 Related notes: [Pixel key / StrongBox probe](pixel-key-feasibility.md).  
 Local artifacts: [pixel-p0-assets/](pixel-p0-assets/README.md).
@@ -28,17 +29,17 @@ current UART state.
 
 ## Already established
 
-| Item | 2026-09-27 probe | 2026-09-28 refresh |
-| --- | --- | --- |
-| Product | `sunfish` | `sunfish` |
-| OS | Android 16 | LineageOS `23.2-20260827-NIGHTLY-sunfish` (`BP4A.251205.006`) |
-| Fingerprint | — | `google/sunfish/sunfish:13/TQ3A.230805.001.S1/10786265:user/release-keys` |
-| Verified-boot | `orange` | `orange` |
-| Slot | `b` | `b` (`androidboot.slot_successful=yes`) |
-| Bootloader | unlocked | unlocked; version `s5-0.5-10252351`; `secure: yes` |
-| SoC / RAM / UFS | — | SM7150; 6 GB LPDDR4X; 128 GB UFS |
-| StrongBox | feature true; probe removed | unchanged |
-| Live cmdline console | — | `console=null` (UART not enabled for this boot) |
+| Item | 2026-09-27 probe | 2026-09-28 refresh | 2026-09-29 ADB |
+| --- | --- | --- | --- |
+| Product | `sunfish` | `sunfish` | `sunfish` |
+| OS | Android 16 | LineageOS `23.2-20260827-NIGHTLY-sunfish` (`BP4A.251205.006`) | unchanged (`BP4A.251205.006`) |
+| Fingerprint | — | `google/sunfish/sunfish:13/TQ3A.230805.001.S1/10786265:user/release-keys` | unchanged |
+| Verified-boot | `orange` | `orange` | `orange` |
+| Slot | `b` | `b` (`androidboot.slot_successful=yes`) | `_b` / successful |
+| Bootloader | unlocked | unlocked; version `s5-0.5-10252351`; `secure: yes` | (not re-entered) |
+| SoC / RAM / UFS | — | SM7150; 6 GB LPDDR4X; 128 GB UFS | — |
+| StrongBox | feature true; probe removed | unchanged | — |
+| Live cmdline console | — | `console=null` (UART not enabled for this boot) | `console=null`; `/dev/ttyMSM0` present |
 
 Do not re-run unlock/lock. Do not include the device serial in project logs.
 
@@ -48,9 +49,9 @@ Do not re-run unlock/lock. Do not include the device serial in project logs.
 | --- | --- |
 | Boot handoff / image shape | **Answered for planning:** Android boot v2 `boot.img` with LZ4 kernel + separate DTB + AVB footer |
 | Early UART without flashing | **Partial:** bootloader reports UART `disabled`; enable syntax known; **no SBU cable capture yet** |
-| DT → seL4 map | **Credible candidates documented** (GIC/timer/UART/memory); GENI UART not in seL4 `hardware.yml` |
-| Lineage return path | **Kit downloaded** (newer nightly than on-phone); restore runbook drafted; personal data backup still on user |
-| P1 go/no-go | **Conditional go** after UART cable proof + userdata backup; not ready to flash |
+| DT → seL4 map | **Credible candidates documented** (GIC/timer/UART/memory); GENI UART not in seL4 `hardware.yml`; desk scaffold in [`platforms/sunfish/`](../platforms/sunfish/README.md) |
+| Lineage return path | **Kit on disk** under `docs/pixel-p0-assets/lineage-ref/20260924/` (SHA256 verified listing); restore runbook drafted; **userdata backup still unconfirmed on host** |
+| P1 go/no-go | **Conditional go** after UART cable proof + userdata backup + live slot dumps; **not ready to flash** |
 
 ---
 
@@ -256,11 +257,28 @@ much later milestone after P1 hello.
 
 ## 7. Remaining P0 sessions
 
-1. Acquire/test USB-C SBU UART adapter; enable UART; capture one Android boot log; disable if desired.  
-2. Confirm off-device backup of phone data.  
-3. Optional: download Google factory image as secondary restore.  
-4. Optional desk: sketch seL4 overlay DTS + GENI putchar stubs (still no flash) —
-   **started** under [`platforms/sunfish/`](../platforms/sunfish/README.md).  
-5. Mark P0 complete in the roadmap when (1) and (2) are done.
+Ordered blockers (do these before any flash):
 
-Keep UTM as the daily development loop.
+1. **Userdata backup (host)** — photos, 2FA, app exports off-device. No confirmed
+   Pixel/`sunfish` backup tree was found on this Mac in a shallow search
+   (2026-09-29). Record the path here once it exists.
+2. **USB-C SBU UART adapter** — ~1.8 V, 115200; label plug orientation. Do **not**
+   run `fastboot oem uart enable` until the adapter is attached and a serial
+   client is listening.
+3. **UART proof** — bootloader session: note current `oem uart` state → enable →
+   capture bootloader and/or one Android boot log → optionally `oem uart disable`
+   → `fastboot reboot`. Decision: keep enabled for P1 work or leave disabled.
+4. **Live slot dumps** — before first custom flash, copy active-slot `boot` /
+   `vbmeta` / `dtbo` to the host (recovery/`dd`/`fastboot fetch` as available).
+
+Optional (not blocking P0 sign-off):
+
+5. Google factory image as secondary restore.  
+6. Continue desk-only seL4 overlay / GENI putchar under [`platforms/sunfish/`](../platforms/sunfish/README.md)
+   (still no flash).
+
+Mark P0 complete in the roadmap when (1)–(3) pass and (4) is done or explicitly
+scheduled as the first step of P1.
+
+Keep UTM / `./dev test-net` as the daily software loop. Dual-UTM Shared Network
+manual `SEAL OK` remains optional and independent of Pixel.
