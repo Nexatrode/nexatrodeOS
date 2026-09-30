@@ -153,20 +153,21 @@ compose).
 - Emulated Ethernet / NAT is not Mac Wi‑Fi and not a Pixel radio.
 - Graphics+input+net still collide on the shared `timer_driver` name.
 - Dual-UTM Shared Network: `./dev utm-net` exports Net A/B bundles; console
-  `netpeer` / `netseal` enable direct peer targeting. **2026-09-29 attempt:**
-  bundles register and start under UTM (`utmctl`); **automated** `SEAL OK` not
-  completed — `utmctl attach` is unimplemented (serial is SPICE-only) and host
-  `qemu -netdev vmnet-shared` needs elevated privileges. Manual GUI procedure
-  remains: boot B then A, note B’s DHCP IP, on A run `netpeer <B-ip>:1236` then
-  `netseal`, expect `SEAL OK` on B. Notes:
-  `build/utm-net-experiment/README.txt`.
+  `netpeer` / `netseal` enable direct peer targeting. **2026-09-29 PASS
+  (manual GUI):** boot B then A; B DHCP `192.168.64.8`; on A
+  `netpeer 192.168.64.8:1236` then `netseal` → A `MSG NET TX` + peer locked,
+  B `SEAL OK`. Shared LAN has no DNS/`personal-os.test`, so A may log
+  `TLS sealed queue failed` while UDP seal still succeeds. UTM serial Enter
+  sends CR only — console treats `\r` like `\n` (Rust + reference C).
+  **Automated** dual-UTM still blocked: `utmctl attach` unimplemented
+  (SPICE-only serial); host `qemu -netdev vmnet-shared` needs privileges.
+  Notes: `build/utm-net-experiment/README.txt`.
 - TLS smoke uses a demo self-signed pin + deterministic entropy — not production PKI.
 - Fake modem / SMS / SimpleX are out of scope.
 
 ## Next
 
-1. Finish the dual-UTM Shared Network **manual** check (GUI serial) and record
-   PASS (`SEAL OK`) or STOP here; automation blocked on UTM serial attach /
-   vmnet privileges (2026-09-29).
+1. Dual-UTM Shared Network manual `SEAL OK` recorded (2026-09-29). Optional:
+   script serial I/O if UTM gains attach, or privilege-capable vmnet harness.
 2. Fake modem / audio / camera backends as needed.
 3. Production TLS/PKI (real entropy, clock, pin UX) when leaving smoke territory.

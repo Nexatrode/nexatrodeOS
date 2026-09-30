@@ -208,10 +208,8 @@ static void execute_line(void)
 
 static void receive_character(char input)
 {
-    if (input == '\r') {
-        return;
-    }
-    if (input == '\n') {
+    /* UTM/QEMU virtio-serial often delivers Enter as CR only. */
+    if (input == '\r' || input == '\n') {
         microkit_dbg_puts("\r\n");
         execute_line();
         line_length = 0;

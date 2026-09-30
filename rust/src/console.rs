@@ -314,10 +314,8 @@ impl Console {
         if !self.ready {
             return;
         }
-        if input == b'\r' {
-            return;
-        }
-        if input == b'\n' {
+        // UTM/serial terminals often send CR alone; QEMU may send LF or CRLF.
+        if input == b'\r' || input == b'\n' {
             debug_print!("\r\n");
             self.execute_line();
             self.line_length = 0;
