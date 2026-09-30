@@ -90,7 +90,7 @@ def main():
     if len(sys.argv) < 2 or len(sys.argv) > 10:
         raise SystemExit(
             "usage: make_touch_surfaces.py OUTPUT.ppm "
-            "[none|notes|contacts|calculator|clock|calendar|messages|settings] [APP_TEXT] "
+            "[none|notes|contacts|calculator|clock|calendar|messages|phone|settings] [APP_TEXT] "
             "[edit|list] [NOTE_COUNT] [SELECTED_NOTE] [SCROLL_START_LINE] [DELETE_ARMED] "
             "[body|title]"
         )
@@ -113,10 +113,10 @@ def main():
         else:
             requested_scroll_start = int(sys.argv[4])
     if focus not in ("none", "notes", "contacts", "calculator", "clock", "calendar",
-                     "messages", "settings"):
+                     "messages", "phone", "settings"):
         raise SystemExit(
             "focus must be none, notes, contacts, calculator, clock, calendar, "
-            "messages, or settings"
+            "messages, phone, or settings"
         )
     if len(app_text) > 128 or any(character not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .\n-" for character in app_text):
         raise SystemExit("APP_TEXT must contain at most 128 uppercase letters, digits, spaces, periods, hyphens, or newlines")
@@ -143,7 +143,9 @@ def main():
          "CALENDAR", "REMINDERS", 2),
         ("messages", 153, 146, 135, 44, (42, 52, 48), (120, 220, 180),
          "MESSAGES", "EXPLICIT KEYS", 2),
-        ("settings", 12, 194, 276, 26, (38, 44, 52), (160, 180, 200),
+        ("phone", 12, 194, 135, 26, (52, 42, 38), (255, 168, 120),
+         "PHONE", "FAKE MODEM", 1),
+        ("settings", 153, 194, 135, 26, (38, 44, 52), (160, 180, 200),
          "SETTINGS", "LOCAL ONLY", 1),
     )
     for name, x, y, width, height, fill, border, title, subtitle, scale in cards:
@@ -190,8 +192,10 @@ def main():
         frame.border(12, 146, 135, 44, (255, 206, 84), thickness=4)
     elif focus == "messages":
         frame.border(153, 146, 135, 44, (255, 206, 84), thickness=4)
+    elif focus == "phone":
+        frame.border(12, 194, 135, 26, (255, 206, 84), thickness=4)
     elif focus == "settings":
-        frame.border(12, 194, 276, 26, (255, 206, 84), thickness=4)
+        frame.border(153, 194, 135, 26, (255, 206, 84), thickness=4)
 
     if focus != "none":
         frame.rect(0, 0, WIDTH, 222, (11, 21, 34))
@@ -213,7 +217,8 @@ def main():
         nav_button(124, 24, "CK", focus == "clock")
         nav_button(150, 24, "CL", focus == "calendar")
         nav_button(176, 24, "MS", focus == "messages")
-        nav_button(202, 34, "ST", focus == "settings")
+        nav_button(202, 24, "PH", focus == "phone")
+        nav_button(228, 24, "ST", focus == "settings")
 
         if focus == "notes":
             if notes_mode == "list":
@@ -246,6 +251,12 @@ def main():
             field_label = "PEER KEYS"
             field_color = (189, 228, 208)
             field_border = (120, 220, 180)
+        elif focus == "phone":
+            frame.text(18, 58, "PHONE", (255, 240, 224), scale=2)
+            frame.text(20, 82, "FAKE CARRIER", (228, 208, 189))
+            field_label = "STATUS"
+            field_color = (228, 208, 189)
+            field_border = (255, 168, 120)
         elif focus == "settings":
             frame.text(18, 58, "SETTINGS", (232, 242, 245), scale=2)
             frame.text(20, 82, "LOCAL DEVICE OPTIONS", (189, 212, 216))
@@ -273,7 +284,7 @@ def main():
         elif focus == "notes" and notes_field == "title":
             field_label = "TITLE"
         frame.text(24, 114, field_label, field_color)
-        if focus in ("notes", "contacts", "calendar", "messages", "settings"):
+        if focus in ("notes", "contacts", "calendar", "messages", "phone", "settings"):
             if focus == "notes" and notes_mode == "list":
                 lines = app_text.split("\n") if app_text else []
                 for index, line_text in enumerate(lines[:note_count]):
@@ -398,6 +409,8 @@ def main():
                 control(188, 95, "DELETE")
         elif focus == "settings":
             frame.text(20, 204, "LOCAL ONLY  NO NET YET", (139, 184, 190))
+        elif focus == "phone":
+            frame.text(20, 204, "MODEMRING  MODEMSMS", (139, 168, 190))
         elif app_text.startswith("ADD "):
             frame.text(20, 204, "ENTER NEXT  BACKSPACE EDIT", (139, 168, 190))
         elif app_text.startswith("NO CONTACTS") or app_text.startswith("NO REMINDERS"):

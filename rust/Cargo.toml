@@ -114,6 +114,12 @@ test = false
 bench = false
 
 [[bin]]
+name = "rust_phone_app"
+path = "src/phone_app.rs"
+test = false
+bench = false
+
+[[bin]]
 name = "vault_backup_cli"
 path = "src/bin/vault_backup_cli.rs"
 required-features = ["host-backup"]

@@ -312,7 +312,7 @@ impl InputService {
             FocusTarget::Messages => MESSAGES_INPUT,
             // Clock and Settings are read-only snapshots; no app endpoint
             // receives their input events.
-            FocusTarget::Clock | FocusTarget::Settings => return,
+            FocusTarget::Clock | FocusTarget::Settings | FocusTarget::Phone => return,
         };
 
         self.next_sequence = self.next_sequence.saturating_add(1);
@@ -458,6 +458,7 @@ const fn focus_name(focus: FocusTarget) -> &'static str {
         FocusTarget::Calendar => "CALENDAR",
         FocusTarget::Messages => "MESSAGES",
         FocusTarget::Settings => "SETTINGS",
+        FocusTarget::Phone => "PHONE",
     }
 }
 

@@ -42,6 +42,7 @@ pub const FOCUS_CLOCK: u32 = 4;
 pub const FOCUS_CALENDAR: u32 = 5;
 pub const FOCUS_MESSAGES: u32 = 6;
 pub const FOCUS_SETTINGS: u32 = 7;
+pub const FOCUS_PHONE: u32 = 8;
 
 pub const fn focus_value(focus: FocusTarget) -> u32 {
     match focus {
@@ -53,6 +54,7 @@ pub const fn focus_value(focus: FocusTarget) -> u32 {
         FocusTarget::Calendar => FOCUS_CALENDAR,
         FocusTarget::Messages => FOCUS_MESSAGES,
         FocusTarget::Settings => FOCUS_SETTINGS,
+        FocusTarget::Phone => FOCUS_PHONE,
     }
 }
 
@@ -64,7 +66,8 @@ pub const fn next_focus_target(focus: FocusTarget) -> FocusTarget {
         FocusTarget::Calculator => FocusTarget::Clock,
         FocusTarget::Clock => FocusTarget::Calendar,
         FocusTarget::Calendar => FocusTarget::Messages,
-        FocusTarget::Messages => FocusTarget::Settings,
+        FocusTarget::Messages => FocusTarget::Phone,
+        FocusTarget::Phone => FocusTarget::Settings,
     }
 }
 
@@ -119,6 +122,7 @@ pub enum FocusTarget {
     Calendar,
     Messages,
     Settings,
+    Phone,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -186,7 +190,8 @@ pub const fn touch_focus_target(
         (153..=288, 98..=141) => Some(FocusTarget::Clock),
         (12..=147, 146..=189) => Some(FocusTarget::Calendar),
         (153..=288, 146..=189) => Some(FocusTarget::Messages),
-        (12..=288, 194..=219) => Some(FocusTarget::Settings),
+        (12..=147, 194..=219) => Some(FocusTarget::Phone),
+        (153..=288, 194..=219) => Some(FocusTarget::Settings),
         _ => None,
     }
 }
@@ -212,7 +217,9 @@ pub const fn touch_navigation_action(x: u32, y: u32) -> Option<NavigationAction>
         Some(NavigationAction::Open(FocusTarget::Calendar))
     } else if x >= 176 && x <= 199 {
         Some(NavigationAction::Open(FocusTarget::Messages))
-    } else if x >= 202 && x <= 235 {
+    } else if x >= 202 && x <= 225 {
+        Some(NavigationAction::Open(FocusTarget::Phone))
+    } else if x >= 228 && x <= 251 {
         Some(NavigationAction::Open(FocusTarget::Settings))
     } else {
         None
@@ -557,7 +564,11 @@ mod tests {
             Some(FocusTarget::Messages)
         );
         assert_eq!(
-            touch_focus_target(event(DEVICE_TABLET, EVENT_KEY, BTN_LEFT, 1), 16_000, 17_000),
+            touch_focus_target(event(DEVICE_TABLET, EVENT_KEY, BTN_LEFT, 1), 10_000, 17_000),
+            Some(FocusTarget::Phone)
+        );
+        assert_eq!(
+            touch_focus_target(event(DEVICE_TABLET, EVENT_KEY, BTN_LEFT, 1), 24_000, 17_000),
             Some(FocusTarget::Settings)
         );
         assert_eq!(
@@ -600,6 +611,10 @@ mod tests {
         );
         assert_eq!(
             next_focus_target(FocusTarget::Messages),
+            FocusTarget::Phone
+        );
+        assert_eq!(
+            next_focus_target(FocusTarget::Phone),
             FocusTarget::Settings
         );
         assert_eq!(
@@ -656,7 +671,11 @@ mod tests {
             Some(NavigationAction::Open(FocusTarget::Messages))
         );
         assert_eq!(
-            touch_navigation_action(218, 24),
+            touch_navigation_action(213, 24),
+            Some(NavigationAction::Open(FocusTarget::Phone))
+        );
+        assert_eq!(
+            touch_navigation_action(239, 24),
             Some(NavigationAction::Open(FocusTarget::Settings))
         );
         assert_eq!(touch_navigation_action(44, 24), None);

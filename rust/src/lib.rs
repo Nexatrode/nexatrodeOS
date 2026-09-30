@@ -10,6 +10,7 @@ pub mod messages;
 pub mod message_seal;
 pub mod messages_net_tx;
 pub mod notes;
+pub mod phone;
 pub mod settings;
 pub mod record_crypto;
 pub mod vault_backup;

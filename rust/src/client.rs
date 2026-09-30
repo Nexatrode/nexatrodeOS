@@ -3,6 +3,7 @@
 
 mod entropy_protocol;
 mod modem_protocol;
+mod phone_protocol;
 mod settings_protocol;
 mod vault_protocol;
 
@@ -13,6 +14,10 @@ use entropy_protocol::{
 use modem_protocol::{
     CLIENT_CHANNEL as MODEM_CHANNEL, REPLY_BAD_REQUEST as MODEM_BAD, REPLY_OK as MODEM_OK,
     REQUEST_RING as MODEM_RING, REQUEST_SMS as MODEM_SMS, SMS_MAX_BYTES,
+};
+use phone_protocol::{
+    CLIENT_CHANNEL as PHONE_CHANNEL, REPLY_OK as PHONE_OK,
+    REQUEST_SET_ALERTS as PHONE_SET_ALERTS,
 };
 use settings_protocol::{
     CLIENT_CHANNEL as SETTINGS_CHANNEL, REPLY_OK as SETTINGS_OK,
@@ -52,6 +57,7 @@ const CRASHER_CHILD: Child = Child::new(1);
 const ENTROPY: Channel = Channel::new(ENTROPY_CHANNEL);
 const MODEM: Channel = Channel::new(MODEM_CHANNEL);
 const SETTINGS_APP: Channel = Channel::new(SETTINGS_CHANNEL);
+const PHONE_APP: Channel = Channel::new(PHONE_CHANNEL);
 
 const REQUEST_ADD: MessageLabel = 1;
 const REQUEST_COUNT: MessageLabel = 2;
@@ -112,8 +118,14 @@ impl Supervisor {
     fn push_settings_alerts(&self) -> bool {
         set_mr(0, self.modem_rings);
         set_mr(1, self.modem_sms);
-        let reply = SETTINGS_APP.pp_call(MessageInfo::new(SETTINGS_SET_ALERTS, 2));
-        reply.label() == SETTINGS_OK && reply.count() == 0
+        let settings = SETTINGS_APP.pp_call(MessageInfo::new(SETTINGS_SET_ALERTS, 2));
+        set_mr(0, self.modem_rings);
+        set_mr(1, self.modem_sms);
+        let phone = PHONE_APP.pp_call(MessageInfo::new(PHONE_SET_ALERTS, 2));
+        settings.label() == SETTINGS_OK
+            && settings.count() == 0
+            && phone.label() == PHONE_OK
+            && phone.count() == 0
     }
 
     fn record(&mut self, passed: bool, name: &str) {
@@ -488,9 +500,10 @@ impl Supervisor {
             let alerts_pushed = self.modem_rings > 0
                 && self.modem_sms > 0
                 && self.push_settings_alerts();
-            self.record(alerts_pushed, "Settings shows modem alert counts");
+            self.record(alerts_pushed, "Settings and Phone show modem alert counts");
             if alerts_pushed {
                 debug_println!("SETTINGS|PASS: alert counts pushed after modem smoke");
+                debug_println!("PHONE|PASS: alert counts pushed after modem smoke");
             }
             debug_println!(
                 "{}",

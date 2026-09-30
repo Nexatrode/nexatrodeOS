@@ -30,6 +30,8 @@
     <memory_region name="messages_net_tx" size="0x1000" />
     <!-- Settings display snapshot (serial + graphics); supervisor pushes alert counts. -->
     <memory_region name="settings_view" size="0x1000" />
+    <!-- Phone display snapshot; mirrors modem alert counts from the supervisor. -->
+    <memory_region name="phone_view" size="0x1000" />
     <protection_domain name="server" priority="100" passive="true">
         <program_image path="rust_server.elf" />
         <map mr="server_private" vaddr="0x40000000" perms="rw" setvar_vaddr="server_private_start" />
@@ -73,6 +75,11 @@
     <protection_domain name="settings_app" priority="100" passive="true">
         <program_image path="rust_settings_app.elf" />
         <map mr="settings_view" vaddr="0x43_000_000" perms="rw" cached="false" setvar_vaddr="settings_view" />
+    </protection_domain>
+    <!-- Read-only Phone stub; alert counts updated only by the supervisor. -->
+    <protection_domain name="phone_app" priority="100" passive="true">
+        <program_image path="rust_phone_app.elf" />
+        <map mr="phone_view" vaddr="0x43_000_000" perms="rw" cached="false" setvar_vaddr="phone_view" />
     </protection_domain>
     <!-- Explicit MCS CPU budgets, in microseconds; 3 ms per 10 ms = 30%. -->
     <protection_domain name="client" priority="99" budget="3_000" period="10_000">
@@ -194,5 +201,10 @@
     <channel>
         <end pd="settings_app" id="0" notify="false" />
         <end pd="client" id="13" pp="true" notify="false" />
+    </channel>
+    <!-- Only the supervisor pushes Phone alert counts. -->
+    <channel>
+        <end pd="phone_app" id="0" notify="false" />
+        <end pd="client" id="14" pp="true" notify="false" />
     </channel>
 </system>

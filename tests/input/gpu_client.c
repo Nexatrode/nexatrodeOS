@@ -70,6 +70,7 @@ uintptr_t clock_view;
 uintptr_t calendar_view;
 uintptr_t messages_view;
 uintptr_t settings_view;
+uintptr_t phone_view;
 
 typedef struct {
     uint32_t revision;
@@ -687,7 +688,8 @@ static void draw_app_page(uint8_t *frame, uint32_t focus, const char *text,
     draw_nav_button(frame, 124, 24, "CK", 2, focus == 4, false);
     draw_nav_button(frame, 150, 24, "CL", 2, focus == 5, false);
     draw_nav_button(frame, 176, 24, "MS", 2, focus == 6, false);
-    draw_nav_button(frame, 202, 34, "ST", 2, focus == 7, false);
+    draw_nav_button(frame, 202, 24, "PH", 2, focus == 8, false);
+    draw_nav_button(frame, 228, 24, "ST", 2, focus == 7, false);
 
     if (focus == 1) {
         char status_body[] = "BODY 1 OF 1";
@@ -724,6 +726,9 @@ static void draw_app_page(uint8_t *frame, uint32_t focus, const char *text,
     } else if (focus == 6) {
         draw_label(frame, 18, 58, "MESSAGES", 8, 240, 255, 224, 2);
         draw_label(frame, 20, 82, "EXPLICIT CONTACT ONLY", 21, 208, 228, 189, 1);
+    } else if (focus == 8) {
+        draw_label(frame, 18, 58, "PHONE", 5, 224, 240, 255, 2);
+        draw_label(frame, 20, 82, "FAKE CARRIER", 12, 189, 208, 228, 1);
     } else {
         draw_label(frame, 18, 58, "SETTINGS", 8, 245, 242, 232, 2);
         draw_label(frame, 20, 82, "LOCAL DEVICE OPTIONS", 20, 216, 212, 189, 1);
@@ -758,6 +763,10 @@ static void draw_app_page(uint8_t *frame, uint32_t focus, const char *text,
             border_r = 200;
             border_g = 180;
             border_b = 160;
+        } else if (focus == 8) {
+            border_r = 120;
+            border_g = 168;
+            border_b = 255;
         }
         draw_border(frame, 12, 105, 276, 89, 2, border_r, border_g, border_b);
     }
@@ -830,6 +839,15 @@ static void draw_app_page(uint8_t *frame, uint32_t focus, const char *text,
         if (cursor_x >= 0) {
             draw_rect(frame, cursor_x, cursor_y, 2, 16, 193, 241, 131);
         }
+    } else if (focus == 8) {
+        draw_label(frame, 24, 114, "STATUS", 6, 189, 208, 228, 1);
+        int cursor_x;
+        int cursor_y;
+        draw_notes_text(frame, text, length, 189, 208, 228, -1,
+                        &cursor_x, &cursor_y);
+        if (cursor_x >= 0) {
+            draw_rect(frame, cursor_x, cursor_y, 2, 16, 193, 241, 131);
+        }
     } else {
         draw_label(frame, 24, 114, "STATUS", 6, 216, 212, 189, 1);
         int cursor_x;
@@ -871,6 +889,8 @@ static void draw_app_page(uint8_t *frame, uint32_t focus, const char *text,
         }
     } else if (focus == 7) {
         draw_label(frame, 20, 204, "LOCAL ONLY  NO NET YET", 22, 190, 184, 139, 1);
+    } else if (focus == 8) {
+        draw_label(frame, 20, 204, "MODEMRING  MODEMSMS", 19, 190, 168, 139, 1);
     } else {
         bool editing = length >= 4 && text[0] == 'A' && text[1] == 'D' &&
                        text[2] == 'D' && text[3] == ' ';
@@ -963,6 +983,12 @@ static void do_draw_state(void)
                                      &notes_field)) {
         return;
     }
+    if (focus == 8 && !read_app_view(phone_view, app_text, &app_text_length,
+                                     &view_revision, &scroll_start_line, &notes_mode,
+                                     &selected_note, &note_count, &notes_delete_armed,
+                                     &notes_field)) {
+        return;
+    }
     if (focus != rendered_focus || view_revision != rendered_view_revision
         || pointer.revision != rendered_pointer_revision) {
         uint8_t *frame = (uint8_t *)(gpu_data + DISPLAY_INFO_DATA_OFFSET);
@@ -970,7 +996,7 @@ static void do_draw_state(void)
         memcpy(frame, _fb_img, frame_size);
 
         if (focus == 1 || focus == 2 || focus == 3 || focus == 4 || focus == 5
-            || focus == 6 || focus == 7) {
+            || focus == 6 || focus == 7 || focus == 8) {
             draw_app_page(frame, focus, app_text, app_text_length, scroll_start_line,
                           notes_mode, selected_note, note_count, notes_delete_armed,
                           notes_field);

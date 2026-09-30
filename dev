@@ -147,7 +147,8 @@ def build(budget_pressure=False):
                       "rust_entropy_rng", "rust_fake_modem", "rust_input_service",
                       "rust_vault_test_client", "rust_vault_notes_test",
                       "rust_vault_contacts_test", "rust_calculator_app",
-                      "rust_calendar_app", "rust_messages_app", "rust_settings_app"]:
+                      "rust_calendar_app", "rust_messages_app", "rust_settings_app",
+                      "rust_phone_app"]:
         shutil.copy2(rust_release / f"{component}.elf", BUILD / f"{component}.elf")
     c_server_obj = BUILD / "c_server.o"
     run([compiler, "--target=aarch64-none-elf", "-mcpu=cortex-a53", "-mstrict-align",
@@ -1864,7 +1865,8 @@ def verify_input_text_cold_boot(qemu_command, gpu_build, expected_pixels, timeou
                         raise RuntimeError(f"QEMU cold-boot persistence run faulted; inspect {reboot_serial}")
                     if ("UIINPUT|READY:" in trace and
                             "ISOLATION COMPLETE: 29 checks passed" in trace and
-                            "SETTINGS|PASS: alert counts pushed after modem smoke" in trace):
+                            "SETTINGS|PASS: alert counts pushed after modem smoke" in trace and
+                            "PHONE|PASS: alert counts pushed after modem smoke" in trace):
                         break
                     time.sleep(0.05)
                 else:
@@ -1956,7 +1958,11 @@ def verify_input_text_cold_boot(qemu_command, gpu_build, expected_pixels, timeou
                 wait_for_saved_frame("messages", "- KEY BE12CD34\n  SEALED 1")
                 tap_pixel(30, 24)
                 wait_for_saved_frame("none")
-                tap_pixel(150, 206)  # Open Settings stub from the launcher.
+                tap_pixel(80, 206)  # Open Phone from the launcher.
+                wait_for_saved_frame("phone", "ALERT\nRING 1\nSMS 1")
+                tap_pixel(30, 24)
+                wait_for_saved_frame("none")
+                tap_pixel(220, 206)  # Open Settings stub from the launcher.
                 wait_for_saved_frame("settings", "LOCAL ONLY\nVAULT LOCAL\nNO NET YET\nALERTS RING 1 SMS 1")
                 qmp_execute(stream, "quit")
                 process.wait(timeout=5)
@@ -2061,6 +2067,7 @@ def input_test(timeout, build_only=False):
         ("messages", "COMPOSE KEY BE12CD34\n"),
         ("messages", "COMPOSE KEY BE12CD34\nHI"),
         ("messages", "- KEY BE12CD34\n  SEALED 1"),
+        ("phone", "ALERT\nRING 1\nSMS 1"),
         ("settings", "LOCAL ONLY\nVAULT LOCAL\nNO NET YET\nALERTS RING 1 SMS 1"),
     ]
     for focus, app_text in frame_cases:
@@ -2176,6 +2183,11 @@ def input_test(timeout, build_only=False):
          ROOT / "tests" / "input" / "settings_model_test.rs", "-o", settings_test])
     run([settings_test])
     print("Settings model: PASS; local-only stub copy verified")
+    phone_test = gpu_build / "phone-model-test"
+    run([tool("rustc"), "--edition=2024", "--test",
+         ROOT / "tests" / "input" / "phone_model_test.rs", "-o", phone_test])
+    run([phone_test])
+    print("Phone model: PASS; fake-modem alert copy verified")
     protocol_test = gpu_build / "input-protocol-test"
     run([tool("rustc"), "--edition=2024", "--test",
          ROOT / "tests" / "input" / "protocol_test.rs", "-o", protocol_test])
@@ -2248,12 +2260,14 @@ def input_test(timeout, build_only=False):
         "UIROUTER|FOCUS: CLOCK touch=(220, 120)",
         "UIROUTER|FOCUS: CALENDAR touch=(80, 165)",
         "UIROUTER|FOCUS: MESSAGES touch=(220, 165)",
-        "UIROUTER|FOCUS: SETTINGS touch=(150, 206)",
+        "UIROUTER|FOCUS: PHONE touch=(80, 206)",
+        "UIROUTER|FOCUS: SETTINGS touch=(220, 206)",
         "UIROUTER|FOCUS: CONTACTS key=TAB",
         "UIROUTER|FOCUS: CALCULATOR key=TAB",
         "UIROUTER|FOCUS: CLOCK key=TAB",
         "UIROUTER|FOCUS: CALENDAR key=TAB",
         "UIROUTER|FOCUS: MESSAGES key=TAB",
+        "UIROUTER|FOCUS: PHONE key=TAB",
         "UIROUTER|FOCUS: SETTINGS key=TAB",
         "UIROUTER|FOCUS: NOTES key=TAB",
         "UIROUTER|NAV: CONTACTS touch",
@@ -2640,6 +2654,10 @@ def input_test(timeout, build_only=False):
                 qmp_execute(stream, "send-key", {
                     "keys": [{"type": "qcode", "data": "tab"}], "hold-time": 150,
                 })
+                wait_for_frame("phone", "ALERT\nRING 1\nSMS 1")
+                qmp_execute(stream, "send-key", {
+                    "keys": [{"type": "qcode", "data": "tab"}], "hold-time": 150,
+                })
                 wait_for_frame("settings", "LOCAL ONLY\nVAULT LOCAL\nNO NET YET\nALERTS RING 1 SMS 1")
                 qmp_execute(stream, "send-key", {
                     "keys": [{"type": "qcode", "data": "tab"}], "hold-time": 150,
@@ -2798,7 +2816,11 @@ def input_test(timeout, build_only=False):
                 wait_for_frame("messages", "- KEY BE12CD34\n  SEALED 1")
                 tap_pixel(30, 24)
                 wait_for_frame("none")
-                tap_pixel(150, 206)  # Open Settings from the launcher.
+                tap_pixel(80, 206)  # Open Phone from the launcher.
+                wait_for_frame("phone", "ALERT\nRING 1\nSMS 1")
+                tap_pixel(30, 24)
+                wait_for_frame("none")
+                tap_pixel(220, 206)  # Open Settings from the launcher.
                 wait_for_frame("settings", "LOCAL ONLY\nVAULT LOCAL\nNO NET YET\nALERTS RING 1 SMS 1")
 
                 converter = shutil.which("magick") or tool("convert")
@@ -2859,7 +2881,8 @@ def input_test(timeout, build_only=False):
                         ("messages", "COMPOSE KEY BE12CD34\n"),
                         ("messages", "COMPOSE KEY BE12CD34\nHI"),
                         ("messages", "- KEY BE12CD34\n  SEALED 1"),
-                        ("settings", "LOCAL ONLY\nVAULT LOCAL\nNO NET YET\nALERTS RING 1 SMS 1"),
+                        ("phone", "ALERT\nRING 1\nSMS 1"),
+        ("settings", "LOCAL ONLY\nVAULT LOCAL\nNO NET YET\nALERTS RING 1 SMS 1"),
                     }
                     expected_frames.update(multi_note_frame_keys)
                     if received == expected_events and rendered == expected_frames:
@@ -2919,6 +2942,7 @@ def input_test(timeout, build_only=False):
         ("messages", "COMPOSE KEY BE12CD34\n"),
         ("messages", "COMPOSE KEY BE12CD34\nHI"),
         ("messages", "- KEY BE12CD34\n  SEALED 1"),
+        ("phone", "ALERT\nRING 1\nSMS 1"),
         ("settings", "LOCAL ONLY\nVAULT LOCAL\nNO NET YET\nALERTS RING 1 SMS 1"),
     }
     expected_frames.update(multi_note_frame_keys)
@@ -3437,8 +3461,9 @@ def test(timeout, reset_disk=True, disk_image=TEST_DISK, prepare_disk=None,
         "PASS: vault record unchanged after denied child write",
         "PASS: independent server computes 100 + 23 after fault",
         "PASS: independent server state advances after fault",
-        "PASS: Settings shows modem alert counts",
+        "PASS: Settings and Phone show modem alert counts",
         "SETTINGS|PASS: alert counts pushed after modem smoke",
+        "PHONE|PASS: alert counts pushed after modem smoke",
         "ISOLATION COMPLETE: 29 checks passed; crasher stopped, services alive",
     ]
     namespace_markers = [

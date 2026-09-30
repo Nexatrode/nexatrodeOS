@@ -15,15 +15,17 @@ identity for Messages (see [explicit-contact-messaging.md](explicit-contact-mess
   refreshes Settings.
 - Settings PD (`settings_app`, channel 13): line 4 is `NO ALERTS YET` or
   `ALERTS RING N SMS M` after supervisor `REQUEST_SET_ALERTS`.
+- Phone PD (`phone_app`, channel 14): read-only Home card showing
+  `IDLE\nRING 0\nSMS 0` or `ALERT\nRING N\nSMS M` from the same supervisor push.
 
 ## Pass
 
-`./dev test` green with modem PASS lines plus `SETTINGS|PASS: alert counts
-pushed after modem smoke`. `./dev test-input` Settings frames show
-`ALERTS RING 1 SMS 1` after boot smoke.
+`./dev test` green with modem PASS lines plus `SETTINGS|PASS` / `PHONE|PASS`
+alert counts after modem smoke. `./dev test-input` Settings frames show
+`ALERTS RING 1 SMS 1` and Phone shows `ALERT\nRING 1\nSMS 1`.
 
 ## Out of scope
 
-Phone/dialer UI, auto-timer RING, AT/Qualcomm realism, Messages vault SMS.
-Graphics+input+net is unblocked via shared `timer_driver`
+Digit pad / outgoing CALL UI, auto-timer RING, AT/Qualcomm realism, Messages
+vault SMS. Graphics+input+net is unblocked via shared `timer_driver`
 (`./dev test-input-net`).
