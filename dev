@@ -1113,8 +1113,8 @@ def net_test(timeout):
     integrated_net_test(timeout, python, env)
 
 
-def integrated_net_test(timeout, python, env):
-    """Merge the serial-free dhcp_client fragment into Personal OS and re-check DHCP."""
+def prepare_net_loaders(python, env):
+    """Build fragment guest B and merged Personal OS+net guest A loaders."""
     build()
     mbedtls_dir = setup_mbedtls()
     net_build = BUILD / "sddf-net-spike"
@@ -1137,7 +1137,6 @@ def integrated_net_test(timeout, python, env):
         shutil.copy2(fragment_build / elf_name, BUILD / elf_name)
 
     merged_system = net_build / "net-system.system"
-    # Share the blk VirtIO MMIO page and relocate net DMA away from storage/RNG.
     run([tool("python3"), ROOT / "tests/merge_network_system.py",
          "--base", BUILD / "system.system",
          "--network", fragment_build / "net.system",
@@ -1150,6 +1149,15 @@ def integrated_net_test(timeout, python, env):
     guest_b_loader = fragment_build / "loader.img"
     if not guest_b_loader.exists():
         raise RuntimeError(f"net fragment build did not produce {guest_b_loader}")
+    if not loader.exists():
+        raise RuntimeError(f"merged net image is missing: {loader}")
+    return loader, guest_b_loader
+
+
+def integrated_net_test(timeout, python, env):
+    """Merge the serial-free dhcp_client fragment into Personal OS and re-check DHCP."""
+    net_build = BUILD / "sddf-net-spike"
+    loader, guest_b_loader = prepare_net_loaders(python, env)
     prepare_vault_disk(TEST_DISK, reset=True)
 
     serial_log = net_build / "net-system-serial.log"
@@ -2941,6 +2949,134 @@ def export_utm_graphics(timeout, output_bundle=None):
     print(f"Graphical UTM bundle: {bundle}\nThe default Personal OS profile remains serial-only.")
 
 
+def _utm_shared_net_mac(seed: str) -> str:
+    digest = hashlib.sha256(seed.encode()).digest()
+    # Locally administered, unicast MAC.
+    octets = [((digest[0] & 0xfe) | 0x02), digest[1], digest[2], digest[3], digest[4], digest[5]]
+    return ":".join(f"{byte:02X}" for byte in octets)
+
+
+def _utm_serial_profile(name, notes, mac, with_disk):
+    profile = {
+        "Backend": "QEMU", "ConfigurationVersion": 4,
+        "Information": {
+            "Name": name, "UUID": str(uuid.uuid4()).upper(),
+            "IconCustom": False, "Notes": notes,
+        },
+        "System": {
+            "Architecture": "aarch64", "Target": "virt", "CPU": LOCK["cpu"],
+            "CPUFlagsAdd": [], "CPUFlagsRemove": [], "CPUCount": 1,
+            "ForceMulticore": False, "MemorySize": 2048,
+            "JITCacheSize": 128,
+        },
+        "QEMU": {
+            "DebugLog": True, "UEFIBoot": False, "RNGDevice": False,
+            "BalloonDevice": False, "TPMDevice": False, "Hypervisor": False,
+            "TSO": False, "RTCLocalTime": False, "PS2Controller": False,
+            "MachinePropertyOverride": "virtualization=on,gic-version=2",
+            "AdditionalArguments": [
+                "-global virtio-mmio.force-legacy=false",
+                # Keep Network=[] so UTM does not also inject a PCI NIC; sDDF
+                # expects VirtIO net on mmio bus.0 (same as ./dev test-net).
+                f"-device virtio-net-device,netdev=net0,bus=virtio-mmio-bus.0,mac={mac}",
+                "-netdev vmnet-shared,id=net0",
+            ],
+        },
+        "Input": {"UsbBusSupport": "Disabled", "UsbSharing": False, "MaximumUsbShare": 0},
+        "Sharing": {
+            "DirectoryShareMode": "None", "DirectoryShareReadOnly": True,
+            "ClipboardSharing": False,
+        },
+        "Display": [], "Network": [], "Sound": [],
+        "Drive": [{
+            "ImageName": "loader.elf", "ImageType": "LinuxKernel",
+            "Interface": "None", "InterfaceVersion": 1, "ReadOnly": True,
+            "Identifier": str(uuid.uuid4()).upper(),
+        }],
+        "Serial": [{
+            "Mode": "Terminal", "Target": "Auto",
+            "Terminal": {
+                "Font": "Menlo", "FontSize": 14, "CursorBlink": False,
+                "ForegroundColor": "#D7E5E3", "BackgroundColor": "#101A22",
+            },
+        }],
+    }
+    if with_disk:
+        ensure_utm_storage_profile(profile)
+    return profile
+
+
+def export_utm_net():
+    """Build and export two Shared Network UTM bundles for the dual-UTM LAN sketch."""
+    setup()
+    setup_sddf()
+    python = ROOT / ".cache" / "sddf-venv" / "bin" / "python"
+    env = os.environ.copy()
+    env["PATH"] = os.pathsep.join([
+        "/opt/homebrew/opt/llvm/bin", "/opt/homebrew/sbin",
+        env.get("PATH", ""),
+    ])
+    guest_a_loader, guest_b_loader = prepare_net_loaders(python, env)
+
+    bundles = (
+        (
+            ROOT / "dist" / "Personal OS Net A.utm",
+            ".personal-os-net-a-export",
+            "Personal OS Net A",
+            (
+                "Merged Personal OS + VirtIO net for dual-UTM Shared Network. "
+                "Serial console: after guest B DHCP, run "
+                "`netpeer <B-ip>:1236` then `netseal`. Built by sel4-personal-os/dev."
+            ),
+            guest_a_loader,
+            True,
+            "net-a",
+        ),
+        (
+            ROOT / "dist" / "Personal OS Net B.utm",
+            ".personal-os-net-b-export",
+            "Personal OS Net B",
+            (
+                "Fragment-only seal listener for dual-UTM Shared Network "
+                "(UDP 1236). Built by sel4-personal-os/dev."
+            ),
+            guest_b_loader,
+            False,
+            "net-b",
+        ),
+    )
+    for bundle, marker_name, name, notes, loader, with_disk, mac_seed in bundles:
+        ensure_utm_bundle_stopped(bundle)
+        if bundle.exists() and not (bundle / marker_name).exists():
+            raise RuntimeError(f"Refusing to overwrite an unrelated bundle: {bundle}")
+        data = bundle / "Data"
+        data.mkdir(parents=True, exist_ok=True)
+        if with_disk:
+            disk_image = data / "personal-os-disk.img"
+            if not disk_image.exists():
+                prepare_vault_disk(TEST_DISK, reset=True)
+                temporary_disk = disk_image.with_name(disk_image.name + ".new")
+                shutil.copy2(TEST_DISK, temporary_disk)
+                temporary_disk.replace(disk_image)
+        mac = _utm_shared_net_mac(mac_seed)
+        profile = _utm_serial_profile(name, notes, mac, with_disk=with_disk)
+        temporary_loader = data / "loader.elf.new"
+        shutil.copy2(loader, temporary_loader)
+        temporary_loader.replace(data / "loader.elf")
+        temporary_config = bundle / "config.plist.new"
+        with temporary_config.open("wb") as stream:
+            plistlib.dump(profile, stream)
+        temporary_config.replace(bundle / "config.plist")
+        (bundle / marker_name).write_text(
+            "Generated by sel4-personal-os/dev; dual-UTM Shared Network profile.\n"
+        )
+        print(f"Net UTM bundle: {bundle} (MAC {mac})")
+    print(
+        "Open both bundles in UTM, start Net B then Net A, note B's DHCP IP from "
+        "serial, then on A: netpeer <B-ip>:1236 && netseal. See docs/network-spike.md."
+    )
+
+
 def ensure_utm_bundle_stopped(bundle):
     """Avoid replacing an image that an active UTM QEMU process has loaded."""
     loader = str((bundle / "Data" / "loader.elf").resolve())
@@ -3581,7 +3717,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["setup", "build", "run", "test", "test-storage",
                                              "test-graphics", "test-input", "test-net",
-                                             "utm-graphics",
+                                             "utm-graphics", "utm-net",
                                              "backup-export", "backup-restore", "utm"])
     parser.add_argument("--timeout", type=float, default=20,
                         help="boot-test timeout in seconds (default: 20)")
@@ -3619,6 +3755,9 @@ def main():
         return
     if args.command == "utm-graphics":
         export_utm_graphics(args.timeout, args.profile)
+        return
+    if args.command == "utm-net":
+        export_utm_net()
         return
     if args.command == "backup-export":
         if args.output is None:

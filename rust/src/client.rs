@@ -16,9 +16,10 @@ use sel4_microkit::{
 use vault_protocol::{
     CLIENT_CHANNEL as VAULT, REPLY_CONFLICT as VAULT_CONFLICT,
     REPLY_NAMESPACE_TEST as VAULT_NAMESPACE_TEST, REPLY_NO_NET, REPLY_OK as VAULT_OK,
-    REPLY_SEND_SEAL_DEMO_OK, REPLY_SEND_UI_SEALED_OK, REQUEST_NAMESPACE_TEST as VAULT_NAMESPACE_TEST_REQUEST,
+    REPLY_SEND_SEAL_DEMO_OK, REPLY_SEND_UI_SEALED_OK, REPLY_SET_NET_PEER_OK,
+    REQUEST_NAMESPACE_TEST as VAULT_NAMESPACE_TEST_REQUEST,
     REQUEST_READ as VAULT_READ, REQUEST_SEND_SEAL_DEMO, REQUEST_SEND_UI_SEALED,
-    REQUEST_WRITE as VAULT_WRITE,
+    REQUEST_SET_NET_PEER, REQUEST_WRITE as VAULT_WRITE,
     TEST_VALUE as VAULT_TEST_VALUE,
 };
 
@@ -52,6 +53,8 @@ const SERVER_PRIVATE_ADDRESS: MessageRegisterValue = 0x4000_0000;
 const REQUEST_CONSOLE_CALC: MessageLabel = 0x201;
 const REQUEST_CONSOLE_STATUS: MessageLabel = 0x202;
 const REQUEST_CONSOLE_CRASH: MessageLabel = 0x203;
+const REQUEST_CONSOLE_NETPEER: MessageLabel = 0x205;
+const REQUEST_CONSOLE_NETSEAL: MessageLabel = 0x206;
 const REPLY_CONSOLE_ERROR: MessageLabel = 0x2ff;
 
 // seL4's AArch64 fault tag and VMFault message length.
@@ -586,6 +589,26 @@ impl Handler for Supervisor {
             self.counter_before_crash = counter;
             self.crash_request_pending = true;
             return Ok(MessageInfo::new(REPLY_OK, 0));
+        }
+        if operation == REQUEST_CONSOLE_NETPEER && count == 2 {
+            let reply = MESSAGES_APP.pp_call(MessageInfo::new(REQUEST_SET_NET_PEER, 2));
+            if reply.label() == REPLY_SET_NET_PEER_OK {
+                return Ok(MessageInfo::new(REPLY_OK, 0));
+            }
+            if reply.label() == REPLY_NO_NET {
+                return Ok(MessageInfo::new(REPLY_NO_NET, 0));
+            }
+            return Ok(MessageInfo::new(REPLY_CONSOLE_ERROR, 0));
+        }
+        if operation == REQUEST_CONSOLE_NETSEAL && count == 0 {
+            let reply = MESSAGES_APP.pp_call(MessageInfo::new(REQUEST_SEND_SEAL_DEMO, 0));
+            if reply.label() == REPLY_SEND_SEAL_DEMO_OK {
+                return Ok(MessageInfo::new(REPLY_OK, 0));
+            }
+            if reply.label() == REPLY_NO_NET {
+                return Ok(MessageInfo::new(REPLY_NO_NET, 0));
+            }
+            return Ok(MessageInfo::new(REPLY_CONSOLE_ERROR, 0));
         }
         Ok(MessageInfo::new(REPLY_CONSOLE_ERROR, 0))
     }

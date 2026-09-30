@@ -17,8 +17,9 @@ use crate::notes::{NOTES_BLOB_CAPACITY, NotesApp};
 use crate::vault_protocol::{
     APP_TEST_SUPERVISOR_CHANNEL, INITIAL_VALUE, REPLY_BAD_REQUEST, REPLY_DENIED,
     REPLY_NAMESPACE_TEST, REPLY_NO_BLOB, REPLY_NO_NET, REPLY_OK, REPLY_NET_TX_OK,
-    REPLY_SEND_SEAL_DEMO_OK, REPLY_SEND_UI_SEALED_OK, REQUEST_NAMESPACE_TEST, REQUEST_NET_TX,
-    REQUEST_READ, REQUEST_READ_BLOB, REQUEST_SEND_SEAL_DEMO, REQUEST_SEND_UI_SEALED,
+    REPLY_SEND_SEAL_DEMO_OK, REPLY_SEND_UI_SEALED_OK, REPLY_SET_NET_PEER_OK,
+    REQUEST_NAMESPACE_TEST, REQUEST_NET_TX, REQUEST_READ, REQUEST_READ_BLOB,
+    REQUEST_SEND_SEAL_DEMO, REQUEST_SEND_UI_SEALED, REQUEST_SET_NET_PEER,
     REQUEST_WRITE, REQUEST_WRITE_BLOB,
 };
 use personal_os_rust_server::calendar::{CALENDAR_BLOB_CAPACITY, Calendar};
@@ -183,6 +184,9 @@ impl Handler for NamespaceTest {
         if request.label() == REQUEST_SEND_UI_SEALED && request.count() == 0 {
             return Ok(self.handle_send_ui_sealed());
         }
+        if request.label() == REQUEST_SET_NET_PEER && request.count() == 2 {
+            return Ok(self.handle_set_net_peer());
+        }
         if request.label() != REQUEST_NAMESPACE_TEST || request.count() != 0 {
             return Ok(MessageInfo::new(REPLY_BAD_REQUEST, 0));
         }
@@ -252,6 +256,30 @@ impl NamespaceTest {
                 MessageInfo::new(REPLY_BAD_REQUEST, 0)
             }
         }
+    }
+
+    fn handle_set_net_peer(&mut self) -> MessageInfo {
+        if self.name != "MESSAGES" {
+            return MessageInfo::new(REPLY_BAD_REQUEST, 0);
+        }
+        let Some(mut page) = self.messages_net_tx else {
+            return MessageInfo::new(REPLY_NO_NET, 0);
+        };
+        let packed = get_mr(0);
+        let port = get_mr(1) as u16;
+        if port == 0 {
+            return MessageInfo::new(REPLY_BAD_REQUEST, 0);
+        }
+        let ipv4 = [
+            (packed & 0xff) as u8,
+            ((packed >> 8) & 0xff) as u8,
+            ((packed >> 16) & 0xff) as u8,
+            ((packed >> 24) & 0xff) as u8,
+        ];
+        let page = unsafe { page.as_mut() };
+        page.lock_peer(ipv4, port);
+        log(self.name, "PASS: sealed TX peer locked");
+        MessageInfo::new(REPLY_SET_NET_PEER_OK, 0)
     }
 
     /// Replay the Messages UI key path: add peer BE12CD34, compose HI, seal.

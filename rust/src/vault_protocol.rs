@@ -49,6 +49,10 @@ pub const REPLY_NET_TX_OK: MessageLabel = 0x414;
 /// Client → Messages: drive the UI compose→seal path and TX the sealed packet.
 pub const REQUEST_SEND_UI_SEALED: MessageLabel = 0x415;
 pub const REPLY_SEND_UI_SEALED_OK: MessageLabel = 0x416;
+/// Client → Messages: lock sealed-TX peer IP/port on the shared net page.
+/// MR0 = IPv4 as `a | b<<8 | c<<16 | d<<24`, MR1 = UDP port (host endian).
+pub const REQUEST_SET_NET_PEER: MessageLabel = 0x417;
+pub const REPLY_SET_NET_PEER_OK: MessageLabel = 0x418;
 
 pub const INITIAL_VALUE: MessageRegisterValue = 0;
 pub const TEST_VALUE: MessageRegisterValue = 0x4e4f_5445;

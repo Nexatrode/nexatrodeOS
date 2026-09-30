@@ -17,9 +17,12 @@ const START_CRASHER: Channel = Channel::new(5);
 const REQUEST_CONSOLE_CALC: MessageLabel = 0x201;
 const REQUEST_CONSOLE_STATUS: MessageLabel = 0x202;
 const REQUEST_CONSOLE_CRASH: MessageLabel = 0x203;
+const REQUEST_CONSOLE_NETPEER: MessageLabel = 0x205;
+const REQUEST_CONSOLE_NETSEAL: MessageLabel = 0x206;
 const REQUEST_CLOCK_STATUS: MessageLabel = 0x204;
 const REPLY_OK: MessageLabel = 0x100;
 const REPLY_OVERFLOW: MessageLabel = 0x102;
+const REPLY_NO_NET: MessageLabel = 0x412;
 
 const UART_DR: usize = 0x00;
 const UART_FR: usize = 0x18;
@@ -89,9 +92,97 @@ impl Console {
     fn print_reply_error(reply: MessageInfo) {
         if reply.label() == REPLY_OVERFLOW {
             debug_print!("error: unsigned addition overflow\r\n");
+        } else if reply.label() == REPLY_NO_NET {
+            debug_print!("error: network not ready (offline image or no DHCP)\r\n");
         } else {
             debug_print!("error: request rejected by service\r\n");
         }
+    }
+
+    fn request_netpeer(argument: &[u8]) {
+        let mut cursor = 0;
+        Self::skip_spaces(argument, &mut cursor);
+        let Some(a) = Self::parse_octet(argument, &mut cursor) else {
+            debug_print!("usage: netpeer A.B.C.D:PORT\r\n");
+            return;
+        };
+        if argument.get(cursor) != Some(&b'.') {
+            debug_print!("usage: netpeer A.B.C.D:PORT\r\n");
+            return;
+        }
+        cursor += 1;
+        let Some(b) = Self::parse_octet(argument, &mut cursor) else {
+            debug_print!("usage: netpeer A.B.C.D:PORT\r\n");
+            return;
+        };
+        if argument.get(cursor) != Some(&b'.') {
+            debug_print!("usage: netpeer A.B.C.D:PORT\r\n");
+            return;
+        }
+        cursor += 1;
+        let Some(c) = Self::parse_octet(argument, &mut cursor) else {
+            debug_print!("usage: netpeer A.B.C.D:PORT\r\n");
+            return;
+        };
+        if argument.get(cursor) != Some(&b'.') {
+            debug_print!("usage: netpeer A.B.C.D:PORT\r\n");
+            return;
+        }
+        cursor += 1;
+        let Some(d) = Self::parse_octet(argument, &mut cursor) else {
+            debug_print!("usage: netpeer A.B.C.D:PORT\r\n");
+            return;
+        };
+        if argument.get(cursor) != Some(&b':') {
+            debug_print!("usage: netpeer A.B.C.D:PORT\r\n");
+            return;
+        }
+        cursor += 1;
+        let Some(port) = Self::parse_word(argument, &mut cursor) else {
+            debug_print!("usage: netpeer A.B.C.D:PORT\r\n");
+            return;
+        };
+        Self::skip_spaces(argument, &mut cursor);
+        if cursor != argument.len() || port == 0 || port > 65535 {
+            debug_print!("usage: netpeer A.B.C.D:PORT\r\n");
+            return;
+        }
+        let packed = (a as MessageRegisterValue)
+            | ((b as MessageRegisterValue) << 8)
+            | ((c as MessageRegisterValue) << 16)
+            | ((d as MessageRegisterValue) << 24);
+        set_mr(0, packed);
+        set_mr(1, port);
+        let reply = CLIENT_CALL.pp_call(MessageInfo::new(REQUEST_CONSOLE_NETPEER, 2));
+        if reply.label() != REPLY_OK || reply.count() != 0 {
+            Self::print_reply_error(reply);
+            return;
+        }
+        debug_print!("net peer locked to {}.{}.{}.{}:{}\r\n", a, b, c, d, port);
+    }
+
+    fn request_netseal() {
+        let reply = CLIENT_CALL.pp_call(MessageInfo::new(REQUEST_CONSOLE_NETSEAL, 0));
+        if reply.label() != REPLY_OK || reply.count() != 0 {
+            Self::print_reply_error(reply);
+            return;
+        }
+        debug_print!("sealed demo handed to dhcp_client\r\n");
+    }
+
+    fn parse_octet(input: &[u8], cursor: &mut usize) -> Option<u8> {
+        let mut parsed: u32 = 0;
+        let mut found_digit = false;
+        while let Some(byte @ b'0'..=b'9') = input.get(*cursor).copied() {
+            let digit = (byte - b'0') as u32;
+            parsed = parsed.checked_mul(10)?.checked_add(digit)?;
+            if parsed > 255 {
+                return None;
+            }
+            found_digit = true;
+            *cursor += 1;
+        }
+        found_digit.then_some(parsed as u8)
     }
 
     fn read_uptime() -> Option<MessageRegisterValue> {
@@ -197,7 +288,9 @@ impl Console {
                 "help          show commands\r\n\
                  status        show uptime and component state\r\n\
                  calc A + B    add two unsigned integers in the isolated service\r\n\
-                 crash         restart the isolated fault demonstration\r\n"
+                 crash         restart the isolated fault demonstration\r\n\
+                 netpeer A.B.C.D:PORT  lock Messages sealed-TX peer (merged net image)\r\n\
+                 netseal       send the fixed PSL1 demo to the locked/default peer\r\n"
             );
         } else if input == b"status" {
             Self::print_status();
@@ -205,6 +298,13 @@ impl Console {
             Self::run_calculation(&input[5..]);
         } else if input == b"crash" {
             Self::request_crash();
+        } else if input.len() >= 8
+            && &input[..7] == b"netpeer"
+            && matches!(input[7], b' ' | b'\t')
+        {
+            Self::request_netpeer(&input[8..]);
+        } else if input == b"netseal" {
+            Self::request_netseal();
         } else {
             debug_print!("unknown command; enter help\r\n");
         }

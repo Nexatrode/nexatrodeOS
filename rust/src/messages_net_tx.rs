@@ -5,6 +5,8 @@ pub const MAX_DATAGRAM: usize = 128;
 pub const NET_READY_MAGIC: u32 = u32::from_le_bytes(*b"NET1");
 /// Also queue the datagram on the open guest TLS session (`MSG TLS TX`).
 pub const TX_FLAG_TLS: u16 = 0x1;
+/// Peer was set explicitly (console `netpeer` / SET_NET_PEER); do not overwrite.
+pub const TX_FLAG_PEER_SET: u16 = 0x2;
 
 /// Default SLIRP host gateway used by `./dev test-net` + toy_router.
 pub const DEMO_PEER_IP: [u8; 4] = [10, 0, 2, 2];
@@ -38,18 +40,36 @@ impl MessagesNetTxPage {
         self.magic == NET_READY_MAGIC
     }
 
+    pub fn peer_locked(&self) -> bool {
+        self.reserved & TX_FLAG_PEER_SET != 0
+    }
+
     pub fn set_peer(&mut self, ipv4: [u8; 4], port: u16) {
         self.dest_ip = ipv4;
         self.dest_port = port;
-        self.reserved = 0;
+        self.reserved &= TX_FLAG_TLS;
+    }
+
+    /// Lock a peer for dual-UTM / manual targeting; survives later demo defaults.
+    pub fn lock_peer(&mut self, ipv4: [u8; 4], port: u16) {
+        self.dest_ip = ipv4;
+        self.dest_port = port;
+        self.reserved = (self.reserved & TX_FLAG_TLS) | TX_FLAG_PEER_SET;
     }
 
     pub fn set_demo_peer(&mut self) {
+        if self.peer_locked() {
+            return;
+        }
         self.set_peer(DEMO_PEER_IP, DEMO_PEER_PORT);
     }
 
     /// Demo peer over UDP plus TLS when the guest TLS session is up.
     pub fn set_demo_peer_tls(&mut self) {
+        if self.peer_locked() {
+            self.reserved |= TX_FLAG_TLS;
+            return;
+        }
         self.set_peer(DEMO_PEER_IP, DEMO_PEER_PORT);
         self.reserved = TX_FLAG_TLS;
     }

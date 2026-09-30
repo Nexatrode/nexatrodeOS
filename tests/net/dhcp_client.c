@@ -33,9 +33,7 @@ net_queue_handle_t net_tx_handle;
 uintptr_t messages_net_tx;
 
 #define LWIP_TICK_MS 100
-
-static struct udp_pcb *udp_tx_socket;
-static bool pending_messages_tx;
+#define PENDING_TX_SLOTS 2
 
 struct messages_net_tx_page {
     uint32_t magic;
@@ -46,7 +44,20 @@ struct messages_net_tx_page {
     uint8_t payload[MESSAGES_NET_TX_MAX];
 };
 
-static int send_messages_datagram(void);
+struct pending_tx {
+    uint8_t payload[MESSAGES_NET_TX_MAX];
+    uint32_t length;
+    uint8_t dest_ip[4];
+    uint16_t dest_port;
+    uint16_t reserved;
+};
+
+static struct udp_pcb *udp_tx_socket;
+static struct pending_tx pending_tx[PENDING_TX_SLOTS];
+static unsigned pending_tx_count;
+
+static int send_datagram_snapshot(const struct pending_tx *tx);
+static void flush_pending_tx(void);
 
 void netif_status_callback(char *ip_addr)
 {
@@ -59,9 +70,7 @@ void netif_status_callback(char *ip_addr)
     if (messages_net_tx != 0) {
         start_tls_smoke();
     }
-    if (pending_messages_tx && send_messages_datagram() == 0) {
-        pending_messages_tx = false;
-    }
+    flush_pending_tx();
 }
 
 void set_timeout(void)
@@ -69,29 +78,22 @@ void set_timeout(void)
     sddf_timer_set_timeout(timer_config.driver_id, LWIP_TICK_MS * NS_IN_MS);
 }
 
-static int send_messages_datagram(void)
+static int send_datagram_snapshot(const struct pending_tx *tx)
 {
-    if (messages_net_tx == 0 || udp_tx_socket == NULL) {
+    if (udp_tx_socket == NULL || tx->length == 0 || tx->length > MESSAGES_NET_TX_MAX) {
         return -1;
     }
-    volatile struct messages_net_tx_page *page =
-        (volatile struct messages_net_tx_page *)messages_net_tx;
-    uint32_t length = page->length;
-    if (length == 0 || length > MESSAGES_NET_TX_MAX) {
-        sddf_dprintf("DHCP_CLIENT|LOG: bad sealed TX length\n");
-        return -1;
-    }
-    struct pbuf *p = pbuf_alloc(PBUF_TRANSPORT, length, PBUF_RAM);
+    struct pbuf *p = pbuf_alloc(PBUF_TRANSPORT, tx->length, PBUF_RAM);
     if (p == NULL) {
         sddf_dprintf("DHCP_CLIENT|LOG: pbuf_alloc failed for sealed TX\n");
         return -1;
     }
-    memcpy(p->payload, (const void *)page->payload, length);
-    uint8_t a = page->dest_ip[0];
-    uint8_t b = page->dest_ip[1];
-    uint8_t c = page->dest_ip[2];
-    uint8_t d = page->dest_ip[3];
-    uint16_t port = page->dest_port;
+    memcpy(p->payload, tx->payload, tx->length);
+    uint8_t a = tx->dest_ip[0];
+    uint8_t b = tx->dest_ip[1];
+    uint8_t c = tx->dest_ip[2];
+    uint8_t d = tx->dest_ip[3];
+    uint16_t port = tx->dest_port;
     if ((a | b | c | d) == 0 || port == 0) {
         a = 10;
         b = 0;
@@ -109,13 +111,56 @@ static int send_messages_datagram(void)
     }
     sddf_printf("MSG NET TX\n");
 
-    if ((page->reserved & MESSAGES_NET_TX_TLS) != 0) {
-        uint8_t copy[MESSAGES_NET_TX_MAX];
-        memcpy(copy, (const void *)page->payload, length);
-        if (tls_queue_sealed(copy, length) != 0) {
+    if ((tx->reserved & MESSAGES_NET_TX_TLS) != 0) {
+        if (tls_queue_sealed(tx->payload, tx->length) != 0) {
             sddf_dprintf("DHCP_CLIENT|LOG: TLS sealed queue failed\n");
         }
     }
+    return 0;
+}
+
+static void flush_pending_tx(void)
+{
+    while (pending_tx_count > 0) {
+        if (send_datagram_snapshot(&pending_tx[0]) != 0) {
+            return;
+        }
+        pending_tx_count -= 1;
+        for (unsigned i = 0; i < pending_tx_count; i++) {
+            pending_tx[i] = pending_tx[i + 1];
+        }
+    }
+}
+
+static int queue_or_send_from_page(void)
+{
+    if (messages_net_tx == 0) {
+        return -1;
+    }
+    volatile struct messages_net_tx_page *page =
+        (volatile struct messages_net_tx_page *)messages_net_tx;
+    uint32_t length = page->length;
+    if (length == 0 || length > MESSAGES_NET_TX_MAX) {
+        sddf_dprintf("DHCP_CLIENT|LOG: bad sealed TX length\n");
+        return -1;
+    }
+
+    struct pending_tx snapshot;
+    snapshot.length = length;
+    snapshot.dest_port = page->dest_port;
+    snapshot.reserved = page->reserved;
+    memcpy(snapshot.dest_ip, (const void *)page->dest_ip, 4);
+    memcpy(snapshot.payload, (const void *)page->payload, length);
+
+    flush_pending_tx();
+    if (send_datagram_snapshot(&snapshot) == 0) {
+        return 0;
+    }
+    if (pending_tx_count >= PENDING_TX_SLOTS) {
+        sddf_dprintf("DHCP_CLIENT|LOG: sealed TX pending queue full\n");
+        return -1;
+    }
+    pending_tx[pending_tx_count++] = snapshot;
     return 0;
 }
 
@@ -143,12 +188,14 @@ void init(void)
             (volatile struct messages_net_tx_page *)messages_net_tx;
         page->magic = MESSAGES_NET_READY_MAGIC;
         page->length = 0;
-        page->dest_ip[0] = 10;
-        page->dest_ip[1] = 0;
-        page->dest_ip[2] = 2;
-        page->dest_ip[3] = 2;
-        page->dest_port = UDP_HOST_TX_PORT;
-        page->reserved = 0;
+        if ((page->reserved & MESSAGES_NET_TX_PEER_SET) == 0) {
+            page->dest_ip[0] = 10;
+            page->dest_ip[1] = 0;
+            page->dest_ip[2] = 2;
+            page->dest_ip[3] = 2;
+            page->dest_port = UDP_HOST_TX_PORT;
+            page->reserved = 0;
+        }
     }
 
     sddf_lwip_maybe_notify();
@@ -178,10 +225,8 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
     if (label != REQUEST_NET_TX) {
         return microkit_msginfo_new(0, 0);
     }
-    if (send_messages_datagram() != 0) {
-        pending_messages_tx = true;
-    } else {
-        pending_messages_tx = false;
+    if (queue_or_send_from_page() != 0) {
+        return microkit_msginfo_new(0, 0);
     }
     return microkit_msginfo_new(REPLY_NET_TX_OK, 0);
 }

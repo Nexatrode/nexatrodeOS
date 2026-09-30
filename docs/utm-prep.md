@@ -30,9 +30,9 @@ UTM does **not** replace Pixel boot, GENI UART, Wi‑Fi, modem, or power.
 6. **Messages** compose → `SEALED N` locally (still offline in the UTM image).
 7. **Serial profile** remains separate: `./dev utm` / `dist/Personal OS.utm`
    for non-graphics work.
-8. **Optional net:** keep proving connectivity with `./dev test-net` (not the
-   graphics UTM). Dual-UTM Shared Network is manual
-   ([network-spike.md](network-spike.md)).
+8. **Optional net:** `./dev test-net` on QEMU, or `./dev utm-net` for dual-UTM
+   Shared Network bundles (`Personal OS Net A/B.utm`; see
+   [network-spike.md](network-spike.md)). Graphics UTM stays offline.
 
 ## Still later on UTM
 

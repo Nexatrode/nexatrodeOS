@@ -26,6 +26,8 @@
 
 /* messages_net_tx.reserved: also send the datagram over the open TLS session. */
 #define MESSAGES_NET_TX_TLS 0x1u
+/* messages_net_tx.reserved: peer was locked by Messages (do not reset on init). */
+#define MESSAGES_NET_TX_PEER_SET 0x2u
 
 int setup_udp_socket(void);
 int setup_tcp_socket(void);

@@ -101,32 +101,37 @@ guest A can address guest B directly.
 
 ### Suggested experiment
 
-1. Run `./dev test-net` once so artifacts exist under `build/sddf-net-spike/`
-   (`net-system-loader.img`) and the fragment build (`loader.img` for guest B).
-2. Create two UTM VMs (aarch64 virt, VirtIO net). Prefer **Shared Network** so
-   both get addresses on the same private LAN without exposing the host Wi‑Fi.
-   Bridged works if you want host-LAN IPs instead.
-3. Attach guest A to the merged Personal OS net loader; guest B to the fragment
-   loader (same CPU/memory/load address as QEMU). Keep serial consoles open.
-4. Confirm both finish DHCP (or assign static IPs on the shared subnet) and that
-   guest B still binds UDP **1236**.
-5. Peer path options:
-   - **Direct (goal):** set the shared-page peer to guest B’s shared-LAN IP
-     `:1236` (Messages `set_peer` / page fields; demo defaults are
-     `10.0.2.2:1237`), trigger `SEND_SEAL_DEMO`, and watch guest B print
-     `SEAL OK` with **no** `toy_router`.
-   - **Host relay (interim):** keep SLIRP/user net or hostfwd and run
-     [`toy_router.py`](../tests/net/toy_router.py) on the Mac as in test-net.
-6. Optional: TCP echo to guest A on shared-LAN IP `:1238` from the host or from
-   guest B once a TCP client exists there.
+1. Run `./dev utm-net` to build the merged net image and fragment guest B, then
+   export `dist/Personal OS Net A.utm` and `dist/Personal OS Net B.utm` with
+   VirtIO net on mmio `bus.0` and UTM **Shared** (`vmnet-shared`) networking.
+   (Or run `./dev test-net` first if you only need the loaders under
+   `build/sddf-net-spike/`.)
+2. Open both bundles in UTM (aarch64 virt). Keep **serial terminals** visible.
+   Do not use the graphics UTM profile for this experiment.
+3. Start **Net B** first, then **Net A**. Confirm both finish DHCP on the shared
+   subnet (often `192.168.64.0/24` with the host at `.1`) and that guest B still
+   binds UDP **1236**.
+4. On guest A’s console, lock the peer to guest B and send the fixed demo:
+   `netpeer <guest-B-ip>:1236` then `netseal`. Guest B should print `SEAL OK`
+   with **no** `toy_router`.
+5. Optional interim: host relay with [`toy_router.py`](../tests/net/toy_router.py)
+   if Shared Network DHCP or VirtIO IRQ layout fails — fall back to QEMU
+   `./dev test-net`.
+6. Optional: TCP echo to guest A on shared-LAN IP `:1238` from the host once
+   reachable.
 
 ### Success / stop conditions
 
 - **Pass:** guest B prints `SEAL OK` for the fixed PSL1 demo after guest A’s
-  sealed TX, without relying on QEMU hostfwd alone.
+  `netseal`, without relying on QEMU hostfwd alone.
 - **Stop:** Shared Network DHCP missing, VirtIO net IRQ/mmio mismatch vs the
   QEMU layout, or graphics+net attempted in one VM (`timer_driver` name clash).
   Fall back to QEMU + `toy_router`; do not block U5 apps on this experiment.
+
+Console helpers on the merged net image: `netpeer A.B.C.D:PORT` locks the
+shared-page peer (survives later demo defaults); `netseal` re-sends the fixed
+PSL1 demo. Boot-time `SEND_SEAL_DEMO` still targets the SLIRP demo peer unless
+a peer was locked earlier.
 
 The sealed TX peer IP/port is already on the shared `messages_net_tx` page
 (demo default `10.0.2.2:1237`). Guest TLS carries the fixed PSL1 demo
@@ -147,13 +152,14 @@ compose).
 
 - Emulated Ethernet / NAT is not Mac Wi‑Fi and not a Pixel radio.
 - Graphics+input+net still collide on the shared `timer_driver` name.
-- Dual-UTM shared LAN is documented as a manual sketch; not part of CI.
+- Dual-UTM Shared Network: `./dev utm-net` exports Net A/B bundles; console
+  `netpeer` / `netseal` enable direct peer targeting. Manual boot + `SEAL OK`
+  result not yet recorded.
 - TLS smoke uses a demo self-signed pin + deterministic entropy — not production PKI.
 - Fake modem / SMS / SimpleX are out of scope.
 
 ## Next
 
-1. Run the dual-UTM Shared Network experiment when convenient; record results here.
+1. Run `./dev utm-net` and record dual-UTM Shared Network results here (pass/stop).
 2. Fake modem / audio / camera backends as needed.
-3. Optional Messages UI / IPC to set peer IP without a rebuild (page fields already exist).
-4. Production TLS/PKI (real entropy, clock, pin UX) when leaving smoke territory.
+3. Production TLS/PKI (real entropy, clock, pin UX) when leaving smoke territory.
