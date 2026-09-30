@@ -1,6 +1,6 @@
 //! Static Settings stub copy for the local-only device shell.
 
-pub const SETTINGS_TEXT: &[u8] = b"LOCAL ONLY\nNO CLOUD YET";
+pub const SETTINGS_TEXT: &[u8] = b"LOCAL ONLY\nVAULT LOCAL\nNO NET YET";
 pub const SETTINGS_TEXT_LENGTH: usize = SETTINGS_TEXT.len();
 
 #[cfg(test)]

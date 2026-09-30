@@ -74,6 +74,7 @@ later)—see [explicit-contact-messaging.md](explicit-contact-messaging.md).
 
 ## Related docs
 
+- [UTM prep checklist](utm-prep.md)
 - [Network spike](network-spike.md)
 - [Roadmap UTM vs Pixel tracks](roadmap.md) (includes home-screen today vs planned)
 - [Input spike](input-spike.md)

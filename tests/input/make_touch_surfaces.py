@@ -382,7 +382,7 @@ def main():
         elif focus == "messages":
             frame.text(20, 204, "OFFLINE PEER KEYS", (139, 184, 190))
         elif focus == "settings":
-            frame.text(20, 204, "LOCAL ONLY  NO CLOUD YET", (139, 184, 190))
+            frame.text(20, 204, "LOCAL ONLY  NO NET YET", (139, 184, 190))
         elif app_text.startswith("ADD "):
             frame.text(20, 204, "ENTER NEXT  BACKSPACE EDIT", (139, 168, 190))
         elif app_text.startswith("NO CONTACTS") or app_text.startswith("NO REMINDERS"):
@@ -403,6 +403,7 @@ def main():
     frame.text(22, 385, "SECURE INPUT ROUTER", (120, 144, 160))
 
     # Guest-drawn tablet cursor parked in the footer for stable QEMU compares.
+    # Amber arrow with dark halo (matches tests/input/gpu_client.c).
     pointer_x, pointer_y = 290, 390
     cursor = (
         "X      ",
@@ -422,9 +423,15 @@ def main():
                 continue
             px = pointer_x + column
             py = pointer_y + row
-            if row > 0 and cursor[row - 1][column] != "X":
-                frame.rect(px, py - 1, 1, 1, (11, 21, 18))
-            frame.rect(px, py, 1, 1, (255, 206, 20))
+            for oy in (-1, 0, 1):
+                for ox in (-1, 0, 1):
+                    if ox == 0 and oy == 0:
+                        continue
+                    hx, hy = px + ox, py + oy
+                    if 0 <= hx < WIDTH and 0 <= hy < HEIGHT:
+                        frame.rect(hx, hy, 1, 1, (11, 21, 18))
+            if 0 <= px < WIDTH and 0 <= py < HEIGHT:
+                frame.rect(px, py, 1, 1, (255, 206, 20))
 
     frame.save(sys.argv[1])
 

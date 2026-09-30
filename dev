@@ -1782,7 +1782,7 @@ def verify_input_text_cold_boot(qemu_command, gpu_build, expected_pixels, timeou
                 tap_pixel(30, 24)
                 wait_for_saved_frame("none")
                 tap_pixel(150, 206)  # Open Settings stub from the launcher.
-                wait_for_saved_frame("settings", "LOCAL ONLY\nNO CLOUD YET")
+                wait_for_saved_frame("settings", "LOCAL ONLY\nVAULT LOCAL\nNO NET YET")
                 qmp_execute(stream, "quit")
                 process.wait(timeout=5)
     finally:
@@ -1882,7 +1882,7 @@ def input_test(timeout):
         ("messages", "COMPOSE\n"),
         ("messages", "COMPOSE\nHI"),
         ("messages", "- KEY BE12CD34\n  SEALED 1"),
-        ("settings", "LOCAL ONLY\nNO CLOUD YET"),
+        ("settings", "LOCAL ONLY\nVAULT LOCAL\nNO NET YET"),
     ]
     for focus, app_text in frame_cases:
         label = app_text.replace("\n", "-") or "empty"
@@ -2225,8 +2225,9 @@ def input_test(timeout):
                         ]})
 
                     park_cursor()
+                    frame_deadline = time.monotonic() + timeout
                     attempt = 0
-                    while time.monotonic() < deadline:
+                    while time.monotonic() < frame_deadline:
                         if attempt > 0 and attempt % 8 == 0:
                             park_cursor()
                         qmp_hmp(stream, f"screendump {frame_path}")
@@ -2258,7 +2259,8 @@ def input_test(timeout):
                     )
 
                 def wait_for_log(marker):
-                    while time.monotonic() < deadline:
+                    log_deadline = time.monotonic() + timeout
+                    while time.monotonic() < log_deadline:
                         trace = serial_log.read_text(errors="replace") if serial_log.exists() else ""
                         if marker in trace:
                             return
@@ -2268,7 +2270,8 @@ def input_test(timeout):
                     raise RuntimeError(f"Guest did not emit {marker!r}; inspect {serial_log}")
 
                 def wait_for_log_count(marker, count):
-                    while time.monotonic() < deadline:
+                    log_deadline = time.monotonic() + timeout
+                    while time.monotonic() < log_deadline:
                         trace = serial_log.read_text(errors="replace") if serial_log.exists() else ""
                         if trace.count(marker) >= count:
                             return
@@ -2450,7 +2453,7 @@ def input_test(timeout):
                 qmp_execute(stream, "send-key", {
                     "keys": [{"type": "qcode", "data": "tab"}], "hold-time": 150,
                 })
-                wait_for_frame("settings", "LOCAL ONLY\nNO CLOUD YET")
+                wait_for_frame("settings", "LOCAL ONLY\nVAULT LOCAL\nNO NET YET")
                 qmp_execute(stream, "send-key", {
                     "keys": [{"type": "qcode", "data": "tab"}], "hold-time": 150,
                 })
@@ -2609,9 +2612,11 @@ def input_test(timeout):
                 tap_pixel(30, 24)
                 wait_for_frame("none")
                 tap_pixel(150, 206)  # Open Settings from the launcher.
-                wait_for_frame("settings", "LOCAL ONLY\nNO CLOUD YET")
+                wait_for_frame("settings", "LOCAL ONLY\nVAULT LOCAL\nNO NET YET")
 
                 converter = shutil.which("magick") or tool("convert")
+                # Frame waits use their own deadlines; refresh for serial marker collection.
+                deadline = time.monotonic() + timeout
                 while time.monotonic() < deadline:
                     trace = serial_log.read_text(errors="replace") if serial_log.exists() else ""
                     received.update(event for event in expected_events if event in trace)
@@ -2667,7 +2672,7 @@ def input_test(timeout):
                         ("messages", "COMPOSE\n"),
                         ("messages", "COMPOSE\nHI"),
                         ("messages", "- KEY BE12CD34\n  SEALED 1"),
-                        ("settings", "LOCAL ONLY\nNO CLOUD YET"),
+                        ("settings", "LOCAL ONLY\nVAULT LOCAL\nNO NET YET"),
                     }
                     expected_frames.update(multi_note_frame_keys)
                     if received == expected_events and rendered == expected_frames:
@@ -2727,7 +2732,7 @@ def input_test(timeout):
         ("messages", "COMPOSE\n"),
         ("messages", "COMPOSE\nHI"),
         ("messages", "- KEY BE12CD34\n  SEALED 1"),
-        ("settings", "LOCAL ONLY\nNO CLOUD YET"),
+        ("settings", "LOCAL ONLY\nVAULT LOCAL\nNO NET YET"),
     }
     expected_frames.update(multi_note_frame_keys)
     if received != expected_events or rendered != expected_frames:

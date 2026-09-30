@@ -282,24 +282,20 @@ distribution plan. A lab call demonstration does not establish those properties.
 
 ## Next concrete milestone
 
-The separate `Personal OS Graphics.utm` profile boots and renders in UTM. Tab
-navigation reaches Notes, Contacts, Calculator, Clock, Calendar, Messages, and
-Settings; physical keys make `8 + 2` display `10`. The QEMU input suite covers
-those workspaces, including launcher, Tab, and app-bar navigation. Direct pointer
-clicks still need a reliable manual check because desktop automation did not
-consistently target the VM window. Keep the default serial profile separate.
+Treat **UTM as the product shell** before Pixel bring-up. Refresh
+`./dev utm-graphics`, confirm tablet + amber guest cursor, and walk the seven
+workspaces (see [utm-prep.md](utm-prep.md)). Keep the default serial profile
+separate.
 
-Next, keep using `./dev utm-graphics` for the seven-workspace home, or deepen
-U6 after the integrated VirtIO net merge (`./dev test-net`, see
-[network-spike.md](network-spike.md)): optional dual-UTM Shared Network
-experiment, then cert/TOFU TLS and Messages-over-TLS toward the explicit-contact path.
-See [utm-vs-hardware.md](utm-vs-hardware.md) for what UTM can and cannot prove.
-Pixel boot and driver research stays a separate feasibility track; no Pixel
-flash is required for this step. U3 still has meaningful long-term work:
-the development crypto provider is not a security anchor, rollback protection
-needs a trusted monotonic source, and flush testing does not establish real
-host/device power-loss durability. See the [QEMU block-storage integration](storage-spike.md)
-for its current evidence and limits.
+QEMU already covers launcher/Tab/app-bar navigation and app frames. Direct
+pointer comfort is a manual UTM check. U6 net/TLS stays on `./dev test-net`
+(graphics UTM remains offline). Pixel P0 stays a separate track
+([pixel-p0-boot-feasibility.md](pixel-p0-boot-feasibility.md)): UART + backup
+before any flash.
+
+Optional next software slices on UTM/QEMU: cert/TOFU TLS, Messages UI over TLS,
+Settings/notifications polish. See [utm-vs-hardware.md](utm-vs-hardware.md) for
+what the emulator cannot prove.
 
 Begin P0 as a bounded feasibility study alongside U3. Follow the
 [P0 boot/debug checklist](pixel-p0-boot-feasibility.md); keep partition writes

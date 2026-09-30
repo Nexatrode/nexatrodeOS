@@ -277,6 +277,7 @@ simulated wall clock, and serial keyboard input is not a graphical interface.
 | `docs/input-spike.md` | VirtIO input event acquisition test and remaining app-routing work |
 | `docs/network-spike.md` | Standalone and integrated VirtIO Ethernet spike (DHCP + UDP echo) |
 | `docs/utm-vs-hardware.md` | What UTM proves vs Pixel hardware; tablet cursor vs mouse |
+| `docs/utm-prep.md` | Pre-Pixel UTM shell checklist (graphics profile, tablet, apps) |
 | `docs/pixel-p0-boot-feasibility.md` | Pixel 4a P0 boot/debug checklist; conditional go pending UART + backup |
 | `docs/pixel-key-feasibility.md` | Pixel 4a Titan M/StrongBox research and the unresolved seL4 access path |
 | `platforms/sunfish/` | Desk-only seL4 overlay DTS + GENI UART putchar stubs (not flashed, not in QEMU build) |
@@ -296,18 +297,19 @@ Generated SDK files, build output, and UTM bundles are excluded from Git.
 
 ## Next milestones
 
-1. Open `dist/Personal OS Graphics.utm` with UTM’s USB Tablet input; confirm the
-   amber guest cursor follows the pointer and Clock/Calendar/Messages/Settings work as expected.
-2. Continue U6 after the integrated net merge (`./dev test-net`): Messages vault
-   and sealed text (explicit-contact path).
+1. Run `./dev utm-graphics`, open `dist/Personal OS Graphics.utm` with USB Tablet,
+   and walk the [UTM prep checklist](docs/utm-prep.md) (amber cursor, seven
+   workspaces, Settings local-only status).
+2. Keep proving net/TLS with `./dev test-net` (graphics UTM stays offline).
 3. Keep evaluating trusted crypto, rollback protection, and storage durability for U3.
-4. Pixel P0: acquire a 1.8 V USB-C SBU UART adapter, confirm userdata backup, dump
-   live slot `b` boot images; desk scaffold is under `platforms/sunfish/`.
-4. Investigate Pixel 4a boot and driver feasibility independently; no device flash is part of the current UTM work.
+4. Pixel P0 only after UART adapter + userdata backup
+   ([pixel-p0-boot-feasibility.md](docs/pixel-p0-boot-feasibility.md)); desk
+   scaffold is under `platforms/sunfish/`. No flash until that go/no-go clears.
 
 See the [UTM-to-Pixel roadmap](docs/roadmap.md) for the complete staged plan,
 relative effort, hardware decision points, and acceptance criteria. EL2 is relevant
 to a Linux driver VM; it is not a universal prerequisite for a native seL4 system.
+[UTM prep](docs/utm-prep.md) is the pre-Pixel shell checklist.
 [UTM vs hardware limits](docs/utm-vs-hardware.md) records what the emulator can
 and cannot prove (tablet cursor vs mouse, Ethernet vs Wi‑Fi, no cellular yet).
 The [QEMU block-storage integration](docs/storage-spike.md) records the regular

@@ -624,7 +624,7 @@ static void draw_notes_list(uint8_t *frame, const char *text, uint32_t length,
 
 static void draw_pointer_cursor(uint8_t *frame, uint32_t x, uint32_t y)
 {
-    /* Compact arrow so UTM tablet mode still shows where the absolute pointer is. */
+    /* Amber arrow with a dark halo so UTM USB Tablet mode stays aimable. */
     static const char *rows[] = {
         "X      ",
         "XX     ",
@@ -647,20 +647,26 @@ static void draw_pointer_cursor(uint8_t *frame, uint32_t x, uint32_t y)
             if (px < 0 || py < 0 || px >= FB_IMG_WIDTH || py >= FB_IMG_HEIGHT) {
                 continue;
             }
-            size_t offset = ((size_t)py * FB_IMG_WIDTH + (size_t)px) * GPU_BPP_2D;
-            /* Bright amber tip with a dark outline pixel above for contrast. */
-            frame[offset] = 20;
-            frame[offset + 1] = 206;
-            frame[offset + 2] = 255;
-            if (row > 0 && rows[row - 1][column] != 'X') {
-                int oy = py - 1;
-                if (oy >= 0) {
-                    size_t outline = ((size_t)oy * FB_IMG_WIDTH + (size_t)px) * GPU_BPP_2D;
+            for (int oy = -1; oy <= 1; oy++) {
+                for (int ox = -1; ox <= 1; ox++) {
+                    if (ox == 0 && oy == 0) {
+                        continue;
+                    }
+                    int hx = px + ox;
+                    int hy = py + oy;
+                    if (hx < 0 || hy < 0 || hx >= FB_IMG_WIDTH || hy >= FB_IMG_HEIGHT) {
+                        continue;
+                    }
+                    size_t outline = ((size_t)hy * FB_IMG_WIDTH + (size_t)hx) * GPU_BPP_2D;
                     frame[outline] = 18;
                     frame[outline + 1] = 21;
                     frame[outline + 2] = 11;
                 }
             }
+            size_t offset = ((size_t)py * FB_IMG_WIDTH + (size_t)px) * GPU_BPP_2D;
+            frame[offset] = 20;
+            frame[offset + 1] = 206;
+            frame[offset + 2] = 255;
         }
     }
 }
@@ -845,7 +851,7 @@ static void draw_app_page(uint8_t *frame, uint32_t focus, const char *text,
     } else if (focus == 6) {
         draw_label(frame, 20, 204, "OFFLINE PEER KEYS", 17, 190, 184, 139, 1);
     } else if (focus == 7) {
-        draw_label(frame, 20, 204, "LOCAL ONLY  NO CLOUD YET", 24, 190, 184, 139, 1);
+        draw_label(frame, 20, 204, "LOCAL ONLY  NO NET YET", 22, 190, 184, 139, 1);
     } else {
         bool editing = length >= 4 && text[0] == 'A' && text[1] == 'D' &&
                        text[2] == 'D' && text[3] == ' ';
