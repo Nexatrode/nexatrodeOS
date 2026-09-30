@@ -1091,6 +1091,7 @@ def integrated_net_test(timeout, python, env):
         f"MICROKIT_SDK={SDK}", f"MICROKIT_BOARD={LOCK['board']}",
         f"MICROKIT_CONFIG={LOCK['configuration']}", f"SDDF={SDDF}",
         f"PYTHON={python}", f"BUILD_DIR={fragment_build}",
+        str(fragment_build / "loader.img"),
     ], cwd=ROOT, env=env)
 
     for elf_name in (
@@ -1110,12 +1111,42 @@ def integrated_net_test(timeout, python, env):
     run([SDK / "bin/microkit", merged_system, "--search-path", BUILD,
          "--board", LOCK["board"], "--config", LOCK["configuration"],
          "-o", loader, "-r", net_build / "net-system-report.txt"])
+    guest_b_loader = fragment_build / "loader.img"
+    if not guest_b_loader.exists():
+        raise RuntimeError(f"net fragment build did not produce {guest_b_loader}")
     prepare_vault_disk(TEST_DISK, reset=True)
 
     serial_log = net_build / "net-system-serial.log"
     qemu_log = net_build / "net-system-qemu.stderr"
-    serial_log.unlink(missing_ok=True)
-    qemu_log.unlink(missing_ok=True)
+    guest_b_serial = net_build / "guest-b-serial.log"
+    guest_b_qemu = net_build / "guest-b-qemu.stderr"
+    router_save = net_build / "toy-router-datagram.bin"
+    for path in (serial_log, qemu_log, guest_b_serial, guest_b_qemu, router_save):
+        path.unlink(missing_ok=True)
+
+    expected_sealed = subprocess.check_output(
+        [tool("python3"), ROOT / "tests" / "net" / "seal_packet.py"]
+    )
+    router = subprocess.Popen(
+        [
+            tool("python3"), ROOT / "tests" / "net" / "toy_router.py",
+            "--listen", "1237", "--forward", "1246", "--count", "1",
+            "--save", str(router_save),
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    guest_b_command = [
+        tool("qemu-system-aarch64"), "-machine", "virt,virtualization=on",
+        "-accel", "tcg", "-cpu", LOCK["cpu"], "-smp", "1",
+        "-m", LOCK["memory"], "-serial", f"file:{guest_b_serial}",
+        "-monitor", "none", "-display", "none", "-global",
+        "virtio-mmio.force-legacy=false", "-device",
+        f"loader,file={guest_b_loader},addr={LOCK['load_address']},cpu-num=0",
+        "-device", "virtio-net-device,netdev=netdev0,bus=virtio-mmio-bus.0",
+        "-netdev", "user,id=netdev0,hostfwd=udp::1246-10.0.2.15:1236",
+        "-d", "guest_errors",
+    ]
     qemu_command = [
         tool("qemu-system-aarch64"), "-machine", "virt,virtualization=on",
         "-accel", "tcg", "-cpu", LOCK["cpu"], "-smp", "1",
@@ -1135,6 +1166,7 @@ def integrated_net_test(timeout, python, env):
     ]
     deadline = time.monotonic() + timeout
     process = None
+    guest_b = None
     # Serial from concurrent PDs can interleave mid-line; require fragments that
     # still appear even when "dhcp_client is:" is split across other output.
     dhcp_markers = (
@@ -1143,8 +1175,25 @@ def integrated_net_test(timeout, python, env):
     )
     isolation_marker = "ISOLATION COMPLETE: 27 checks passed"
     seal_marker = "SEAL OK"
+    msg_tx_marker = "MSG NET TX"
     forbidden = ("faulting PD:", "Failed assertion", "MON|ERROR", "Kernel panic", "FAIL:")
     try:
+        with guest_b_qemu.open("wb") as errors:
+            guest_b = subprocess.Popen(
+                guest_b_command, stdout=subprocess.DEVNULL, stderr=errors
+            )
+        while time.monotonic() < deadline:
+            if guest_b.poll() is not None:
+                raise RuntimeError(f"Guest B QEMU exited during boot; inspect {guest_b_qemu}")
+            trace_b = guest_b_serial.read_text(errors="replace") if guest_b_serial.exists() else ""
+            if any(marker in trace_b for marker in forbidden):
+                raise RuntimeError(f"Guest B faulted; inspect {guest_b_serial}")
+            if "DHCP request finished" in trace_b and "10.0.2.15" in trace_b:
+                break
+            time.sleep(0.05)
+        else:
+            raise RuntimeError(f"Guest B missed DHCP; inspect {guest_b_serial}")
+
         with qemu_log.open("wb") as errors:
             process = subprocess.Popen(qemu_command, stdout=subprocess.DEVNULL, stderr=errors)
             while time.monotonic() < deadline:
@@ -1163,6 +1212,46 @@ def integrated_net_test(timeout, python, env):
             else:
                 raise RuntimeError(
                     f"Integrated network guest missed isolation or DHCP; inspect {serial_log}"
+                )
+
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    raise RuntimeError(
+                        f"Integrated network QEMU exited before Messages TX; inspect {qemu_log}"
+                    )
+                if router.poll() is not None and router.returncode != 0:
+                    raise RuntimeError("toy_router exited with an error before Messages TX")
+                trace = serial_log.read_text(errors="replace") if serial_log.exists() else ""
+                if any(marker in trace for marker in forbidden):
+                    raise RuntimeError(
+                        f"Integrated network guest faulted waiting for Messages TX; "
+                        f"inspect {serial_log}"
+                    )
+                if msg_tx_marker in trace and router_save.exists():
+                    break
+                time.sleep(0.05)
+            else:
+                raise RuntimeError(
+                    f"Integrated network guest missed {msg_tx_marker}; inspect {serial_log}"
+                )
+            if router_save.read_bytes() != expected_sealed:
+                raise RuntimeError(
+                    f"Messages sealed TX mismatch via toy_router; inspect {serial_log}"
+                )
+            while time.monotonic() < deadline:
+                if guest_b.poll() is not None:
+                    raise RuntimeError(
+                        f"Guest B exited during seal wait; inspect {guest_b_serial}"
+                    )
+                trace_b = guest_b_serial.read_text(errors="replace") if guest_b_serial.exists() else ""
+                if any(marker in trace_b for marker in forbidden):
+                    raise RuntimeError(f"Guest B faulted after forward; inspect {guest_b_serial}")
+                if seal_marker in trace_b:
+                    break
+                time.sleep(0.05)
+            else:
+                raise RuntimeError(
+                    f"Guest B missed {seal_marker} via toy router; inspect {guest_b_serial}"
                 )
 
             payload = b"PERSONAL-OS-NET-MERGE"
@@ -1185,16 +1274,13 @@ def integrated_net_test(timeout, python, env):
                     f"Integrated UDP echo failed ({last_error}); inspect {serial_log}"
                 )
 
-            sealed = subprocess.check_output(
-                [tool("python3"), ROOT / "tests" / "net" / "seal_packet.py"]
-            )
             seal_sent = False
             last_seal_error = None
             for _attempt in range(20):
                 try:
                     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
                         sock.settimeout(1.0)
-                        sock.sendto(sealed, ("127.0.0.1", 1236))
+                        sock.sendto(expected_sealed, ("127.0.0.1", 1236))
                         seal_sent = True
                         break
                 except OSError as error:
@@ -1222,22 +1308,29 @@ def integrated_net_test(timeout, python, env):
                     f"Integrated network guest missed {seal_marker}; inspect {serial_log}"
                 )
     finally:
-        if process is not None and process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
+        for proc in (process, guest_b, router):
+            if proc is not None and proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
 
     trace = serial_log.read_text(errors="replace") if serial_log.exists() else ""
+    trace_b = guest_b_serial.read_text(errors="replace") if guest_b_serial.exists() else ""
     if (isolation_marker not in trace
             or any(marker not in trace for marker in dhcp_markers)
-            or seal_marker not in trace):
-        raise RuntimeError(f"Integrated network checks incomplete; inspect {serial_log}")
+            or seal_marker not in trace
+            or msg_tx_marker not in trace
+            or seal_marker not in trace_b):
+        raise RuntimeError(
+            f"Integrated network checks incomplete; inspect {serial_log} and {guest_b_serial}"
+        )
     print(
         f"Integrated VirtIO network: PASS; Personal OS isolation completed with "
-        f"dhcp_client DHCP, UDP echo, and SEAL OK; serial saved to {serial_log}"
+        f"dhcp_client DHCP, Messages sealed TX, toy router → guest B SEAL OK, "
+        f"UDP echo, and guest A SEAL OK; serial saved to {serial_log}"
     )
 
 

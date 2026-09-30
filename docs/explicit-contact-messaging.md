@@ -81,11 +81,12 @@ See [utm-vs-hardware.md](utm-vs-hardware.md#messaging-and-simplex-chat-long-term
 | Stage | Work |
 | --- | --- |
 | U5 | Contacts optional key-fingerprint field (PCT2, hex stub) done; Messages peer-key shell with vaulted PMS2 peers + local PSL1 sealed stubs on Home |
-| U6 | VirtIO Ethernet standalone + Personal OS merge done (`./dev test-net`: DHCP, UDP echo 1235, PSL1 `SEAL OK` on 1236); next: Messages↔net bridge, toy router on LAN between UTM instances |
+| U6 | VirtIO Ethernet + Personal OS merge + Messages→dhcp_client sealed TX + host toy router to a second guest (`./dev test-net`); next: dual-UTM bridged LAN / DNS/TLS as needed |
 | U7 | Key lifecycle, backup of key material, threat notes |
 | Pixel P3+ | Same client over real IP; still not MSISDN-as-identity |
 | Later | Voice/video; replace or federate the central router |
 
 Do **not** block calendar/Notes polish on this. It is the north star for
-**Messages**. Local seal stubs and host↔guest PSL1 UDP smoke exist; remaining
-messaging batches are on-wire peer delivery and a toy router, not a SimpleX port.
+**Messages**. Local seal stubs, host↔guest PSL1 UDP, Messages sealed TX, and a
+host toy router exist; remaining messaging batches are richer peer UX and a
+real LAN/relay story, not a SimpleX port.

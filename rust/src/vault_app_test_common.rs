@@ -16,16 +16,20 @@ use crate::input_protocol::{
 use crate::notes::{NOTES_BLOB_CAPACITY, NotesApp};
 use crate::vault_protocol::{
     APP_TEST_SUPERVISOR_CHANNEL, INITIAL_VALUE, REPLY_BAD_REQUEST, REPLY_DENIED,
-    REPLY_NAMESPACE_TEST, REPLY_NO_BLOB, REPLY_OK, REQUEST_NAMESPACE_TEST, REQUEST_READ,
-    REQUEST_READ_BLOB, REQUEST_WRITE, REQUEST_WRITE_BLOB,
+    REPLY_NAMESPACE_TEST, REPLY_NO_BLOB, REPLY_NO_NET, REPLY_OK, REPLY_NET_TX_OK,
+    REPLY_SEND_SEAL_DEMO_OK, REQUEST_NAMESPACE_TEST, REQUEST_NET_TX, REQUEST_READ,
+    REQUEST_READ_BLOB, REQUEST_SEND_SEAL_DEMO, REQUEST_WRITE, REQUEST_WRITE_BLOB,
 };
 use personal_os_rust_server::calendar::{CALENDAR_BLOB_CAPACITY, Calendar};
 use personal_os_rust_server::contacts::{CONTACTS_BLOB_CAPACITY, ContactsApp};
+use personal_os_rust_server::message_seal::{self, MAX_PACKET};
 use personal_os_rust_server::messages::{MESSAGES_BLOB_CAPACITY, Messages};
+use personal_os_rust_server::messages_net_tx::MessagesNetTxPage;
 use personal_os_rust_server::vault_blob_transfer::BlobTransferPage;
 
 const VAULT: Channel = Channel::new(0);
 const ROUTED_INPUT: Channel = Channel::new(2);
+const NET_TX: Channel = Channel::new(3);
 
 pub struct NamespaceTest {
     name: &'static str,
@@ -35,6 +39,7 @@ pub struct NamespaceTest {
     app_view: NonNull<AppViewState>,
     notes_touch_mode: Option<NonNull<AtomicU32>>,
     blob_transfer: NonNull<BlobTransferPage>,
+    messages_net_tx: Option<NonNull<MessagesNetTxPage>>,
     vault_generation: Option<MessageRegisterValue>,
     contacts: ContactsApp,
     notes: NotesApp,
@@ -50,6 +55,24 @@ impl NamespaceTest {
         notes_touch_mode: Option<NonNull<AtomicU32>>,
         blob_transfer: NonNull<BlobTransferPage>,
     ) -> Self {
+        Self::with_net_tx(
+            name,
+            other_namespace,
+            app_view,
+            notes_touch_mode,
+            blob_transfer,
+            None,
+        )
+    }
+
+    pub const fn with_net_tx(
+        name: &'static str,
+        other_namespace: usize,
+        app_view: NonNull<AppViewState>,
+        notes_touch_mode: Option<NonNull<AtomicU32>>,
+        blob_transfer: NonNull<BlobTransferPage>,
+        messages_net_tx: Option<NonNull<MessagesNetTxPage>>,
+    ) -> Self {
         Self {
             name,
             other_namespace,
@@ -58,6 +81,7 @@ impl NamespaceTest {
             app_view,
             notes_touch_mode,
             blob_transfer,
+            messages_net_tx,
             vault_generation: None,
             contacts: ContactsApp::new(),
             notes: NotesApp::new(),
@@ -152,6 +176,9 @@ impl Handler for NamespaceTest {
         if channel != APP_TEST_SUPERVISOR_CHANNEL {
             return Ok(MessageInfo::new(REPLY_DENIED, 0));
         }
+        if request.label() == REQUEST_SEND_SEAL_DEMO && request.count() == 0 {
+            return Ok(self.handle_send_seal_demo());
+        }
         if request.label() != REQUEST_NAMESPACE_TEST || request.count() != 0 {
             return Ok(MessageInfo::new(REPLY_BAD_REQUEST, 0));
         }
@@ -165,6 +192,31 @@ impl Handler for NamespaceTest {
 }
 
 impl NamespaceTest {
+    fn handle_send_seal_demo(&mut self) -> MessageInfo {
+        if self.name != "MESSAGES" {
+            return MessageInfo::new(REPLY_BAD_REQUEST, 0);
+        }
+        let Some(mut page) = self.messages_net_tx else {
+            return MessageInfo::new(REPLY_NO_NET, 0);
+        };
+        let page = unsafe { page.as_mut() };
+        if !page.net_ready() {
+            return MessageInfo::new(REPLY_NO_NET, 0);
+        }
+        let mut packet = [0u8; MAX_PACKET];
+        let length = message_seal::demo_udp_packet(&mut packet);
+        if !page.set_datagram(&packet[..length]) {
+            return MessageInfo::new(REPLY_BAD_REQUEST, 0);
+        }
+        let reply = NET_TX.pp_call(MessageInfo::new(REQUEST_NET_TX, 0));
+        if reply.label() != REPLY_NET_TX_OK {
+            log(self.name, "FAIL: dhcp_client rejected sealed TX");
+            return MessageInfo::new(REPLY_BAD_REQUEST, 0);
+        }
+        log(self.name, "PASS: sealed demo handed to dhcp_client");
+        MessageInfo::new(REPLY_SEND_SEAL_DEMO_OK, 0)
+    }
+
     fn handle_routed_input(&mut self, request: MessageInfo) -> MessageInfo {
         if request.label() != REQUEST_ROUTED_EVENT || request.count() != 3 {
             return MessageInfo::new(REPLY_ROUTED_EVENT_BAD, 0);

@@ -206,8 +206,47 @@ def main():
     if args.elf_dir is not None:
         patch_phys_in_elfs(args.elf_dir, phys_remap)
 
+    inject_messages_net_bridge(root, memory_regions, pd_names, endpoint_ids)
+
     args.output.parent.mkdir(parents=True, exist_ok=True)
     base_tree.write(args.output, encoding="UTF-8", xml_declaration=True)
+
+
+def inject_messages_net_bridge(root, memory_regions, pd_names, endpoint_ids):
+    """Map messages_net_tx into dhcp_client and add Messages→dhcp pp channel."""
+    if "messages_app" not in pd_names or "dhcp_client" not in pd_names:
+        raise RuntimeError("messages_app and dhcp_client required for sealed TX bridge")
+    if "messages_net_tx" not in memory_regions:
+        raise RuntimeError("base system missing messages_net_tx memory region")
+
+    dhcp = next(
+        pd for pd in root.findall(".//protection_domain") if pd.get("name") == "dhcp_client"
+    )
+    # Protected calls require the callee to outrank the caller (messages_app=100).
+    dhcp.set("priority", "101")
+    if not any(mapping.get("mr") == "messages_net_tx" for mapping in dhcp.findall("map")):
+        mapping = ET.SubElement(dhcp, "map")
+        mapping.set("mr", "messages_net_tx")
+        mapping.set("vaddr", "0x49_000_000")
+        mapping.set("perms", "rw")
+        mapping.set("setvar_vaddr", "messages_net_tx")
+
+    for endpoint_key in (("messages_app", "3"), ("dhcp_client", "3")):
+        if endpoint_key in endpoint_ids:
+            raise RuntimeError(f"channel endpoint already used: {endpoint_key}")
+
+    channel = ET.SubElement(root, "channel")
+    messages_end = ET.SubElement(channel, "end")
+    messages_end.set("pd", "messages_app")
+    messages_end.set("id", "3")
+    messages_end.set("pp", "true")
+    messages_end.set("notify", "false")
+    dhcp_end = ET.SubElement(channel, "end")
+    dhcp_end.set("pd", "dhcp_client")
+    dhcp_end.set("id", "3")
+    dhcp_end.set("notify", "false")
+    endpoint_ids.add(("messages_app", "3"))
+    endpoint_ids.add(("dhcp_client", "3"))
 
 
 if __name__ == "__main__":

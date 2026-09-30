@@ -2,12 +2,13 @@
  * Copyright 2026, Personal OS contributors
  * SPDX-License-Identifier: BSD-2-Clause
  *
- * Serial-free DHCP + UDP echo client for merging into Personal OS.
+ * Serial-free DHCP + UDP echo/seal client for merging into Personal OS.
  * Logging uses libsddf_util_debug (Microkit debug putchar), not PL011.
  */
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
+#include <microkit.h>
 #include <os/sddf.h>
 #include <sddf/util/util.h>
 #include <sddf/util/printf.h>
@@ -16,7 +17,10 @@
 #include <sddf/network/config.h>
 #include <sddf/timer/client.h>
 #include <sddf/timer/config.h>
+#include "lwip/err.h"
+#include "lwip/ip_addr.h"
 #include "lwip/pbuf.h"
+#include "lwip/udp.h"
 #include "dhcp_client.h"
 
 __attribute__((__section__(".timer_client_config"))) timer_client_config_t timer_config;
@@ -26,18 +30,64 @@ __attribute__((__section__(".lib_sddf_lwip_config"))) lib_sddf_lwip_config_t lib
 net_queue_handle_t net_rx_handle;
 net_queue_handle_t net_tx_handle;
 
+uintptr_t messages_net_tx;
+
 #define LWIP_TICK_MS 100
+
+static struct udp_pcb *udp_tx_socket;
+static bool pending_messages_tx;
+
+struct messages_net_tx_page {
+    uint32_t magic;
+    uint32_t length;
+    uint8_t payload[MESSAGES_NET_TX_MAX];
+};
+
+static int send_messages_datagram(void);
 
 void netif_status_callback(char *ip_addr)
 {
     /* Matches standalone echo_server wording so ./dev test-net can share markers. */
     sddf_printf("DHCP request finished, IP address for netif %s is: %s\n",
                 sddf_get_pd_name(), ip_addr);
+    if (pending_messages_tx && send_messages_datagram() == 0) {
+        pending_messages_tx = false;
+    }
 }
 
 void set_timeout(void)
 {
     sddf_timer_set_timeout(timer_config.driver_id, LWIP_TICK_MS * NS_IN_MS);
+}
+
+static int send_messages_datagram(void)
+{
+    if (messages_net_tx == 0 || udp_tx_socket == NULL) {
+        return -1;
+    }
+    volatile struct messages_net_tx_page *page =
+        (volatile struct messages_net_tx_page *)messages_net_tx;
+    uint32_t length = page->length;
+    if (length == 0 || length > MESSAGES_NET_TX_MAX) {
+        sddf_dprintf("DHCP_CLIENT|LOG: bad sealed TX length\n");
+        return -1;
+    }
+    struct pbuf *p = pbuf_alloc(PBUF_TRANSPORT, length, PBUF_RAM);
+    if (p == NULL) {
+        sddf_dprintf("DHCP_CLIENT|LOG: pbuf_alloc failed for sealed TX\n");
+        return -1;
+    }
+    memcpy(p->payload, (const void *)page->payload, length);
+    ip_addr_t dest;
+    IP_ADDR4(&dest, 10, 0, 2, 2);
+    err_t error = udp_sendto(udp_tx_socket, p, &dest, UDP_HOST_TX_PORT);
+    pbuf_free(p);
+    if (error != ERR_OK) {
+        sddf_dprintf("DHCP_CLIENT|LOG: udp_sendto failed: %s\n", lwip_strerr(error));
+        return -1;
+    }
+    sddf_printf("MSG NET TX\n");
+    return 0;
 }
 
 void init(void)
@@ -52,6 +102,19 @@ void init(void)
                    NULL, NULL, netif_status_callback, NULL, NULL, NULL);
     set_timeout();
     setup_udp_socket();
+
+    udp_tx_socket = udp_new_ip_type(IPADDR_TYPE_V4);
+    if (udp_tx_socket == NULL) {
+        sddf_dprintf("DHCP_CLIENT|LOG: failed to open TX UDP pcb\n");
+    }
+
+    if (messages_net_tx != 0) {
+        volatile struct messages_net_tx_page *page =
+            (volatile struct messages_net_tx_page *)messages_net_tx;
+        page->magic = MESSAGES_NET_READY_MAGIC;
+        page->length = 0;
+    }
+
     sddf_lwip_maybe_notify();
 }
 
@@ -68,4 +131,21 @@ void notified(sddf_channel ch)
         sddf_dprintf("DHCP_CLIENT|LOG: unexpected channel: %u\n", ch);
     }
     sddf_lwip_maybe_notify();
+}
+
+microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
+{
+    if (ch != MESSAGES_NET_CHANNEL) {
+        return microkit_msginfo_new(0, 0);
+    }
+    seL4_Word label = microkit_msginfo_get_label(msginfo);
+    if (label != REQUEST_NET_TX) {
+        return microkit_msginfo_new(0, 0);
+    }
+    if (send_messages_datagram() != 0) {
+        pending_messages_tx = true;
+    } else {
+        pending_messages_tx = false;
+    }
+    return microkit_msginfo_new(REPLY_NET_TX_OK, 0);
 }

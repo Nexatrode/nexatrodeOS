@@ -39,6 +39,14 @@ pub const REPLY_STORAGE: MessageLabel = 0x307;
 pub const REPLY_NAMESPACE_TEST: MessageLabel = 0x30a;
 pub const REPLY_NO_BLOB: MessageLabel = 0x30d;
 
+/// Client → Messages: seal the fixed PSL1 demo datagram and hand it to dhcp_client.
+pub const REQUEST_SEND_SEAL_DEMO: MessageLabel = 0x410;
+pub const REPLY_SEND_SEAL_DEMO_OK: MessageLabel = 0x411;
+pub const REPLY_NO_NET: MessageLabel = 0x412;
+/// Messages → dhcp_client: transmit the shared-page datagram to the host.
+pub const REQUEST_NET_TX: MessageLabel = 0x413;
+pub const REPLY_NET_TX_OK: MessageLabel = 0x414;
+
 pub const INITIAL_VALUE: MessageRegisterValue = 0;
 pub const TEST_VALUE: MessageRegisterValue = 0x4e4f_5445;
 pub const DENIED_WRITE_VALUE: MessageRegisterValue = 0xdead_beef;

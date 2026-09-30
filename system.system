@@ -26,6 +26,8 @@
     <memory_region name="contacts_transfer" size="0x1000" />
     <memory_region name="calendar_transfer" size="0x1000" />
     <memory_region name="messages_transfer" size="0x1000" />
+    <!-- Shared sealed-datagram page for Messages → dhcp_client (net merge maps the peer). -->
+    <memory_region name="messages_net_tx" size="0x1000" />
     <protection_domain name="server" priority="100" passive="true">
         <program_image path="rust_server.elf" />
         <map mr="server_private" vaddr="0x40000000" perms="rw" setvar_vaddr="server_private_start" />
@@ -63,6 +65,7 @@
         <program_image path="rust_messages_app.elf" />
         <map mr="messages_view" vaddr="0x43_000_000" perms="rw" cached="false" setvar_vaddr="messages_view" />
         <map mr="messages_transfer" vaddr="0x44_000_000" perms="rw" cached="false" setvar_vaddr="blob_transfer" />
+        <map mr="messages_net_tx" vaddr="0x49_000_000" perms="rw" setvar_vaddr="messages_net_tx" />
     </protection_domain>
     <!-- Explicit MCS CPU budgets, in microseconds; 3 ms per 10 ms = 30%. -->
     <protection_domain name="client" priority="99" budget="3_000" period="10_000">

@@ -8,6 +8,7 @@ pub mod contacts;
 pub mod input_protocol;
 pub mod messages;
 pub mod message_seal;
+pub mod messages_net_tx;
 pub mod notes;
 pub mod settings;
 pub mod record_crypto;
