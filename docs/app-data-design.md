@@ -45,21 +45,23 @@ blocks without rewriting their ciphertext.
 
 ## First app models
 
-The Contacts model uses a versioned `PCT1` blob with bounded, length-prefixed
-name and phone fields. The decoder validates the full payload before exposing
-it to the UI; malformed lengths, invalid characters, excess records, and
-trailing data are rejected. Legacy single-name records migrate to a one-entry
-Contacts list on first open. Keep future display snapshots bounded and copy
-only the visible page of app data into them.
+The Contacts model uses a versioned `PCT2` blob with bounded, length-prefixed
+name, phone, and optional hex key-fingerprint fields. `PCT1` blobs still decode
+with an empty fingerprint and rewrite as `PCT2` on the next persist. The decoder
+validates the full payload before exposing it to the UI; malformed lengths,
+invalid characters, excess records, and trailing data are rejected. Legacy
+single-name records migrate to a one-entry Contacts list on first open. Keep
+future display snapshots bounded and copy only the visible page of app data into
+them.
 
 The current interactive pass can create/edit note titles and bodies, insert a
 line break with physical or on-screen Enter, delete text, and preserve both
 fields, the collection, and last opened note across cold boots. Its input router
 receives only a shared Notes mode word for list-row hit-testing; note contents
 stay inside the app display snapshot. Contacts can create, select, and delete
-entries and survives a QEMU cold boot. Phone digits can be entered through the
-on-screen number row or a physical keyboard. These are app controls and do not
-belong in the vault protocol.
+entries and survives a QEMU cold boot. Phone digits and an optional 8-character
+hex key fingerprint can be entered through the on-screen keyboard or a physical
+keyboard. These are app controls and do not belong in the vault protocol.
 
 ## Acceptance checks
 

@@ -67,7 +67,7 @@ def main():
         vault,
         partition=args.partition,
         queue_capacity=32,
-        data_size=8 * 4096,
+        data_size=10 * 4096,
     )
     serial_system = block.Serial(
         sdf, uart, serial_driver, serial_virtualiser, enable_color=False
@@ -109,7 +109,7 @@ def main():
             rng_mmio, 0x52000000, "rw", cached=False, setvar_vaddr="rng_regs"
         )
     )
-    rng_dma = SystemDescription.MemoryRegion(sdf, "rng_dma", 0x2000, paddr=0x5fddc000)
+    rng_dma = SystemDescription.MemoryRegion(sdf, "rng_dma", 0x2000, paddr=0x5fdc0000)
     sdf.add_mr(rng_dma)
     entropy.add_map(
         SystemDescription.Map(

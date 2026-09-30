@@ -25,28 +25,35 @@ Personal OS UTM profile remain serial-only. `./dev test-input` adds a budgeted
 VirtIO input driver and a separately budgeted Rust router to that system. The
 32-record shared ring has bounded overflow accounting; the router validates
 keyboard/tablet events and delivers them over app-specific endpoints. QEMU
-checks the four-card launcher and Notes, Contacts, Calculator, and Clock at
-exact 300 x 400 frames, then confirms Notes and Contacts data survive a cold
-boot. The isolated Clock service owns the emulated PL031 RTC and publishes only
-the formatted UTC display snapshot; the GPU client maps it read-only and the
-input router does not forward keys to it. The test masks the changing time
-digits while comparing the rest of the Clock frame exactly. It also verifies
-touch-calculator `7 + 5 = 12` and physical-keyboard `8 + 2 = 10`, while all 25 OS
+checks the seven-workspace launcher and Notes, Contacts, Calculator, Clock,
+Calendar,
+Messages, and Settings at exact 300 x 400 frames, then confirms Notes, Contacts,
+and
+Calendar data survive a cold boot. The isolated Clock service owns the emulated
+PL031 RTC and publishes only the formatted UTC date and time snapshot; Messages
+is an offline peer-key shell with local PSL1 sealed stubs; Settings is a matching read-only stub PD. The GPU client maps them read-only
+and the
+input router does not forward keys to them. The test masks the changing date and
+time digits while comparing the rest of the Clock frame exactly. It also verifies
+touch-calculator `7 + 5 = 12` and physical-keyboard `8 + 2 = 10`, while all 26 OS
 checks and app-isolation constraints pass. The pinned sDDF still has no
 production VirtIO input driver; this input driver is a narrow QEMU test driver.
 
 `./dev utm-graphics` runs those verifications and exports a separate
 `dist/Personal OS Graphics.utm` profile with the VirtIO GPU, keyboard, and tablet
-devices plus a disposable vault disk. The profile includes the four-workspace
-launcher, Notes, Contacts, the Calculator touch keypad, and the read-only Clock
-screen; the default serial profile is unchanged.
+devices plus a disposable vault disk. The profile includes the seven-workspace
+launcher, Notes, Contacts, the Calculator touch keypad, the read-only Clock
+screen, Calendar reminders, the Messages peer-key shell, and the Settings stub; the default
+serial profile is
+unchanged.
 It enables native resolution so the 300 x 400 touch targets map consistently.
-The exported profile boots and renders in UTM; physical keyboard navigation and
-Calculator arithmetic have been checked there. Pointer clicks still need a
-reliable direct manual check, since desktop automation did not consistently
-target the intended VM window. If UTM keeps an older bundle configuration
+Keep UTM on USB Tablet mode; an amber guest cursor follows the absolute tablet
+position so clicks are visible without switching to a mouse device. The exported
+profile boots and renders in UTM; physical keyboard navigation and
+Calculator arithmetic have been checked there. If UTM keeps an older bundle configuration
 cached, remove the stale library entry and open the fresh bundle. QEMU `virt`
 has no display by default, and the guest needs matching graphics and input drivers
 ([QEMU ARM `virt`](https://www.qemu.org/docs/master/system/arm/virt),
 [QEMU VirtIO GPU](https://www.qemu.org/docs/master/system/devices/virtio/virtio-gpu.html),
 [UTM display settings](https://docs.getutm.app/settings-qemu/devices/display/)).
+See also [UTM vs hardware limits](utm-vs-hardware.md).

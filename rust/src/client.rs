@@ -28,6 +28,8 @@ include!(concat!(
 const SERVICE: Channel = Channel::new(0);
 const NOTES_APP: Channel = Channel::new(7);
 const CONTACTS_APP: Channel = Channel::new(8);
+const CALENDAR_APP: Channel = Channel::new(10);
+const MESSAGES_APP: Channel = Channel::new(11);
 const C_REFERENCE: Channel = Channel::new(4);
 const START_CRASHER: Channel = Channel::new(1);
 const CONSOLE_TO_CLIENT: Channel = Channel::new(2);
@@ -291,6 +293,20 @@ impl Supervisor {
             0,
             "Contacts app is confined to its own vault namespace",
         );
+        self.check(
+            CALENDAR_APP.pp_call(MessageInfo::new(VAULT_NAMESPACE_TEST_REQUEST, 0)),
+            VAULT_NAMESPACE_TEST,
+            0,
+            0,
+            "Calendar app is confined to its own vault namespace",
+        );
+        self.check(
+            MESSAGES_APP.pp_call(MessageInfo::new(VAULT_NAMESPACE_TEST_REQUEST, 0)),
+            VAULT_NAMESPACE_TEST,
+            0,
+            0,
+            "Messages app is confined to its own vault namespace",
+        );
 
         if self.failures != 0 {
             debug_println!("FAIL: baseline failed; fault test not started");
@@ -431,8 +447,8 @@ impl Supervisor {
             );
             debug_println!(
                 "{}",
-                if self.failures == 0 && self.checks == 25 {
-                    "ISOLATION COMPLETE: 25 checks passed; crasher stopped, services alive"
+                if self.failures == 0 && self.checks == 27 {
+                    "ISOLATION COMPLETE: 27 checks passed; crasher stopped, services alive"
                 } else {
                     "FAIL: isolation checks failed"
                 }

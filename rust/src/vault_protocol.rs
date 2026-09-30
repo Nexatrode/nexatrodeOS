@@ -11,12 +11,16 @@ pub const CRASHER_CHANNEL: Channel = Channel::new(1);
 // Vault-side endpoints bind app capabilities to fixed disk namespaces.
 pub const NOTES_APP_CHANNEL: Channel = Channel::new(3);
 pub const CONTACTS_APP_CHANNEL: Channel = Channel::new(4);
+pub const CALENDAR_APP_CHANNEL: Channel = Channel::new(5);
+pub const MESSAGES_APP_CHANNEL: Channel = Channel::new(6);
 // Local app endpoint shared by the supervisor's explicit namespace test calls.
 pub const APP_TEST_SUPERVISOR_CHANNEL: Channel = Channel::new(1);
-pub const NAMESPACE_COUNT: usize = 3;
+pub const NAMESPACE_COUNT: usize = 5;
 pub const SYSTEM_NAMESPACE: usize = 0;
 pub const NOTES_NAMESPACE: usize = 1;
 pub const CONTACTS_NAMESPACE: usize = 2;
+pub const CALENDAR_NAMESPACE: usize = 3;
+pub const MESSAGES_NAMESPACE: usize = 4;
 
 pub const REQUEST_READ: MessageLabel = 0x301;
 pub const REQUEST_WRITE: MessageLabel = 0x302;

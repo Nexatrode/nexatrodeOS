@@ -9,7 +9,8 @@ available after the kernel contains a sibling's unauthorized
 memory write. A private disk-backed vault also tests channel-based read/write
 authorization and retains its committed record across QEMU boots. A separate
 experimental graphics profile now includes isolated Notes, Contacts, a
-four-function Calculator, and a read-only UTC Clock app with routed navigation.
+four-function Calculator, a read-only UTC Clock app, a bounded Calendar reminder
+list, an offline Messages peer-key shell, and a read-only Settings stub with routed navigation.
 
 ## Run
 
@@ -34,7 +35,7 @@ The guest first prints twenty-five ordered supervisor checks and eight
 namespace-specific assertions, ending with:
 
 ```text
-ISOLATION COMPLETE: 25 checks passed; crasher stopped, services alive
+ISOLATION COMPLETE: 27 checks passed; crasher stopped, services alive
 ```
 
 It then starts a keyboard-driven serial console. Enter `help`, `status`,
@@ -73,17 +74,16 @@ to QEMU's generic `-kernel` option; the guest is seL4, with no Linux guest invol
 `src/boot-image.S` wraps the unchanged Microkit image in an ELF envelope whose entry
 point is `0x70000000`, so both launchers load it at the correct address.
 
-The side-by-side graphics build can be exported without replacing the current
-VM with:
+The graphical build exports into the default experimental UTM profile with:
 
 ```sh
-./dev utm-graphics --profile "dist/Personal OS Graphics Clock.utm"
-open -a /Applications/UTM.app "$(pwd)/dist/Personal OS Graphics Clock.utm"
+./dev utm-graphics
+open -a /Applications/UTM.app "$(pwd)/dist/Personal OS Graphics.utm"
 ```
 
-This reruns the QEMU graphics/input checks and gives the new profile a fresh,
-disposable vault disk. The profile is separate from both the serial VM and any
-existing graphics VM.
+This reruns the QEMU graphics/input checks and refreshes that profile's image.
+Pass `--profile <path>` only when you need a disposable side-by-side copy. The
+default serial `Personal OS.utm` profile stays unchanged.
 
 ## Vault backups
 
@@ -132,7 +132,8 @@ with either one.
 | `./dev test --budget-pressure` | Temporarily build a spinning crasher and verify other services progress under its CPU budget; restore the normal image afterward |
 | `./dev test-storage` | Verify entropy delivery across QEMU boots, four scalar and four blob QMP write/flush resets, a full VM snapshot restore, and two cloned VM instances; check recovery from malformed encrypted slots |
 | `./dev test-graphics` | Verify the sDDF GPU sample renders exactly on QEMU `virt`, then merge it with the regular OS and rerun isolation checks |
-| `./dev test-input` | Test isolated app input routing, exact Notes/Contacts/Calculator/Clock frames, calculator arithmetic by touch and keyboard, and Notes/Contacts cold-boot persistence in QEMU |
+| `./dev test-input` | Test isolated app input routing, exact Notes/Contacts/Calculator/Clock/Calendar/Messages/Settings frames, calculator arithmetic by touch and keyboard, and Notes/Contacts/Calendar cold-boot persistence in QEMU |
+| `./dev test-net` | Standalone sDDF echo_server DHCP+UDP, then merge serial-free `tests/net` `dhcp_client` into Personal OS; require isolation complete, DHCP, and host UDP echo (default/UTM images stay offline) |
 | `./dev utm-graphics` | Verify graphics and input, then create a separate experimental `dist/Personal OS Graphics.utm` bundle; pass `--profile <path>` to create a side-by-side profile |
 | `./dev backup-export --output vault.pvlt` | Export the latest authenticated records from the default CLI disk into a new archive |
 | `./dev backup-restore --archive vault.pvlt --output restored.img [--allow-rollback]` | Restore into a new copy of the default CLI disk; older authenticated generations require the explicit override |
@@ -269,11 +270,16 @@ simulated wall clock, and serial keyboard input is not a graphical interface.
 | `rust/src/vault.rs` | Retained RAM-backed prototype for comparison |
 | `rust/src/vault_disk_test.rs`, `tests/storage_meta.py`, `tests/merge_storage_system.py` | Standalone reboot-recovery test and generated-system merger for sDDF components |
 | `tests/merge_graphics_system.py` | Generated-system merger for the temporary sDDF GPU client and drivers |
+| `tests/merge_network_system.py`, `tests/net/` | Serial-free VirtIO net fragment and merger into Personal OS |
 | `tests/input/driver.c`, `tests/input/input.system` | Isolated VirtIO keyboard/tablet event-queue feasibility driver |
 | `docs/storage-spike.md` | Storage test evidence and durability limits |
 | `docs/graphics-spike.md` | QEMU VirtIO GPU feasibility test, compatibility fixes, and next integration step |
 | `docs/input-spike.md` | VirtIO input event acquisition test and remaining app-routing work |
+| `docs/network-spike.md` | Standalone and integrated VirtIO Ethernet spike (DHCP + UDP echo) |
+| `docs/utm-vs-hardware.md` | What UTM proves vs Pixel hardware; tablet cursor vs mouse |
+| `docs/pixel-p0-boot-feasibility.md` | Pixel 4a P0 boot/debug checklist; conditional go pending UART + backup |
 | `docs/pixel-key-feasibility.md` | Pixel 4a Titan M/StrongBox research and the unresolved seL4 access path |
+| `platforms/sunfish/` | Desk-only seL4 overlay DTS + GENI UART putchar stubs (not flashed, not in QEMU build) |
 | `docs/vault-record-v2-design.md` | Proposed AES-GCM record version, IV requirements, and mixed-version migration plan |
 | `tools/pixel-keystore-probe` | Temporary Android-only StrongBox probe; builds with the local SDK and uninstalls after a run |
 | `tests/negative_controls.py` | Tests that prevent false-positive isolation results |
@@ -290,15 +296,20 @@ Generated SDK files, build output, and UTM bundles are excluded from Git.
 
 ## Next milestones
 
-1. Open the Clock-enabled side-by-side graphics profile in UTM and test Clock
-   with Tab and pointer input; continue refining launcher and app interactions.
-2. Continue the local app set with a small calendar/reminder workflow.
+1. Open `dist/Personal OS Graphics.utm` with UTM’s USB Tablet input; confirm the
+   amber guest cursor follows the pointer and Clock/Calendar/Messages/Settings work as expected.
+2. Continue U6 after the integrated net merge (`./dev test-net`): Messages vault
+   and sealed text (explicit-contact path).
 3. Keep evaluating trusted crypto, rollback protection, and storage durability for U3.
+4. Pixel P0: acquire a 1.8 V USB-C SBU UART adapter, confirm userdata backup, dump
+   live slot `b` boot images; desk scaffold is under `platforms/sunfish/`.
 4. Investigate Pixel 4a boot and driver feasibility independently; no device flash is part of the current UTM work.
 
 See the [UTM-to-Pixel roadmap](docs/roadmap.md) for the complete staged plan,
 relative effort, hardware decision points, and acceptance criteria. EL2 is relevant
 to a Linux driver VM; it is not a universal prerequisite for a native seL4 system.
+[UTM vs hardware limits](docs/utm-vs-hardware.md) records what the emulator can
+and cannot prove (tablet cursor vs mouse, Ethernet vs Wi‑Fi, no cellular yet).
 The [QEMU block-storage integration](docs/storage-spike.md) records the regular
 image's sDDF-backed vault, reboot-recovery evidence, and the remaining limits on
 durability claims.

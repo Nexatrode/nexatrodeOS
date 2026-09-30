@@ -11,4 +11,8 @@ Large binaries are gitignored; keep checksums and notes in the repo.
 | `lineage-ref/YYYYMMDD/` | Matching Lineage `boot.img`, `dtbo.img`, `vbmeta.img`, signed ZIP, SHA256 |
 | `lineage-ref/YYYYMMDD/unpacked/` | Extracted kernel, ramdisk, DTB from `boot.img` |
 
+Related desk scaffold (not flashed): [`platforms/sunfish/`](../../platforms/sunfish/README.md)
+holds a minimal overlay DTS and GENI UART putchar stub derived from these DT
+sources.
+
 Do not commit phone serial numbers or userdata dumps here.

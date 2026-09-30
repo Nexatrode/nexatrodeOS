@@ -86,10 +86,30 @@ def main():
                 "cached": "false",
                 "setvar_vaddr": "ui_focus",
             }))
+        if "ui_pointer" in memory_regions:
+            gpu_client = next(
+                (pd for pd in root.findall("protection_domain")
+                 if pd.get("name") == "gpu_client"),
+                None,
+            )
+            if gpu_client is None:
+                raise RuntimeError("input pointer region requires the graphics gpu_client domain")
+            if any(mapping.get("mr") == "ui_pointer" for mapping in gpu_client.findall("map")):
+                raise RuntimeError("graphics client already maps the input pointer region")
+            gpu_client.append(ET.Element("map", {
+                "mr": "ui_pointer",
+                "vaddr": "0x47_000_000",
+                "perms": "r",
+                "cached": "false",
+                "setvar_vaddr": "ui_pointer",
+            }))
         app_view_mappings = {
             "notes_app": ("notes_view", "0x43_000_000", "app_view"),
             "contacts_app": ("contacts_view", "0x43_000_000", "app_view"),
             "calculator_app": ("calculator_view", "0x43_000_000", "calculator_view"),
+            "calendar_app": ("calendar_view", "0x43_000_000", "calendar_view"),
+            "messages_app": ("messages_view", "0x43_000_000", "messages_view"),
+            "settings_app": ("settings_view", "0x43_000_000", "settings_view"),
             "clock": ("clock_view", "0x50100000", "clock_view"),
         }
         for app_name, (region_name, vaddr, setvar) in app_view_mappings.items():
@@ -127,6 +147,9 @@ def main():
                 "contacts_app": "0x44_000_000",
                 "calculator_app": "0x45_000_000",
                 "clock": "0x46_000_000",
+                "calendar_app": "0x48_000_000",
+                "messages_app": "0x49_000_000",
+                "settings_app": "0x4a_000_000",
             }[app_name]
             gpu_client.append(ET.Element("map", {
                 "mr": region_name,
@@ -138,6 +161,9 @@ def main():
                     "contacts_app": "contacts_view",
                     "calculator_app": "calculator_view",
                     "clock": "clock_view",
+                    "calendar_app": "calendar_view",
+                    "messages_app": "messages_view",
+                    "settings_app": "settings_view",
                 }[app_name],
             }))
         for channel in input_root.findall("channel"):

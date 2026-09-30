@@ -145,7 +145,8 @@ def build(budget_pressure=False):
                       "rust_console", "rust_vault", "rust_vault_disk",
                       "rust_entropy_rng", "rust_input_service",
                       "rust_vault_test_client", "rust_vault_notes_test",
-                      "rust_vault_contacts_test", "rust_calculator_app"]:
+                      "rust_vault_contacts_test", "rust_calculator_app",
+                      "rust_calendar_app", "rust_messages_app", "rust_settings_app"]:
         shutil.copy2(rust_release / f"{component}.elf", BUILD / f"{component}.elf")
     c_server_obj = BUILD / "c_server.o"
     run([compiler, "--target=aarch64-none-elf", "-mcpu=cortex-a53", "-mstrict-align",
@@ -284,7 +285,7 @@ def prepare_vault_disk(path, reset, env=None):
         cwd=path.parent, env=env)
     with path.open("r+b") as disk:
         disk.seek(2048 * 512)
-        disk.write(bytes(8 * 4096))
+        disk.write(bytes(10 * 4096))
         disk.flush()
         os.fsync(disk.fileno())
 
@@ -810,7 +811,7 @@ def storage_test(timeout):
     # upstream disk helper initially creates; keep the GPT partition table.
     with (STORAGE_BUILD / "disk").open("r+b") as disk:
         disk.seek(2048 * 512)
-        disk.write(bytes(8 * 4096))
+        disk.write(bytes(10 * 4096))
         disk.flush()
         os.fsync(disk.fileno())
     pristine_disk = STORAGE_BUILD / "pristine-disk.img"
@@ -930,7 +931,7 @@ def integrated_graphics_test(timeout, gpu_build, expected_pixels, converter):
                                 width = height = 0
                             if (width == 300 and height == 400 and
                                     parts[3] == expected_pixels and
-                                    "ISOLATION COMPLETE: 25 checks passed" in
+                                    "ISOLATION COMPLETE: 27 checks passed" in
                                     (serial_log.read_text(errors="replace") if serial_log.exists() else "")):
                                 shutil.copy2(frame_path, screenshot)
                                 rendered = True
@@ -950,7 +951,7 @@ def integrated_graphics_test(timeout, gpu_build, expected_pixels, converter):
         qmp_path.unlink(missing_ok=True)
 
     trace = serial_log.read_text(errors="replace") if serial_log.exists() else ""
-    if "ISOLATION COMPLETE: 25 checks passed" not in trace:
+    if "ISOLATION COMPLETE: 27 checks passed" not in trace:
         raise RuntimeError(f"Regular OS checks did not finish; inspect {serial_log}")
     if "PD 'timer_driver' is now passive!" not in trace:
         raise RuntimeError(f"Integrated GPU timer service did not start; inspect {serial_log}")
@@ -961,6 +962,283 @@ def integrated_graphics_test(timeout, gpu_build, expected_pixels, converter):
     png = gpu_build / "graphics-system-smoke.png"
     run([converter, screenshot, png], stdout=subprocess.DEVNULL)
     print(f"Integrated graphics test: PASS; regular OS checks passed and GPU frame saved to {png}")
+
+
+def net_test(timeout):
+    """Prove VirtIO net standalone, then merged into Personal OS."""
+    setup()
+    python = setup_sddf()
+    for name in ("make", "dtc"):
+        tool(name)
+
+    net_build = BUILD / "sddf-net-spike"
+    env = os.environ.copy()
+    env["PATH"] = os.pathsep.join([
+        "/opt/homebrew/opt/llvm/bin", "/opt/homebrew/sbin",
+        env.get("PATH", "")
+    ])
+    make_args = [
+        tool("make"), "-C", SDDF / "examples/echo_server",
+        f"MICROKIT_SDK={SDK}", f"MICROKIT_BOARD={LOCK['board']}",
+        f"MICROKIT_CONFIG={LOCK['configuration']}", f"SDDF={SDDF}",
+        f"PYTHON={python}", f"BUILD_DIR={net_build}",
+        f"SMP_CONFIG={SDDF / 'examples/echo_server/core_config/single_core.json'}",
+    ]
+    if net_build.exists():
+        shutil.rmtree(net_build)
+    run(make_args + ["all"], cwd=ROOT, env=env)
+
+    loader = net_build / "loader.img"
+    if not loader.exists():
+        raise RuntimeError(f"echo_server build did not produce {loader}")
+
+    serial_log = net_build / "net-serial.log"
+    qemu_log = net_build / "net-qemu.stderr"
+    # Match the upstream echo_server QEMU layout: VirtIO net on mmio bus 0 with
+    # SLIRP user networking and host forwards for both echo clients.
+    qemu_command = [
+        tool("qemu-system-aarch64"),
+        "-machine", "virt,virtualization=on",
+        "-cpu", LOCK["cpu"],
+        "-m", LOCK["memory"],
+        "-smp", "4",
+        "-serial", f"file:{serial_log}",
+        "-monitor", "none",
+        "-display", "none",
+        "-global", "virtio-mmio.force-legacy=false",
+        "-device", f"loader,file={loader},addr={LOCK['load_address']},cpu-num=0",
+        "-device", "virtio-net-device,netdev=netdev0,bus=virtio-mmio-bus.0",
+        "-netdev",
+        "user,id=netdev0,"
+        "hostfwd=udp::1235-10.0.2.15:1235,"
+        "hostfwd=tcp::1236-10.0.2.15:1236,"
+        "hostfwd=tcp::1237-10.0.2.15:1237,"
+        "hostfwd=udp::1238-10.0.2.16:1235,"
+        "hostfwd=tcp::1239-10.0.2.16:1236,"
+        "hostfwd=tcp::1240-10.0.2.16:1237",
+        "-d", "guest_errors",
+    ]
+    deadline = time.monotonic() + timeout
+    process = None
+    dhcp_marker = "DHCP request finished, IP address for netif"
+    forbidden = ("faulting PD:", "Failed assertion", "MON|ERROR", "Kernel panic")
+    try:
+        with qemu_log.open("wb") as errors:
+            process = subprocess.Popen(qemu_command, stdout=subprocess.DEVNULL, stderr=errors)
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    raise RuntimeError(f"Network QEMU exited during boot; inspect {qemu_log}")
+                trace = serial_log.read_text(errors="replace") if serial_log.exists() else ""
+                if any(marker in trace for marker in forbidden):
+                    raise RuntimeError(f"Network echo_server guest faulted; inspect {serial_log}")
+                if trace.count(dhcp_marker) >= 2:
+                    break
+                time.sleep(0.05)
+            else:
+                raise RuntimeError(
+                    f"Network echo_server did not finish DHCP for both clients; inspect {serial_log}"
+                )
+
+            # Prove the UDP echo path from the host through SLIRP port forwards.
+            payload = b"PERSONAL-OS-NET-SPIKE"
+            echoed = False
+            last_error = None
+            for port in (1235, 1238):
+                try:
+                    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                        sock.settimeout(1.0)
+                        sock.sendto(payload, ("127.0.0.1", port))
+                        data, _address = sock.recvfrom(256)
+                        if data == payload:
+                            echoed = True
+                            break
+                except OSError as error:
+                    last_error = error
+            if not echoed:
+                raise RuntimeError(
+                    f"UDP echo through VirtIO net failed ({last_error}); inspect {serial_log}"
+                )
+    finally:
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+
+    trace = serial_log.read_text(errors="replace") if serial_log.exists() else ""
+    if any(marker in trace for marker in forbidden):
+        raise RuntimeError(f"Network echo_server guest faulted after DHCP; inspect {serial_log}")
+    if "Failed to bind the UDP socket" in trace or "Failed to open a UDP socket" in trace:
+        raise RuntimeError(f"Network echo_server failed to bind UDP; inspect {serial_log}")
+    print(
+        f"VirtIO network smoke: PASS; both echo clients got DHCP and UDP echo "
+        f"returned through SLIRP; serial saved to {serial_log}"
+    )
+    integrated_net_test(timeout, python, env)
+
+
+def integrated_net_test(timeout, python, env):
+    """Merge the serial-free dhcp_client fragment into Personal OS and re-check DHCP."""
+    build()
+    net_build = BUILD / "sddf-net-spike"
+    fragment_build = net_build / "fragment"
+    if fragment_build.exists():
+        shutil.rmtree(fragment_build)
+    run([
+        tool("make"), "-C", ROOT / "tests/net",
+        f"MICROKIT_SDK={SDK}", f"MICROKIT_BOARD={LOCK['board']}",
+        f"MICROKIT_CONFIG={LOCK['configuration']}", f"SDDF={SDDF}",
+        f"PYTHON={python}", f"BUILD_DIR={fragment_build}",
+    ], cwd=ROOT, env=env)
+
+    for elf_name in (
+        "eth_driver.elf", "dhcp_client.elf", "network_virt_rx.elf",
+        "network_virt_tx.elf", "network_copy.elf", "timer_driver.elf",
+    ):
+        shutil.copy2(fragment_build / elf_name, BUILD / elf_name)
+
+    merged_system = net_build / "net-system.system"
+    # Share the blk VirtIO MMIO page and relocate net DMA away from storage/RNG.
+    run([tool("python3"), ROOT / "tests/merge_network_system.py",
+         "--base", BUILD / "system.system",
+         "--network", fragment_build / "net.system",
+         "--output", merged_system,
+         "--elf-dir", BUILD])
+    loader = net_build / "net-system-loader.img"
+    run([SDK / "bin/microkit", merged_system, "--search-path", BUILD,
+         "--board", LOCK["board"], "--config", LOCK["configuration"],
+         "-o", loader, "-r", net_build / "net-system-report.txt"])
+    prepare_vault_disk(TEST_DISK, reset=True)
+
+    serial_log = net_build / "net-system-serial.log"
+    qemu_log = net_build / "net-system-qemu.stderr"
+    serial_log.unlink(missing_ok=True)
+    qemu_log.unlink(missing_ok=True)
+    qemu_command = [
+        tool("qemu-system-aarch64"), "-machine", "virt,virtualization=on",
+        "-accel", "tcg", "-cpu", LOCK["cpu"], "-smp", "1",
+        "-m", LOCK["memory"], "-serial", f"file:{serial_log}",
+        "-monitor", "none", "-display", "none", "-global",
+        "virtio-mmio.force-legacy=false", "-device",
+        f"loader,file={loader},addr={LOCK['load_address']},cpu-num=0",
+        "-device", "virtio-blk-device,drive=hd,bus=virtio-mmio-bus.1",
+        "-device", "virtio-rng-device,bus=virtio-mmio-bus.8",
+        "-device", "virtio-net-device,netdev=netdev0,bus=virtio-mmio-bus.0",
+        "-netdev",
+        ("user,id=netdev0,"
+         "hostfwd=udp::1235-10.0.2.15:1235,"
+         "hostfwd=udp::1236-10.0.2.15:1236"),
+        "-d", "guest_errors",
+        "-drive", f"file={TEST_DISK},if=none,format=raw,id=hd",
+    ]
+    deadline = time.monotonic() + timeout
+    process = None
+    # Serial from concurrent PDs can interleave mid-line; require fragments that
+    # still appear even when "dhcp_client is:" is split across other output.
+    dhcp_markers = (
+        "DHCP request finished",
+        "10.0.2.15",
+    )
+    isolation_marker = "ISOLATION COMPLETE: 27 checks passed"
+    seal_marker = "SEAL OK"
+    forbidden = ("faulting PD:", "Failed assertion", "MON|ERROR", "Kernel panic", "FAIL:")
+    try:
+        with qemu_log.open("wb") as errors:
+            process = subprocess.Popen(qemu_command, stdout=subprocess.DEVNULL, stderr=errors)
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    raise RuntimeError(
+                        f"Integrated network QEMU exited during boot; inspect {qemu_log}"
+                    )
+                trace = serial_log.read_text(errors="replace") if serial_log.exists() else ""
+                if any(marker in trace for marker in forbidden):
+                    raise RuntimeError(
+                        f"Integrated network guest faulted; inspect {serial_log}"
+                    )
+                if isolation_marker in trace and all(marker in trace for marker in dhcp_markers):
+                    break
+                time.sleep(0.05)
+            else:
+                raise RuntimeError(
+                    f"Integrated network guest missed isolation or DHCP; inspect {serial_log}"
+                )
+
+            payload = b"PERSONAL-OS-NET-MERGE"
+            echoed = False
+            last_error = None
+            for _attempt in range(20):
+                try:
+                    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                        sock.settimeout(1.0)
+                        sock.sendto(payload, ("127.0.0.1", 1235))
+                        data, _address = sock.recvfrom(256)
+                        if data == payload:
+                            echoed = True
+                            break
+                except OSError as error:
+                    last_error = error
+                time.sleep(0.25)
+            if not echoed:
+                raise RuntimeError(
+                    f"Integrated UDP echo failed ({last_error}); inspect {serial_log}"
+                )
+
+            sealed = subprocess.check_output(
+                [tool("python3"), ROOT / "tests" / "net" / "seal_packet.py"]
+            )
+            seal_sent = False
+            last_seal_error = None
+            for _attempt in range(20):
+                try:
+                    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                        sock.settimeout(1.0)
+                        sock.sendto(sealed, ("127.0.0.1", 1236))
+                        seal_sent = True
+                        break
+                except OSError as error:
+                    last_seal_error = error
+                time.sleep(0.25)
+            if not seal_sent:
+                raise RuntimeError(
+                    f"Integrated sealed UDP send failed ({last_seal_error}); inspect {serial_log}"
+                )
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    raise RuntimeError(
+                        f"Integrated network QEMU exited during seal check; inspect {qemu_log}"
+                    )
+                trace = serial_log.read_text(errors="replace") if serial_log.exists() else ""
+                if any(marker in trace for marker in forbidden):
+                    raise RuntimeError(
+                        f"Integrated network guest faulted after seal; inspect {serial_log}"
+                    )
+                if seal_marker in trace:
+                    break
+                time.sleep(0.05)
+            else:
+                raise RuntimeError(
+                    f"Integrated network guest missed {seal_marker}; inspect {serial_log}"
+                )
+    finally:
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+
+    trace = serial_log.read_text(errors="replace") if serial_log.exists() else ""
+    if (isolation_marker not in trace
+            or any(marker not in trace for marker in dhcp_markers)
+            or seal_marker not in trace):
+        raise RuntimeError(f"Integrated network checks incomplete; inspect {serial_log}")
+    print(
+        f"Integrated VirtIO network: PASS; Personal OS isolation completed with "
+        f"dhcp_client DHCP, UDP echo, and SEAL OK; serial saved to {serial_log}"
+    )
 
 
 def graphics_test(timeout):
@@ -1177,7 +1455,7 @@ def verify_input_text_cold_boot(qemu_command, gpu_build, expected_pixels, timeou
                     if "faulting PD:" in trace or "Failed assertion" in trace or "MON|ERROR" in trace:
                         raise RuntimeError(f"QEMU cold-boot persistence run faulted; inspect {reboot_serial}")
                     if ("UIINPUT|READY:" in trace and
-                            "ISOLATION COMPLETE: 25 checks passed" in trace):
+                            "ISOLATION COMPLETE: 27 checks passed" in trace):
                         break
                     time.sleep(0.05)
                 else:
@@ -1202,14 +1480,28 @@ def verify_input_text_cold_boot(qemu_command, gpu_build, expected_pixels, timeou
                         focus, text, scroll_start_line, notes_mode, note_count,
                         selected_note, delete_armed, notes_field
                     )
+                    park_x = (290 * 32767 + 298) // 299
+                    park_y = (390 * 32767 + 398) // 399
+
+                    def park_cursor():
+                        qmp_execute(stream, "input-send-event", {"events": [
+                            {"type": "abs", "data": {"axis": "x", "value": park_x}},
+                            {"type": "abs", "data": {"axis": "y", "value": park_y}},
+                        ]})
+
+                    park_cursor()
                     deadline = time.monotonic() + timeout
+                    attempt = 0
                     while time.monotonic() < deadline:
+                        if attempt > 0 and attempt % 8 == 0:
+                            park_cursor()
                         qmp_hmp(stream, f"screendump {reboot_frame}")
                         frame = reboot_frame.read_bytes() if reboot_frame.exists() else b""
                         parts = frame.split(b"\n", 3)
                         if (len(parts) == 4 and parts[0] == b"P6" and parts[2] == b"255" and
                                 parts[3] == expected_pixels[expected_key]):
                             return
+                        attempt += 1
                         time.sleep(0.05)
                     raise RuntimeError(
                         f"{focus} field did not restore as {text!r} after QEMU cold boot; inspect {reboot_serial}"
@@ -1232,12 +1524,24 @@ def verify_input_text_cold_boot(qemu_command, gpu_build, expected_pixels, timeou
                 tap_pixel(255, 208)
                 wait_for_saved_frame("notes", "1 TWO", notes_mode="list",
                                      note_count=1, selected_note=0)
-                tap_pixel(194, 24)  # Open the persisted Contacts list.
-                wait_for_saved_frame("contacts", "CONTACT 1 OF 2\nNAME B\nPHONE 5551234")
+                tap_pixel(83, 24)  # Open the persisted Contacts list.
+                wait_for_saved_frame("contacts", "CONTACT 1 OF 2\nNAME B\nPHONE 5551234\nKEY BE12")
                 tap_pixel(146, 208)  # Select the next contact with the DOWN control.
-                wait_for_saved_frame("contacts", "CONTACT 2 OF 2\nNAME C\nPHONE 8675309")
+                wait_for_saved_frame("contacts", "CONTACT 2 OF 2\nNAME C\nPHONE 8675309\nKEY -")
                 tap_pixel(235, 208)  # Remove the selected contact with DELETE.
-                wait_for_saved_frame("contacts", "CONTACT 1 OF 1\nNAME B\nPHONE 5551234")
+                wait_for_saved_frame("contacts", "CONTACT 1 OF 1\nNAME B\nPHONE 5551234\nKEY BE12")
+                tap_pixel(30, 24)  # Home
+                wait_for_saved_frame("none")
+                tap_pixel(80, 165)  # Open Calendar from the launcher.
+                wait_for_saved_frame("calendar", "- MEET\n  0101 1200")
+                tap_pixel(30, 24)
+                wait_for_saved_frame("none")
+                tap_pixel(220, 165)  # Open Messages shell from the launcher.
+                wait_for_saved_frame("messages", "- KEY BE12CD34\n  SEALED 1")
+                tap_pixel(30, 24)
+                wait_for_saved_frame("none")
+                tap_pixel(150, 206)  # Open Settings stub from the launcher.
+                wait_for_saved_frame("settings", "LOCAL ONLY\nNO CLOUD YET")
                 qmp_execute(stream, "quit")
                 process.wait(timeout=5)
     finally:
@@ -1251,7 +1555,7 @@ def verify_input_text_cold_boot(qemu_command, gpu_build, expected_pixels, timeou
         reboot_qmp.unlink(missing_ok=True)
 
     trace = reboot_serial.read_text(errors="replace") if reboot_serial.exists() else ""
-    if "ISOLATION COMPLETE: 25 checks passed" not in trace or "FAIL:" in trace:
+    if "ISOLATION COMPLETE: 27 checks passed" not in trace or "FAIL:" in trace:
         raise RuntimeError(f"QEMU cold-boot persistence run failed; inspect {reboot_serial}")
 
 
@@ -1306,16 +1610,38 @@ def input_test(timeout):
         ("contacts", "ADD NAME\nNAME B\nPHONE "),
         ("contacts", "ADD PHONE\nNAME B\nPHONE "),
         ("contacts", "ADD PHONE\nNAME B\nPHONE 5551234"),
-        ("contacts", "CONTACT 1 OF 1\nNAME B\nPHONE 5551234"),
+        ("contacts", "ADD KEY\nNAME B\nPHONE 5551234\nKEY "),
+        ("contacts", "ADD KEY\nNAME B\nPHONE 5551234\nKEY B"),
+        ("contacts", "ADD KEY\nNAME B\nPHONE 5551234\nKEY BE"),
+        ("contacts", "ADD KEY\nNAME B\nPHONE 5551234\nKEY BE1"),
+        ("contacts", "ADD KEY\nNAME B\nPHONE 5551234\nKEY BE12"),
+        ("contacts", "CONTACT 1 OF 1\nNAME B\nPHONE 5551234\nKEY BE12"),
         ("contacts", "ADD NAME\nNAME C\nPHONE "),
         ("contacts", "ADD PHONE\nNAME C\nPHONE "),
         ("contacts", "ADD PHONE\nNAME C\nPHONE 8675309"),
-        ("contacts", "CONTACT 2 OF 2\nNAME C\nPHONE 8675309"),
-        ("contacts", "CONTACT 1 OF 2\nNAME B\nPHONE 5551234"),
+        ("contacts", "ADD KEY\nNAME C\nPHONE 8675309\nKEY "),
+        ("contacts", "CONTACT 2 OF 2\nNAME C\nPHONE 8675309\nKEY -"),
+        ("contacts", "CONTACT 1 OF 2\nNAME B\nPHONE 5551234\nKEY BE12"),
         ("calculator", "0"),
         ("calculator", "12"),
         ("calculator", "10"),
-        ("clock", "00 00 00"),
+        ("clock", "1970 01 01\n00 00 00"),
+        ("calendar", "NO REMINDERS\nENTER TO ADD"),
+        ("calendar", "ADD REMINDER\n"),
+        ("calendar", "ADD REMINDER\nMEET"),
+        ("calendar", "ADD DAY\nMEET\n"),
+        ("calendar", "ADD DAY\nMEET\n0101"),
+        ("calendar", "ADD TIME\nMEET\n0101\n"),
+        ("calendar", "ADD TIME\nMEET\n0101\n1200"),
+        ("calendar", "- MEET\n  0101 1200"),
+        ("messages", "NO THREADS\nENTER TO ADD"),
+        ("messages", "ADD KEY\n"),
+        ("messages", "ADD KEY\nBE12CD34"),
+        ("messages", "- KEY BE12CD34"),
+        ("messages", "COMPOSE\n"),
+        ("messages", "COMPOSE\nHI"),
+        ("messages", "- KEY BE12CD34\n  SEALED 1"),
+        ("settings", "LOCAL ONLY\nNO CLOUD YET"),
     ]
     for focus, app_text in frame_cases:
         label = app_text.replace("\n", "-") or "empty"
@@ -1408,6 +1734,28 @@ def input_test(timeout):
          ROOT / "tests" / "input" / "calculator_model_test.rs", "-o", calculator_test])
     run([calculator_test])
     print("Calculator model: PASS; checked arithmetic, bounded input, and error recovery verified")
+    contacts_model_test = gpu_build / "contacts-model-test"
+    run([tool("rustc"), "--edition=2024", "--test",
+         ROOT / "tests" / "input" / "contacts_model_test.rs", "-o", contacts_model_test])
+    run([contacts_model_test])
+    print("Contacts model: PASS; PCT2 fingerprints, PCT1 migration, and selection verified")
+    calendar_test = gpu_build / "calendar-model-test"
+    run([tool("rustc"), "--edition=2024", "--test",
+         ROOT / "tests" / "input" / "calendar_model_test.rs", "-o", calendar_test])
+    run([calendar_test])
+    print("Calendar model: PASS; bounded reminders, day/time fields, and deletion verified")
+    clock_test = gpu_build / "clock-model-test"
+    run([tool("rustc"), "--edition=2024", "--test",
+         ROOT / "tests" / "input" / "clock_model_test.rs", "-o", clock_test])
+    run([clock_test])
+    print("Clock model: PASS; UTC date and time formatting verified")
+    run([tool("cargo"), "test", "--quiet"], cwd=ROOT / "tests" / "input" / "messages_model")
+    print("Messages model: PASS; PMS2 peer-key compose/seal and PSL1 codec verified")
+    settings_test = gpu_build / "settings-model-test"
+    run([tool("rustc"), "--edition=2024", "--test",
+         ROOT / "tests" / "input" / "settings_model_test.rs", "-o", settings_test])
+    run([settings_test])
+    print("Settings model: PASS; local-only stub copy verified")
     protocol_test = gpu_build / "input-protocol-test"
     run([tool("rustc"), "--edition=2024", "--test",
          ROOT / "tests" / "input" / "protocol_test.rs", "-o", protocol_test])
@@ -1445,7 +1793,7 @@ def input_test(timeout):
                         note_count=2, selected_note=1): gpu_build / "input-notes-list.ppm",
         input_frame_key("notes", "TWO", note_count=2, selected_note=1,
                         notes_field="title"): gpu_build / "input-notes-title.ppm",
-        ("contacts", "CONTACT 1 OF 2\nNAME B\nPHONE 5551234"): gpu_build / "input-contacts-text.ppm",
+        ("contacts", "CONTACT 1 OF 2\nNAME B\nPHONE 5551234\nKEY BE12"): gpu_build / "input-contacts-text.ppm",
         ("calculator", "12"): gpu_build / "input-calculator-touch-result.ppm",
         ("calculator", "10"): gpu_build / "input-calculator-keyboard-result.ppm",
     }
@@ -1471,13 +1819,19 @@ def input_test(timeout):
     rendered = set()
     received = set()
     expected_events = {
-        "UIROUTER|FOCUS: NOTES touch=(80, 90)",
-        "UIROUTER|FOCUS: CONTACTS touch=(220, 90)",
-        "UIROUTER|FOCUS: CALCULATOR touch=(80, 160)",
-        "UIROUTER|FOCUS: CLOCK touch=(220, 160)",
+        "UIROUTER|FOCUS: NOTES touch=(80, 70)",
+        "UIROUTER|FOCUS: CONTACTS touch=(220, 70)",
+        "UIROUTER|FOCUS: CALCULATOR touch=(80, 120)",
+        "UIROUTER|FOCUS: CLOCK touch=(220, 120)",
+        "UIROUTER|FOCUS: CALENDAR touch=(80, 165)",
+        "UIROUTER|FOCUS: MESSAGES touch=(220, 165)",
+        "UIROUTER|FOCUS: SETTINGS touch=(150, 206)",
         "UIROUTER|FOCUS: CONTACTS key=TAB",
         "UIROUTER|FOCUS: CALCULATOR key=TAB",
         "UIROUTER|FOCUS: CLOCK key=TAB",
+        "UIROUTER|FOCUS: CALENDAR key=TAB",
+        "UIROUTER|FOCUS: MESSAGES key=TAB",
+        "UIROUTER|FOCUS: SETTINGS key=TAB",
         "UIROUTER|FOCUS: NOTES key=TAB",
         "UIROUTER|NAV: CONTACTS touch",
         "UIROUTER|NAV: CALCULATOR touch",
@@ -1519,6 +1873,7 @@ def input_test(timeout):
         "UIAPP|NOTES|VIEW: revision=20 length=5",
         "UIAPP|CALCULATOR|VIEW: revision=8 length=2",
         "UIAPP|CALCULATOR|VIEW: revision=14 length=2",
+        "UIAPP|CALENDAR|VIEW: revision=34 length=18",
         "UIAPP|NOTES|EVENT: device=keyboard type=1 code=49 value=1",
         "UIAPP|NOTES|EVENT: device=keyboard type=1 code=49 value=0",
         "UIAPP|NOTES|EVENT: device=keyboard type=1 code=14 value=1",
@@ -1601,7 +1956,7 @@ def input_test(timeout):
                         raise RuntimeError(f"Input integration guest faulted; inspect {serial_log}")
                     ready = (
                         "UIINPUT|READY:" in trace and
-                        "ISOLATION COMPLETE: 25 checks passed" in trace
+                        "ISOLATION COMPLETE: 27 checks passed" in trace
                     )
                     if ready:
                         break
@@ -1617,7 +1972,22 @@ def input_test(timeout):
                         focus, app_text, scroll_start_line, notes_mode, note_count,
                         selected_note, delete_armed, notes_field
                     )
+                    # Park the guest cursor in footer chrome so golden frames match.
+                    # Re-park sparingly: every-poll abs floods the focused app.
+                    park_x = (290 * 32767 + 298) // 299
+                    park_y = (390 * 32767 + 398) // 399
+
+                    def park_cursor():
+                        qmp_execute(stream, "input-send-event", {"events": [
+                            {"type": "abs", "data": {"axis": "x", "value": park_x}},
+                            {"type": "abs", "data": {"axis": "y", "value": park_y}},
+                        ]})
+
+                    park_cursor()
+                    attempt = 0
                     while time.monotonic() < deadline:
+                        if attempt > 0 and attempt % 8 == 0:
+                            park_cursor()
                         qmp_hmp(stream, f"screendump {frame_path}")
                         frame = frame_path.read_bytes() if frame_path.exists() else b""
                         parts = frame.split(b"\n", 3)
@@ -1628,9 +1998,10 @@ def input_test(timeout):
                                 width = height = 0
                             pixels_match = parts[3] == expected_pixels[expected_key]
                             if focus == "clock":
+                                # Mask the live date and time digit rows; chrome stays exact.
                                 pixels_match = rgb_matches_outside_rect(
                                     parts[3], expected_pixels[expected_key],
-                                    100, 140, 100, 24
+                                    20, 128, 185, 66
                                 )
                             if (width == 300 and height == 400 and
                                     pixels_match):
@@ -1639,6 +2010,7 @@ def input_test(timeout):
                                     shutil.copy2(frame_path, text_screenshots[expected_key])
                                 rendered.add(expected_key)
                                 return
+                        attempt += 1
                         time.sleep(0.05)
                     raise RuntimeError(
                         f"GPU did not render the expected {focus}/{app_text} frame; inspect {serial_log}"
@@ -1745,7 +2117,7 @@ def input_test(timeout):
                 # tap to produce its own distinct, exact framebuffer.
                 wait_for_frame("none")
 
-                tap_pixel(80, 90)  # Open Notes from the compact launcher card.
+                tap_pixel(80, 70)  # Open Notes from the compact launcher card.
                 wait_for_frame("notes")
                 qmp_execute(stream, "send-key", {
                     "keys": [{"type": "qcode", "data": "a"}], "hold-time": 150,
@@ -1825,12 +2197,24 @@ def input_test(timeout):
                 qmp_execute(stream, "send-key", {
                     "keys": [{"type": "qcode", "data": "tab"}], "hold-time": 150,
                 })
-                wait_for_frame("clock", "00 00 00")
+                wait_for_frame("clock", "1970 01 01\n00 00 00")
+                qmp_execute(stream, "send-key", {
+                    "keys": [{"type": "qcode", "data": "tab"}], "hold-time": 150,
+                })
+                wait_for_frame("calendar", "NO REMINDERS\nENTER TO ADD")
+                qmp_execute(stream, "send-key", {
+                    "keys": [{"type": "qcode", "data": "tab"}], "hold-time": 150,
+                })
+                wait_for_frame("messages", "NO THREADS\nENTER TO ADD")
+                qmp_execute(stream, "send-key", {
+                    "keys": [{"type": "qcode", "data": "tab"}], "hold-time": 150,
+                })
+                wait_for_frame("settings", "LOCAL ONLY\nNO CLOUD YET")
                 qmp_execute(stream, "send-key", {
                     "keys": [{"type": "qcode", "data": "tab"}], "hold-time": 150,
                 })
                 wait_for_frame("notes", "AB", note_count=2, selected_note=1)
-                tap(17_000, 2_000)  # Contacts tab in the five-item navigation bar.
+                tap_pixel(83, 24)  # Contacts tab in the eight-item navigation bar.
                 wait_for_frame("contacts", "NO CONTACTS\nENTER TO ADD")
                 tap(15_900, 27_750)  # Start the first contact with the touch keyboard.
                 wait_for_frame("contacts", "ADD NAME\nNAME \nPHONE ")
@@ -1841,8 +2225,18 @@ def input_test(timeout):
                 for digit in "5551234":
                     tap_digit(digit)
                 wait_for_frame("contacts", "ADD PHONE\nNAME B\nPHONE 5551234")
+                tap(15_900, 27_750)  # Advance to the key-fingerprint field.
+                wait_for_frame("contacts", "ADD KEY\nNAME B\nPHONE 5551234\nKEY ")
+                tap_letter("B")
+                wait_for_frame("contacts", "ADD KEY\nNAME B\nPHONE 5551234\nKEY B")
+                tap_letter("E")
+                wait_for_frame("contacts", "ADD KEY\nNAME B\nPHONE 5551234\nKEY BE")
+                tap_digit("1")
+                wait_for_frame("contacts", "ADD KEY\nNAME B\nPHONE 5551234\nKEY BE1")
+                tap_digit("2")
+                wait_for_frame("contacts", "ADD KEY\nNAME B\nPHONE 5551234\nKEY BE12")
                 tap(15_900, 27_750)  # Commit the first contact.
-                wait_for_frame("contacts", "CONTACT 1 OF 1\nNAME B\nPHONE 5551234")
+                wait_for_frame("contacts", "CONTACT 1 OF 1\nNAME B\nPHONE 5551234\nKEY BE12")
 
                 qmp_execute(stream, "send-key", {
                     "keys": [{"type": "qcode", "data": "ret"}], "hold-time": 150,
@@ -1860,17 +2254,21 @@ def input_test(timeout):
                 qmp_execute(stream, "send-key", {
                     "keys": [{"type": "qcode", "data": "ret"}], "hold-time": 150,
                 })
-                wait_for_frame("contacts", "CONTACT 2 OF 2\nNAME C\nPHONE 8675309")
+                wait_for_frame("contacts", "ADD KEY\nNAME C\nPHONE 8675309\nKEY ")
+                qmp_execute(stream, "send-key", {
+                    "keys": [{"type": "qcode", "data": "ret"}], "hold-time": 150,
+                })
+                wait_for_frame("contacts", "CONTACT 2 OF 2\nNAME C\nPHONE 8675309\nKEY -")
                 tap_contacts_control("UP")
-                wait_for_frame("contacts", "CONTACT 1 OF 2\nNAME B\nPHONE 5551234")
+                wait_for_frame("contacts", "CONTACT 1 OF 2\nNAME B\nPHONE 5551234\nKEY BE12")
                 tap_contacts_control("DOWN")
-                wait_for_frame("contacts", "CONTACT 2 OF 2\nNAME C\nPHONE 8675309")
+                wait_for_frame("contacts", "CONTACT 2 OF 2\nNAME C\nPHONE 8675309\nKEY -")
 
                 # Exercise both the touch keypad and physical UTM keyboard in
                 # the calculator app's own protection domain.
-                tap(10_000, 2_000)
+                tap_pixel(57, 24)  # Notes tab.
                 wait_for_frame("notes", "AB", note_count=2, selected_note=1)
-                tap(24_000, 2_000)  # Calculator tab.
+                tap_pixel(109, 24)  # Calculator tab.
                 wait_for_frame("calculator", "0")
                 tap_pixel(30, 237)   # 7
                 tap_pixel(245, 315)  # Add
@@ -1882,26 +2280,95 @@ def input_test(timeout):
                         "keys": [{"type": "qcode", "data": key}], "hold-time": 150,
                     })
                 wait_for_frame("calculator", "10")
-                tap_pixel(266, 24)  # Open Clock from the in-app navigation strip.
-                wait_for_frame("clock", "00 00 00")
-                tap_pixel(40, 24)  # Home tab.
+                tap_pixel(135, 24)  # Open Clock from the in-app navigation strip.
+                wait_for_frame("clock", "1970 01 01\n00 00 00")
+                tap_pixel(30, 24)  # Home tab.
                 wait_for_frame("none")
-                tap_pixel(80, 90)  # Open Notes from the launcher.
+                tap_pixel(80, 70)  # Open Notes from the launcher.
                 wait_for_frame("notes", "AB", note_count=2, selected_note=1)
                 qmp_execute(stream, "send-key", {
                     "keys": [{"type": "qcode", "data": "esc"}], "hold-time": 150,
                 })
                 wait_for_frame("none")
-                tap_pixel(220, 90)  # Open Contacts from the launcher.
-                wait_for_frame("contacts", "CONTACT 2 OF 2\nNAME C\nPHONE 8675309")
-                tap_pixel(40, 24)
+                tap_pixel(220, 70)  # Open Contacts from the launcher.
+                wait_for_frame("contacts", "CONTACT 2 OF 2\nNAME C\nPHONE 8675309\nKEY -")
+                tap_pixel(30, 24)
                 wait_for_frame("none")
-                tap_pixel(80, 160)  # Open Calculator from the launcher.
+                tap_pixel(80, 120)  # Open Calculator from the launcher.
                 wait_for_frame("calculator", "10")
-                tap_pixel(40, 24)
+                tap_pixel(30, 24)
                 wait_for_frame("none")
-                tap_pixel(220, 160)  # Open Clock from the launcher.
-                wait_for_frame("clock", "00 00 00")
+                tap_pixel(220, 120)  # Open Clock from the launcher.
+                wait_for_frame("clock", "1970 01 01\n00 00 00")
+                tap_pixel(30, 24)
+                wait_for_frame("none")
+                tap_pixel(80, 165)  # Open Calendar from the launcher.
+                wait_for_frame("calendar", "NO REMINDERS\nENTER TO ADD")
+                qmp_execute(stream, "send-key", {
+                    "keys": [{"type": "qcode", "data": "ret"}], "hold-time": 150,
+                })
+                wait_for_frame("calendar", "ADD REMINDER\n")
+                for key in ("m", "e", "e", "t"):
+                    qmp_execute(stream, "send-key", {
+                        "keys": [{"type": "qcode", "data": key}], "hold-time": 150,
+                    })
+                wait_for_frame("calendar", "ADD REMINDER\nMEET")
+                qmp_execute(stream, "send-key", {
+                    "keys": [{"type": "qcode", "data": "ret"}], "hold-time": 150,
+                })
+                wait_for_frame("calendar", "ADD DAY\nMEET\n")
+                for key in ("0", "1", "0", "1"):
+                    qmp_execute(stream, "send-key", {
+                        "keys": [{"type": "qcode", "data": key}], "hold-time": 150,
+                    })
+                wait_for_frame("calendar", "ADD DAY\nMEET\n0101")
+                qmp_execute(stream, "send-key", {
+                    "keys": [{"type": "qcode", "data": "ret"}], "hold-time": 150,
+                })
+                wait_for_frame("calendar", "ADD TIME\nMEET\n0101\n")
+                for key in ("1", "2", "0", "0"):
+                    qmp_execute(stream, "send-key", {
+                        "keys": [{"type": "qcode", "data": key}], "hold-time": 150,
+                    })
+                wait_for_frame("calendar", "ADD TIME\nMEET\n0101\n1200")
+                qmp_execute(stream, "send-key", {
+                    "keys": [{"type": "qcode", "data": "ret"}], "hold-time": 150,
+                })
+                wait_for_frame("calendar", "- MEET\n  0101 1200")
+                tap_pixel(30, 24)
+                wait_for_frame("none")
+                tap_pixel(220, 165)  # Open Messages from the launcher.
+                wait_for_frame("messages", "NO THREADS\nENTER TO ADD")
+                qmp_execute(stream, "send-key", {
+                    "keys": [{"type": "qcode", "data": "ret"}], "hold-time": 150,
+                })
+                wait_for_frame("messages", "ADD KEY\n")
+                for key in ("b", "e", "1", "2", "c", "d", "3", "4"):
+                    qmp_execute(stream, "send-key", {
+                        "keys": [{"type": "qcode", "data": key}], "hold-time": 150,
+                    })
+                wait_for_frame("messages", "ADD KEY\nBE12CD34")
+                qmp_execute(stream, "send-key", {
+                    "keys": [{"type": "qcode", "data": "ret"}], "hold-time": 150,
+                })
+                wait_for_frame("messages", "- KEY BE12CD34")
+                qmp_execute(stream, "send-key", {
+                    "keys": [{"type": "qcode", "data": "ret"}], "hold-time": 150,
+                })
+                wait_for_frame("messages", "COMPOSE\n")
+                for key in ("h", "i"):
+                    qmp_execute(stream, "send-key", {
+                        "keys": [{"type": "qcode", "data": key}], "hold-time": 150,
+                    })
+                wait_for_frame("messages", "COMPOSE\nHI")
+                qmp_execute(stream, "send-key", {
+                    "keys": [{"type": "qcode", "data": "ret"}], "hold-time": 150,
+                })
+                wait_for_frame("messages", "- KEY BE12CD34\n  SEALED 1")
+                tap_pixel(30, 24)
+                wait_for_frame("none")
+                tap_pixel(150, 206)  # Open Settings from the launcher.
+                wait_for_frame("settings", "LOCAL ONLY\nNO CLOUD YET")
 
                 converter = shutil.which("magick") or tool("convert")
                 while time.monotonic() < deadline:
@@ -1930,14 +2397,36 @@ def input_test(timeout):
                         ("contacts", "ADD NAME\nNAME B\nPHONE "),
                         ("contacts", "ADD PHONE\nNAME B\nPHONE "),
                         ("contacts", "ADD PHONE\nNAME B\nPHONE 5551234"),
-                        ("contacts", "CONTACT 1 OF 1\nNAME B\nPHONE 5551234"),
+                        ("contacts", "ADD KEY\nNAME B\nPHONE 5551234\nKEY "),
+                        ("contacts", "ADD KEY\nNAME B\nPHONE 5551234\nKEY B"),
+                        ("contacts", "ADD KEY\nNAME B\nPHONE 5551234\nKEY BE"),
+                        ("contacts", "ADD KEY\nNAME B\nPHONE 5551234\nKEY BE1"),
+                        ("contacts", "ADD KEY\nNAME B\nPHONE 5551234\nKEY BE12"),
+                        ("contacts", "CONTACT 1 OF 1\nNAME B\nPHONE 5551234\nKEY BE12"),
                         ("contacts", "ADD NAME\nNAME C\nPHONE "),
                         ("contacts", "ADD PHONE\nNAME C\nPHONE "),
                         ("contacts", "ADD PHONE\nNAME C\nPHONE 8675309"),
-                        ("contacts", "CONTACT 2 OF 2\nNAME C\nPHONE 8675309"),
-                        ("contacts", "CONTACT 1 OF 2\nNAME B\nPHONE 5551234"),
+                        ("contacts", "ADD KEY\nNAME C\nPHONE 8675309\nKEY "),
+                        ("contacts", "CONTACT 2 OF 2\nNAME C\nPHONE 8675309\nKEY -"),
+                        ("contacts", "CONTACT 1 OF 2\nNAME B\nPHONE 5551234\nKEY BE12"),
                         ("calculator", "0"), ("calculator", "12"), ("calculator", "10"),
-                        ("clock", "00 00 00"),
+                        ("clock", "1970 01 01\n00 00 00"),
+                        ("calendar", "NO REMINDERS\nENTER TO ADD"),
+                        ("calendar", "ADD REMINDER\n"),
+                        ("calendar", "ADD REMINDER\nMEET"),
+                        ("calendar", "ADD DAY\nMEET\n"),
+                        ("calendar", "ADD DAY\nMEET\n0101"),
+                        ("calendar", "ADD TIME\nMEET\n0101\n"),
+                        ("calendar", "ADD TIME\nMEET\n0101\n1200"),
+                        ("calendar", "- MEET\n  0101 1200"),
+                        ("messages", "NO THREADS\nENTER TO ADD"),
+                        ("messages", "ADD KEY\n"),
+                        ("messages", "ADD KEY\nBE12CD34"),
+                        ("messages", "- KEY BE12CD34"),
+                        ("messages", "COMPOSE\n"),
+                        ("messages", "COMPOSE\nHI"),
+                        ("messages", "- KEY BE12CD34\n  SEALED 1"),
+                        ("settings", "LOCAL ONLY\nNO CLOUD YET"),
                     }
                     expected_frames.update(multi_note_frame_keys)
                     if received == expected_events and rendered == expected_frames:
@@ -1954,7 +2443,7 @@ def input_test(timeout):
         qmp_path.unlink(missing_ok=True)
 
     trace = serial_log.read_text(errors="replace") if serial_log.exists() else ""
-    if "ISOLATION COMPLETE: 25 checks passed" not in trace:
+    if "ISOLATION COMPLETE: 27 checks passed" not in trace:
         raise RuntimeError(f"Regular OS checks did not finish; inspect {serial_log}")
     expected_frames = {
         ("none", ""), ("notes", ""), ("notes", "A"),
@@ -1968,14 +2457,36 @@ def input_test(timeout):
         ("contacts", "ADD NAME\nNAME B\nPHONE "),
         ("contacts", "ADD PHONE\nNAME B\nPHONE "),
         ("contacts", "ADD PHONE\nNAME B\nPHONE 5551234"),
-        ("contacts", "CONTACT 1 OF 1\nNAME B\nPHONE 5551234"),
+        ("contacts", "ADD KEY\nNAME B\nPHONE 5551234\nKEY "),
+        ("contacts", "ADD KEY\nNAME B\nPHONE 5551234\nKEY B"),
+        ("contacts", "ADD KEY\nNAME B\nPHONE 5551234\nKEY BE"),
+        ("contacts", "ADD KEY\nNAME B\nPHONE 5551234\nKEY BE1"),
+        ("contacts", "ADD KEY\nNAME B\nPHONE 5551234\nKEY BE12"),
+        ("contacts", "CONTACT 1 OF 1\nNAME B\nPHONE 5551234\nKEY BE12"),
         ("contacts", "ADD NAME\nNAME C\nPHONE "),
         ("contacts", "ADD PHONE\nNAME C\nPHONE "),
         ("contacts", "ADD PHONE\nNAME C\nPHONE 8675309"),
-        ("contacts", "CONTACT 2 OF 2\nNAME C\nPHONE 8675309"),
-        ("contacts", "CONTACT 1 OF 2\nNAME B\nPHONE 5551234"),
+        ("contacts", "ADD KEY\nNAME C\nPHONE 8675309\nKEY "),
+        ("contacts", "CONTACT 2 OF 2\nNAME C\nPHONE 8675309\nKEY -"),
+        ("contacts", "CONTACT 1 OF 2\nNAME B\nPHONE 5551234\nKEY BE12"),
         ("calculator", "0"), ("calculator", "12"), ("calculator", "10"),
-        ("clock", "00 00 00"),
+        ("clock", "1970 01 01\n00 00 00"),
+        ("calendar", "NO REMINDERS\nENTER TO ADD"),
+        ("calendar", "ADD REMINDER\n"),
+        ("calendar", "ADD REMINDER\nMEET"),
+        ("calendar", "ADD DAY\nMEET\n"),
+        ("calendar", "ADD DAY\nMEET\n0101"),
+        ("calendar", "ADD TIME\nMEET\n0101\n"),
+        ("calendar", "ADD TIME\nMEET\n0101\n1200"),
+        ("calendar", "- MEET\n  0101 1200"),
+        ("messages", "NO THREADS\nENTER TO ADD"),
+        ("messages", "ADD KEY\n"),
+        ("messages", "ADD KEY\nBE12CD34"),
+        ("messages", "- KEY BE12CD34"),
+        ("messages", "COMPOSE\n"),
+        ("messages", "COMPOSE\nHI"),
+        ("messages", "- KEY BE12CD34\n  SEALED 1"),
+        ("settings", "LOCAL ONLY\nNO CLOUD YET"),
     }
     expected_frames.update(multi_note_frame_keys)
     if received != expected_events or rendered != expected_frames:
@@ -2270,7 +2781,7 @@ def test(timeout, reset_disk=True, disk_image=TEST_DISK, prepare_disk=None,
         "PASS: vault record unchanged after denied child write",
         "PASS: independent server computes 100 + 23 after fault",
         "PASS: independent server state advances after fault",
-        "ISOLATION COMPLETE: 25 checks passed; crasher stopped, services alive",
+        "ISOLATION COMPLETE: 27 checks passed; crasher stopped, services alive",
     ]
     namespace_markers = [
         "NAMESPACE|NOTES|PASS: reads its own namespace",
@@ -2797,7 +3308,8 @@ def crypto_unit_test():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["setup", "build", "run", "test", "test-storage",
-                                             "test-graphics", "test-input", "utm-graphics",
+                                             "test-graphics", "test-input", "test-net",
+                                             "utm-graphics",
                                              "backup-export", "backup-restore", "utm"])
     parser.add_argument("--timeout", type=float, default=20,
                         help="boot-test timeout in seconds (default: 20)")
@@ -2826,6 +3338,9 @@ def main():
         return
     if args.command == "test-graphics":
         graphics_test(args.timeout)
+        return
+    if args.command == "test-net":
+        net_test(args.timeout)
         return
     if args.command == "test-input":
         input_test(args.timeout)

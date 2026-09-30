@@ -18,18 +18,22 @@ use sel4_microkit::{
 #[cfg(feature = "storage-test")]
 use vault_protocol::REQUEST_TEST_ADVANCE;
 use vault_protocol::{
-    CONTACTS_APP_CHANNEL, CONTACTS_NAMESPACE, NAMESPACE_COUNT, NOTES_APP_CHANNEL, NOTES_NAMESPACE,
-    REPLY_BAD_REQUEST, REPLY_CONFLICT, REPLY_CORRUPT, REPLY_DENIED, REPLY_NAMESPACE_TEST,
-    REPLY_NO_BLOB, REPLY_OK, REPLY_STORAGE, REQUEST_NAMESPACE_TEST, REQUEST_READ,
-    REQUEST_READ_BLOB, REQUEST_WRITE, REQUEST_WRITE_BLOB, SYSTEM_NAMESPACE,
+    CALENDAR_APP_CHANNEL, CALENDAR_NAMESPACE, CONTACTS_APP_CHANNEL, CONTACTS_NAMESPACE,
+    MESSAGES_APP_CHANNEL, MESSAGES_NAMESPACE, NAMESPACE_COUNT, NOTES_APP_CHANNEL,
+    NOTES_NAMESPACE, REPLY_BAD_REQUEST, REPLY_CONFLICT, REPLY_CORRUPT, REPLY_DENIED,
+    REPLY_NAMESPACE_TEST, REPLY_NO_BLOB, REPLY_OK, REPLY_STORAGE, REQUEST_NAMESPACE_TEST,
+    REQUEST_READ, REQUEST_READ_BLOB, REQUEST_WRITE, REQUEST_WRITE_BLOB, SYSTEM_NAMESPACE,
 };
 
 const BLOCK_SIZE: usize = 4096;
 const SLOT_COUNT: usize = 2;
-// Keep blocks 2-3 unused: older prototype disks contain leftover FAT metadata
-// there. The system namespace remains at blocks 0-1; app data starts after it.
-const NAMESPACE_FIRST_BLOCK: [usize; NAMESPACE_COUNT] = [0, 4, 6];
-const STORAGE_BLOCK_COUNT: u16 = 8;
+// Keep the system namespace at blocks 0-1. Calendar reuses the previously
+// unused prototype gap at blocks 2-3. Notes/Contacts remain at 4-5 and 6-7.
+// Messages occupies blocks 8-9 (STORAGE_BLOCK_COUNT=10). Host backup archives
+// still cover namespaces 0-2 only. RNG DMA is pinned at 0x5fdc0000 so the
+// larger vault data window does not collide with it.
+const NAMESPACE_FIRST_BLOCK: [usize; NAMESPACE_COUNT] = [0, 4, 6, 2, 8];
+const STORAGE_BLOCK_COUNT: u16 = 10;
 const BLOCK_READ: u32 = 0;
 const BLOCK_WRITE: u32 = 1;
 const BLOCK_FLUSH: u32 = 2;
@@ -220,6 +224,10 @@ fn init() -> Vault {
     let notes_transfer = memory_region_symbol!(notes_transfer: *mut BlobTransferPage).as_ptr();
     let contacts_transfer =
         memory_region_symbol!(contacts_transfer: *mut BlobTransferPage).as_ptr();
+    let calendar_transfer =
+        memory_region_symbol!(calendar_transfer: *mut BlobTransferPage).as_ptr();
+    let messages_transfer =
+        memory_region_symbol!(messages_transfer: *mut BlobTransferPage).as_ptr();
     unsafe {
         ptr::write_volatile(
             state,
@@ -234,7 +242,13 @@ fn init() -> Vault {
         state,
         block: BlockClient::new(config),
         crypto,
-        blob_transfer: [ptr::null_mut(), notes_transfer, contacts_transfer],
+        blob_transfer: [
+            ptr::null_mut(),
+            notes_transfer,
+            contacts_transfer,
+            calendar_transfer,
+            messages_transfer,
+        ],
     }
 }
 
@@ -789,6 +803,10 @@ impl Handler for Vault {
             NOTES_NAMESPACE
         } else if channel == CONTACTS_APP_CHANNEL {
             CONTACTS_NAMESPACE
+        } else if channel == CALENDAR_APP_CHANNEL {
+            CALENDAR_NAMESPACE
+        } else if channel == MESSAGES_APP_CHANNEL {
+            MESSAGES_NAMESPACE
         } else {
             return Ok(MessageInfo::new(REPLY_DENIED, 0));
         };

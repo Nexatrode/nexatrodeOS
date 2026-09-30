@@ -67,9 +67,9 @@ Calendar duration depends heavily on available time and prior hardware experienc
 | U1: interactive system — done | IRQ-driven RTC and serial input; `help`, `status`, `calc`, `crash`; Rust supervisor-mediated child restart | QEMU tests commands before and after the deliberate fault, heartbeat, and two consecutive restarts | Complete |
 | U2: service architecture — done | MCS CPU budgets for active domains; malformed console input checks; explicit child restart policy | A spinning child cannot block other services; malformed inputs are rejected; the attempt counter proves private state persists across restarts | Complete |
 | U3: private persistent data — in progress | The Rust vault stores system, Notes, and Contacts records in fixed endpoint-mapped namespaces. New slots use AES-256-GCM-SIV; QEMU tests verify encrypted records survive reboot and reject tampering. PVLTBAK1 remains readable; new PVLTBAK2 archives carry full active blocks, with host export/restore commands and QEMU restore coverage. The vault waits for a negotiated VirtIO flush after staging a record and again after committing it. Record encoding now uses a crypto-operation interface and preserves provider outages as storage failures; the feature-gated QEMU provider still keeps its fixed software key in the vault process. Pixel StrongBox supports the tested AES-GCM path, while the current format requires AES-GCM-SIV, so a trusted compatible service or versioned format change is needed. Default library tests use a separate test-only provider. Restore refuses older authenticated generations relative to the selected source image unless `--allow-rollback` is passed. The storage suite injects guest resets at all four write/flush boundaries for both scalar and PVLTBLB1 app records and checks old-or-new recovery. Remaining: validate a trusted device crypto path, add a trusted monotonic rollback anchor, establish durability under actual host or device power loss, and add a guest backup UI if needed | All three records survive repeated QEMU cold boots and UTM warm resets; interrupted writes leave a defined valid state; one app cannot read or alter another app's record; the archive restores authenticated records without storing the raw key in the archive; provider/storage errors and missing flush support fail vault operations | Medium–large |
-| U4: graphics and input — QEMU integration passed | `./dev test-input` verifies the shared input ring and overflow handling, Rust event validation, isolated app endpoints, keyboard and touch navigation, Notes and Contacts editing, read-only Clock navigation, exact rendered frames, encrypted persistence across a cold boot, and all 25 isolation checks. Notes supports four records with independent titles and bodies; old raw notes and PNT1 collections migrate to PNT2 by deriving titles from the first body line. Contacts supports four entries and touchscreen text/number input. UTM boot/render and keyboard navigation are manually verified; pointer click comfort is still unconfirmed. Broader keymaps/accessibility and production VirtIO input drivers remain future work | QEMU renders title, body, list, scroll, Contacts, Calculator, and Clock states exactly; Notes and Contacts restore after cold boot | Medium integration complete; polish remains |
-| U5: local applications — started | The isolated Calculator app now has bounded checked `i64` arithmetic, chaining, backspace, and visible divide-by-zero/overflow errors. Its touch keypad and physical keyboard work through the trusted router; QEMU verifies `7 + 5 = 12` by touch and `8 + 2 = 10` by keyboard. A read-only Clock workspace now displays UTC time from the isolated PL031-owning service through a read-only snapshot. UTM keyboard and pointer checks for the new Clock page still need to be done. Calculator has no persistent history yet. Notes and Contacts already have isolated graphical editing and encrypted persistence. Calendar, notifications, and settings remain | QEMU checks arithmetic, clock formatting, routing, and exact frames; manual UTM keyboard navigation and arithmetic work; pointer click behavior still needs a reliable manual check; calendar/reminder edge cases are tested | Small per simple app; medium for calendar/reminders |
-| U6: connectivity and simulated phone devices | Emulated Ethernet, network service, DNS/TLS as needed; fake modem, audio and camera backends | Script incoming/outgoing calls, SMS, lost signal, capture frames, permissions, and service failures | Medium–large |
+| U4: graphics and input — QEMU integration passed | `./dev test-input` verifies the shared input ring and overflow handling, Rust event validation, isolated app endpoints, keyboard and touch navigation, Notes and Contacts editing, read-only Clock navigation, exact rendered frames, encrypted persistence across a cold boot, and all 26 isolation checks. Notes supports four records with independent titles and bodies; old raw notes and PNT1 collections migrate to PNT2 by deriving titles from the first body line. Contacts supports four entries and touchscreen text/number input. UTM boot/render and keyboard navigation are manually verified; pointer click comfort is still unconfirmed. Broader keymaps/accessibility and production VirtIO input drivers remain future work | QEMU renders title, body, list, scroll, Contacts, Calculator, and Clock states exactly; Notes and Contacts restore after cold boot | Medium integration complete; polish remains |
+| U5: local applications — started | Notes, Contacts, Calculator, Clock, Calendar, Messages, and Settings share the home launcher (2×3 cards plus a full-width Settings row). Contacts store an optional 8-character hex key-fingerprint stub (PCT2 vault blob; PCT1 migrates with empty KEY). Calculator keeps checked `i64` arithmetic with touch/keyboard QEMU checks. Clock stays a read-only UTC snapshot from the PL031 service. Calendar is an isolated PD with up to three reminders (title plus optional MMDD day and HHMM time) persisted in an encrypted vault namespace (PCL2; PCAL migrates with empty when). Messages is an interactive peer-key shell with vaulted PMS2 peers and local PSL1 sealed stubs (`SEALED N`; ns 4; UI still offline). Settings remains a Clock-style read-only stub. Refresh `./dev utm-graphics` after input changes. Pointer click comfort is still a manual UTM check. Notifications remain | QEMU checks arithmetic, clock formatting, calendar day/time frames, Messages compose→`SEALED 1` frames, Settings stub frames, Contacts KEY frames, routing, and exact frames; manual UTM Keyboard navigation works; pointer click behavior still needs a reliable manual check | Small per simple app; medium for vaulted reminders |
+| U6: connectivity and simulated phone devices — started | `./dev test-net` proves standalone sDDF echo_server DHCP+UDP and an integrated Personal OS merge (`tests/net` serial-free `dhcp_client`, shared VirtIO MMIO page with blk, isolation + DHCP + host UDP echo on 1235 + PSL1 `SEAL OK` on 1236). Default/UTM images stay offline. Remaining: Messages↔ethernet bridge, toy LAN router, DNS/TLS as needed, fake modem/audio/camera backends; graphics+net combo still blocked on `timer_driver` naming | Standalone and merged QEMU DHCP + UDP echo + SEAL OK pass; later scripted calls/SMS and permissions once those backends exist | Medium–large |
 | U7: hardening and release discipline | Entropy/key handling, encrypted data, authenticated updates, failed-update recovery, backups, parser fuzzing and endurance tests | Defined attacks are rejected; update interruption and restore work; long runs remain responsive | Large and ongoing |
 
 U2 establishes security boundaries before adding more devices. U3 and U4 can
@@ -205,6 +205,52 @@ different milestones. [AOSP camera architecture](https://source.android.com/docs
 Keeping the CPU architecture ARM64 helps, but it does not make the QEMU boot image
 a Pixel image. The two targets need separate builds and hardware descriptions.
 
+## Home screen and app set (today vs planned)
+
+Today the graphics profile is a **six-card home** (not a full phone springboard):
+
+| Slot | Status |
+| --- | --- |
+| Notes | Done — isolated UI + encrypted vault |
+| Contacts | Done — isolated UI + encrypted vault; optional hex key-fingerprint stub |
+| Calculator | Done — isolated UI; history still transient |
+| Clock | Done — read-only UTC date/time from the RTC service |
+| Calendar / reminders | Done — isolated UI + encrypted vault blob (title + optional MMDD/HHMM) |
+| Messages | Interactive peer-key shell with vaulted PMS2 sealed stubs (ns 4, blocks 8–9); on-wire peer delivery / toy router remain U6 |
+| Settings | Done as read-only stub — isolated UI, local-only copy; real options come later |
+| Phone / dialer | Planned UI later; real calls need U6 fake modem then Pixel P4 |
+
+Home is `FocusTarget::None`: tap a card or use Tab / the top app bar. Escape returns
+Home. There is no app drawer and no Phone icon yet.
+
+**Messaging north star (not scheduled as the next spike):** identity by explicit
+QR / PGP-style key exchange over a data pipe, not by phone number as social ID.
+See [explicit-contact-messaging.md](explicit-contact-messaging.md).
+
+**Calendar** occupies one slot in the 2×3 launcher: an isolated protection domain
+and up to three reminders with title plus optional `MMDD` day and `HHMM` time,
+persisted in an encrypted vault blob with QEMU cold-boot checks. Google Calendar
+sync, time zones, push notifications, and backup-archive inclusion remain later
+work.
+
+**Messages** is an interactive peer-key shell: isolated PD with routed input,
+up to three local 8-hex KEY peers with PSL1 sealed stubs persisted in vault
+namespace 4 (PMS2). Browse shows `SEALED N` only (ciphertext stays opaque).
+Host↔guest PSL1 UDP smoke is covered by `./dev test-net` (port 1236); Messages
+does not call the network yet. On-wire peer delivery and a toy LAN router
+remain later U6 work.
+
+**Settings** is a seventh Clock-style workspace under the 2×3 grid: isolated PD,
+static “local only / no cloud yet” copy, no input endpoint and no vault.
+
+### How we “port” apps on seL4
+
+seL4/Microkit does not run Linux binaries. The benefit is explicit isolation and
+a small trusted kernel, so apps are **rewritten** against our vault/input/display
+(and later net) interfaces. Porting SimpleX Chat means a new native client or a
+future Linux guest VM—not installing the Haskell Linux build. See
+[utm-vs-hardware.md](utm-vs-hardware.md#messaging-and-simplex-chat-long-term).
+
 ## Scope controls and security claims
 
 Start with offline calculator, notes, contacts, and a modest calendar. Defer cloud
@@ -235,16 +281,17 @@ distribution plan. A lab call demonstration does not establish those properties.
 ## Next concrete milestone
 
 The separate `Personal OS Graphics.utm` profile boots and renders in UTM. Tab
-navigation reaches Notes, Contacts, and Calculator; physical keys make `8 + 2`
-display `10`. The QEMU input suite now also covers the fourth, read-only Clock
-workspace from the isolated RTC service, including launcher, Tab, and app-bar
-navigation. The side-by-side Clock-enabled graphics bundle is ready for a UTM
-keyboard and pointer check. Direct pointer clicks still need a reliable manual
-check because desktop automation did not consistently target the VM window.
-Keep the default serial profile separate.
+navigation reaches Notes, Contacts, Calculator, Clock, Calendar, Messages, and
+Settings; physical keys make `8 + 2` display `10`. The QEMU input suite covers
+those workspaces, including launcher, Tab, and app-bar navigation. Direct pointer
+clicks still need a reliable manual check because desktop automation did not
+consistently target the VM window. Keep the default serial profile separate.
 
-Next, open the Clock-enabled bundle in UTM and check it with the keyboard and
-pointer, then pick the next bounded local app workflow for U5.
+Next, keep using `./dev utm-graphics` for the seven-workspace home, or deepen
+U6 after the integrated VirtIO net merge (`./dev test-net`, see
+[network-spike.md](network-spike.md)): bridge Messages to ethernet / a toy
+router toward the explicit-contact path.
+See [utm-vs-hardware.md](utm-vs-hardware.md) for what UTM can and cannot prove.
 Pixel boot and driver research stays a separate feasibility track; no Pixel
 flash is required for this step. U3 still has meaningful long-term work:
 the development crypto provider is not a security anchor, rollback protection
@@ -257,7 +304,9 @@ Begin P0 as a bounded feasibility study alongside U3. Follow the
 out of scope until that report’s go/no-go table is filled. As of 28 September
 2026 the desk half of P0 is largely done (boot v2 anatomy, DT map, Lineage
 20260924 rollback kit) with a **conditional go**: still need a USB-C SBU UART
-capture and a confirmed userdata backup before any flash. The [Pixel key
+capture and a confirmed userdata backup before any flash. A desk platform
+scaffold lives in [`platforms/sunfish/`](../platforms/sunfish/README.md) (overlay
+DTS + GENI putchar stubs; not linked into the QEMU build). The [Pixel key
 feasibility note](pixel-key-feasibility.md) finds Titan M/StrongBox support in
 the Android `sunfish` stack, but no demonstrated direct seL4 service path. The
 first Pixel deliverable remains a documented boot/debug/driver strategy, not a

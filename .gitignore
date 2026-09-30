@@ -3,6 +3,9 @@ build/
 dist/
 __pycache__/
 .DS_Store
+rust/target/
+tests/net/seal_host/target/
+tests/input/messages_model/target/
 
 # Pixel P0 local binaries (DT sources and README stay in git)
 docs/pixel-p0-assets/lineage-ref/

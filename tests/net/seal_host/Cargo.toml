@@ -1,0 +1,12 @@
+[package]
+name = "psl1-seal-packet"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "seal_packet"
+path = "main.rs"
+
+[dependencies]
+aes-gcm-siv = { version = "=0.12.1", default-features = false, features = ["aes", "alloc"] }

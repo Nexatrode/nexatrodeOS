@@ -62,10 +62,23 @@ gpu_req_queue_t *gpu_req_queue;
 gpu_resp_queue_t *gpu_resp_queue;
 uintptr_t gpu_data;
 uintptr_t ui_focus;
+uintptr_t ui_pointer;
 uintptr_t notes_view;
 uintptr_t contacts_view;
 uintptr_t calculator_view;
 uintptr_t clock_view;
+uintptr_t calendar_view;
+uintptr_t messages_view;
+uintptr_t settings_view;
+
+typedef struct {
+    uint32_t revision;
+    uint32_t x;
+    uint32_t y;
+    uint32_t visible;
+} ui_pointer_t;
+
+_Static_assert(sizeof(ui_pointer_t) == 16, "pointer wire layout changed");
 
 extern char _fb_img[];
 extern char _fb_img_end[];
@@ -78,6 +91,7 @@ static bool display_info_init = false;
 static bool pending_display_info_request = false;
 static uint32_t rendered_focus = UINT32_MAX;
 static uint32_t rendered_view_revision = UINT32_MAX;
+static uint32_t rendered_pointer_revision = UINT32_MAX;
 
 static const uint8_t font_5x7[26][7] = {
     {0x0e, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11},
@@ -608,6 +622,49 @@ static void draw_notes_list(uint8_t *frame, const char *text, uint32_t length,
     }
 }
 
+static void draw_pointer_cursor(uint8_t *frame, uint32_t x, uint32_t y)
+{
+    /* Compact arrow so UTM tablet mode still shows where the absolute pointer is. */
+    static const char *rows[] = {
+        "X      ",
+        "XX     ",
+        "X X    ",
+        "X  X   ",
+        "X   X  ",
+        "X    X ",
+        "XXXXX  ",
+        "X  X   ",
+        "X   X  ",
+        "     X ",
+    };
+    for (int row = 0; row < 10; row++) {
+        for (int column = 0; column < 7; column++) {
+            if (rows[row][column] != 'X') {
+                continue;
+            }
+            int px = (int)x + column;
+            int py = (int)y + row;
+            if (px < 0 || py < 0 || px >= FB_IMG_WIDTH || py >= FB_IMG_HEIGHT) {
+                continue;
+            }
+            size_t offset = ((size_t)py * FB_IMG_WIDTH + (size_t)px) * GPU_BPP_2D;
+            /* Bright amber tip with a dark outline pixel above for contrast. */
+            frame[offset] = 20;
+            frame[offset + 1] = 206;
+            frame[offset + 2] = 255;
+            if (row > 0 && rows[row - 1][column] != 'X') {
+                int oy = py - 1;
+                if (oy >= 0) {
+                    size_t outline = ((size_t)oy * FB_IMG_WIDTH + (size_t)px) * GPU_BPP_2D;
+                    frame[outline] = 18;
+                    frame[outline + 1] = 21;
+                    frame[outline + 2] = 11;
+                }
+            }
+        }
+    }
+}
+
 static void draw_app_page(uint8_t *frame, uint32_t focus, const char *text,
                           uint32_t length, uint32_t scroll_start_line,
                           uint32_t notes_mode, uint32_t selected_note,
@@ -617,11 +674,14 @@ static void draw_app_page(uint8_t *frame, uint32_t focus, const char *text,
     /* Keep the already-rendered keyboard below y=222 and replace the launcher. */
     draw_rect(frame, 0, 0, FB_IMG_WIDTH, 222, 34, 21, 11);
     draw_rect(frame, 0, 0, FB_IMG_WIDTH, 3, 193, 224, 105);
-    draw_nav_button(frame, 12, 48, "HOME", 4, false, true);
-    draw_nav_button(frame, 64, 54, "NOTES", 5, focus == 1, false);
-    draw_nav_button(frame, 122, 73, "CONTACTS", 8, focus == 2, false);
-    draw_nav_button(frame, 199, 40, "CALC", 4, focus == 3, false);
-    draw_nav_button(frame, 243, 45, "CLOCK", 5, focus == 4, false);
+    draw_nav_button(frame, 12, 32, "HOME", 4, false, true);
+    draw_nav_button(frame, 46, 24, "NT", 2, focus == 1, false);
+    draw_nav_button(frame, 72, 24, "CT", 2, focus == 2, false);
+    draw_nav_button(frame, 98, 24, "CA", 2, focus == 3, false);
+    draw_nav_button(frame, 124, 24, "CK", 2, focus == 4, false);
+    draw_nav_button(frame, 150, 24, "CL", 2, focus == 5, false);
+    draw_nav_button(frame, 176, 24, "MS", 2, focus == 6, false);
+    draw_nav_button(frame, 202, 34, "ST", 2, focus == 7, false);
 
     if (focus == 1) {
         char status_body[] = "BODY 1 OF 1";
@@ -649,16 +709,52 @@ static void draw_app_page(uint8_t *frame, uint32_t focus, const char *text,
     } else if (focus == 3) {
         draw_label(frame, 18, 58, "CALCULATOR", 10, 245, 242, 232, 2);
         draw_label(frame, 20, 82, "FOUR FUNCTION INTEGER", 21, 216, 212, 189, 1);
-    } else {
+    } else if (focus == 4) {
         draw_label(frame, 18, 58, "CLOCK", 5, 245, 242, 232, 2);
-        draw_label(frame, 20, 82, "UTC TIME FROM RTC", 17, 216, 212, 189, 1);
+        draw_label(frame, 20, 82, "UTC DATE AND TIME FROM RTC", 26, 216, 212, 189, 1);
+    } else if (focus == 5) {
+        draw_label(frame, 18, 58, "CALENDAR", 8, 224, 236, 255, 2);
+        draw_label(frame, 20, 82, "LOCAL REMINDERS", 15, 189, 204, 228, 1);
+    } else if (focus == 6) {
+        draw_label(frame, 18, 58, "MESSAGES", 8, 240, 255, 224, 2);
+        draw_label(frame, 20, 82, "EXPLICIT CONTACT ONLY", 21, 208, 228, 189, 1);
+    } else {
+        draw_label(frame, 18, 58, "SETTINGS", 8, 245, 242, 232, 2);
+        draw_label(frame, 20, 82, "LOCAL DEVICE OPTIONS", 20, 216, 212, 189, 1);
     }
 
     draw_rect(frame, 12, 105, 276, 89, 53, 38, 18);
-    draw_border(frame, 12, 105, 276, 89, 2,
-                focus == 1 ? 193 : (focus == 3 ? 84 : (focus == 4 ? 193 : 255)),
-                focus == 1 ? 224 : (focus == 3 ? 206 : (focus == 4 ? 241 : 155)),
-                focus == 1 ? 105 : (focus == 3 ? 255 : (focus == 4 ? 131 : 169)));
+    {
+        uint8_t border_r = 255;
+        uint8_t border_g = 155;
+        uint8_t border_b = 169;
+        if (focus == 1) {
+            border_r = 193;
+            border_g = 224;
+            border_b = 105;
+        } else if (focus == 3) {
+            border_r = 84;
+            border_g = 206;
+            border_b = 255;
+        } else if (focus == 4) {
+            border_r = 193;
+            border_g = 241;
+            border_b = 131;
+        } else if (focus == 5) {
+            border_r = 120;
+            border_g = 168;
+            border_b = 255;
+        } else if (focus == 6) {
+            border_r = 180;
+            border_g = 220;
+            border_b = 120;
+        } else if (focus == 7) {
+            border_r = 200;
+            border_g = 180;
+            border_b = 160;
+        }
+        draw_border(frame, 12, 105, 276, 89, 2, border_r, border_g, border_b);
+    }
     if (focus == 1 && notes_mode == 1) {
         draw_label(frame, 24, 114, "SAVED NOTES", 11, 216, 212, 189, 1);
         draw_notes_list(frame, text, length, selected_note, note_count);
@@ -691,9 +787,52 @@ static void draw_app_page(uint8_t *frame, uint32_t focus, const char *text,
     } else if (focus == 3) {
         draw_label(frame, 24, 114, "RESULT", 6, 216, 212, 189, 1);
         draw_app_text(frame, 24, 143, text, length, 216, 212, 189, 2);
+    } else if (focus == 4) {
+        const char *date = text;
+        uint32_t date_length = length;
+        const char *time = "";
+        uint32_t time_length = 0;
+        for (uint32_t index = 0; index < length; index++) {
+            if (text[index] == '\n') {
+                date_length = index;
+                if (index + 1 < length) {
+                    time = text + index + 1;
+                    time_length = length - index - 1;
+                }
+                break;
+            }
+        }
+        draw_label(frame, 24, 114, "UTC DATE", 8, 193, 241, 131, 1);
+        draw_app_text(frame, 24, 132, date, date_length, 193, 241, 131, 2);
+        draw_label(frame, 24, 156, "UTC TIME", 8, 193, 241, 131, 1);
+        draw_app_text(frame, 102, 174, time, time_length, 193, 241, 131, 2);
+    } else if (focus == 5) {
+        draw_label(frame, 24, 114, "REMINDERS", 9, 189, 204, 228, 1);
+        int cursor_x;
+        int cursor_y;
+        draw_notes_text(frame, text, length, 189, 204, 228, -1,
+                        &cursor_x, &cursor_y);
+        if (cursor_x >= 0) {
+            draw_rect(frame, cursor_x, cursor_y, 2, 16, 193, 241, 131);
+        }
+    } else if (focus == 6) {
+        draw_label(frame, 24, 114, "INBOX", 5, 208, 228, 189, 1);
+        int cursor_x;
+        int cursor_y;
+        draw_notes_text(frame, text, length, 208, 228, 189, -1,
+                        &cursor_x, &cursor_y);
+        if (cursor_x >= 0) {
+            draw_rect(frame, cursor_x, cursor_y, 2, 16, 193, 241, 131);
+        }
     } else {
-        draw_label(frame, 24, 114, "UTC TIME", 8, 193, 241, 131, 1);
-        draw_app_text(frame, 102, 144, text, length, 193, 241, 131, 2);
+        draw_label(frame, 24, 114, "STATUS", 6, 216, 212, 189, 1);
+        int cursor_x;
+        int cursor_y;
+        draw_notes_text(frame, text, length, 216, 212, 189, -1,
+                        &cursor_x, &cursor_y);
+        if (cursor_x >= 0) {
+            draw_rect(frame, cursor_x, cursor_y, 2, 16, 193, 241, 131);
+        }
     }
     if (focus == 1) {
         draw_notes_controls(frame, notes_mode, notes_field);
@@ -702,17 +841,26 @@ static void draw_app_page(uint8_t *frame, uint32_t focus, const char *text,
                    190, 168, 139, 1);
         draw_calculator_keypad(frame);
     } else if (focus == 4) {
-        draw_label(frame, 20, 204, "LIVE UTC TIME", 13, 190, 184, 139, 1);
+        draw_label(frame, 20, 204, "LIVE UTC DATE AND TIME", 22, 190, 184, 139, 1);
+    } else if (focus == 6) {
+        draw_label(frame, 20, 204, "OFFLINE PEER KEYS", 17, 190, 184, 139, 1);
+    } else if (focus == 7) {
+        draw_label(frame, 20, 204, "LOCAL ONLY  NO CLOUD YET", 24, 190, 184, 139, 1);
     } else {
         bool editing = length >= 4 && text[0] == 'A' && text[1] == 'D' &&
                        text[2] == 'D' && text[3] == ' ';
-        bool empty = length >= 11 && text[0] == 'N' && text[1] == 'O' &&
-                     text[2] == ' ' && text[3] == 'C';
+        bool empty_contacts = length >= 11 && text[0] == 'N' && text[1] == 'O' &&
+                              text[2] == ' ' && text[3] == 'C';
+        bool empty_reminders = length >= 12 && text[0] == 'N' && text[1] == 'O' &&
+                               text[2] == ' ' && text[3] == 'R';
         if (editing) {
             draw_label(frame, 20, 204, "ENTER NEXT  BACKSPACE EDIT", 26,
                        190, 168, 139, 1);
-        } else if (empty) {
+        } else if (empty_contacts) {
             draw_label(frame, 20, 204, "ENTER ADD A CONTACT", 19,
+                       190, 168, 139, 1);
+        } else if (empty_reminders) {
+            draw_label(frame, 20, 204, "ENTER ADD A REMINDER", 20,
                        190, 168, 139, 1);
         } else {
             draw_contacts_control(frame, 20, 84, "UP", 2);
@@ -725,6 +873,20 @@ static void draw_app_page(uint8_t *frame, uint32_t focus, const char *text,
 static void do_draw_state(void)
 {
     uint32_t focus = *(volatile uint32_t *)ui_focus;
+    ui_pointer_t pointer = { 0 };
+    if (ui_pointer != 0) {
+        volatile ui_pointer_t *shared = (volatile ui_pointer_t *)ui_pointer;
+        uint32_t first = shared->revision;
+        if ((first & 1U) == 0) {
+            pointer.x = shared->x;
+            pointer.y = shared->y;
+            pointer.visible = shared->visible;
+            pointer.revision = shared->revision;
+            if (pointer.revision != first) {
+                pointer.visible = 0;
+            }
+        }
+    }
     char app_text[APP_VIEW_TEXT_CAPACITY + 1] = { 0 };
     uint32_t app_text_length = 0;
     uint32_t view_revision = 0;
@@ -758,15 +920,38 @@ static void do_draw_state(void)
                                      &notes_field)) {
         return;
     }
-    if (focus != rendered_focus || view_revision != rendered_view_revision) {
+    if (focus == 5 && !read_app_view(calendar_view, app_text, &app_text_length,
+                                     &view_revision, &scroll_start_line, &notes_mode,
+                                     &selected_note, &note_count, &notes_delete_armed,
+                                     &notes_field)) {
+        return;
+    }
+    if (focus == 6 && !read_app_view(messages_view, app_text, &app_text_length,
+                                     &view_revision, &scroll_start_line, &notes_mode,
+                                     &selected_note, &note_count, &notes_delete_armed,
+                                     &notes_field)) {
+        return;
+    }
+    if (focus == 7 && !read_app_view(settings_view, app_text, &app_text_length,
+                                     &view_revision, &scroll_start_line, &notes_mode,
+                                     &selected_note, &note_count, &notes_delete_armed,
+                                     &notes_field)) {
+        return;
+    }
+    if (focus != rendered_focus || view_revision != rendered_view_revision
+        || pointer.revision != rendered_pointer_revision) {
         uint8_t *frame = (uint8_t *)(gpu_data + DISPLAY_INFO_DATA_OFFSET);
         size_t frame_size = FB_IMG_WIDTH * FB_IMG_HEIGHT * GPU_BPP_2D;
         memcpy(frame, _fb_img, frame_size);
 
-        if (focus == 1 || focus == 2 || focus == 3 || focus == 4) {
+        if (focus == 1 || focus == 2 || focus == 3 || focus == 4 || focus == 5
+            || focus == 6 || focus == 7) {
             draw_app_page(frame, focus, app_text, app_text_length, scroll_start_line,
                           notes_mode, selected_note, note_count, notes_delete_armed,
                           notes_field);
+        }
+        if (pointer.visible) {
+            draw_pointer_cursor(frame, pointer.x, pointer.y);
         }
 
         gpu_rect_t full = {
@@ -800,6 +985,7 @@ static void do_draw_state(void)
         }
         rendered_focus = focus;
         rendered_view_revision = view_revision;
+        rendered_pointer_revision = pointer.revision;
         microkit_notify(VIRT_CH);
     }
 }

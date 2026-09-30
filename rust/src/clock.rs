@@ -9,7 +9,7 @@ use sel4_microkit::{
     debug_println, memory_region_symbol, protection_domain, set_mr,
 };
 use app_view::AppViewState;
-use personal_os_rust_server::clock_display::{UTC_TIME_TEXT_LENGTH, format_utc_hms};
+use personal_os_rust_server::clock_display::{UTC_CLOCK_TEXT_LENGTH, format_utc_clock};
 
 const TIMER_IRQ: Channel = Channel::new(0);
 const TIMER_TO_CONSOLE: Channel = Channel::new(1);
@@ -77,10 +77,10 @@ struct Clock {
 
 impl Clock {
     fn publish_time(&mut self) {
-        let mut text = [0; UTC_TIME_TEXT_LENGTH];
-        format_utc_hms(self.rtc.read(RTC_DR), &mut text);
+        let mut text = [0; UTC_CLOCK_TEXT_LENGTH];
+        format_utc_clock(self.rtc.read(RTC_DR), &mut text);
         if !unsafe { self.clock_view.as_mut() }.set_display_text(&text) {
-            debug_println!("CLOCK|ERROR: invalid time display snapshot");
+            debug_println!("CLOCK|ERROR: invalid clock display snapshot");
         }
     }
 }

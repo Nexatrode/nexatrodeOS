@@ -9,7 +9,7 @@ pub const KEY_SIZE: usize = 32;
 pub const NONCE_SIZE: usize = 12;
 pub const TAG_SIZE: usize = 16;
 
-pub(crate) fn encrypt(
+pub fn encrypt(
     key: &[u8; KEY_SIZE],
     nonce: &[u8; NONCE_SIZE],
     associated_data: &[u8],
@@ -25,7 +25,7 @@ pub(crate) fn encrypt(
     Some(result)
 }
 
-pub(crate) fn decrypt(
+pub fn decrypt(
     key: &[u8; KEY_SIZE],
     nonce: &[u8; NONCE_SIZE],
     associated_data: &[u8],

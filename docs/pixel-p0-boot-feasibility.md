@@ -199,10 +199,13 @@ Sources: mainline-style DT in `pixel-p0-assets/` and DTB extracted from Lineage
 Still **unknown** whether ABL enters the payload at EL2 or EL1. Plan the first
 port as **EL1-capable**; treat EL2 / driver-VM as a separate experiment.
 
-### P1 engineering order (unchanged; not started on device)
+### P1 engineering order (desk scaffold started; not on device)
 
-1. Platform skeleton + overlay DTS  
-2. GENI UART putchar + GICv3 + arch timer  
+1. Platform skeleton + overlay DTS — desk sketch in
+   [`platforms/sunfish/overlay.dts`](../platforms/sunfish/overlay.dts)
+2. GENI UART putchar + GICv3 + arch timer — putchar stub in
+   [`platforms/sunfish/geni_uart_putchar.c`](../platforms/sunfish/geni_uart_putchar.c);
+   GIC/timer still need seL4 board integration
 3. Elfloader handoff under ABL  
 4. Microkit UART hello (not the UTM image)  
 5. Pack as boot v2 + AVB strategy  
@@ -215,6 +218,8 @@ Checklist:
 - [x] Record DRAM, GIC, timer, UART, PSCI  
 - [x] Diff against seL4 `hardware.yml` (GENI UART gap)  
 - [x] Mark EL2 unknown; assume EL1 for first attempt  
+- [x] Desk overlay DTS + GENI putchar stubs (not linked / not flashed)  
+- [ ] Wire scaffold into an seL4/Microkit board tree (P1)  
 
 ---
 
@@ -254,7 +259,8 @@ much later milestone after P1 hello.
 1. Acquire/test USB-C SBU UART adapter; enable UART; capture one Android boot log; disable if desired.  
 2. Confirm off-device backup of phone data.  
 3. Optional: download Google factory image as secondary restore.  
-4. Optional desk: sketch seL4 overlay DTS + GENI putchar stubs (still no flash).  
+4. Optional desk: sketch seL4 overlay DTS + GENI putchar stubs (still no flash) —
+   **started** under [`platforms/sunfish/`](../platforms/sunfish/README.md).  
 5. Mark P0 complete in the roadmap when (1) and (2) are done.
 
 Keep UTM as the daily development loop.

@@ -90,6 +90,24 @@ test = false
 bench = false
 
 [[bin]]
+name = "rust_calendar_app"
+path = "src/calendar_app.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rust_messages_app"
+path = "src/messages_app.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rust_settings_app"
+path = "src/settings_app.rs"
+test = false
+bench = false
+
+[[bin]]
 name = "vault_backup_cli"
 path = "src/bin/vault_backup_cli.rs"
 required-features = ["host-backup"]

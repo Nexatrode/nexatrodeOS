@@ -29,6 +29,9 @@ pub const KEY_MAX: u16 = 0x2ff;
 pub const TABLET_AXIS_MAX: u32 = 0x7fff;
 pub const DISPLAY_WIDTH: u32 = 300;
 pub const DISPLAY_HEIGHT: u32 = 400;
+/// Known cursor park used by QEMU frame compares (footer chrome).
+pub const POINTER_PARK_X: u32 = 290;
+pub const POINTER_PARK_Y: u32 = 390;
 pub const KEYBOARD_TOP: u32 = 220;
 pub const KEYBOARD_BOTTOM: u32 = 360;
 pub const FOCUS_NONE: u32 = 0;
@@ -36,6 +39,9 @@ pub const FOCUS_NOTES: u32 = 1;
 pub const FOCUS_CONTACTS: u32 = 2;
 pub const FOCUS_CALCULATOR: u32 = 3;
 pub const FOCUS_CLOCK: u32 = 4;
+pub const FOCUS_CALENDAR: u32 = 5;
+pub const FOCUS_MESSAGES: u32 = 6;
+pub const FOCUS_SETTINGS: u32 = 7;
 
 pub const fn focus_value(focus: FocusTarget) -> u32 {
     match focus {
@@ -44,21 +50,58 @@ pub const fn focus_value(focus: FocusTarget) -> u32 {
         FocusTarget::Contacts => FOCUS_CONTACTS,
         FocusTarget::Calculator => FOCUS_CALCULATOR,
         FocusTarget::Clock => FOCUS_CLOCK,
+        FocusTarget::Calendar => FOCUS_CALENDAR,
+        FocusTarget::Messages => FOCUS_MESSAGES,
+        FocusTarget::Settings => FOCUS_SETTINGS,
     }
 }
 
 pub const fn next_focus_target(focus: FocusTarget) -> FocusTarget {
     match focus {
-        FocusTarget::None | FocusTarget::Clock => FocusTarget::Notes,
+        FocusTarget::None | FocusTarget::Settings => FocusTarget::Notes,
         FocusTarget::Notes => FocusTarget::Contacts,
         FocusTarget::Contacts => FocusTarget::Calculator,
         FocusTarget::Calculator => FocusTarget::Clock,
+        FocusTarget::Clock => FocusTarget::Calendar,
+        FocusTarget::Calendar => FocusTarget::Messages,
+        FocusTarget::Messages => FocusTarget::Settings,
     }
 }
 
 pub const REQUEST_ROUTED_EVENT: u64 = 0x310;
 pub const REPLY_ROUTED_EVENT_OK: u64 = 0x311;
 pub const REPLY_ROUTED_EVENT_BAD: u64 = 0x312;
+
+/// Shared tablet cursor published by the trusted router for the GPU client.
+#[repr(C)]
+pub struct UiPointerState {
+    pub revision: core::sync::atomic::AtomicU32,
+    pub x: u32,
+    pub y: u32,
+    pub visible: u32,
+}
+
+impl UiPointerState {
+    pub const fn new() -> Self {
+        Self {
+            revision: core::sync::atomic::AtomicU32::new(0),
+            x: 0,
+            y: 0,
+            visible: 0,
+        }
+    }
+
+    pub fn publish(&mut self, x: u32, y: u32) {
+        let odd = self.revision.load(core::sync::atomic::Ordering::Relaxed).wrapping_add(1) | 1;
+        self.revision
+            .store(odd, core::sync::atomic::Ordering::SeqCst);
+        self.x = x.min(DISPLAY_WIDTH.saturating_sub(1));
+        self.y = y.min(DISPLAY_HEIGHT.saturating_sub(1));
+        self.visible = 1;
+        self.revision
+            .store(odd.wrapping_add(1), core::sync::atomic::Ordering::SeqCst);
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FocusTarget {
@@ -67,6 +110,9 @@ pub enum FocusTarget {
     Contacts,
     Calculator,
     Clock,
+    Calendar,
+    Messages,
+    Settings,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -128,10 +174,13 @@ pub const fn touch_focus_target(
     let x = tablet_axis_to_pixel(tablet_x, DISPLAY_WIDTH);
     let y = tablet_axis_to_pixel(tablet_y, DISPLAY_HEIGHT);
     match (x, y) {
-        (12..=147, 62..=123) => Some(FocusTarget::Notes),
-        (153..=288, 62..=123) => Some(FocusTarget::Contacts),
-        (12..=147, 130..=193) => Some(FocusTarget::Calculator),
-        (153..=288, 130..=193) => Some(FocusTarget::Clock),
+        (12..=147, 50..=93) => Some(FocusTarget::Notes),
+        (153..=288, 50..=93) => Some(FocusTarget::Contacts),
+        (12..=147, 98..=141) => Some(FocusTarget::Calculator),
+        (153..=288, 98..=141) => Some(FocusTarget::Clock),
+        (12..=147, 146..=189) => Some(FocusTarget::Calendar),
+        (153..=288, 146..=189) => Some(FocusTarget::Messages),
+        (12..=288, 194..=219) => Some(FocusTarget::Settings),
         _ => None,
     }
 }
@@ -143,16 +192,22 @@ pub const fn touch_navigation_action(x: u32, y: u32) -> Option<NavigationAction>
     if y < 12 || y > 43 {
         return None;
     }
-    if x >= 12 && x <= 58 {
+    if x >= 12 && x <= 43 {
         Some(NavigationAction::Home)
-    } else if x >= 64 && x <= 117 {
+    } else if x >= 46 && x <= 69 {
         Some(NavigationAction::Open(FocusTarget::Notes))
-    } else if x >= 122 && x <= 194 {
+    } else if x >= 72 && x <= 95 {
         Some(NavigationAction::Open(FocusTarget::Contacts))
-    } else if x >= 199 && x <= 239 {
+    } else if x >= 98 && x <= 121 {
         Some(NavigationAction::Open(FocusTarget::Calculator))
-    } else if x >= 244 && x <= 288 {
+    } else if x >= 124 && x <= 147 {
         Some(NavigationAction::Open(FocusTarget::Clock))
+    } else if x >= 150 && x <= 173 {
+        Some(NavigationAction::Open(FocusTarget::Calendar))
+    } else if x >= 176 && x <= 199 {
+        Some(NavigationAction::Open(FocusTarget::Messages))
+    } else if x >= 202 && x <= 235 {
+        Some(NavigationAction::Open(FocusTarget::Settings))
     } else {
         None
     }
@@ -216,9 +271,9 @@ pub const fn touch_calculator_action(focus: FocusTarget, x: u32, y: u32) -> Opti
     }
 }
 
-/// Map the visible Contacts browse controls to their ordinary keyboard actions.
+/// Map the visible Contacts/Calendar browse controls to ordinary keyboard actions.
 pub const fn touch_contacts_action(focus: FocusTarget, x: u32, y: u32) -> Option<u16> {
-    if !matches!(focus, FocusTarget::Contacts) || y < 198 || y >= 218 {
+    if !matches!(focus, FocusTarget::Contacts | FocusTarget::Calendar) || y < 198 || y >= 218 {
         return None;
     }
     if x >= 20 && x < 104 {
@@ -472,20 +527,32 @@ mod tests {
     #[test]
     fn touch_hits_only_the_visible_app_surfaces_on_left_button_down() {
         assert_eq!(
-            touch_focus_target(event(DEVICE_TABLET, EVENT_KEY, BTN_LEFT, 1), 10_000, 6_500),
+            touch_focus_target(event(DEVICE_TABLET, EVENT_KEY, BTN_LEFT, 1), 10_000, 6_000),
             Some(FocusTarget::Notes)
         );
         assert_eq!(
-            touch_focus_target(event(DEVICE_TABLET, EVENT_KEY, BTN_LEFT, 1), 24_000, 7_500),
+            touch_focus_target(event(DEVICE_TABLET, EVENT_KEY, BTN_LEFT, 1), 24_000, 6_000),
             Some(FocusTarget::Contacts)
         );
         assert_eq!(
-            touch_focus_target(event(DEVICE_TABLET, EVENT_KEY, BTN_LEFT, 1), 10_000, 13_500),
+            touch_focus_target(event(DEVICE_TABLET, EVENT_KEY, BTN_LEFT, 1), 10_000, 10_000),
             Some(FocusTarget::Calculator)
         );
         assert_eq!(
-            touch_focus_target(event(DEVICE_TABLET, EVENT_KEY, BTN_LEFT, 1), 24_000, 13_500),
+            touch_focus_target(event(DEVICE_TABLET, EVENT_KEY, BTN_LEFT, 1), 24_000, 10_000),
             Some(FocusTarget::Clock)
+        );
+        assert_eq!(
+            touch_focus_target(event(DEVICE_TABLET, EVENT_KEY, BTN_LEFT, 1), 10_000, 14_000),
+            Some(FocusTarget::Calendar)
+        );
+        assert_eq!(
+            touch_focus_target(event(DEVICE_TABLET, EVENT_KEY, BTN_LEFT, 1), 24_000, 14_000),
+            Some(FocusTarget::Messages)
+        );
+        assert_eq!(
+            touch_focus_target(event(DEVICE_TABLET, EVENT_KEY, BTN_LEFT, 1), 16_000, 17_000),
+            Some(FocusTarget::Settings)
         );
         assert_eq!(
             touch_focus_target(event(DEVICE_TABLET, EVENT_KEY, BTN_LEFT, 0), 10_000, 10_000),
@@ -519,6 +586,18 @@ mod tests {
         );
         assert_eq!(
             next_focus_target(FocusTarget::Clock),
+            FocusTarget::Calendar
+        );
+        assert_eq!(
+            next_focus_target(FocusTarget::Calendar),
+            FocusTarget::Messages
+        );
+        assert_eq!(
+            next_focus_target(FocusTarget::Messages),
+            FocusTarget::Settings
+        );
+        assert_eq!(
+            next_focus_target(FocusTarget::Settings),
             FocusTarget::Notes
         );
     }
@@ -543,26 +622,38 @@ mod tests {
     #[test]
     fn app_navigation_maps_home_and_app_tabs() {
         assert_eq!(
-            touch_navigation_action(40, 24),
+            touch_navigation_action(30, 24),
             Some(NavigationAction::Home)
         );
         assert_eq!(
-            touch_navigation_action(110, 24),
+            touch_navigation_action(57, 24),
             Some(NavigationAction::Open(FocusTarget::Notes))
         );
         assert_eq!(
-            touch_navigation_action(190, 24),
+            touch_navigation_action(83, 24),
             Some(NavigationAction::Open(FocusTarget::Contacts))
         );
         assert_eq!(
-            touch_navigation_action(260, 24),
+            touch_navigation_action(109, 24),
+            Some(NavigationAction::Open(FocusTarget::Calculator))
+        );
+        assert_eq!(
+            touch_navigation_action(135, 24),
             Some(NavigationAction::Open(FocusTarget::Clock))
         );
         assert_eq!(
-            touch_navigation_action(220, 24),
-            Some(NavigationAction::Open(FocusTarget::Calculator))
+            touch_navigation_action(161, 24),
+            Some(NavigationAction::Open(FocusTarget::Calendar))
         );
-        assert_eq!(touch_navigation_action(60, 24), None);
+        assert_eq!(
+            touch_navigation_action(187, 24),
+            Some(NavigationAction::Open(FocusTarget::Messages))
+        );
+        assert_eq!(
+            touch_navigation_action(218, 24),
+            Some(NavigationAction::Open(FocusTarget::Settings))
+        );
+        assert_eq!(touch_navigation_action(44, 24), None);
         assert_eq!(touch_navigation_action(40, 50), None);
     }
 

@@ -6,7 +6,7 @@
     <!-- RNG uses slot 8, on its own 4 KiB page separate from the block device. -->
     <memory_region name="rng_mmio" size="0x1000" phys_addr="0x0a001000" />
     <!-- Private, uncached split-ring page and device-writable entropy buffer. -->
-    <memory_region name="rng_dma" size="0x2000" phys_addr="0x5fddc000" />
+    <memory_region name="rng_dma" size="0x2000" phys_addr="0x5fdc0000" />
 
     <!-- Each server owns a separate private frame. Neither client maps either. -->
     <memory_region name="server_private" size="0x1000" />
@@ -15,6 +15,8 @@
     <!-- Each app owns a bounded render snapshot, isolated from its sibling. -->
     <memory_region name="notes_view" size="0x1000" />
     <memory_region name="contacts_view" size="0x1000" />
+    <memory_region name="calendar_view" size="0x1000" />
+    <memory_region name="messages_view" size="0x1000" />
     <!-- The trusted RTC service publishes only a formatted read-only clock face. -->
     <memory_region name="clock_view" size="0x1000" />
     <!-- Expose only Notes' current screen mode to the input router. -->
@@ -22,6 +24,8 @@
     <!-- Private app/vault pages for bounded authenticated blob transfers. -->
     <memory_region name="notes_transfer" size="0x1000" />
     <memory_region name="contacts_transfer" size="0x1000" />
+    <memory_region name="calendar_transfer" size="0x1000" />
+    <memory_region name="messages_transfer" size="0x1000" />
     <protection_domain name="server" priority="100" passive="true">
         <program_image path="rust_server.elf" />
         <map mr="server_private" vaddr="0x40000000" perms="rw" setvar_vaddr="server_private_start" />
@@ -35,6 +39,8 @@
         <map mr="vault_private" vaddr="0x42000000" perms="rw" setvar_vaddr="vault_private_start" />
         <map mr="notes_transfer" vaddr="0x45000000" perms="rw" cached="false" setvar_vaddr="notes_transfer" />
         <map mr="contacts_transfer" vaddr="0x46000000" perms="rw" cached="false" setvar_vaddr="contacts_transfer" />
+        <map mr="calendar_transfer" vaddr="0x47000000" perms="rw" cached="false" setvar_vaddr="calendar_transfer" />
+        <map mr="messages_transfer" vaddr="0x48000000" perms="rw" cached="false" setvar_vaddr="messages_transfer" />
     </protection_domain>
     <!-- Each app gets one capability endpoint, which the vault binds to a fixed namespace. -->
     <protection_domain name="notes_app" priority="100" passive="true">
@@ -47,6 +53,16 @@
         <program_image path="rust_vault_contacts_test.elf" />
         <map mr="contacts_view" vaddr="0x43_000_000" perms="rw" cached="false" setvar_vaddr="app_view" />
         <map mr="contacts_transfer" vaddr="0x44_000_000" perms="rw" cached="false" setvar_vaddr="blob_transfer" />
+    </protection_domain>
+    <protection_domain name="calendar_app" priority="100" passive="true">
+        <program_image path="rust_calendar_app.elf" />
+        <map mr="calendar_view" vaddr="0x43_000_000" perms="rw" cached="false" setvar_vaddr="calendar_view" />
+        <map mr="calendar_transfer" vaddr="0x44_000_000" perms="rw" cached="false" setvar_vaddr="blob_transfer" />
+    </protection_domain>
+    <protection_domain name="messages_app" priority="100" passive="true" stack_size="0x10000">
+        <program_image path="rust_messages_app.elf" />
+        <map mr="messages_view" vaddr="0x43_000_000" perms="rw" cached="false" setvar_vaddr="messages_view" />
+        <map mr="messages_transfer" vaddr="0x44_000_000" perms="rw" cached="false" setvar_vaddr="blob_transfer" />
     </protection_domain>
     <!-- Explicit MCS CPU budgets, in microseconds; 3 ms per 10 ms = 30%. -->
     <protection_domain name="client" priority="99" budget="3_000" period="10_000">
@@ -100,12 +116,28 @@
         <end pd="contacts_app" id="0" pp="true" notify="false" />
     </channel>
     <channel>
+        <end pd="vault" id="5" notify="false" />
+        <end pd="calendar_app" id="0" pp="true" notify="false" />
+    </channel>
+    <channel>
+        <end pd="vault" id="6" notify="false" />
+        <end pd="messages_app" id="0" pp="true" notify="false" />
+    </channel>
+    <channel>
         <end pd="client" id="7" pp="true" notify="false" />
         <end pd="notes_app" id="1" notify="false" />
     </channel>
     <channel>
         <end pd="client" id="8" pp="true" notify="false" />
         <end pd="contacts_app" id="1" notify="false" />
+    </channel>
+    <channel>
+        <end pd="client" id="10" pp="true" notify="false" />
+        <end pd="calendar_app" id="1" notify="false" />
+    </channel>
+    <channel>
+        <end pd="client" id="11" pp="true" notify="false" />
+        <end pd="messages_app" id="1" notify="false" />
     </channel>
     <channel>
         <end pd="client" id="1" />

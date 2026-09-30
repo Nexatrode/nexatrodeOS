@@ -12,7 +12,7 @@ use sel4_microkit::{
 use virtio_rng::VirtioRng;
 
 const CLIENT_CHANNEL: Channel = Channel::new(0);
-const DMA_PHYSICAL_ADDRESS: u64 = 0x5fdd_c000;
+const DMA_PHYSICAL_ADDRESS: u64 = 0x5fdc_0000;
 
 #[protection_domain]
 fn init() -> EntropyService {

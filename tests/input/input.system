@@ -7,7 +7,10 @@
     <memory_region name="input_queues" size="0x4_000" page_size="0x1_000" />
     <memory_region name="input_handoff" size="0x1_000" page_size="0x1_000" />
     <memory_region name="ui_focus" size="0x1_000" page_size="0x1_000" />
+    <!-- Trusted tablet pointer snapshot for the guest-drawn UTM cursor. -->
+    <memory_region name="ui_pointer" size="0x1_000" page_size="0x1_000" />
     <memory_region name="calculator_view" size="0x1_000" page_size="0x1_000" />
+    <memory_region name="settings_view" size="0x1_000" page_size="0x1_000" />
 
     <protection_domain name="input_driver" priority="254" budget="1_000" period="10_000" stack_size="0x10000">
         <program_image path="input_driver.elf" />
@@ -22,6 +25,7 @@
         <program_image path="input_service.elf" />
         <map mr="input_handoff" vaddr="0x41_000_000" perms="rw" cached="false" setvar_vaddr="input_handoff" />
         <map mr="ui_focus" vaddr="0x42_000_000" perms="rw" cached="false" setvar_vaddr="ui_focus" />
+        <map mr="ui_pointer" vaddr="0x44_000_000" perms="rw" cached="false" setvar_vaddr="ui_pointer" />
         <!-- Row hit-testing needs one mode word, not private Notes text. -->
         <map mr="notes_touch_mode" vaddr="0x43_000_000" perms="r" cached="false" setvar_vaddr="notes_touch_mode" />
     </protection_domain>
@@ -29,6 +33,11 @@
     <protection_domain name="calculator_app" priority="100" passive="true">
         <program_image path="rust_calculator_app.elf" />
         <map mr="calculator_view" vaddr="0x43_000_000" perms="rw" cached="false" setvar_vaddr="calculator_view" />
+    </protection_domain>
+    <!-- Settings is a read-only local-device stub (no cloud, no app endpoint). -->
+    <protection_domain name="settings_app" priority="100" passive="true">
+        <program_image path="rust_settings_app.elf" />
+        <map mr="settings_view" vaddr="0x43_000_000" perms="rw" cached="false" setvar_vaddr="settings_view" />
     </protection_domain>
     <channel>
         <end pd="input_driver" id="2" />
@@ -46,6 +55,14 @@
     <channel>
         <end pd="input_service" id="5" pp="true" notify="false" />
         <end pd="calculator_app" id="2" notify="false" />
+    </channel>
+    <channel>
+        <end pd="input_service" id="6" pp="true" notify="false" />
+        <end pd="calendar_app" id="2" notify="false" />
+    </channel>
+    <channel>
+        <end pd="input_service" id="7" pp="true" notify="false" />
+        <end pd="messages_app" id="2" notify="false" />
     </channel>
     <channel>
         <end pd="input_service" id="4" />

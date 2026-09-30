@@ -19,7 +19,9 @@ use crate::vault_protocol::{
     REPLY_NAMESPACE_TEST, REPLY_NO_BLOB, REPLY_OK, REQUEST_NAMESPACE_TEST, REQUEST_READ,
     REQUEST_READ_BLOB, REQUEST_WRITE, REQUEST_WRITE_BLOB,
 };
+use personal_os_rust_server::calendar::{CALENDAR_BLOB_CAPACITY, Calendar};
 use personal_os_rust_server::contacts::{CONTACTS_BLOB_CAPACITY, ContactsApp};
+use personal_os_rust_server::messages::{MESSAGES_BLOB_CAPACITY, Messages};
 use personal_os_rust_server::vault_blob_transfer::BlobTransferPage;
 
 const VAULT: Channel = Channel::new(0);
@@ -36,6 +38,8 @@ pub struct NamespaceTest {
     vault_generation: Option<MessageRegisterValue>,
     contacts: ContactsApp,
     notes: NotesApp,
+    calendar: Calendar,
+    messages: Messages,
 }
 
 impl NamespaceTest {
@@ -57,6 +61,8 @@ impl NamespaceTest {
             vault_generation: None,
             contacts: ContactsApp::new(),
             notes: NotesApp::new(),
+            calendar: Calendar::new(),
+            messages: Messages::new(),
         }
     }
 
@@ -202,6 +208,52 @@ impl NamespaceTest {
                         view.length
                     );
                 }
+            } else if self.name == "CALENDAR" {
+                let old_calendar = self.calendar;
+                let update = self.calendar.apply_key(event.code, event.value);
+                if update.changed {
+                    if update.persist && !self.persist_calendar() {
+                        self.calendar = old_calendar;
+                        self.render_calendar_snapshot();
+                        log(self.name, "FAIL: vault could not persist reminders");
+                        return MessageInfo::new(REPLY_ROUTED_EVENT_BAD, 0);
+                    }
+                    if !self.render_calendar_snapshot() {
+                        self.calendar = old_calendar;
+                        log(self.name, "FAIL: could not render reminders");
+                        return MessageInfo::new(REPLY_ROUTED_EVENT_BAD, 0);
+                    }
+                    let view = unsafe { self.app_view.as_ref() };
+                    debug_println!(
+                        "UIAPP|{}|VIEW: revision={} length={}",
+                        self.name,
+                        view.revision.load(core::sync::atomic::Ordering::SeqCst),
+                        view.length
+                    );
+                }
+            } else if self.name == "MESSAGES" {
+                let old_messages = self.messages;
+                let update = self.messages.apply_key(event.code, event.value);
+                if update.changed {
+                    if update.persist && !self.persist_messages() {
+                        self.messages = old_messages;
+                        self.render_messages_snapshot();
+                        log(self.name, "FAIL: vault could not persist peer keys");
+                        return MessageInfo::new(REPLY_ROUTED_EVENT_BAD, 0);
+                    }
+                    if !self.render_messages_snapshot() {
+                        self.messages = old_messages;
+                        log(self.name, "FAIL: could not render peer keys");
+                        return MessageInfo::new(REPLY_ROUTED_EVENT_BAD, 0);
+                    }
+                    let view = unsafe { self.app_view.as_ref() };
+                    debug_println!(
+                        "UIAPP|{}|VIEW: revision={} length={}",
+                        self.name,
+                        view.revision.load(core::sync::atomic::Ordering::SeqCst),
+                        view.length
+                    );
+                }
             } else {
                 let old_notes = self.notes;
                 let update = {
@@ -248,6 +300,12 @@ impl NamespaceTest {
         }
         if self.name == "NOTES" {
             return self.ensure_notes_loaded();
+        }
+        if self.name == "CALENDAR" {
+            return self.ensure_calendar_loaded();
+        }
+        if self.name == "MESSAGES" {
+            return self.ensure_messages_loaded();
         }
         log(self.name, "FAIL: unknown app namespace");
         false
@@ -421,6 +479,151 @@ impl NamespaceTest {
     fn render_contacts_snapshot(&mut self) -> bool {
         let mut text = [0; APP_VIEW_TEXT_CAPACITY];
         let length = self.contacts.render(&mut text);
+        unsafe { self.app_view.as_mut() }.set_display_text(&text[..length])
+    }
+
+    fn ensure_calendar_loaded(&mut self) -> bool {
+        let reply = VAULT.pp_call(MessageInfo::new(REQUEST_READ_BLOB, 0));
+        if reply.label() == REPLY_OK && reply.count() == 2 {
+            let generation = get_mr(0);
+            let length = get_mr(1) as usize;
+            let page = unsafe { self.blob_transfer.as_ref() };
+            let Some(payload) = page.payload() else {
+                log(
+                    self.name,
+                    "FAIL: vault returned an invalid calendar payload length",
+                );
+                return false;
+            };
+            if payload.len() != length {
+                log(
+                    self.name,
+                    "FAIL: vault returned an invalid calendar payload",
+                );
+                return false;
+            }
+            self.vault_generation = Some(generation);
+            let Some(calendar) = Calendar::decode(payload) else {
+                log(self.name, "FAIL: calendar blob is invalid");
+                return false;
+            };
+            self.calendar = calendar;
+            return self.render_calendar_snapshot();
+        }
+        if reply.label() != REPLY_NO_BLOB || reply.count() != 0 {
+            log(self.name, "FAIL: could not load persisted reminders");
+            return false;
+        }
+
+        let Some((generation, _value)) = read_record() else {
+            log(self.name, "FAIL: could not read empty calendar namespace");
+            return false;
+        };
+        self.calendar = Calendar::new();
+        self.vault_generation = Some(generation);
+        if !self.persist_calendar() {
+            log(self.name, "FAIL: could not initialize calendar blob");
+            return false;
+        }
+        self.render_calendar_snapshot()
+    }
+
+    fn persist_calendar(&mut self) -> bool {
+        let mut payload = [0; CALENDAR_BLOB_CAPACITY];
+        let Some(length) = self.calendar.encode(&mut payload) else {
+            return false;
+        };
+        if !unsafe { self.blob_transfer.as_mut() }.set_payload(&payload[..length]) {
+            return false;
+        }
+        let Some(expected_generation) = self.vault_generation else {
+            return false;
+        };
+        let Some(generation) = write_blob(expected_generation, length) else {
+            return false;
+        };
+        self.vault_generation = Some(generation);
+        true
+    }
+
+    fn render_calendar_snapshot(&mut self) -> bool {
+        let mut text = [0; APP_VIEW_TEXT_CAPACITY];
+        let length = self.calendar.display(&mut text).len();
+        unsafe { self.app_view.as_mut() }.set_display_text(&text[..length])
+    }
+
+    fn ensure_messages_loaded(&mut self) -> bool {
+        let reply = VAULT.pp_call(MessageInfo::new(REQUEST_READ_BLOB, 0));
+        if reply.label() == REPLY_OK && reply.count() == 2 {
+            let generation = get_mr(0);
+            let length = get_mr(1) as usize;
+            let page = unsafe { self.blob_transfer.as_ref() };
+            let Some(payload) = page.payload() else {
+                log(
+                    self.name,
+                    "FAIL: vault returned an invalid messages payload length",
+                );
+                return false;
+            };
+            if payload.len() != length {
+                log(
+                    self.name,
+                    "FAIL: vault returned an invalid messages payload",
+                );
+                return false;
+            }
+            self.vault_generation = Some(generation);
+            match Messages::decode(payload) {
+                Some(messages) => {
+                    self.messages = messages;
+                    return self.render_messages_snapshot();
+                }
+                None => {
+                    // PMS1 or other mismatched blobs re-init empty (no on-disk migration).
+                    log(self.name, "LOG: messages blob format mismatch; re-initializing");
+                }
+            }
+        } else if reply.label() != REPLY_NO_BLOB || reply.count() != 0 {
+            log(self.name, "FAIL: could not load persisted peer keys");
+            return false;
+        }
+
+        if self.vault_generation.is_none() {
+            let Some((generation, _value)) = read_record() else {
+                log(self.name, "FAIL: could not read empty messages namespace");
+                return false;
+            };
+            self.vault_generation = Some(generation);
+        }
+        self.messages = Messages::new();
+        if !self.persist_messages() {
+            log(self.name, "FAIL: could not initialize messages blob");
+            return false;
+        }
+        self.render_messages_snapshot()
+    }
+
+    fn persist_messages(&mut self) -> bool {
+        let mut payload = [0; MESSAGES_BLOB_CAPACITY];
+        let Some(length) = self.messages.encode(&mut payload) else {
+            return false;
+        };
+        if !unsafe { self.blob_transfer.as_mut() }.set_payload(&payload[..length]) {
+            return false;
+        }
+        let Some(expected_generation) = self.vault_generation else {
+            return false;
+        };
+        let Some(generation) = write_blob(expected_generation, length) else {
+            return false;
+        };
+        self.vault_generation = Some(generation);
+        true
+    }
+
+    fn render_messages_snapshot(&mut self) -> bool {
+        let mut text = [0; APP_VIEW_TEXT_CAPACITY];
+        let length = self.messages.display(&mut text).len();
         unsafe { self.app_view.as_mut() }.set_display_text(&text[..length])
     }
 

@@ -8,12 +8,15 @@ service. The active Rust service has an MCS budget, validates device/type/code/
 value combinations, and sends validated events over separate protected
 endpoints to isolated Notes, Contacts, or Calculator apps. Apps receive neither
 device registers nor the raw ring. Focus starts empty. The trusted router maps
-absolute tablet coordinates to four visible launcher cards and opens an app on
+absolute tablet coordinates to seven visible launcher cards and opens an app on
 a left-button press inside a card. In an app, a visible top bar switches between
-Notes, Contacts, Calculator, Clock, and Home; Escape returns to Home from a
-physical keyboard. Tab cycles between Notes, Contacts, Calculator, and Clock,
-starting at Notes, and the router consumes it. Clock remains read-only: the
-router does not forward app key events to it. The
+Notes, Contacts, Calculator, Clock, Calendar, Messages, Settings, and Home;
+Escape returns
+to Home from a physical keyboard. Tab cycles Notes → Contacts → Calculator →
+Clock → Calendar → Messages → Settings → Notes, starting at Notes, and the
+router consumes
+it. Clock and Settings remain read-only: the router does not forward app key
+events to them. Messages receives routed input for its offline peer-key shell. The
 300x400 launcher also shows a QWERTY touch keyboard with Space and Backspace;
 each tap becomes a keyboard press/release pair delivered only to the active
 app. A key release or repeat stays with the app that received its press, even
@@ -23,7 +26,10 @@ maps it read-only. A screen change notifies the graphics client, which draws
 the full app view without a polling timer. Before changing to a writable app,
 the router sends that app a bounded activation event so it can load its private
 saved view before the GPU reads the snapshot. Clock needs no activation event;
-the RTC service refreshes its snapshot each second.
+the RTC service refreshes its snapshot each second. Messages is an interactive
+peer-key shell with vaulted PMS2 sealed stubs. Settings needs
+no activation
+event either; each publishes a fixed display snapshot at startup.
 
 Notes and Contacts each own a separate bounded text snapshot. Their app process
 alone can write its snapshot; the display client maps both read-only and renders
@@ -46,18 +52,21 @@ the same routed key events as a physical keyboard. Calculator state and history
 are currently transient.
 
 The Clock screen is a read-only snapshot written by the RTC-owning clock
-service, formatted as UTC `HH MM SS`. The GPU client maps that page read-only,
-and the input router has no mapping to the clock snapshot.
+service, formatted as UTC `YYYY MM DD` plus `HH MM SS`. The GPU client maps
+that page read-only, and the input router has no mapping to the clock snapshot.
 
 Run `./dev test-input` to build the combined Microkit image and inject a key
 press/release plus absolute X/Y and left-button events through QMP. It taps the
 Notes panel, checks physical typing, taps the on-screen `N`, Backspace, Space,
 and Backspace keys, uses Tab and the app tabs to switch between screens, returns
-Home by touch and Escape, then opens Contacts, Calculator, and Clock from the
-launcher. QEMU must render the exact 300 x 400 launcher, Notes, Contacts,
-Calculator, and Clock frames, including separate title and body editing. The
-Clock check masks only its live time field and compares the rest of the frame
-exactly. The test types a four-row body, checks the
+Home by touch and Escape, then opens Contacts, Calculator, Clock, Calendar,
+Messages, and Settings from the launcher. QEMU must render the exact 300 x 400
+launcher, Notes,
+Contacts, Calculator, Clock, Calendar, Messages, and Settings frames, including
+separate
+title and body editing. The
+Clock check masks its live date and time digit rows and compares the rest of
+the frame exactly. The test types a four-row body, checks the
 Older and Newer controls against exact frames, creates a second note, edits its
 title and body independently, and verifies both survive a cold boot. It also
 checks confirmed deletion, then creates two Contacts entries
@@ -70,13 +79,18 @@ tests reject unsupported event combinations, malformed routed records, and
 touches outside the app panels. The test uses a disposable vault disk.
 `./dev utm-graphics` exports the same system with UTM VirtIO GPU, keyboard, and
 tablet devices in `dist/Personal OS Graphics.utm`; the default serial profile is
-unchanged. The bundle includes the touch keyboard, Contacts browse/delete
+unchanged. Keep UTM on **USB Tablet** (absolute) mode; the guest draws an amber
+cursor from the last tablet position so clicks are visible without a VirtIO
+mouse. The bundle includes the touch keyboard, Contacts browse/delete
 controls, Notes title/body editing, list/add/delete and Older/Newer body
-scrolling, the Calculator keypad, and the read-only Clock screen. QEMU verifies
+scrolling, the Calculator keypad, the read-only Clock screen, the Calendar
+reminder list (title plus optional MMDD day and HHMM time), the Messages
+peer-key shell,
+and the Settings stub. QEMU verifies
 `7 + 5 = 12` through touch and `8 + 2 = 10` through the physical keyboard; it
-also checks clock navigation and exact frames while masking the live time field.
-The profile uses native resolution so the 300 x 400 touch targets map
-consistently.
+also checks clock/calendar/messages navigation and exact frames while masking
+the live date/time fields. The profile uses native resolution so the 300 x 400
+touch targets map consistently.
 
 The scripted QEMU check demonstrates bounded driver-to-service handoff,
 visible-surface hit-testing, per-app protected endpoints, focused-only routing,
@@ -89,11 +103,13 @@ Older/Newer browse content outside the visible rows. The Notes list can open,
 add, and confirmed-delete entries; legacy raw notes and `PNT1` collections
 migrate to `PNT2` with first-line titles, and QEMU checks titles, bodies, the
 collection, and selected note after cold boot.
-Contacts stores up to four entries, each with a 12-character uppercase name and
-up to 16 phone digits. Enter starts and advances through fields, Up/Down
-selects entries, and Delete removes one. The on-screen keyboard includes a
-number row, so names and phone numbers can be entered by touch. QEMU checks
-exact editing frames and restores Notes and Contacts after a cold boot. Broader
+Contacts stores up to four entries, each with a 12-character uppercase name, up
+to 16 phone digits, and an optional 8-character hex key fingerprint (`A-F` /
+`0-9`). Enter starts and advances through name, phone, and key fields; empty
+key commits with `KEY -`. Up/Down selects entries, and Delete removes one. The
+on-screen keyboard includes a number row, so names, phones, and fingerprints can
+be entered by touch. QEMU checks exact editing frames and restores Notes and
+Contacts (including fingerprints) after a cold boot. Broader
 keymaps, touch accessibility, and production VirtIO input drivers remain future
 work.
 VirtIO input defines event and status queues, with event type/code/value fields

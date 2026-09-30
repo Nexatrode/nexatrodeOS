@@ -13,7 +13,7 @@ use input_protocol::{
     ABS_X, ABS_Y, BTN_LEFT, DEVICE_KEYBOARD, DEVICE_TABLET, DISPLAY_HEIGHT, DISPLAY_WIDTH,
     EVENT_ABS, EVENT_CAPACITY, EVENT_KEY, EVENT_SYN, EventRecord, EventRing, FocusTarget, KEY_ESC,
     KEY_TAB, KeyOwners, NavigationAction, REPLY_ROUTED_EVENT_OK, REQUEST_ROUTED_EVENT, SYN_REPORT,
-    focus_value, next_focus_target, onscreen_key_code, onscreen_keyboard_area,
+    UiPointerState, focus_value, next_focus_target, onscreen_key_code, onscreen_keyboard_area,
     tablet_axis_to_pixel, touch_calculator_action, touch_contacts_action, touch_focus_target,
     touch_navigation_action, touch_notes_action, touch_notes_list_action, valid_event,
 };
@@ -27,24 +27,29 @@ const NOTES_INPUT: Channel = Channel::new(2);
 const CONTACTS_INPUT: Channel = Channel::new(3);
 const GPU_FOCUS_NOTIFICATION: Channel = Channel::new(4);
 const CALCULATOR_INPUT: Channel = Channel::new(5);
+const CALENDAR_INPUT: Channel = Channel::new(6);
+const MESSAGES_INPUT: Channel = Channel::new(7);
 
 #[protection_domain]
 fn init() -> InputService {
     let ring = memory_region_symbol!(input_handoff: *mut EventRing);
     let ui_focus = memory_region_symbol!(ui_focus: *mut AtomicU32);
+    let ui_pointer = memory_region_symbol!(ui_pointer: *mut UiPointerState);
     let notes_touch_mode = memory_region_symbol!(notes_touch_mode: *mut AtomicU32);
     unsafe {
         ui_focus
             .as_ref()
-            .store(focus_value(FocusTarget::None), Ordering::Release)
+            .store(focus_value(FocusTarget::None), Ordering::Release);
+        ui_pointer.as_ptr().write(UiPointerState::new());
     };
     debug_println!(
-        "UIINPUT|READY: bounded event service capacity={} focus=none touch-surfaces=notes,contacts,calculator,clock",
+        "UIINPUT|READY: bounded event service capacity={} focus=none touch-surfaces=notes,contacts,calculator,clock,calendar,messages pointer=guest-cursor",
         EVENT_CAPACITY
     );
     InputService {
         ring,
         ui_focus,
+        ui_pointer,
         notes_touch_mode,
         focus: FocusTarget::None,
         tablet_x: None,
@@ -63,6 +68,7 @@ fn init() -> InputService {
 struct InputService {
     ring: NonNull<EventRing>,
     ui_focus: NonNull<AtomicU32>,
+    ui_pointer: NonNull<UiPointerState>,
     notes_touch_mode: NonNull<AtomicU32>,
     focus: FocusTarget,
     tablet_x: Option<u32>,
@@ -90,6 +96,12 @@ impl InputService {
                 ABS_X => self.tablet_x = Some(event.value),
                 ABS_Y => self.tablet_y = Some(event.value),
                 _ => {}
+            }
+            if let (Some(x), Some(y)) = (self.tablet_x, self.tablet_y) {
+                let pixel_x = tablet_axis_to_pixel(x, DISPLAY_WIDTH);
+                let pixel_y = tablet_axis_to_pixel(y, DISPLAY_HEIGHT);
+                unsafe { self.ui_pointer.as_mut() }.publish(pixel_x, pixel_y);
+                GPU_FOCUS_NOTIFICATION.notify();
             }
         }
 
@@ -150,7 +162,11 @@ impl InputService {
                 if let Some(code) = touch_contacts_action(self.focus, pixel_x, pixel_y) {
                     if event.value == 1 {
                         self.dispatch_virtual_key(code);
-                        debug_println!("UIROUTER|VKEY: CONTACTS code={}", code);
+                        debug_println!(
+                            "UIROUTER|VKEY: {} code={}",
+                            focus_name(self.focus),
+                            code
+                        );
                     }
                     return;
                 }
@@ -248,9 +264,11 @@ impl InputService {
             FocusTarget::Notes => NOTES_INPUT,
             FocusTarget::Contacts => CONTACTS_INPUT,
             FocusTarget::Calculator => CALCULATOR_INPUT,
-            // The Clock screen is a read-only snapshot published by the RTC
-            // service; no app endpoint receives its input events.
-            FocusTarget::Clock => return,
+            FocusTarget::Calendar => CALENDAR_INPUT,
+            FocusTarget::Messages => MESSAGES_INPUT,
+            // Clock and Settings are read-only snapshots; no app endpoint
+            // receives their input events.
+            FocusTarget::Clock | FocusTarget::Settings => return,
         };
 
         self.next_sequence = self.next_sequence.saturating_add(1);
@@ -346,6 +364,9 @@ const fn focus_name(focus: FocusTarget) -> &'static str {
         FocusTarget::Contacts => "CONTACTS",
         FocusTarget::Calculator => "CALCULATOR",
         FocusTarget::Clock => "CLOCK",
+        FocusTarget::Calendar => "CALENDAR",
+        FocusTarget::Messages => "MESSAGES",
+        FocusTarget::Settings => "SETTINGS",
     }
 }
 

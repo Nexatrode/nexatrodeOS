@@ -89,7 +89,8 @@ class Frame:
 def main():
     if len(sys.argv) < 2 or len(sys.argv) > 10:
         raise SystemExit(
-            "usage: make_touch_surfaces.py OUTPUT.ppm [none|notes|contacts|calculator] [APP_TEXT] "
+            "usage: make_touch_surfaces.py OUTPUT.ppm "
+            "[none|notes|contacts|calculator|clock|calendar|messages|settings] [APP_TEXT] "
             "[edit|list] [NOTE_COUNT] [SELECTED_NOTE] [SCROLL_START_LINE] [DELETE_ARMED] "
             "[body|title]"
         )
@@ -111,8 +112,12 @@ def main():
             notes_field = sys.argv[9] if len(sys.argv) >= 10 else "body"
         else:
             requested_scroll_start = int(sys.argv[4])
-    if focus not in ("none", "notes", "contacts", "calculator", "clock"):
-        raise SystemExit("focus must be none, notes, contacts, calculator, or clock")
+    if focus not in ("none", "notes", "contacts", "calculator", "clock", "calendar",
+                     "messages", "settings"):
+        raise SystemExit(
+            "focus must be none, notes, contacts, calculator, clock, calendar, "
+            "messages, or settings"
+        )
     if len(app_text) > 128 or any(character not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .\n-" for character in app_text):
         raise SystemExit("APP_TEXT must contain at most 128 uppercase letters, digits, spaces, periods, hyphens, or newlines")
     if note_count < 1 or note_count > 4 or selected_note < 0 or selected_note >= note_count:
@@ -126,26 +131,31 @@ def main():
     frame.text(20, 38, "TOUCH A WORKSPACE", (145, 168, 183))
 
     cards = (
-        ("notes", 12, 62, 135, 60, (24, 57, 80), (105, 224, 193),
+        ("notes", 12, 50, 135, 44, (24, 57, 80), (105, 224, 193),
          "NOTES", "PRIVATE NOTES", 2),
-        ("contacts", 153, 62, 135, 60, (41, 48, 79), (169, 155, 255),
+        ("contacts", 153, 50, 135, 44, (41, 48, 79), (169, 155, 255),
          "CONTACTS", "PEOPLE DETAILS", 2),
-        ("calculator", 12, 130, 135, 64, (39, 48, 79), (255, 206, 84),
+        ("calculator", 12, 98, 135, 44, (39, 48, 79), (255, 206, 84),
          "CALCULATOR", "FOUR FUNCTION", 2),
-        ("clock", 153, 130, 135, 64, (32, 49, 65), (131, 241, 193),
+        ("clock", 153, 98, 135, 44, (32, 49, 65), (131, 241, 193),
          "CLOCK", "UTC TIME", 2),
+        ("calendar", 12, 146, 135, 44, (48, 42, 58), (255, 168, 120),
+         "CALENDAR", "REMINDERS", 2),
+        ("messages", 153, 146, 135, 44, (42, 52, 48), (120, 220, 180),
+         "MESSAGES", "EXPLICIT KEYS", 2),
+        ("settings", 12, 194, 276, 26, (38, 44, 52), (160, 180, 200),
+         "SETTINGS", "LOCAL ONLY", 1),
     )
     for name, x, y, width, height, fill, border, title, subtitle, scale in cards:
         frame.rect(x, y, width, height, fill)
         frame.border(x, y, width, height, border)
         title_width = len(title) * 6 * scale
-        frame.text(x + (width - title_width) // 2, y + 8,
+        frame.text(x + (width - title_width) // 2, y + (8 if height > 40 else 4),
                    title, (240, 251, 250), scale=scale)
         subtitle_width = len(subtitle) * 6
-        frame.text(x + (width - subtitle_width) // 2, y + 39,
+        frame.text(x + (width - subtitle_width) // 2, y + (height - 16 if height > 40 else height - 12),
                    subtitle, (189, 212, 216))
 
-    frame.text(16, 211, "TOUCH KEYS OR USE UTM KEYBOARD", (139, 184, 190))
     frame.rect(12, 222, 276, 140, (18, 38, 53))
     frame.border(12, 222, 276, 140, (51, 73, 89))
 
@@ -169,13 +179,19 @@ def main():
     keycap(188, 324, 95, "BACKSPACE")
 
     if focus == "notes":
-        frame.border(12, 62, 135, 60, (255, 206, 84), thickness=4)
+        frame.border(12, 50, 135, 44, (255, 206, 84), thickness=4)
     elif focus == "contacts":
-        frame.border(153, 62, 135, 60, (255, 206, 84), thickness=4)
+        frame.border(153, 50, 135, 44, (255, 206, 84), thickness=4)
     elif focus == "calculator":
-        frame.border(12, 130, 135, 64, (255, 206, 84), thickness=4)
+        frame.border(12, 98, 135, 44, (255, 206, 84), thickness=4)
     elif focus == "clock":
-        frame.border(153, 130, 135, 64, (255, 206, 84), thickness=4)
+        frame.border(153, 98, 135, 44, (255, 206, 84), thickness=4)
+    elif focus == "calendar":
+        frame.border(12, 146, 135, 44, (255, 206, 84), thickness=4)
+    elif focus == "messages":
+        frame.border(153, 146, 135, 44, (255, 206, 84), thickness=4)
+    elif focus == "settings":
+        frame.border(12, 194, 276, 26, (255, 206, 84), thickness=4)
 
     if focus != "none":
         frame.rect(0, 0, WIDTH, 222, (11, 21, 34))
@@ -190,11 +206,14 @@ def main():
             frame.border(x, 12, width, 32, border, thickness=2)
             frame.text(x + 8, 23, label, (232, 242, 245))
 
-        nav_button(12, 48, "HOME", False, home=True)
-        nav_button(64, 54, "NOTES", focus == "notes")
-        nav_button(122, 73, "CONTACTS", focus == "contacts")
-        nav_button(199, 40, "CALC", focus == "calculator")
-        nav_button(243, 45, "CLOCK", focus == "clock")
+        nav_button(12, 32, "HOME", False, home=True)
+        nav_button(46, 24, "NT", focus == "notes")
+        nav_button(72, 24, "CT", focus == "contacts")
+        nav_button(98, 24, "CA", focus == "calculator")
+        nav_button(124, 24, "CK", focus == "clock")
+        nav_button(150, 24, "CL", focus == "calendar")
+        nav_button(176, 24, "MS", focus == "messages")
+        nav_button(202, 34, "ST", focus == "settings")
 
         if focus == "notes":
             if notes_mode == "list":
@@ -215,6 +234,24 @@ def main():
             field_label = "CONTACT LIST"
             field_color = (208, 204, 228)
             field_border = (169, 155, 255)
+        elif focus == "calendar":
+            frame.text(18, 58, "CALENDAR", (255, 236, 224), scale=2)
+            frame.text(20, 82, "LOCAL REMINDERS", (228, 204, 189))
+            field_label = "REMINDERS"
+            field_color = (228, 204, 189)
+            field_border = (255, 168, 120)
+        elif focus == "messages":
+            frame.text(18, 58, "MESSAGES", (224, 255, 240), scale=2)
+            frame.text(20, 82, "EXPLICIT CONTACT ONLY", (189, 228, 208))
+            field_label = "INBOX"
+            field_color = (189, 228, 208)
+            field_border = (120, 220, 180)
+        elif focus == "settings":
+            frame.text(18, 58, "SETTINGS", (232, 242, 245), scale=2)
+            frame.text(20, 82, "LOCAL DEVICE OPTIONS", (189, 212, 216))
+            field_label = "STATUS"
+            field_color = (189, 212, 216)
+            field_border = (160, 180, 200)
         else:
             if focus == "calculator":
                 frame.text(18, 58, "CALCULATOR", (232, 242, 245), scale=2)
@@ -224,8 +261,8 @@ def main():
                 field_border = (255, 206, 84)
             else:
                 frame.text(18, 58, "CLOCK", (232, 242, 245), scale=2)
-                frame.text(20, 82, "UTC TIME FROM RTC", (189, 212, 216))
-                field_label = "UTC TIME"
+                frame.text(20, 82, "UTC DATE AND TIME FROM RTC", (189, 212, 216))
+                field_label = "UTC DATE"
                 field_color = (131, 241, 193)
                 field_border = (131, 241, 193)
 
@@ -236,7 +273,7 @@ def main():
         elif focus == "notes" and notes_field == "title":
             field_label = "TITLE"
         frame.text(24, 114, field_label, field_color)
-        if focus in ("notes", "contacts"):
+        if focus in ("notes", "contacts", "calendar", "messages", "settings"):
             if focus == "notes" and notes_mode == "list":
                 lines = app_text.split("\n") if app_text else []
                 for index, line_text in enumerate(lines[:note_count]):
@@ -290,7 +327,13 @@ def main():
             frame.text(24, 143, app_text, field_color, scale=2)
             cursor_x = cursor_y = -1
         elif focus == "clock":
-            frame.text(102, 144, app_text, field_color, scale=2)
+            if "\n" in app_text:
+                date_text, time_text = app_text.split("\n", 1)
+            else:
+                date_text, time_text = app_text, ""
+            frame.text(24, 132, date_text, field_color, scale=2)
+            frame.text(24, 156, "UTC TIME", field_color)
+            frame.text(102, 174, time_text, field_color, scale=2)
             cursor_x = cursor_y = -1
         else:
             if app_text:
@@ -335,11 +378,16 @@ def main():
             frame.border(16, 330, 261, 22, (74, 101, 117), thickness=1)
             frame.text(131, 337, "ENTER", (232, 242, 245))
         elif focus == "clock":
-            frame.text(20, 204, "LIVE UTC TIME", (139, 184, 190))
+            frame.text(20, 204, "LIVE UTC DATE AND TIME", (139, 184, 190))
+        elif focus == "messages":
+            frame.text(20, 204, "OFFLINE PEER KEYS", (139, 184, 190))
+        elif focus == "settings":
+            frame.text(20, 204, "LOCAL ONLY  NO CLOUD YET", (139, 184, 190))
         elif app_text.startswith("ADD "):
             frame.text(20, 204, "ENTER NEXT  BACKSPACE EDIT", (139, 168, 190))
-        elif app_text.startswith("NO CONTACTS"):
-            frame.text(20, 204, "ENTER ADD A CONTACT", (139, 168, 190))
+        elif app_text.startswith("NO CONTACTS") or app_text.startswith("NO REMINDERS"):
+            hint = "ENTER ADD A CONTACT" if focus == "contacts" else "ENTER ADD A REMINDER"
+            frame.text(20, 204, hint, (139, 168, 190))
         else:
             def control(x, width, label):
                 frame.rect(x, 198, width, 20, (32, 58, 75))
@@ -353,6 +401,31 @@ def main():
 
     frame.rect(20, 374, 260, 1, (51, 73, 89))
     frame.text(22, 385, "SECURE INPUT ROUTER", (120, 144, 160))
+
+    # Guest-drawn tablet cursor parked in the footer for stable QEMU compares.
+    pointer_x, pointer_y = 290, 390
+    cursor = (
+        "X      ",
+        "XX     ",
+        "X X    ",
+        "X  X   ",
+        "X   X  ",
+        "X    X ",
+        "XXXXX  ",
+        "X  X   ",
+        "X   X  ",
+        "     X ",
+    )
+    for row, pattern in enumerate(cursor):
+        for column, cell in enumerate(pattern):
+            if cell != "X":
+                continue
+            px = pointer_x + column
+            py = pointer_y + row
+            if row > 0 and cursor[row - 1][column] != "X":
+                frame.rect(px, py - 1, 1, 1, (11, 21, 18))
+            frame.rect(px, py, 1, 1, (255, 206, 20))
+
     frame.save(sys.argv[1])
 
 

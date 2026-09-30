@@ -1,0 +1,96 @@
+/dts-v1/;
+
+/*
+ * Desk sketch of a minimal seL4/Microkit-oriented overlay for Google Pixel 4a
+ * (sunfish / SM7150). Not a buildable board file for this repo's qemu_virt
+ * toolchain. Numbers are from docs/pixel-p0-assets DT sources (2026-09-28 P0).
+ *
+ * Privilege: plan for EL1 entry until ABL handoff is measured on device.
+ */
+
+/ {
+	compatible = "google,sunfish", "qcom,sm7150", "seL4,scaffold";
+	#address-cells = <2>;
+	#size-cells = <2>;
+
+	/* Bootloader fills real size; 6 GiB is the phone-reported planning value. */
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x0 0x80000000 0x1 0x80000000>;
+	};
+
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		/* Large no-map regions from sm7150-google-sunfish.dts (subset). */
+		mpss_mem: memory@8b000000 {
+			reg = <0x0 0x8b000000 0x0 0x9800000>;
+			no-map;
+		};
+		venus_mem: memory@94800000 {
+			reg = <0x0 0x94800000 0x0 0x500000>;
+			no-map;
+		};
+		cdsp_mem: memory@94d00000 {
+			reg = <0x0 0x94d00000 0x0 0x1e00000>;
+			no-map;
+		};
+		adsp_mem: memory@96b00000 {
+			reg = <0x0 0x96b00000 0x0 0x2200000>;
+			no-map;
+		};
+		wlan_msa_mem: memory@98d00000 {
+			reg = <0x0 0x98d00000 0x0 0x200000>;
+			no-map;
+		};
+		/* Splash / early FB territory — leave reserved for P2. */
+		splash_mem: memory@9c000000 {
+			reg = <0x0 0x9c000000 0x0 0x2300000>;
+			no-map;
+		};
+	};
+
+	interrupt-controller@17a00000 {
+		compatible = "arm,gic-v3";
+		reg = <0x0 0x17a00000 0x0 0x10000>,
+		      <0x0 0x17a60000 0x0 0x100000>;
+		#interrupt-cells = <3>;
+		interrupt-controller;
+	};
+
+	timer {
+		compatible = "arm,armv8-timer";
+		/* PPI numbers match SM7150 DT; confirm on first on-device boot. */
+		interrupts = <1 13 0xf08>,
+			     <1 14 0xf08>,
+			     <1 11 0xf08>,
+			     <1 10 0xf08>;
+	};
+
+	/* Debug console candidate used by Android cmdline ttyMSM0 path. */
+	serial@a88000 {
+		compatible = "qcom,geni-debug-uart";
+		reg = <0x0 0x00a88000 0x0 0x4000>;
+		interrupts = <0 355 4>; /* GIC_SPI 355 LEVEL_HIGH */
+		status = "okay";
+	};
+
+	psci {
+		compatible = "arm,psci-1.0";
+		method = "smc";
+	};
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		cpu@0 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a76";
+			reg = <0x0>;
+			enable-method = "psci";
+		};
+	};
+};

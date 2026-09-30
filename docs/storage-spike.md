@@ -3,11 +3,13 @@
 The regular `./dev build` and `./dev run` system now use an sDDF-backed Rust vault.
 The build generates the virtio block driver and block virtualizer as separate
 protection domains, gives the vault its client queue and private state, and
-attaches a 16 MiB GPT data disk to QEMU. It stores system, Notes, and Contacts
-records in separate two-slot namespaces. Blocks 2–3 remain unused to preserve
-compatibility with FAT metadata left by older prototype disks. `build/personal-os-disk.img`
-is created once and preserved by later builds. Automated main-system tests use a
-separate resettable disk so their sample writes do not alter the user's CLI data.
+attaches a 16 MiB GPT data disk to QEMU. It stores system, Notes, Contacts, and
+Calendar records in separate two-slot namespaces. Calendar reuses the former
+prototype gap at blocks 2–3; Notes and Contacts remain at 4–5 and 6–7. Host
+backup archives still export namespaces 0–2 only.
+`build/personal-os-disk.img` is created once and preserved by later builds.
+Automated main-system tests use a separate resettable disk so their sample
+writes do not alter the user's CLI data.
 
 `./dev test-storage` builds a small, separate recovery system on a fresh 16 MiB
 GPT test disk. Across five fresh QEMU boots, it commits generation 1 and then
@@ -39,6 +41,8 @@ the recorded QEMU 11.1.1 run, both the restore pair and clone pair differed.
 This establishes different output on this QEMU backend for these restore and
 clone operations; it is not an entropy-quality test and says nothing about
 Pixel hardware or arbitrary cloned VM state.
+
+Vault data covers ten 4 KiB blocks: system 0–1, Calendar 2–3, Notes 4–5, Contacts 6–7, Messages 8–9. Host backup archives still export namespaces 0–2 only. RNG DMA is pinned at `0x5fdc0000`.
 
 These tests exercise persisted disk states through QEMU's virtual disk path,
 system reset, and one whole-VM snapshot restore. QEMU and its host-side disk

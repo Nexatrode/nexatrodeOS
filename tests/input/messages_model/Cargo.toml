@@ -1,0 +1,12 @@
+[package]
+name = "messages-model-test"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[test]]
+name = "messages_model"
+path = "messages_model.rs"
+
+[dependencies]
+aes-gcm-siv = { version = "=0.12.1", default-features = false, features = ["aes", "alloc"] }
