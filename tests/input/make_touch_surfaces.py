@@ -243,7 +243,7 @@ def main():
         elif focus == "messages":
             frame.text(18, 58, "MESSAGES", (224, 255, 240), scale=2)
             frame.text(20, 82, "EXPLICIT CONTACT ONLY", (189, 228, 208))
-            field_label = "INBOX"
+            field_label = "PEER KEYS"
             field_color = (189, 228, 208)
             field_border = (120, 220, 180)
         elif focus == "settings":
@@ -380,7 +380,22 @@ def main():
         elif focus == "clock":
             frame.text(20, 204, "LIVE UTC DATE AND TIME", (139, 184, 190))
         elif focus == "messages":
-            frame.text(20, 204, "OFFLINE PEER KEYS", (139, 184, 190))
+            if app_text.startswith("NO THREADS"):
+                frame.text(20, 204, "ENTER ADD A PEER KEY", (139, 168, 190))
+            elif app_text.startswith("ADD KEY"):
+                frame.text(20, 204, "HEX 0-9 A-F  ENTER AT 8", (139, 168, 190))
+            elif app_text.startswith("COMPOSE KEY"):
+                frame.text(20, 204, "A-Z BODY  ENTER SEAL", (139, 168, 190))
+            else:
+                def control(x, width, label):
+                    frame.rect(x, 198, width, 20, (32, 58, 75))
+                    frame.border(x, 198, width, 20, (74, 101, 117), thickness=1)
+                    frame.text(x + max(2, (width - len(label) * 6) // 2), 204,
+                               label, (232, 242, 245))
+
+                control(20, 84, "UP")
+                control(108, 76, "DOWN")
+                control(188, 95, "DELETE")
         elif focus == "settings":
             frame.text(20, 204, "LOCAL ONLY  NO NET YET", (139, 184, 190))
         elif app_text.startswith("ADD "):

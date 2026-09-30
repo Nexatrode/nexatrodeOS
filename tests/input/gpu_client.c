@@ -822,7 +822,7 @@ static void draw_app_page(uint8_t *frame, uint32_t focus, const char *text,
             draw_rect(frame, cursor_x, cursor_y, 2, 16, 193, 241, 131);
         }
     } else if (focus == 6) {
-        draw_label(frame, 24, 114, "INBOX", 5, 208, 228, 189, 1);
+        draw_label(frame, 24, 114, "PEER KEYS", 9, 208, 228, 189, 1);
         int cursor_x;
         int cursor_y;
         draw_notes_text(frame, text, length, 208, 228, 189, -1,
@@ -849,7 +849,26 @@ static void draw_app_page(uint8_t *frame, uint32_t focus, const char *text,
     } else if (focus == 4) {
         draw_label(frame, 20, 204, "LIVE UTC DATE AND TIME", 22, 190, 184, 139, 1);
     } else if (focus == 6) {
-        draw_label(frame, 20, 204, "OFFLINE PEER KEYS", 17, 190, 184, 139, 1);
+        bool empty_peers = length >= 10 && text[0] == 'N' && text[1] == 'O' &&
+                           text[2] == ' ' && text[3] == 'T';
+        bool adding_key = length >= 7 && text[0] == 'A' && text[1] == 'D' &&
+                          text[2] == 'D' && text[3] == ' ' && text[4] == 'K';
+        bool composing = length >= 12 && text[0] == 'C' && text[1] == 'O' &&
+                         text[2] == 'M' && text[3] == 'P' && text[4] == 'O';
+        if (empty_peers) {
+            draw_label(frame, 20, 204, "ENTER ADD A PEER KEY", 20,
+                       190, 168, 139, 1);
+        } else if (adding_key) {
+            draw_label(frame, 20, 204, "HEX 0-9 A-F  ENTER AT 8", 23,
+                       190, 168, 139, 1);
+        } else if (composing) {
+            draw_label(frame, 20, 204, "A-Z BODY  ENTER SEAL", 20,
+                       190, 168, 139, 1);
+        } else {
+            draw_contacts_control(frame, 20, 84, "UP", 2);
+            draw_contacts_control(frame, 108, 76, "DOWN", 4);
+            draw_contacts_control(frame, 188, 95, "DELETE", 6);
+        }
     } else if (focus == 7) {
         draw_label(frame, 20, 204, "LOCAL ONLY  NO NET YET", 22, 190, 184, 139, 1);
     } else {

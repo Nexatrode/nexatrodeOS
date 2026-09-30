@@ -30,7 +30,8 @@ UTM does **not** replace Pixel boot, GENI UART, Wi‑Fi, modem, or power.
 5. **Settings** shows local-only status (`LOCAL ONLY` / `VAULT LOCAL` /
    `NO NET YET`) and alert counts after modem smoke (`ALERTS RING N SMS M`, or
    `NO ALERTS YET` if nothing was injected).
-6. **Messages** compose → `SEALED N` locally (still offline in the UTM image).
+6. **Messages** compose → `SEALED N` (shows `COMPOSE KEY <id>`; offline Graphics
+   UTM stays local-only; Graphics Net can TX).
 7. **Serial profile** remains separate: `./dev utm` / `dist/Personal OS.utm`
    for non-graphics work.
 8. **Optional net:** `./dev test-net` on QEMU, `./dev utm-net` for dual-UTM

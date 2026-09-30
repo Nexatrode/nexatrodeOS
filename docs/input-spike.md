@@ -16,7 +16,8 @@ to Home from a physical keyboard. Tab cycles Notes → Contacts → Calculator �
 Clock → Calendar → Messages → Settings → Notes, starting at Notes, and the
 router consumes
 it. Clock and Settings remain read-only: the router does not forward app key
-events to them. Messages receives routed input for its offline peer-key shell. The
+events to them. Messages receives routed input for its peer-key shell (`PEER KEYS`
+field, `ADD KEY n OF 8`, `COMPOSE KEY <id>`). The
 300x400 launcher also shows a QWERTY touch keyboard with Space and Backspace;
 each tap becomes a keyboard press/release pair delivered only to the active
 app. A key release or repeat stays with the app that received its press, even

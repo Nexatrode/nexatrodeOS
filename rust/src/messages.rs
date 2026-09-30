@@ -96,7 +96,10 @@ impl Messages {
                 &buffer[..offset]
             }
             EditPhase::Key => {
-                let mut offset = write(buffer, 0, b"ADD KEY\n");
+                // Progress so Enter-before-8 is obvious (Contacts-style clarity).
+                let mut offset = write(buffer, 0, b"ADD KEY ");
+                offset = write_digit(buffer, offset, self.draft_length as u8);
+                offset = write(buffer, offset, b" OF 8\n");
                 offset = write(
                     buffer,
                     offset,
@@ -105,7 +108,10 @@ impl Messages {
                 &buffer[..offset]
             }
             EditPhase::Compose => {
-                let mut offset = write(buffer, 0, b"COMPOSE\n");
+                // Show which peer key this seal targets.
+                let mut offset = write(buffer, 0, b"COMPOSE KEY ");
+                offset = write(buffer, offset, &self.peers[self.selected].key);
+                offset = write(buffer, offset, b"\n");
                 offset = write(buffer, offset, &self.body[..self.body_length]);
                 &buffer[..offset]
             }
@@ -524,13 +530,13 @@ mod tests {
         assert_eq!(app.display(&mut buffer), b"NO THREADS\nENTER TO ADD");
 
         assert!(app.apply_key(KEY_ENTER, 1).changed);
-        assert_eq!(app.display(&mut buffer), b"ADD KEY\n");
+        assert_eq!(app.display(&mut buffer), b"ADD KEY 0 OF 8\n");
 
         // BE12CD34
         for code in [48u16, 18, 2, 3, 46, 32, 4, 5] {
             assert!(app.apply_key(code, 1).changed);
         }
-        assert_eq!(app.display(&mut buffer), b"ADD KEY\nBE12CD34");
+        assert_eq!(app.display(&mut buffer), b"ADD KEY 8 OF 8\nBE12CD34");
         let commit = app.apply_key(KEY_ENTER, 1);
         assert!(commit.changed && commit.persist);
         assert_eq!(app.display(&mut buffer), b"- KEY BE12CD34");
@@ -557,11 +563,11 @@ mod tests {
         assert!(app.apply_key(KEY_ENTER, 1).persist);
 
         assert!(app.apply_key(KEY_ENTER, 1).changed);
-        assert_eq!(app.display(&mut buffer), b"COMPOSE\n");
+        assert_eq!(app.display(&mut buffer), b"COMPOSE KEY BE12CD34\n");
         // HI
         assert!(app.apply_key(35, 1).changed); // H
         assert!(app.apply_key(23, 1).changed); // I
-        assert_eq!(app.display(&mut buffer), b"COMPOSE\nHI");
+        assert_eq!(app.display(&mut buffer), b"COMPOSE KEY BE12CD34\nHI");
         let sealed = app.apply_key(KEY_ENTER, 1);
         assert!(sealed.changed && sealed.persist && sealed.tx_sealed);
         assert_eq!(app.display(&mut buffer), b"- KEY BE12CD34\n  SEALED 1");

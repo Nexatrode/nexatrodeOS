@@ -2055,11 +2055,11 @@ def input_test(timeout, build_only=False):
         ("calendar", "ADD TIME\nMEET\n0101\n1200"),
         ("calendar", "- MEET\n  0101 1200"),
         ("messages", "NO THREADS\nENTER TO ADD"),
-        ("messages", "ADD KEY\n"),
-        ("messages", "ADD KEY\nBE12CD34"),
+        ("messages", "ADD KEY 0 OF 8\n"),
+        ("messages", "ADD KEY 8 OF 8\nBE12CD34"),
         ("messages", "- KEY BE12CD34"),
-        ("messages", "COMPOSE\n"),
-        ("messages", "COMPOSE\nHI"),
+        ("messages", "COMPOSE KEY BE12CD34\n"),
+        ("messages", "COMPOSE KEY BE12CD34\nHI"),
         ("messages", "- KEY BE12CD34\n  SEALED 1"),
         ("settings", "LOCAL ONLY\nVAULT LOCAL\nNO NET YET\nALERTS RING 1 SMS 1"),
     ]
@@ -2773,12 +2773,12 @@ def input_test(timeout, build_only=False):
                 qmp_execute(stream, "send-key", {
                     "keys": [{"type": "qcode", "data": "ret"}], "hold-time": 150,
                 })
-                wait_for_frame("messages", "ADD KEY\n")
+                wait_for_frame("messages", "ADD KEY 0 OF 8\n")
                 for key in ("b", "e", "1", "2", "c", "d", "3", "4"):
                     qmp_execute(stream, "send-key", {
                         "keys": [{"type": "qcode", "data": key}], "hold-time": 150,
                     })
-                wait_for_frame("messages", "ADD KEY\nBE12CD34")
+                wait_for_frame("messages", "ADD KEY 8 OF 8\nBE12CD34")
                 qmp_execute(stream, "send-key", {
                     "keys": [{"type": "qcode", "data": "ret"}], "hold-time": 150,
                 })
@@ -2786,12 +2786,12 @@ def input_test(timeout, build_only=False):
                 qmp_execute(stream, "send-key", {
                     "keys": [{"type": "qcode", "data": "ret"}], "hold-time": 150,
                 })
-                wait_for_frame("messages", "COMPOSE\n")
+                wait_for_frame("messages", "COMPOSE KEY BE12CD34\n")
                 for key in ("h", "i"):
                     qmp_execute(stream, "send-key", {
                         "keys": [{"type": "qcode", "data": key}], "hold-time": 150,
                     })
-                wait_for_frame("messages", "COMPOSE\nHI")
+                wait_for_frame("messages", "COMPOSE KEY BE12CD34\nHI")
                 qmp_execute(stream, "send-key", {
                     "keys": [{"type": "qcode", "data": "ret"}], "hold-time": 150,
                 })
@@ -2853,11 +2853,11 @@ def input_test(timeout, build_only=False):
                         ("calendar", "ADD TIME\nMEET\n0101\n1200"),
                         ("calendar", "- MEET\n  0101 1200"),
                         ("messages", "NO THREADS\nENTER TO ADD"),
-                        ("messages", "ADD KEY\n"),
-                        ("messages", "ADD KEY\nBE12CD34"),
+                        ("messages", "ADD KEY 0 OF 8\n"),
+                        ("messages", "ADD KEY 8 OF 8\nBE12CD34"),
                         ("messages", "- KEY BE12CD34"),
-                        ("messages", "COMPOSE\n"),
-                        ("messages", "COMPOSE\nHI"),
+                        ("messages", "COMPOSE KEY BE12CD34\n"),
+                        ("messages", "COMPOSE KEY BE12CD34\nHI"),
                         ("messages", "- KEY BE12CD34\n  SEALED 1"),
                         ("settings", "LOCAL ONLY\nVAULT LOCAL\nNO NET YET\nALERTS RING 1 SMS 1"),
                     }
@@ -2913,11 +2913,11 @@ def input_test(timeout, build_only=False):
         ("calendar", "ADD TIME\nMEET\n0101\n1200"),
         ("calendar", "- MEET\n  0101 1200"),
         ("messages", "NO THREADS\nENTER TO ADD"),
-        ("messages", "ADD KEY\n"),
-        ("messages", "ADD KEY\nBE12CD34"),
+        ("messages", "ADD KEY 0 OF 8\n"),
+        ("messages", "ADD KEY 8 OF 8\nBE12CD34"),
         ("messages", "- KEY BE12CD34"),
-        ("messages", "COMPOSE\n"),
-        ("messages", "COMPOSE\nHI"),
+        ("messages", "COMPOSE KEY BE12CD34\n"),
+        ("messages", "COMPOSE KEY BE12CD34\nHI"),
         ("messages", "- KEY BE12CD34\n  SEALED 1"),
         ("settings", "LOCAL ONLY\nVAULT LOCAL\nNO NET YET\nALERTS RING 1 SMS 1"),
     }
