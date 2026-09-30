@@ -2,7 +2,7 @@
  * Copyright 2026, Personal OS contributors
  * SPDX-License-Identifier: BSD-2-Clause
  *
- * Serial-free DHCP + UDP echo/seal client for merging into Personal OS.
+ * Serial-free DHCP + UDP/TCP echo/seal client for merging into Personal OS.
  * Logging uses libsddf_util_debug (Microkit debug putchar), not PL011.
  */
 #include <stdbool.h>
@@ -102,6 +102,7 @@ void init(void)
                    NULL, NULL, netif_status_callback, NULL, NULL, NULL);
     set_timeout();
     setup_udp_socket();
+    setup_tcp_socket();
 
     udp_tx_socket = udp_new_ip_type(IPADDR_TYPE_V4);
     if (udp_tx_socket == NULL) {

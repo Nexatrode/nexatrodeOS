@@ -44,7 +44,9 @@ Practical approach:
 - **P0/P1:** Pixel boot/debug (UART adapter, boot.img packaging, platform port).
 - **Input/GPU:** production drivers beyond QEMU spike code; mouse; accessibility.
 - **U6:** `./dev test-net` proves standalone and merged Personal OS VirtIO net
-  (DHCP + UDP echo + PSL1 SEAL OK); Messages↔net bridge and fake telephony/camera remain later.
+  (DHCP + UDP/TCP echo + PSL1 SEAL OK + Messages sealed TX + toy router). Dual-UTM
+  Shared Network is a manual sketch in [network-spike.md](network-spike.md);
+  fake telephony/camera remain later.
 - **P3–P6:** Wi‑Fi, cellular, camera, battery — conditional on hardware access.
 
 Apps still matter: they force stable UI, storage, and permission interfaces that

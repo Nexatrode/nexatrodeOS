@@ -52,7 +52,7 @@ CFLAGS += -Wno-tautological-constant-out-of-range-compare
 LDFLAGS := -L$(BOARD_DIR)/lib
 LIBS := --start-group -lmicrokit -Tmicrokit.ld libsddf_util_debug.a --end-group
 
-DHCP_OBJS := dhcp_client.o udp_echo_socket.o
+DHCP_OBJS := dhcp_client.o udp_echo_socket.o tcp_echo_socket.o
 DEPS := $(DHCP_OBJS:.o=.d)
 
 all: $(SYSTEM_FILE)

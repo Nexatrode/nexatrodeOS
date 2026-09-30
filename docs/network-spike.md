@@ -10,9 +10,9 @@
 
 2. **Integrated** — builds the serial-free fragment under [`tests/net/`](../tests/net/)
    and merges it into Personal OS. The merged guest proves isolation + DHCP +
-   UDP echo on **1235** + host→guest PSL1 `SEAL OK` on **1236**, plus
-   Messages→`dhcp_client` sealed TX to the host on **1237**. A second QEMU
-   (fragment-only guest B) receives that datagram via
+   UDP echo on **1235** + host→guest TCP echo on **1238** + host→guest PSL1
+   `SEAL OK` on **1236**, plus Messages→`dhcp_client` sealed TX to the host on
+   **1237**. A second QEMU (fragment-only guest B) receives that datagram via
    [`toy_router.py`](../tests/net/toy_router.py) (`1237` → hostfwd `1246` →
    guest B `:1236`) and must also print `SEAL OK`. Artifacts:
    `build/sddf-net-spike/net-system.system`, `net-system-serial.log`,
@@ -44,7 +44,7 @@ UDP demo constants (fixed, **not** for production):
 Host helper [`tests/net/seal_host`](../tests/net/seal_host) /
 [`seal_packet.py`](../tests/net/seal_packet.py) emits the datagram;
 [`psl1_demo_packet.h`](../tests/net/include/psl1_demo_packet.h) locks guest
-`memcmp`. Port **1235** stays pure echo.
+`memcmp`. Port **1235** stays pure UDP echo; port **1238** is TCP echo.
 
 ## Toy LAN router
 
@@ -52,21 +52,67 @@ SLIRP isolates guests, so peer delivery uses a **host process** as the central
 router: listen on UDP 1237, forward opaque bytes to guest B’s hostfwd. This is
 not a bridged UTM LAN and not graphics+net (still blocked on `timer_driver`).
 
+## Dual-UTM bridged LAN (manual sketch)
+
+`./dev test-net` stays on QEMU + SLIRP + `toy_router`. A true two-guest LAN is a
+**manual** UTM experiment; it is not automated and does not change default /
+graphics UTM images (those remain offline).
+
+### Why this is separate from test-net
+
+QEMU user networking gives each guest its own `10.0.2.0/24` with the host at
+`10.0.2.2`. Guests never share L2, so peer UDP needs a host relay. UTM’s
+**Shared Network** (vmnet) or **Bridged** mode can put two VMs on one subnet so
+guest A can address guest B directly.
+
+### Suggested experiment
+
+1. Run `./dev test-net` once so artifacts exist under `build/sddf-net-spike/`
+   (`net-system-loader.img`) and the fragment build (`loader.img` for guest B).
+2. Create two UTM VMs (aarch64 virt, VirtIO net). Prefer **Shared Network** so
+   both get addresses on the same private LAN without exposing the host Wi‑Fi.
+   Bridged works if you want host-LAN IPs instead.
+3. Attach guest A to the merged Personal OS net loader; guest B to the fragment
+   loader (same CPU/memory/load address as QEMU). Keep serial consoles open.
+4. Confirm both finish DHCP (or assign static IPs on the shared subnet) and that
+   guest B still binds UDP **1236**.
+5. Peer path options:
+   - **Direct (goal):** change or temporarily override the Messages TX target
+     from `10.0.2.2:1237` to guest B’s shared-LAN IP `:1236`, then trigger
+     `SEND_SEAL_DEMO` and watch guest B print `SEAL OK` with **no**
+     `toy_router`.
+   - **Host relay (interim):** keep SLIRP/user net or hostfwd and run
+     [`toy_router.py`](../tests/net/toy_router.py) on the Mac as in test-net.
+6. Optional: TCP echo to guest A on shared-LAN IP `:1238` from the host or from
+   guest B once a TCP client exists there.
+
+### Success / stop conditions
+
+- **Pass:** guest B prints `SEAL OK` for the fixed PSL1 demo after guest A’s
+  sealed TX, without relying on QEMU hostfwd alone.
+- **Stop:** Shared Network DHCP missing, VirtIO net IRQ/mmio mismatch vs the
+  QEMU layout, or graphics+net attempted in one VM (`timer_driver` name clash).
+  Fall back to QEMU + `toy_router`; do not block U5 apps on this experiment.
+
+DNS/TLS and a configurable peer IP in Messages remain later U6 work.
+
 ## What passed
 
 - Standalone: both echo clients DHCP + UDP echo through SLIRP.
 - Integrated: isolation, DHCP, Messages `MSG NET TX`, toy router → guest B
-  `SEAL OK`, host UDP echo on 1235, guest A `SEAL OK` on 1236.
+  `SEAL OK`, host UDP echo on 1235, host TCP echo on 1238, guest A `SEAL OK`
+  on 1236.
 
 ## Limits
 
 - Emulated Ethernet / NAT is not Mac Wi‑Fi and not a Pixel radio.
 - Graphics+input+net still collide on the shared `timer_driver` name.
-- Dual-UTM shared LAN and real PGP/QR remain later.
+- Dual-UTM shared LAN is documented as a manual sketch; not part of CI.
 - Fake modem / SMS / SimpleX are out of scope.
 
 ## Next
 
-1. Optionally assert a host↔guest TCP echo in `./dev test-net`.
-2. Dual-UTM bridged LAN experiment (manual) once the host router path is familiar.
-3. DNS / TLS and fake modem / audio / camera backends as needed.
+1. Run the dual-UTM Shared Network experiment when convenient; record results here.
+2. DNS / TLS and fake modem / audio / camera backends as needed.
+3. Configurable Messages peer IP (replace hard-coded `10.0.2.2:1237`) when a
+   real LAN path is wanted beyond the demo.

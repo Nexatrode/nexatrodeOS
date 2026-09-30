@@ -185,7 +185,7 @@
 #define MEMP_NUM_PBUF (TCP_ECHO_MAX_CONNS * TCP_SND_QUEUELEN) /* (TCP sender buffer space (pbufs)) */
 
 /**
- * DHCP plus UDP echo (1235) and sealed demo (1236).
+ * DHCP plus UDP echo (1235), sealed demo (1236), and TX pcb.
  */
 #define MEMP_NUM_UDP_PCB 8
 

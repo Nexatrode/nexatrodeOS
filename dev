@@ -1160,7 +1160,8 @@ def integrated_net_test(timeout, python, env):
         "-netdev",
         ("user,id=netdev0,"
          "hostfwd=udp::1235-10.0.2.15:1235,"
-         "hostfwd=udp::1236-10.0.2.15:1236"),
+         "hostfwd=udp::1236-10.0.2.15:1236,"
+         "hostfwd=tcp::1238-10.0.2.15:1238"),
         "-d", "guest_errors",
         "-drive", f"file={TEST_DISK},if=none,format=raw,id=hd",
     ]
@@ -1274,6 +1275,32 @@ def integrated_net_test(timeout, python, env):
                     f"Integrated UDP echo failed ({last_error}); inspect {serial_log}"
                 )
 
+            tcp_payload = b"PERSONAL-OS-TCP-ECHO"
+            tcp_echoed = False
+            last_tcp_error = None
+            for _attempt in range(20):
+                try:
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                        sock.settimeout(2.0)
+                        sock.connect(("127.0.0.1", 1238))
+                        sock.sendall(tcp_payload)
+                        received = b""
+                        while len(received) < len(tcp_payload):
+                            chunk = sock.recv(len(tcp_payload) - len(received))
+                            if not chunk:
+                                break
+                            received += chunk
+                        if received == tcp_payload:
+                            tcp_echoed = True
+                            break
+                except OSError as error:
+                    last_tcp_error = error
+                time.sleep(0.25)
+            if not tcp_echoed:
+                raise RuntimeError(
+                    f"Integrated TCP echo failed ({last_tcp_error}); inspect {serial_log}"
+                )
+
             seal_sent = False
             last_seal_error = None
             for _attempt in range(20):
@@ -1330,7 +1357,7 @@ def integrated_net_test(timeout, python, env):
     print(
         f"Integrated VirtIO network: PASS; Personal OS isolation completed with "
         f"dhcp_client DHCP, Messages sealed TX, toy router → guest B SEAL OK, "
-        f"UDP echo, and guest A SEAL OK; serial saved to {serial_log}"
+        f"UDP echo, TCP echo, and guest A SEAL OK; serial saved to {serial_log}"
     )
 
 
