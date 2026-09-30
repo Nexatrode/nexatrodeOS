@@ -51,7 +51,7 @@ Do not re-run unlock/lock. Do not include the device serial in project logs.
 | Early UART without flashing | **Partial:** bootloader reports UART `disabled`; enable syntax known; **no SBU cable capture yet** |
 | DT → seL4 map | **Credible candidates documented** (GIC/timer/UART/memory); GENI UART not in seL4 `hardware.yml`; desk scaffold in [`platforms/sunfish/`](../platforms/sunfish/README.md) |
 | Lineage return path | **Kit on disk** under `docs/pixel-p0-assets/lineage-ref/20260924/` (SHA256 verified listing); restore runbook drafted; **shared `/sdcard` backup on host** (`~/Backups/pixel-sunfish-20260929/`); app-private `/data` / 2FA still on user |
-| P1 go/no-go | **Conditional go** after UART cable proof + remaining app-private backup + live slot dumps; **not ready to flash** |
+| P1 go/no-go | **Conditional go** after UART cable proof; live slot dumps blocked by no `fastboot fetch` (use Lineage kit or root/`dd` later); **not ready to flash** |
 
 ---
 
@@ -173,8 +173,9 @@ Checklist:
 - [x] Shared storage (`/sdcard`) backed up off-device — host path
   `~/Backups/pixel-sunfish-20260929/` (~172 MiB, 111 files + SHA-256;
   2026-09-29). Does **not** include app-private `/data` (no root).
-- [ ] Authenticator / 2FA and other app-private data exported (manual /
-  Seedvault; Android Backup Manager is disabled on this build)
+- [x] App-private / 2FA risk accepted (2026-09-29): no authenticator apps;
+  SimpleX Chat is a recent test install — passphrase/keystore not exported;
+  user OK to recreate profile after wipe
 - [x] Lineage ZIP + boot/dtbo/vbmeta + checksums retained
 - [x] Restore sequence documented
 - [x] A/B awareness noted (current slot `b`)
@@ -242,7 +243,7 @@ See [pixel-key-feasibility.md](pixel-key-feasibility.md).
 | Device identity | `sunfish`, unlocked, Lineage recoverable | **Pass** |
 | Boot container understood | boot v2 + DTB + AVB notes; flash vs `fastboot boot` decided | **Pass** (assume flash may be required) |
 | Debug channel | UART enabled; serial capture of bootloader or kernel | **Fail / pending** — need SBU adapter + enable test |
-| Rollback kit | ZIP + images + checksums; data backed up | **Partial** — kit yes; `/sdcard` yes (`~/Backups/pixel-sunfish-20260929/`); app-private/2FA not fully covered |
+| Rollback kit | ZIP + images + checksums; data backed up | **Pass for this device** — kit + `/sdcard` backup; SimpleX/app-private skipped by choice |
 | Hardware map | DRAM/GIC/timer/UART from DT | **Pass** |
 | Privilege story | Explicit EL1 vs EL2 assumption | **Pass** (EL1-first) |
 | Scope discipline | First goal UART hello | **Pass** |
@@ -251,8 +252,11 @@ See [pixel-key-feasibility.md](pixel-key-feasibility.md).
 platform port. Do **not** flash a custom image until:
 
 1. UART cable proves bootloader/kernel text after `oem uart enable`, and  
-2. Personal data is backed up, and  
-3. Live `boot`/`vbmeta`/`dtbo` for slot `b` are dumped to the host.
+2. Personal data risk is accepted (done for this handset: `/sdcard` backup +  
+   no authenticator apps; SimpleX disposable), and  
+3. Live `boot`/`vbmeta`/`dtbo` for slot `b` are dumped **or** you explicitly  
+   accept restoring via the Lineage 20260924 kit only (`fastboot fetch`  
+   unsupported on this bootloader — 2026-09-29).
 
 **Not a go for “run the UTM Personal OS image on the Pixel”** — that remains a
 much later milestone after P1 hello.
@@ -263,18 +267,20 @@ much later milestone after P1 hello.
 
 Ordered blockers (do these before any flash):
 
-1. **Userdata backup (host)** — **partial:** shared storage pulled to
-   `~/Backups/pixel-sunfish-20260929/` (2026-09-29). Still export authenticator /
-   2FA and any app-private data (Seedvault is installed but Backup Manager is
-   disabled; no root for a full `/data` dump).
+1. **Userdata backup (host)** — **done for this device:** shared storage at
+   `~/Backups/pixel-sunfish-20260929/`. App-private `/data` skipped by choice
+   (no authenticator apps; SimpleX test profile accepted as disposable).
 2. **USB-C SBU UART adapter** — ~1.8 V, 115200; label plug orientation. Do **not**
    run `fastboot oem uart enable` until the adapter is attached and a serial
    client is listening.
 3. **UART proof** — bootloader session: note current `oem uart` state → enable →
    capture bootloader and/or one Android boot log → optionally `oem uart disable`
    → `fastboot reboot`. Decision: keep enabled for P1 work or leave disabled.
-4. **Live slot dumps** — before first custom flash, copy active-slot `boot` /
-   `vbmeta` / `dtbo` to the host (recovery/`dd`/`fastboot fetch` as available).
+4. **Live slot dumps** — **attempted 2026-09-29:** `fastboot fetch` is **not**
+   supported on this sunfish bootloader (`Unable to get max-fetch-size`). Need
+   root/`dd` or recovery later; until then rely on the Lineage 20260924 kit.
+   Session notes: `~/Backups/pixel-sunfish-20260929/live-slot-b/` (UART still
+   `disabled`; phone rebooted back to Android).
 
 Optional (not blocking P0 sign-off):
 
@@ -282,9 +288,8 @@ Optional (not blocking P0 sign-off):
 6. Continue desk-only seL4 overlay / GENI putchar under [`platforms/sunfish/`](../platforms/sunfish/README.md)
    (still no flash).
 
-Mark P0 complete in the roadmap when UART proof (2)–(3) passes, app-private
-backup risk is accepted or mitigated, and (4) is done or explicitly scheduled as
-the first step of P1.
+Mark P0 complete in the roadmap when UART proof (2)–(3) passes and (4) is done
+or explicitly scheduled as the first step of P1.
 
 Keep UTM / `./dev test-net` as the daily software loop. Dual-UTM Shared Network
 manual `SEAL OK` remains optional and independent of Pixel.
