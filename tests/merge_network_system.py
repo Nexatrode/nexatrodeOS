@@ -170,8 +170,13 @@ def main():
         memory_regions.add(name)
 
     pd_names = {pd.get("name") for pd in root.findall(".//protection_domain")}
+    # Graphics (and other) systems already own the ARM generic timer. Share it
+    # instead of adding a second timer_driver PD (duplicate name + IRQ 30).
+    share_timer = "timer_driver" in pd_names
     for component in network_root.findall("protection_domain"):
         name = component.get("name", "")
+        if name == "timer_driver" and share_timer:
+            continue
         if name in pd_names:
             raise RuntimeError(f"duplicate protection domain while merging network: {name}")
         for mapping in component.findall("map"):
@@ -181,7 +186,27 @@ def main():
         root.append(component)
         pd_names.add(name)
 
+    timer_ids = set()
+    if share_timer:
+        for channel in root.findall("channel"):
+            for endpoint in channel.findall("end"):
+                if endpoint.get("pd") == "timer_driver":
+                    timer_ids.add(int(endpoint.get("id"), 0))
+
+    def alloc_timer_id():
+        candidate = 1
+        while candidate in timer_ids:
+            candidate += 1
+        timer_ids.add(candidate)
+        return candidate
+
     for channel in network_root.findall("channel"):
+        if share_timer:
+            for endpoint in channel.findall("end"):
+                if endpoint.get("pd") == "timer_driver":
+                    # Keep dhcp_client's local channel id (matches its
+                    # timer_client_config); only the shared driver's end moves.
+                    endpoint.set("id", str(alloc_timer_id()))
         root.append(channel)
 
     for mapping in root.findall(".//map"):
@@ -210,6 +235,8 @@ def main():
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     base_tree.write(args.output, encoding="UTF-8", xml_declaration=True)
+    if share_timer:
+        print("merge_network_system: shared existing timer_driver with net clients")
 
 
 def inject_messages_net_bridge(root, memory_regions, pd_names, endpoint_ids):

@@ -84,7 +84,8 @@ verify callback (no guest wall clock) — not a production RNG/PKI story.
 
 SLIRP isolates guests, so peer delivery uses a **host process** as the central
 router: listen on UDP 1237, forward opaque bytes to guest B’s hostfwd. This is
-not a bridged UTM LAN and not graphics+net (still blocked on `timer_driver`).
+not a bridged UTM LAN. Graphics+input+net is a separate merge
+([`./dev test-input-net`](../README.md)) that shares the GPU `timer_driver`.
 
 ## Dual-UTM bridged LAN (manual sketch)
 
@@ -124,9 +125,10 @@ guest A can address guest B directly.
 
 - **Pass:** guest B prints `SEAL OK` for the fixed PSL1 demo after guest A’s
   `netseal`, without relying on QEMU hostfwd alone.
-- **Stop:** Shared Network DHCP missing, VirtIO net IRQ/mmio mismatch vs the
-  QEMU layout, or graphics+net attempted in one VM (`timer_driver` name clash).
-  Fall back to QEMU + `toy_router`; do not block U5 apps on this experiment.
+- **Stop:** Shared Network DHCP missing, or VirtIO net IRQ/mmio mismatch vs the
+  QEMU layout. Fall back to QEMU + `toy_router`; do not block U5 apps on this
+  experiment. Graphics+input+net uses a separate image
+  (`./dev test-input-net` / `./dev utm-graphics-net`).
 
 Console helpers on the merged net image: `netpeer A.B.C.D:PORT` locks the
 shared-page peer (survives later demo defaults); `netseal` re-sends the fixed
@@ -151,7 +153,11 @@ compose).
 ## Limits
 
 - Emulated Ethernet / NAT is not Mac Wi‑Fi and not a Pixel radio.
-- Graphics+input+net still collide on the shared `timer_driver` name.
+- Graphics+input+net: `./dev test-input-net` merges VirtIO net into the
+  graphics+input system by **sharing** the existing GPU `timer_driver` (no
+  second IRQ 30 PD). `./dev utm-graphics-net` exports
+  `dist/Personal OS Graphics Net.utm` (Shared Network + tablet). Default and
+  offline Graphics UTM profiles stay as they are.
 - Dual-UTM Shared Network: `./dev utm-net` exports Net A/B bundles; console
   `netpeer` / `netseal` enable direct peer targeting. **2026-09-29 PASS
   (manual GUI):** boot B then A; B DHCP `192.168.64.8`; on A

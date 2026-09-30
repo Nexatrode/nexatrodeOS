@@ -24,5 +24,6 @@ pushed after modem smoke`. `./dev test-input` Settings frames show
 
 ## Out of scope
 
-Phone/dialer UI, auto-timer RING, AT/Qualcomm realism, graphics+net merge
-(`timer_driver` clash), Messages vault SMS.
+Phone/dialer UI, auto-timer RING, AT/Qualcomm realism, Messages vault SMS.
+Graphics+input+net is unblocked via shared `timer_driver`
+(`./dev test-input-net`).

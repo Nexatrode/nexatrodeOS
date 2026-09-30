@@ -9,9 +9,11 @@ UART cables and `sunfish` bring-up.
 
 - Isolation, vault, seven-workspace Home, keyboard + tablet input
 - Experimental graphics profile: `./dev utm-graphics` →
-  `dist/Personal OS Graphics.utm`
+  `dist/Personal OS Graphics.utm` (offline)
+- Graphics + net: `./dev utm-graphics-net` →
+  `dist/Personal OS Graphics Net.utm` (tablet + Shared Network)
 - VirtIO net / TLS / sealed messaging on **QEMU** (`./dev test-net`); default and
-  graphics UTM images stay **offline**
+  offline graphics UTM images stay **offline**
 
 UTM does **not** replace Pixel boot, GENI UART, Wi‑Fi, modem, or power.
 
@@ -31,17 +33,24 @@ UTM does **not** replace Pixel boot, GENI UART, Wi‑Fi, modem, or power.
 6. **Messages** compose → `SEALED N` locally (still offline in the UTM image).
 7. **Serial profile** remains separate: `./dev utm` / `dist/Personal OS.utm`
    for non-graphics work.
-8. **Optional net:** `./dev test-net` on QEMU, or `./dev utm-net` for dual-UTM
-   Shared Network bundles (`Personal OS Net A/B.utm`; see
-   [network-spike.md](network-spike.md)). Graphics UTM stays offline.
+8. **Optional net:** `./dev test-net` on QEMU, `./dev utm-net` for dual-UTM
+   Shared Network (`Personal OS Net A/B.utm`), or `./dev utm-graphics-net` for
+   one graphical VM with net. Offline Graphics UTM is unchanged.
 
 ## Still later on UTM
 
 - Dialer UI on top of [modem-spike.md](modem-spike.md)
 - Camera backends
-- Graphics + net in one image (`timer_driver` name clash)
 - Richer notification delivery beyond Settings alert counts
 - Production TLS/PKI beyond the test-net TOFU smoke
+- Manual dual-UTM seal from the graphics+net profile
+  (`./dev utm-graphics-net` + Net B)
+
+## Graphics + net (unblocked)
+
+`./dev test-input-net` shares the GPU `timer_driver` with `dhcp_client` (no
+duplicate IRQ 30). `./dev utm-graphics-net` exports
+`dist/Personal OS Graphics Net.utm`. Offline `./dev utm-graphics` is unchanged.
 
 ## Pixel handoff (when UART adapter + backup ready)
 

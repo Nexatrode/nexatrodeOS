@@ -41,7 +41,8 @@ production VirtIO input driver; this input driver is a narrow QEMU test driver.
 
 `./dev utm-graphics` runs those verifications and exports a separate
 `dist/Personal OS Graphics.utm` profile with the VirtIO GPU, keyboard, and tablet
-devices plus a disposable vault disk. The profile includes the seven-workspace
+devices plus a disposable vault disk. For the same UI with VirtIO net (shared GPU
+`timer_driver`), use `./dev test-input-net` / `./dev utm-graphics-net`. The profile includes the seven-workspace
 launcher, Notes, Contacts, the Calculator touch keypad, the read-only Clock
 screen, Calendar reminders, the Messages peer-key shell, and the Settings stub; the default
 serial profile is

@@ -133,9 +133,11 @@ with either one.
 | `./dev test-storage` | Verify entropy delivery across QEMU boots, four scalar and four blob QMP write/flush resets, a full VM snapshot restore, and two cloned VM instances; check recovery from malformed encrypted slots |
 | `./dev test-graphics` | Verify the sDDF GPU sample renders exactly on QEMU `virt`, then merge it with the regular OS and rerun isolation checks |
 | `./dev test-input` | Test isolated app input routing, exact Notes/Contacts/Calculator/Clock/Calendar/Messages/Settings frames, calculator arithmetic by touch and keyboard, and Notes/Contacts/Calendar cold-boot persistence in QEMU |
+| `./dev test-input-net` | Merge VirtIO net into graphics+input by sharing the GPU `timer_driver`; require isolation complete and DHCP (default/offline Graphics UTM stay offline) |
 | `./dev test-net` | Standalone sDDF echo_server DHCP+UDP, then merge serial-free `tests/net` `dhcp_client` into Personal OS; require isolation complete, DHCP, DNS OK, TLS OK, UDP/TCP echo, Messages sealed TX, and toy-router guest B `SEAL OK` (default/UTM images stay offline) |
 | `./dev utm-net` | Build merged net + fragment loaders and export dual-UTM Shared Network bundles `dist/Personal OS Net A.utm` / `Net B.utm` (serial; see [network-spike.md](docs/network-spike.md)) |
 | `./dev utm-graphics` | Verify graphics and input, then create a separate experimental `dist/Personal OS Graphics.utm` bundle; pass `--profile <path>` to create a side-by-side profile |
+| `./dev utm-graphics-net` | Build graphics+input+net (shared timer), smoke DHCP, then export `dist/Personal OS Graphics Net.utm` (tablet + Shared Network) |
 | `./dev backup-export --output vault.pvlt` | Export the latest authenticated records from the default CLI disk into a new archive |
 | `./dev backup-restore --archive vault.pvlt --output restored.img [--allow-rollback]` | Restore into a new copy of the default CLI disk; older authenticated generations require the explicit override |
 | `./dev run --disk restored.img` | Boot QEMU from a selected raw disk image |
@@ -301,9 +303,9 @@ Generated SDK files, build output, and UTM bundles are excluded from Git.
 1. Run `./dev utm-graphics`, open `dist/Personal OS Graphics.utm` with USB Tablet,
    and walk the [UTM prep checklist](docs/utm-prep.md) (amber cursor, seven
    workspaces, Settings local-only status).
-2. Keep proving net/TLS with `./dev test-net` (graphics UTM stays offline). For
-   a two-guest Shared Network experiment, run `./dev utm-net` and follow
-   [network-spike.md](docs/network-spike.md).
+2. For clickable Messages over the network in one VM, run `./dev utm-graphics-net`
+   (or `./dev test-input-net` on QEMU). Keep proving full TLS/seal with
+   `./dev test-net`; dual-guest Shared Network stays `./dev utm-net`.
 3. Keep evaluating trusted crypto, rollback protection, and storage durability for U3.
 4. Pixel P0 only after UART adapter + userdata backup
    ([pixel-p0-boot-feasibility.md](docs/pixel-p0-boot-feasibility.md)); desk

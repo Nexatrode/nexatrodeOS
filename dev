@@ -1154,6 +1154,139 @@ def prepare_net_loaders(python, env):
     return loader, guest_b_loader
 
 
+def prepare_input_net_loader(python, env, timeout):
+    """Merge VirtIO net into graphics+input, sharing the GPU timer_driver."""
+    gpu_build = BUILD / "sddf-gpu-spike"
+    input_system = gpu_build / "input-system.system"
+    needed = [
+        input_system,
+        BUILD / "timer_driver.elf",
+        BUILD / "gpu_client.elf",
+        BUILD / "input_driver.elf",
+        BUILD / "input_service.elf",
+    ]
+    if not all(path.is_file() for path in needed):
+        input_test(timeout, build_only=True)
+
+    mbedtls_dir = setup_mbedtls()
+    net_build = BUILD / "sddf-net-spike"
+    fragment_build = net_build / "fragment"
+    if fragment_build.exists():
+        shutil.rmtree(fragment_build)
+    run([
+        tool("make"), "-C", ROOT / "tests/net",
+        f"MICROKIT_SDK={SDK}", f"MICROKIT_BOARD={LOCK['board']}",
+        f"MICROKIT_CONFIG={LOCK['configuration']}", f"SDDF={SDDF}",
+        f"PYTHON={python}", f"BUILD_DIR={fragment_build}",
+        f"MBEDTLS_DIR={mbedtls_dir}",
+        str(fragment_build / "loader.img"),
+    ], cwd=ROOT, env=env)
+
+    # Keep the graphics timer_driver.elf (IRQ 30 + device_resources). Net's
+    # timer PD is skipped by merge_network_system when the base already has one.
+    for elf_name in (
+        "eth_driver.elf", "dhcp_client.elf", "network_virt_rx.elf",
+        "network_virt_tx.elf", "network_copy.elf",
+    ):
+        shutil.copy2(fragment_build / elf_name, BUILD / elf_name)
+
+    merged_system = gpu_build / "input-net-system.system"
+    run([tool("python3"), ROOT / "tests/merge_network_system.py",
+         "--base", input_system,
+         "--network", fragment_build / "net.system",
+         "--output", merged_system,
+         "--elf-dir", BUILD])
+    loader = gpu_build / "input-net-system-loader.img"
+    run([SDK / "bin/microkit", merged_system, "--search-path", BUILD,
+         "--board", LOCK["board"], "--config", LOCK["configuration"],
+         "-o", loader, "-r", gpu_build / "input-net-system-report.txt"])
+    if not loader.exists():
+        raise RuntimeError(f"graphics+input+net image is missing: {loader}")
+    return loader
+
+
+def input_net_test(timeout):
+    """Share GPU timer_driver with net; require DHCP beside graphics+input."""
+    run([tool("python3"), ROOT / "tests/merge_network_timer_share_test.py"])
+    print("Network timer share unit test: PASS")
+
+    setup()
+    setup_sddf()
+    python = str(SDDF_VENV / "bin/python")
+    env = os.environ.copy()
+    env["PATH"] = os.pathsep.join([
+        "/opt/homebrew/opt/llvm/bin", "/opt/homebrew/sbin",
+        env.get("PATH", ""),
+    ])
+    loader = prepare_input_net_loader(python, env, timeout)
+    gpu_build = BUILD / "sddf-gpu-spike"
+    prepare_vault_disk(TEST_DISK, reset=True)
+
+    serial_log = gpu_build / "input-net-serial.log"
+    qemu_log = gpu_build / "input-net-qemu.stderr"
+    for path in (serial_log, qemu_log):
+        path.unlink(missing_ok=True)
+
+    qemu_command = [
+        tool("qemu-system-aarch64"), "-machine", "virt,virtualization=on",
+        "-accel", "tcg", "-cpu", LOCK["cpu"], "-smp", "1",
+        "-m", LOCK["memory"], "-serial", f"file:{serial_log}",
+        "-monitor", "none", "-global",
+        "virtio-mmio.force-legacy=false", "-device",
+        f"loader,file={loader},addr={LOCK['load_address']},cpu-num=0",
+        "-device", "virtio-blk-device,drive=hd,bus=virtio-mmio-bus.1",
+        "-device", "virtio-rng-device,bus=virtio-mmio-bus.8",
+        "-device", "virtio-net-device,netdev=netdev0,bus=virtio-mmio-bus.0",
+        "-netdev", "user,id=netdev0",
+        "-device",
+        "virtio-gpu-device,bus=virtio-mmio-bus.31,edid=off,blob=off,max_outputs=1,"
+        "indirect_desc=off,event_idx=off",
+        "-device", "virtio-keyboard-device,bus=virtio-mmio-bus.30,indirect_desc=off,event_idx=off",
+        "-device", "virtio-tablet-device,bus=virtio-mmio-bus.29,indirect_desc=off,event_idx=off",
+        "-display", "none", "-d", "guest_errors",
+        "-drive", f"file={TEST_DISK},if=none,format=raw,id=hd",
+    ]
+    deadline = time.monotonic() + timeout
+    dhcp_markers = ("DHCP request finished", "10.0.2.15")
+    isolation_marker = "ISOLATION COMPLETE: 29 checks passed"
+    forbidden = ("faulting PD:", "Failed assertion", "MON|ERROR", "Kernel panic", "FAIL:")
+    process = None
+    try:
+        with qemu_log.open("wb") as errors:
+            process = subprocess.Popen(
+                qemu_command, stdout=subprocess.DEVNULL, stderr=errors
+            )
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    raise RuntimeError(
+                        f"graphics+input+net QEMU exited during boot; inspect {qemu_log}"
+                    )
+                text = serial_log.read_text(errors="replace") if serial_log.exists() else ""
+                for marker in forbidden:
+                    if marker in text:
+                        raise RuntimeError(
+                            f"graphics+input+net hit {marker!r}; inspect {serial_log}"
+                        )
+                if isolation_marker in text and all(m in text for m in dhcp_markers):
+                    print(
+                        f"Graphics+input+net: PASS; shared timer_driver, isolation, and DHCP; "
+                        f"serial saved to {serial_log}"
+                    )
+                    return
+                time.sleep(0.25)
+            raise RuntimeError(
+                f"Timed out waiting for isolation+DHCP on graphics+input+net; "
+                f"inspect {serial_log}"
+            )
+    finally:
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+
+
 def integrated_net_test(timeout, python, env):
     """Merge the serial-free dhcp_client fragment into Personal OS and re-check DHCP."""
     net_build = BUILD / "sddf-net-spike"
@@ -1842,8 +1975,12 @@ def verify_input_text_cold_boot(qemu_command, gpu_build, expected_pixels, timeou
         raise RuntimeError(f"QEMU cold-boot persistence run failed; inspect {reboot_serial}")
 
 
-def input_test(timeout):
-    """Test the bounded VirtIO input handoff beside the GPU and regular OS."""
+def input_test(timeout, build_only=False):
+    """Test the bounded VirtIO input handoff beside the GPU and regular OS.
+
+    When build_only is true, stop after assembling input-system-loader.img so
+    callers (graphics+net merge) can reuse the image without the frame walk.
+    """
     graphics_test(timeout)
     gpu_build = BUILD / "sddf-gpu-spike"
     converter = shutil.which("magick") or tool("convert")
@@ -2061,6 +2198,9 @@ def input_test(timeout):
     run([SDK / "bin/microkit", merged_system, "--search-path", BUILD,
          "--board", LOCK["board"], "--config", LOCK["configuration"],
          "-o", loader, "-r", gpu_build / "input-system-report.txt"])
+    if build_only:
+        print(f"Input system image: built ({loader})")
+        return loader
 
     prepare_vault_disk(TEST_DISK, reset=True)
     serial_log = gpu_build / "input-serial.log"
@@ -2969,6 +3109,92 @@ def export_utm_graphics(timeout, output_bundle=None):
     print(f"Graphical UTM bundle: {bundle}\nThe default Personal OS profile remains serial-only.")
 
 
+def export_utm_graphics_net(timeout, output_bundle=None):
+    """Export graphics+input+net bundle (shared timer_driver) for UTM."""
+    bundle = output_bundle or (ROOT / "dist" / "Personal OS Graphics Net.utm")
+    if not bundle.is_absolute():
+        bundle = ROOT / bundle
+    ensure_utm_bundle_stopped(bundle)
+    input_net_test(timeout)
+
+    base_bundle = ROOT / "dist" / "Personal OS.utm"
+    base_config = base_bundle / "config.plist"
+    if not base_config.exists():
+        export_utm()
+
+    if bundle.exists() and not (bundle / ".personal-os-graphics-net-export").exists():
+        raise RuntimeError(f"Refusing to overwrite an unrelated bundle: {bundle}")
+
+    with base_config.open("rb") as stream:
+        profile = plistlib.load(stream)
+    mac = _utm_shared_net_mac("graphics-net")
+    profile["Information"]["Name"] = bundle.stem
+    profile["Information"]["UUID"] = str(uuid.uuid4()).upper()
+    profile["Information"]["Notes"] = (
+        "Experimental graphical seL4 build with VirtIO net (shared GPU timer_driver). "
+        "USB Tablet + Shared Network. Disposable vault. Built by sel4-personal-os/dev."
+    )
+    profile["Display"] = [{
+        "DownscalingFilter": "Linear",
+        "DynamicResolution": False,
+        "Hardware": "virtio-gpu-device",
+        "NativeResolution": True,
+        "UpscalingFilter": "Nearest",
+    }]
+    # UTM must not also inject a PCI NIC; sDDF expects mmio bus.0 like test-net.
+    profile["Network"] = []
+    ensure_utm_storage_profile(profile)
+    arguments = profile["QEMU"]["AdditionalArguments"]
+    arguments[:] = [
+        item for item in arguments
+        if not (
+            item.startswith("-device virtio-net-device")
+            or item.startswith("-netdev ")
+        )
+    ]
+    gpu_net_defaults = [
+        "-global virtio-gpu-device.edid=off",
+        "-global virtio-gpu-device.indirect_desc=off",
+        "-global virtio-gpu-device.event_idx=off",
+        "-device virtio-keyboard-device,indirect_desc=off,event_idx=off",
+        "-device virtio-tablet-device,indirect_desc=off,event_idx=off",
+        f"-device virtio-net-device,netdev=net0,bus=virtio-mmio-bus.0,mac={mac}",
+        "-netdev vmnet-shared,id=net0",
+    ]
+    for argument in gpu_net_defaults:
+        if argument not in arguments:
+            arguments.append(argument)
+
+    data = bundle / "Data"
+    data.mkdir(parents=True, exist_ok=True)
+    disk_image = data / "personal-os-disk.img"
+    if not disk_image.exists():
+        prepare_vault_disk(TEST_DISK, reset=True)
+        temporary_disk = disk_image.with_name(disk_image.name + ".new")
+        shutil.copy2(TEST_DISK, temporary_disk)
+        temporary_disk.replace(disk_image)
+
+    loader = BUILD / "sddf-gpu-spike" / "input-net-system-loader.img"
+    if not loader.is_file():
+        raise RuntimeError(f"Graphics+net image is missing: {loader}")
+    temporary_loader = data / "loader.elf.new"
+    shutil.copy2(loader, temporary_loader)
+    temporary_loader.replace(data / "loader.elf")
+
+    temporary_config = bundle / "config.plist.new"
+    with temporary_config.open("wb") as stream:
+        plistlib.dump(profile, stream)
+    temporary_config.replace(bundle / "config.plist")
+    (bundle / ".personal-os-graphics-net-export").write_text(
+        "Generated by sel4-personal-os/dev; graphics+input+net (shared timer).\n"
+    )
+    print(
+        f"Graphical+net UTM bundle: {bundle} (MAC {mac})\n"
+        "Default and Graphics (offline) profiles are unchanged. "
+        "Use USB Tablet; Shared Network needs vmnet privileges."
+    )
+
+
 def _utm_shared_net_mac(seed: str) -> str:
     digest = hashlib.sha256(seed.encode()).digest()
     # Locally administered, unicast MAC.
@@ -3740,8 +3966,9 @@ def crypto_unit_test():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["setup", "build", "run", "test", "test-storage",
-                                             "test-graphics", "test-input", "test-net",
-                                             "utm-graphics", "utm-net",
+                                             "test-graphics", "test-input", "test-input-net",
+                                             "test-net",
+                                             "utm-graphics", "utm-graphics-net", "utm-net",
                                              "backup-export", "backup-restore", "utm"])
     parser.add_argument("--timeout", type=float, default=20,
                         help="boot-test timeout in seconds (default: 20)")
@@ -3751,7 +3978,7 @@ def main():
     parser.add_argument("--output", type=Path,
                         help="new archive or disk-image path; existing files are not overwritten")
     parser.add_argument("--profile", type=Path,
-                        help="UTM output bundle path for utm-graphics; default is dist/Personal OS Graphics.utm")
+                        help="UTM output bundle path for utm-graphics / utm-graphics-net")
     parser.add_argument("--allow-rollback", action="store_true",
                         help="explicitly restore generations older than the selected source disk")
     parser.add_argument("--budget-pressure", action="store_true",
@@ -3777,8 +4004,14 @@ def main():
     if args.command == "test-input":
         input_test(args.timeout)
         return
+    if args.command == "test-input-net":
+        input_net_test(args.timeout)
+        return
     if args.command == "utm-graphics":
         export_utm_graphics(args.timeout, args.profile)
+        return
+    if args.command == "utm-graphics-net":
+        export_utm_graphics_net(args.timeout, args.profile)
         return
     if args.command == "utm-net":
         export_utm_net()
