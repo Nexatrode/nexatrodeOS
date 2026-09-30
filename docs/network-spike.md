@@ -11,8 +11,9 @@
 2. **Integrated** — builds the serial-free fragment under [`tests/net/`](../tests/net/)
    and merges it into Personal OS. The merged guest proves isolation + DHCP +
    `DNS OK` (lwIP client → host [`dns_stub.py`](../tests/net/dns_stub.py) on UDP
-   **53535**) + `TLS OK` (Mbed TLS 1.2 PSK-AES128-CCM8 client → host
-   [`tls_stub.py`](../tests/net/tls_stub.py) on TCP **1239**) + UDP echo on
+   **53535**) + `TLS OK` (Mbed TLS 1.2 ECDHE-ECDSA + AES-128-GCM client with a
+   pinned self-signed cert → host [`tls_stub.py`](../tests/net/tls_stub.py) on TCP
+   **1239**) + UDP echo on
    **1235** + host→guest TCP echo on **1238** + host→guest PSL1 `SEAL OK` on
    **1236**, plus Messages→`dhcp_client` sealed TX to the host on **1237**. A
    second QEMU (fragment-only guest B) receives that datagram via
@@ -62,12 +63,16 @@ and does not use the public Internet.
 ## TLS smoke (non-production)
 
 Pinned Mbed TLS **3.6.2** (see `toolchain.lock.json`) builds into the net
-fragment as a TLS 1.2 **PSK** client (`PSK-AES128-CCM8`). After DHCP the guest
-connects to `10.0.2.2:1239`, completes the handshake (`TLS OK`), sends the fixed
+fragment as a TLS 1.2 **ECDHE-ECDSA** client (`AES-128-GCM`) with a **TOFU pin**:
+the guest embeds the demo leaf DER and its SHA-256
+([`tls_tofu_pin.h`](../tests/net/include/tls_tofu_pin.h);
+certs under [`tests/net/certs/`](../tests/net/certs/)). After DHCP the guest
+connects to `10.0.2.2:1239`, verifies the pin (`TLS OK`), sends the fixed
 PSL1 sealed demo datagram over that session, requires an echo, and prints
-`TLS SEAL OK`. Host helper: [`tls_stub.py`](../tests/net/tls_stub.py) (verifies
-bytes against the demo packet). Entropy for the smoke is a deterministic
-hardware-poll stub — not a production RNG/cert story.
+`TLS SEAL OK`. Host helper: [`tls_stub.py`](../tests/net/tls_stub.py) loads the
+demo cert/key. Entropy for the smoke is a deterministic hardware-poll stub;
+validity-window checks are cleared in the verify callback (no guest wall clock)
+— not a production RNG/PKI story.
 
 ## Toy LAN router
 
@@ -118,15 +123,16 @@ guest A can address guest B directly.
   Fall back to QEMU + `toy_router`; do not block U5 apps on this experiment.
 
 The sealed TX peer IP/port is already on the shared `messages_net_tx` page
-(demo default `10.0.2.2:1237`). Guest TLS can carry the PSL1 demo (`TLS SEAL OK`);
-certificate/TOFU TLS and Messages UI over TLS remain later. Messages UI compose
+(demo default `10.0.2.2:1237`). Guest TLS carries the PSL1 demo over a pinned-cert
+session (`TLS SEAL OK`); Messages UI over TLS remains later. Messages UI compose
 already hands sealed packets to `dhcp_client` over UDP when the net page is
 ready (`SEND_UI_SEALED` / live compose).
 
 ## What passed
 
 - Standalone: both echo clients DHCP + UDP echo through SLIRP.
-- Integrated: isolation, DHCP, `DNS OK`, `TLS OK`, `TLS SEAL OK`, Messages
+- Integrated: isolation, DHCP, `DNS OK`, `TLS OK`, `TLS SEAL OK` (TOFU-pinned
+  ECDHE-ECDSA), Messages
   `MSG NET TX` (demo + UI compose seal), toy router → guest B `SEAL OK`, host UDP echo on 1235, host TCP
   echo on 1238, guest A `SEAL OK` on 1236.
 
@@ -135,12 +141,12 @@ ready (`SEND_UI_SEALED` / live compose).
 - Emulated Ethernet / NAT is not Mac Wi‑Fi and not a Pixel radio.
 - Graphics+input+net still collide on the shared `timer_driver` name.
 - Dual-UTM shared LAN is documented as a manual sketch; not part of CI.
-- TLS smoke is PSK-only with a demo key; no PKI / TOFU yet.
+- TLS smoke uses a demo self-signed pin + deterministic entropy — not production PKI.
 - Fake modem / SMS / SimpleX are out of scope.
 
 ## Next
 
 1. Run the dual-UTM Shared Network experiment when convenient; record results here.
-2. Certificate / TOFU TLS; Messages UI sending sealed traffic over TLS (UDP UI TX is done).
+2. Messages UI sending sealed traffic over TLS (UDP UI TX + cert TOFU smoke are done).
 3. Fake modem / audio / camera backends as needed.
 4. Optional Messages UI / IPC to set peer IP without a rebuild (page fields already exist).

@@ -2,7 +2,8 @@
  * Copyright 2026, Personal OS contributors
  * SPDX-License-Identifier: BSD-2-Clause
  *
- * Guest TLS 1.2 PSK smoke: connect to 10.0.2.2:1239, send the fixed PSL1
+ * Guest TLS 1.2 ECDHE-ECDSA smoke with a pinned self-signed cert (TOFU demo):
+ * connect to 10.0.2.2:1239, verify the leaf SHA-256 pin, send the fixed PSL1
  * sealed demo datagram, require echo, print TLS OK / TLS SEAL OK.
  */
 
@@ -19,21 +20,17 @@
 #include "mbedtls/ctr_drbg.h"
 #include "mbedtls/entropy.h"
 #include "mbedtls/memory_buffer_alloc.h"
+#include "mbedtls/sha256.h"
 #include "mbedtls/ssl.h"
+#include "mbedtls/x509_crt.h"
 
 #include <sddf/util/printf.h>
 #include "dhcp_client.h"
 #include "psl1_demo_packet.h"
+#include "tls_tofu_pin.h"
 
-#define TLS_RX_CAP 2048
-#define TLS_HEAP_BYTES (48 * 1024)
-
-static const char TLS_PSK_ID[] = "personal-os";
-/* Demo only — not a production secret. */
-static const unsigned char TLS_PSK[16] = {
-    0x50, 0x65, 0x72, 0x73, 0x6f, 0x6e, 0x61, 0x6c,
-    0x4f, 0x53, 0x2d, 0x54, 0x4c, 0x53, 0x21, 0x21
-};
+#define TLS_RX_CAP 4096
+#define TLS_HEAP_BYTES (128 * 1024)
 
 static unsigned char tls_heap[TLS_HEAP_BYTES];
 static unsigned char tls_rx[TLS_RX_CAP];
@@ -44,6 +41,7 @@ static mbedtls_entropy_context entropy;
 static mbedtls_ctr_drbg_context ctr_drbg;
 static mbedtls_ssl_config conf;
 static mbedtls_ssl_context ssl;
+static mbedtls_x509_crt ca;
 static struct tcp_pcb *tls_pcb;
 static bool tls_started;
 static bool tls_done;
@@ -108,6 +106,25 @@ int fprintf(void *stream, const char *format, ...)
 {
     (void)stream;
     (void)format;
+    return 0;
+}
+
+static int tls_tofu_verify(void *data, mbedtls_x509_crt *crt, int depth, uint32_t *flags)
+{
+    (void)data;
+    /* No wall clock in the guest — ignore validity window for this smoke. */
+    *flags &= ~(MBEDTLS_X509_BADCERT_EXPIRED | MBEDTLS_X509_BADCERT_FUTURE
+                | MBEDTLS_X509_BADCERT_CN_MISMATCH);
+
+    if (depth == 0) {
+        unsigned char hash[32];
+        if (mbedtls_sha256(crt->raw.p, crt->raw.len, hash, 0) != 0
+            || memcmp(hash, TLS_TOFU_CERT_SHA256, sizeof(TLS_TOFU_CERT_SHA256)) != 0) {
+            sddf_dprintf("TLS|LOG: TOFU pin mismatch\n");
+            *flags |= MBEDTLS_X509_BADCERT_OTHER;
+            return -1;
+        }
+    }
     return 0;
 }
 
@@ -260,9 +277,14 @@ static int tls_setup_mbedtls(void)
     mbedtls_ctr_drbg_init(&ctr_drbg);
     mbedtls_ssl_config_init(&conf);
     mbedtls_ssl_init(&ssl);
+    mbedtls_x509_crt_init(&ca);
 
     int ret = mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy,
                                     (const unsigned char *)"personal-os-tls", 14);
+    if (ret != 0) {
+        return ret;
+    }
+    ret = mbedtls_x509_crt_parse_der(&ca, TLS_TOFU_CERT_DER, TLS_TOFU_CERT_DER_LEN);
     if (ret != 0) {
         return ret;
     }
@@ -273,13 +295,9 @@ static int tls_setup_mbedtls(void)
         return ret;
     }
     mbedtls_ssl_conf_rng(&conf, mbedtls_ctr_drbg_random, &ctr_drbg);
-    mbedtls_ssl_conf_authmode(&conf, MBEDTLS_SSL_VERIFY_NONE);
-    ret = mbedtls_ssl_conf_psk(&conf, TLS_PSK, sizeof(TLS_PSK),
-                               (const unsigned char *)TLS_PSK_ID,
-                               sizeof(TLS_PSK_ID) - 1);
-    if (ret != 0) {
-        return ret;
-    }
+    mbedtls_ssl_conf_authmode(&conf, MBEDTLS_SSL_VERIFY_REQUIRED);
+    mbedtls_ssl_conf_ca_chain(&conf, &ca, NULL);
+    mbedtls_ssl_conf_verify(&conf, tls_tofu_verify, NULL);
     ret = mbedtls_ssl_setup(&ssl, &conf);
     if (ret != 0) {
         return ret;

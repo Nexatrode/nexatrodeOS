@@ -59,7 +59,7 @@ all: $(SYSTEM_FILE)
 
 include $(NET_SRC)/mbedtls.mk
 
-dhcp_client.elf: $(DHCP_OBJS) libsddf_util_debug.a lib_sddf_lwip.a libmbedtls_psk.a
+dhcp_client.elf: $(DHCP_OBJS) libsddf_util_debug.a lib_sddf_lwip.a libmbedtls_tls.a
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 ${IMAGES}: libsddf_util_debug.a
