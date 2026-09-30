@@ -17,8 +17,9 @@ use crate::notes::{NOTES_BLOB_CAPACITY, NotesApp};
 use crate::vault_protocol::{
     APP_TEST_SUPERVISOR_CHANNEL, INITIAL_VALUE, REPLY_BAD_REQUEST, REPLY_DENIED,
     REPLY_NAMESPACE_TEST, REPLY_NO_BLOB, REPLY_NO_NET, REPLY_OK, REPLY_NET_TX_OK,
-    REPLY_SEND_SEAL_DEMO_OK, REQUEST_NAMESPACE_TEST, REQUEST_NET_TX, REQUEST_READ,
-    REQUEST_READ_BLOB, REQUEST_SEND_SEAL_DEMO, REQUEST_WRITE, REQUEST_WRITE_BLOB,
+    REPLY_SEND_SEAL_DEMO_OK, REPLY_SEND_UI_SEALED_OK, REQUEST_NAMESPACE_TEST, REQUEST_NET_TX,
+    REQUEST_READ, REQUEST_READ_BLOB, REQUEST_SEND_SEAL_DEMO, REQUEST_SEND_UI_SEALED,
+    REQUEST_WRITE, REQUEST_WRITE_BLOB,
 };
 use personal_os_rust_server::calendar::{CALENDAR_BLOB_CAPACITY, Calendar};
 use personal_os_rust_server::contacts::{CONTACTS_BLOB_CAPACITY, ContactsApp};
@@ -179,6 +180,9 @@ impl Handler for NamespaceTest {
         if request.label() == REQUEST_SEND_SEAL_DEMO && request.count() == 0 {
             return Ok(self.handle_send_seal_demo());
         }
+        if request.label() == REQUEST_SEND_UI_SEALED && request.count() == 0 {
+            return Ok(self.handle_send_ui_sealed());
+        }
         if request.label() != REQUEST_NAMESPACE_TEST || request.count() != 0 {
             return Ok(MessageInfo::new(REPLY_BAD_REQUEST, 0));
         }
@@ -196,26 +200,110 @@ impl NamespaceTest {
         if self.name != "MESSAGES" {
             return MessageInfo::new(REPLY_BAD_REQUEST, 0);
         }
-        let Some(mut page) = self.messages_net_tx else {
+        let mut packet = [0u8; MAX_PACKET];
+        let length = message_seal::demo_udp_packet(&mut packet);
+        match self.tx_sealed_datagram(&packet[..length]) {
+            Ok(()) => {
+                log(self.name, "PASS: sealed demo handed to dhcp_client");
+                MessageInfo::new(REPLY_SEND_SEAL_DEMO_OK, 0)
+            }
+            Err(REPLY_NO_NET) => MessageInfo::new(REPLY_NO_NET, 0),
+            Err(_) => {
+                log(self.name, "FAIL: dhcp_client rejected sealed TX");
+                MessageInfo::new(REPLY_BAD_REQUEST, 0)
+            }
+        }
+    }
+
+    fn handle_send_ui_sealed(&mut self) -> MessageInfo {
+        if self.name != "MESSAGES" {
+            return MessageInfo::new(REPLY_BAD_REQUEST, 0);
+        }
+        // Probe net before mutating vault state so offline images stay quiet.
+        if !self.net_tx_ready() {
             return MessageInfo::new(REPLY_NO_NET, 0);
+        }
+        if !self.ensure_loaded() {
+            return MessageInfo::new(REPLY_BAD_REQUEST, 0);
+        }
+        let old = self.messages;
+        self.drive_ui_compose_seal();
+        let Some(packet) = self.messages.selected_sealed() else {
+            self.messages = old;
+            return MessageInfo::new(REPLY_BAD_REQUEST, 0);
+        };
+        let mut copy = [0u8; MAX_PACKET];
+        let length = packet.len();
+        copy[..length].copy_from_slice(packet);
+        if !self.persist_messages() {
+            self.messages = old;
+            log(self.name, "FAIL: vault could not persist UI sealed peer");
+            return MessageInfo::new(REPLY_BAD_REQUEST, 0);
+        }
+        match self.tx_sealed_datagram(&copy[..length]) {
+            Ok(()) => {
+                let _ = self.render_messages_snapshot();
+                log(self.name, "PASS: UI sealed packet handed to dhcp_client");
+                MessageInfo::new(REPLY_SEND_UI_SEALED_OK, 0)
+            }
+            Err(REPLY_NO_NET) => MessageInfo::new(REPLY_NO_NET, 0),
+            Err(_) => {
+                log(self.name, "FAIL: dhcp_client rejected UI sealed TX");
+                MessageInfo::new(REPLY_BAD_REQUEST, 0)
+            }
+        }
+    }
+
+    /// Replay the Messages UI key path: add peer BE12CD34, compose HI, seal.
+    fn drive_ui_compose_seal(&mut self) {
+        self.messages = Messages::new();
+        let key_codes = [48u16, 18, 2, 3, 46, 32, 4, 5]; // BE12CD34
+        self.messages.apply_key(28, 1); // Enter → ADD KEY
+        for code in key_codes {
+            self.messages.apply_key(code, 1);
+        }
+        self.messages.apply_key(28, 1); // commit peer
+        self.messages.apply_key(28, 1); // compose
+        self.messages.apply_key(35, 1); // H
+        self.messages.apply_key(23, 1); // I
+        let _ = self.messages.apply_key(28, 1); // seal
+    }
+
+    fn net_tx_ready(&self) -> bool {
+        let Some(page) = self.messages_net_tx else {
+            return false;
+        };
+        unsafe { page.as_ref().net_ready() }
+    }
+
+    fn tx_sealed_datagram(&mut self, bytes: &[u8]) -> Result<(), MessageLabel> {
+        let Some(mut page) = self.messages_net_tx else {
+            return Err(REPLY_NO_NET);
         };
         let page = unsafe { page.as_mut() };
         if !page.net_ready() {
-            return MessageInfo::new(REPLY_NO_NET, 0);
+            return Err(REPLY_NO_NET);
         }
-        let mut packet = [0u8; MAX_PACKET];
-        let length = message_seal::demo_udp_packet(&mut packet);
         page.set_demo_peer();
-        if !page.set_datagram(&packet[..length]) {
-            return MessageInfo::new(REPLY_BAD_REQUEST, 0);
+        if !page.set_datagram(bytes) {
+            return Err(REPLY_BAD_REQUEST);
         }
         let reply = NET_TX.pp_call(MessageInfo::new(REQUEST_NET_TX, 0));
         if reply.label() != REPLY_NET_TX_OK {
-            log(self.name, "FAIL: dhcp_client rejected sealed TX");
-            return MessageInfo::new(REPLY_BAD_REQUEST, 0);
+            return Err(REPLY_BAD_REQUEST);
         }
-        log(self.name, "PASS: sealed demo handed to dhcp_client");
-        MessageInfo::new(REPLY_SEND_SEAL_DEMO_OK, 0)
+        Ok(())
+    }
+
+    /// Best-effort TX after UI compose; no-op when the net page is offline.
+    fn try_tx_selected_sealed(&mut self) {
+        let Some(packet) = self.messages.selected_sealed() else {
+            return;
+        };
+        let mut copy = [0u8; MAX_PACKET];
+        let length = packet.len();
+        copy[..length].copy_from_slice(packet);
+        let _ = self.tx_sealed_datagram(&copy[..length]);
     }
 
     fn handle_routed_input(&mut self, request: MessageInfo) -> MessageInfo {
@@ -293,6 +381,9 @@ impl NamespaceTest {
                         self.render_messages_snapshot();
                         log(self.name, "FAIL: vault could not persist peer keys");
                         return MessageInfo::new(REPLY_ROUTED_EVENT_BAD, 0);
+                    }
+                    if update.tx_sealed {
+                        self.try_tx_selected_sealed();
                     }
                     if !self.render_messages_snapshot() {
                         self.messages = old_messages;

@@ -46,6 +46,9 @@ pub const REPLY_NO_NET: MessageLabel = 0x412;
 /// Messages → dhcp_client: transmit the shared-page datagram to the host.
 pub const REQUEST_NET_TX: MessageLabel = 0x413;
 pub const REPLY_NET_TX_OK: MessageLabel = 0x414;
+/// Client → Messages: drive the UI compose→seal path and TX the sealed packet.
+pub const REQUEST_SEND_UI_SEALED: MessageLabel = 0x415;
+pub const REPLY_SEND_UI_SEALED_OK: MessageLabel = 0x416;
 
 pub const INITIAL_VALUE: MessageRegisterValue = 0;
 pub const TEST_VALUE: MessageRegisterValue = 0x4e4f_5445;

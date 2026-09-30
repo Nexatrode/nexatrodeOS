@@ -1372,6 +1372,26 @@ def integrated_net_test(timeout, python, env):
                     f"Guest B missed {seal_marker} via toy router; inspect {guest_b_serial}"
                 )
 
+            ui_seal_marker = "PASS: UI sealed packet handed to dhcp_client"
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    raise RuntimeError(
+                        f"Integrated network QEMU exited before UI sealed TX; inspect {qemu_log}"
+                    )
+                trace = serial_log.read_text(errors="replace") if serial_log.exists() else ""
+                if any(marker in trace for marker in forbidden):
+                    raise RuntimeError(
+                        f"Integrated network guest faulted waiting for UI sealed TX; "
+                        f"inspect {serial_log}"
+                    )
+                if ui_seal_marker in trace and trace.count(msg_tx_marker) >= 2:
+                    break
+                time.sleep(0.05)
+            else:
+                raise RuntimeError(
+                    f"Integrated network guest missed UI sealed TX; inspect {serial_log}"
+                )
+
             payload = b"PERSONAL-OS-NET-MERGE"
             echoed = False
             last_error = None
@@ -1477,6 +1497,7 @@ def integrated_net_test(timeout, python, env):
     print(
         f"Integrated VirtIO network: PASS; Personal OS isolation completed with "
         f"dhcp_client DHCP, DNS OK, TLS OK, TLS SEAL OK, Messages sealed TX, "
+        f"Messages UI sealed TX, "
         f"toy router → guest B SEAL OK, UDP echo, TCP echo, and guest A SEAL OK; "
         f"serial saved to {serial_log}"
     )

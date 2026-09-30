@@ -14,6 +14,8 @@ const MAGIC: [u8; 4] = *b"PMS2";
 pub struct MessagesUpdate {
     pub changed: bool,
     pub persist: bool,
+    /// Compose sealed a PSL1 packet; net merge may TX it when NET1 is ready.
+    pub tx_sealed: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -268,8 +270,22 @@ impl Messages {
                     return unchanged();
                 }
                 self.phase = EditPhase::Browse;
-                changed(true)
+                sealed_persist()
             }
+        }
+    }
+
+    /// Latest sealed PSL1 packet for the selected peer, if any.
+    pub fn selected_sealed(&self) -> Option<&[u8]> {
+        if self.count == 0 || self.selected >= self.count {
+            return None;
+        }
+        let peer = &self.peers[self.selected];
+        let len = peer.sealed_len as usize;
+        if peer.sealed_count == 0 || len == 0 || len > MAX_SEALED_BYTES {
+            None
+        } else {
+            Some(&peer.sealed[..len])
         }
     }
 
@@ -407,6 +423,7 @@ const fn unchanged() -> MessagesUpdate {
     MessagesUpdate {
         changed: false,
         persist: false,
+        tx_sealed: false,
     }
 }
 
@@ -414,6 +431,15 @@ const fn changed(persist: bool) -> MessagesUpdate {
     MessagesUpdate {
         changed: true,
         persist,
+        tx_sealed: false,
+    }
+}
+
+const fn sealed_persist() -> MessagesUpdate {
+    MessagesUpdate {
+        changed: true,
+        persist: true,
+        tx_sealed: true,
     }
 }
 
@@ -421,6 +447,7 @@ const fn bool_update(changed_flag: bool, persist: bool) -> MessagesUpdate {
     MessagesUpdate {
         changed: changed_flag,
         persist: changed_flag && persist,
+        tx_sealed: false,
     }
 }
 
@@ -536,9 +563,12 @@ mod tests {
         assert!(app.apply_key(23, 1).changed); // I
         assert_eq!(app.display(&mut buffer), b"COMPOSE\nHI");
         let sealed = app.apply_key(KEY_ENTER, 1);
-        assert!(sealed.changed && sealed.persist);
+        assert!(sealed.changed && sealed.persist && sealed.tx_sealed);
         assert_eq!(app.display(&mut buffer), b"- KEY BE12CD34\n  SEALED 1");
         assert!(!buffer.windows(2).any(|window| window == b"HI"));
+        let packet = app.selected_sealed().unwrap();
+        assert_eq!(&packet[..4], b"PSL1");
+        assert_eq!(&packet[4..12], b"BE12CD34");
 
         let mut encoded = [0; MESSAGES_BLOB_CAPACITY];
         let length = app.encode(&mut encoded).unwrap();

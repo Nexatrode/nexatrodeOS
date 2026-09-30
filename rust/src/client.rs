@@ -16,8 +16,9 @@ use sel4_microkit::{
 use vault_protocol::{
     CLIENT_CHANNEL as VAULT, REPLY_CONFLICT as VAULT_CONFLICT,
     REPLY_NAMESPACE_TEST as VAULT_NAMESPACE_TEST, REPLY_NO_NET, REPLY_OK as VAULT_OK,
-    REPLY_SEND_SEAL_DEMO_OK, REQUEST_NAMESPACE_TEST as VAULT_NAMESPACE_TEST_REQUEST,
-    REQUEST_READ as VAULT_READ, REQUEST_SEND_SEAL_DEMO, REQUEST_WRITE as VAULT_WRITE,
+    REPLY_SEND_SEAL_DEMO_OK, REPLY_SEND_UI_SEALED_OK, REQUEST_NAMESPACE_TEST as VAULT_NAMESPACE_TEST_REQUEST,
+    REQUEST_READ as VAULT_READ, REQUEST_SEND_SEAL_DEMO, REQUEST_SEND_UI_SEALED,
+    REQUEST_WRITE as VAULT_WRITE,
     TEST_VALUE as VAULT_TEST_VALUE,
 };
 
@@ -461,6 +462,14 @@ impl Supervisor {
                 debug_println!("PASS: Messages SEND_SEAL_DEMO skipped (no net)");
             } else {
                 debug_println!("FAIL: Messages SEND_SEAL_DEMO rejected");
+            }
+            let ui_seal_reply = MESSAGES_APP.pp_call(MessageInfo::new(REQUEST_SEND_UI_SEALED, 0));
+            if ui_seal_reply.label() == REPLY_SEND_UI_SEALED_OK {
+                debug_println!("PASS: Messages SEND_UI_SEALED accepted");
+            } else if ui_seal_reply.label() == REPLY_NO_NET {
+                debug_println!("PASS: Messages SEND_UI_SEALED skipped (no net)");
+            } else {
+                debug_println!("FAIL: Messages SEND_UI_SEALED rejected");
             }
             CLIENT_TO_CONSOLE.notify();
         } else {

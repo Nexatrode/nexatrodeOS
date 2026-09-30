@@ -119,13 +119,15 @@ guest A can address guest B directly.
 
 The sealed TX peer IP/port is already on the shared `messages_net_tx` page
 (demo default `10.0.2.2:1237`). Guest TLS can carry the PSL1 demo (`TLS SEAL OK`);
-certificate/TOFU TLS and Messages UI over TLS remain later.
+certificate/TOFU TLS and Messages UI over TLS remain later. Messages UI compose
+already hands sealed packets to `dhcp_client` over UDP when the net page is
+ready (`SEND_UI_SEALED` / live compose).
 
 ## What passed
 
 - Standalone: both echo clients DHCP + UDP echo through SLIRP.
 - Integrated: isolation, DHCP, `DNS OK`, `TLS OK`, `TLS SEAL OK`, Messages
-  `MSG NET TX`, toy router → guest B `SEAL OK`, host UDP echo on 1235, host TCP
+  `MSG NET TX` (demo + UI compose seal), toy router → guest B `SEAL OK`, host UDP echo on 1235, host TCP
   echo on 1238, guest A `SEAL OK` on 1236.
 
 ## Limits
@@ -139,6 +141,6 @@ certificate/TOFU TLS and Messages UI over TLS remain later.
 ## Next
 
 1. Run the dual-UTM Shared Network experiment when convenient; record results here.
-2. Certificate / TOFU TLS; Messages UI sending sealed traffic over TLS (not only the fixed demo).
+2. Certificate / TOFU TLS; Messages UI sending sealed traffic over TLS (UDP UI TX is done).
 3. Fake modem / audio / camera backends as needed.
 4. Optional Messages UI / IPC to set peer IP without a rebuild (page fields already exist).
