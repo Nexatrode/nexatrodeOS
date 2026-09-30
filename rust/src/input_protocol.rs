@@ -91,15 +91,21 @@ impl UiPointerState {
         }
     }
 
-    pub fn publish(&mut self, x: u32, y: u32) {
+    pub fn publish(&mut self, x: u32, y: u32) -> bool {
+        let x = x.min(DISPLAY_WIDTH.saturating_sub(1));
+        let y = y.min(DISPLAY_HEIGHT.saturating_sub(1));
+        if self.visible == 1 && self.x == x && self.y == y {
+            return false;
+        }
         let odd = self.revision.load(core::sync::atomic::Ordering::Relaxed).wrapping_add(1) | 1;
         self.revision
             .store(odd, core::sync::atomic::Ordering::SeqCst);
-        self.x = x.min(DISPLAY_WIDTH.saturating_sub(1));
-        self.y = y.min(DISPLAY_HEIGHT.saturating_sub(1));
+        self.x = x;
+        self.y = y;
         self.visible = 1;
         self.revision
             .store(odd.wrapping_add(1), core::sync::atomic::Ordering::SeqCst);
+        true
     }
 }
 

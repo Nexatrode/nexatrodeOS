@@ -95,8 +95,9 @@ touch targets map consistently.
 The scripted QEMU check demonstrates bounded driver-to-service handoff,
 visible-surface hit-testing, per-app protected endpoints, focused-only routing,
 and a notification-driven focus indicator. The ring rejects new events when full and counts those drops (capacity 128).
-Tablet ABS samples update the guest cursor in the input router and are not
-forwarded into focused apps, so UTM pointer motion does not flood IPC. Notes persists up to four bounded titles and 128-byte bodies through
+Tablet ABS/SYN samples update the guest cursor in the input router and are not
+forwarded into focused apps, so UTM pointer motion does not flood IPC. Use UTM
+**USB Tablet** (absolute); **USB Mouse** (relative) is not implemented yet. Notes persists up to four bounded titles and 128-byte bodies through
 its fixed encrypted blob endpoint. The editor wraps body text, shows three
 rows, accepts Enter from both the physical and touchscreen keyboards, and lets
 Older/Newer browse content outside the visible rows. The Notes list can open,

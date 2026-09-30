@@ -100,8 +100,9 @@ impl InputService {
             if let (Some(x), Some(y)) = (self.tablet_x, self.tablet_y) {
                 let pixel_x = tablet_axis_to_pixel(x, DISPLAY_WIDTH);
                 let pixel_y = tablet_axis_to_pixel(y, DISPLAY_HEIGHT);
-                unsafe { self.ui_pointer.as_mut() }.publish(pixel_x, pixel_y);
-                GPU_FOCUS_NOTIFICATION.notify();
+                if unsafe { self.ui_pointer.as_mut() }.publish(pixel_x, pixel_y) {
+                    GPU_FOCUS_NOTIFICATION.notify();
+                }
             }
         }
 
@@ -211,10 +212,11 @@ impl InputService {
             }
         }
 
-        // Keep ABS samples in-router for the guest cursor. Forwarding every
-        // move into the focused app burns a protected call per sample on a
-        // small ring and drops pointer updates under UTM tablet flood.
-        if event.device == DEVICE_TABLET && event.event_type == EVENT_ABS {
+        // Keep tablet ABS/SYN in-router for the guest cursor. Forwarding every
+        // sample (including SYN reports) into Notes burns IPC and drops moves.
+        if event.device == DEVICE_TABLET
+            && (event.event_type == EVENT_ABS || event.event_type == EVENT_SYN)
+        {
             return;
         }
 
@@ -318,6 +320,7 @@ impl Handler for InputService {
             return Ok(());
         }
 
+        let forwarded_before = self.forwarded;
         for _ in 0..pending {
             let slot = (tail & (EVENT_CAPACITY - 1)) as usize;
             // The producer publishes head with release ordering after writing
@@ -331,15 +334,18 @@ impl Handler for InputService {
         let dropped = ring.dropped.load(Ordering::Acquire);
         let newly_dropped = dropped.wrapping_sub(self.seen_dropped);
         self.seen_dropped = dropped;
-        debug_println!(
-            "UIROUTER|BATCH: accepted={} forwarded={} unfocused={} rejected={} call_errors={} dropped={}",
-            self.accepted,
-            self.forwarded,
-            self.unfocused,
-            self.rejected,
-            self.call_errors,
-            newly_dropped
-        );
+        // Skip serial spam on pure pointer motion; still log drops and app IPC.
+        if newly_dropped != 0 || self.forwarded != forwarded_before {
+            debug_println!(
+                "UIROUTER|BATCH: accepted={} forwarded={} unfocused={} rejected={} call_errors={} dropped={}",
+                self.accepted,
+                self.forwarded,
+                self.unfocused,
+                self.rejected,
+                self.call_errors,
+                newly_dropped
+            );
+        }
         Ok(())
     }
 
