@@ -15,13 +15,21 @@
 #include "input_handoff.h"
 
 #define INPUT_DEVICE_ID 18
-#define INPUT_QUEUE_SIZE 8
+/* UTM tablet floods ABS samples; 8 descriptors refilled mid-IRQ used to mark
+ * the device FAILED and freeze the guest cursor. Keep more in flight. */
+#define INPUT_QUEUE_SIZE 32
 #define INPUT_DEVICE_COUNT 2
 #define INPUT_QUEUE_STRIDE 0x1000
-#define INPUT_EVENTS_OFFSET 0x400
+/* Event buffers live above the virtqueue metadata (desc/avail/used). */
+#define INPUT_EVENTS_OFFSET 0x800
 #define VIRTIO_MMIO_KEYBOARD_OFFSET 0xc00
 #define VIRTIO_MMIO_TABLET_OFFSET 0xa00
 #define VIRTIO_F_VERSION_1 32
+#define INPUT_EV_SYN 0U
+#define INPUT_EV_KEY 1U
+#define INPUT_EV_ABS 3U
+#define INPUT_ABS_X 0U
+#define INPUT_ABS_Y 1U
 
 struct virtio_input_event {
     uint16_t type;
@@ -150,9 +158,18 @@ static void handle_events(unsigned index)
     struct input_queue *device = &devices[index];
     uint32_t interrupt_status = device->regs->InterruptStatus;
     if (interrupt_status & VIRTIO_IRQ_VQUEUE) {
-        unsigned handled = 0;
         int published = 0;
-        while (device->next_used != device->used->idx && handled < INPUT_QUEUE_SIZE) {
+        int have_abs_x = 0;
+        int have_abs_y = 0;
+        struct input_event_record abs_x = {0};
+        struct input_event_record abs_y = {0};
+        /* Drain everything currently used. Refills can race mid-handler; never
+         * mark the device FAILED just because more samples arrived. Tablet ABS
+         * floods the shared ring and starves keyboard/BTN clicks — coalesce to
+         * the latest X/Y per IRQ and skip SYN (router only needs the point). */
+        unsigned safety = 0;
+        while (device->next_used != device->used->idx &&
+               safety < INPUT_QUEUE_SIZE * 8U) {
             uint16_t used_index = device->next_used % INPUT_QUEUE_SIZE;
             uint32_t descriptor = device->used->ring[used_index].id;
             if (descriptor >= INPUT_QUEUE_SIZE) {
@@ -168,15 +185,38 @@ static void handle_events(unsigned index)
                 .reserved = 0,
                 .value = event->value,
             };
-            published |= input_ring_try_push(event_ring, record);
+            if (record.device == INPUT_DEVICE_TABLET && record.type == INPUT_EV_SYN) {
+                /* drop */
+            } else if (record.device == INPUT_DEVICE_TABLET &&
+                       record.type == INPUT_EV_ABS && record.code == INPUT_ABS_X) {
+                abs_x = record;
+                have_abs_x = 1;
+            } else if (record.device == INPUT_DEVICE_TABLET &&
+                       record.type == INPUT_EV_ABS && record.code == INPUT_ABS_Y) {
+                abs_y = record;
+                have_abs_y = 1;
+            } else {
+                /* Flush pending point before KEY/BTN so click coords match. */
+                if (have_abs_x) {
+                    published |= input_ring_try_push(event_ring, abs_x);
+                    have_abs_x = 0;
+                }
+                if (have_abs_y) {
+                    published |= input_ring_try_push(event_ring, abs_y);
+                    have_abs_y = 0;
+                }
+                published |= input_ring_try_push(event_ring, record);
+            }
             device->avail->ring[device->avail->idx % INPUT_QUEUE_SIZE] = descriptor;
             device->avail->idx++;
             device->next_used++;
-            handled++;
+            safety++;
         }
-        if (device->next_used != device->used->idx) {
-            sddf_dprintf("INPUT|ERROR: %s exceeded bounded used queue\n", device->name);
-            device->regs->Status |= VIRTIO_DEVICE_STATUS_FAILED;
+        if (have_abs_x) {
+            published |= input_ring_try_push(event_ring, abs_x);
+        }
+        if (have_abs_y) {
+            published |= input_ring_try_push(event_ring, abs_y);
         }
         if (published) {
             microkit_notify(INPUT_SERVICE_CHANNEL);

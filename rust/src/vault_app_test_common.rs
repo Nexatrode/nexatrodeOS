@@ -10,7 +10,7 @@ use sel4_microkit::{
 use crate::app_view::APP_VIEW_TEXT_CAPACITY;
 use crate::app_view::AppViewState;
 use crate::input_protocol::{
-    DEVICE_KEYBOARD, DEVICE_TABLET, EVENT_KEY, REPLY_ROUTED_EVENT_BAD, REPLY_ROUTED_EVENT_OK,
+    DEVICE_KEYBOARD, EVENT_KEY, EVENT_SYN, REPLY_ROUTED_EVENT_BAD, REPLY_ROUTED_EVENT_OK,
     REQUEST_ROUTED_EVENT, decode_routed_event,
 };
 use crate::notes::{NOTES_BLOB_CAPACITY, NotesApp};
@@ -357,6 +357,14 @@ impl NamespaceTest {
         if !self.ensure_loaded() {
             return MessageInfo::new(REPLY_ROUTED_EVENT_BAD, 0);
         }
+        if event.event_type == EVENT_SYN {
+            // Focus-leave / restore SYN: persist in-RAM Notes edits.
+            if self.name == "NOTES" && !self.persist_notes() {
+                log(self.name, "FAIL: vault could not persist Notes collection");
+                return MessageInfo::new(REPLY_ROUTED_EVENT_BAD, 0);
+            }
+            return MessageInfo::new(REPLY_ROUTED_EVENT_OK, 0);
+        }
         if event.device == DEVICE_KEYBOARD && event.event_type == EVENT_KEY {
             if self.name == "CONTACTS" {
                 let old_contacts = self.contacts;
@@ -373,13 +381,6 @@ impl NamespaceTest {
                         log(self.name, "FAIL: could not render contact list");
                         return MessageInfo::new(REPLY_ROUTED_EVENT_BAD, 0);
                     }
-                    let view = unsafe { self.app_view.as_ref() };
-                    debug_println!(
-                        "UIAPP|{}|VIEW: revision={} length={}",
-                        self.name,
-                        view.revision.load(core::sync::atomic::Ordering::SeqCst),
-                        view.length
-                    );
                 }
             } else if self.name == "CALENDAR" {
                 let old_calendar = self.calendar;
@@ -396,13 +397,6 @@ impl NamespaceTest {
                         log(self.name, "FAIL: could not render reminders");
                         return MessageInfo::new(REPLY_ROUTED_EVENT_BAD, 0);
                     }
-                    let view = unsafe { self.app_view.as_ref() };
-                    debug_println!(
-                        "UIAPP|{}|VIEW: revision={} length={}",
-                        self.name,
-                        view.revision.load(core::sync::atomic::Ordering::SeqCst),
-                        view.length
-                    );
                 }
             } else if self.name == "MESSAGES" {
                 let old_messages = self.messages;
@@ -422,13 +416,6 @@ impl NamespaceTest {
                         log(self.name, "FAIL: could not render peer keys");
                         return MessageInfo::new(REPLY_ROUTED_EVENT_BAD, 0);
                     }
-                    let view = unsafe { self.app_view.as_ref() };
-                    debug_println!(
-                        "UIAPP|{}|VIEW: revision={} length={}",
-                        self.name,
-                        view.revision.load(core::sync::atomic::Ordering::SeqCst),
-                        view.length
-                    );
                 }
             } else {
                 let old_notes = self.notes;
@@ -445,25 +432,12 @@ impl NamespaceTest {
                         log(self.name, "FAIL: vault could not persist Notes collection");
                         return MessageInfo::new(REPLY_ROUTED_EVENT_BAD, 0);
                     }
-                    let view = unsafe { self.app_view.as_ref() };
-                    debug_println!(
-                        "UIAPP|{}|VIEW: revision={} length={}",
-                        self.name,
-                        view.revision.load(core::sync::atomic::Ordering::SeqCst),
-                        view.length
-                    );
                 }
             }
         }
-        debug_println!(
-            "UIAPP|{}|EVENT: device={} type={} code={} value={} seq={}",
-            self.name,
-            device_name(event.device),
-            event.event_type,
-            event.code,
-            event.value,
-            sequence
-        );
+        // Hot-path EVENT/VIEW UART logs removed — they stalled the guest cursor
+        // on every UTM keystroke. Frame compares still cover routing.
+        let _ = sequence;
         MessageInfo::new(REPLY_ROUTED_EVENT_OK, 0)
     }
 
@@ -858,12 +832,4 @@ fn write_blob(
 
 fn log(name: &str, result: &str) {
     debug_println!("NAMESPACE|{}|{}", name, result);
-}
-
-const fn device_name(device: u16) -> &'static str {
-    match device {
-        DEVICE_KEYBOARD => "keyboard",
-        DEVICE_TABLET => "tablet",
-        _ => "unknown",
-    }
 }

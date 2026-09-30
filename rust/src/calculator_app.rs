@@ -103,12 +103,6 @@ impl Handler for CalculatorService {
                 debug_println!("UIAPP|CALCULATOR|ERROR: invalid calculator display snapshot");
                 return Ok(MessageInfo::new(REPLY_ROUTED_EVENT_BAD, 0));
             }
-            let view = unsafe { self.view.as_ref() };
-            debug_println!(
-                "UIAPP|CALCULATOR|VIEW: revision={} length={}",
-                view.revision.load(core::sync::atomic::Ordering::SeqCst),
-                view.length
-            );
         }
         Ok(MessageInfo::new(REPLY_ROUTED_EVENT_OK, 0))
     }

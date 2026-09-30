@@ -266,7 +266,8 @@ impl NotesApp {
             self.screen = Screen::List;
             self.delete_armed = false;
             self.render_list(view);
-            return changed(false);
+            // Flush body/title edits that stayed in RAM during typing.
+            return changed(true);
         }
         if code == KEY_F6 && value == 1 {
             if self.editing_title {
@@ -315,7 +316,8 @@ impl NotesApp {
             };
             self.notes[index] = note;
         }
-        changed(true)
+        // Keep edits in RAM while typing; vault writes on list/home flush.
+        changed(false)
     }
 
     fn apply_list_key(&mut self, code: u16, value: u32, view: &mut AppViewState) -> NotesUpdate {
@@ -339,7 +341,7 @@ impl NotesApp {
             self.editing_title = false;
             self.delete_armed = false;
             self.render_editor(view);
-            return changed(true);
+            return changed(false);
         }
         if code == KEY_INSERT && value == 1 {
             if self.count() == MAX_NOTES {
@@ -545,20 +547,20 @@ mod tests {
         let mut app = NotesApp::new();
         let mut view = AppViewState::new();
         app.render_editor(&mut view);
-        assert_eq!(app.apply_key(30, 1, &mut view), changed(true));
+        assert_eq!(app.apply_key(30, 1, &mut view), changed(false));
         assert_eq!(app.current_text(), b"A");
 
         assert_eq!(app.apply_key(KEY_F6, 1, &mut view), changed(false));
         assert!(view.notes_field != 0);
-        assert_eq!(app.apply_key(37, 1, &mut view), changed(true)); // K
-        assert_eq!(app.apply_key(30, 1, &mut view), changed(true)); // A
-        assert_eq!(app.apply_key(3, 1, &mut view), changed(true)); // 2
+        assert_eq!(app.apply_key(37, 1, &mut view), changed(false)); // K
+        assert_eq!(app.apply_key(30, 1, &mut view), changed(false)); // A
+        assert_eq!(app.apply_key(3, 1, &mut view), changed(false)); // 2
         assert_eq!(app.current_title(), b"NOTE 1KA2");
         assert_eq!(app.current_text(), b"A");
 
         assert_eq!(app.apply_key(KEY_F7, 1, &mut view), changed(false));
         assert_eq!(&view.text[..view.length as usize], b"A");
-        assert_eq!(app.apply_key(48, 1, &mut view), changed(true)); // B
+        assert_eq!(app.apply_key(48, 1, &mut view), changed(false)); // B
         assert_eq!(app.current_text(), b"AB");
         assert_eq!(app.current_title(), b"NOTE 1KA2");
     }
@@ -568,10 +570,10 @@ mod tests {
         let mut app = NotesApp::new();
         let mut view = AppViewState::new();
         app.render_editor(&mut view);
-        assert_eq!(app.apply_key(30, 1, &mut view), changed(true));
+        assert_eq!(app.apply_key(30, 1, &mut view), changed(false));
         assert_eq!(app.current_text(), b"A");
 
-        assert_eq!(app.apply_key(KEY_F5, 1, &mut view), changed(false));
+        assert_eq!(app.apply_key(KEY_F5, 1, &mut view), changed(true));
         assert!(app.is_list_mode());
         assert_eq!(&view.text[..view.length as usize], b"1 NOTE 1");
         assert_eq!(app.apply_key(KEY_INSERT, 1, &mut view), changed(true));
@@ -580,10 +582,10 @@ mod tests {
         assert_eq!(app.current_text(), b"");
         assert!(!app.is_list_mode());
 
-        assert_eq!(app.apply_key(48, 1, &mut view), changed(true)); // B
+        assert_eq!(app.apply_key(48, 1, &mut view), changed(false)); // B
         assert_eq!(app.current_text(), b"B");
-        assert_eq!(app.apply_key(KEY_F5, 1, &mut view), changed(false));
-        assert_eq!(app.apply_key(KEY_F1, 1, &mut view), changed(true));
+        assert_eq!(app.apply_key(KEY_F5, 1, &mut view), changed(true));
+        assert_eq!(app.apply_key(KEY_F1, 1, &mut view), changed(false));
         assert_eq!(app.selected(), 0);
         assert_eq!(app.current_text(), b"A");
         assert_eq!(view.revision.load(Ordering::SeqCst) & 1, 0);

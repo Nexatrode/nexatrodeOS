@@ -2228,6 +2228,12 @@ def input_test(timeout):
     expected_events.update(
         f"UIROUTER|VKEY: CONTACTS code={code}" for code in range(2, 12)
     )
+    # Apps only log KEY/BTN presses now (releases burned UTM UART bandwidth).
+    # Hot-path EVENT/VIEW lines are omitted entirely; frames cover those paths.
+    expected_events = {
+        event for event in expected_events
+        if "|EVENT:" not in event and "|VIEW:" not in event
+    }
     try:
         with qemu_log.open("wb") as errors:
             process = subprocess.Popen(qemu_command, stdout=subprocess.DEVNULL, stderr=errors)
@@ -2414,9 +2420,8 @@ def input_test(timeout):
                 tap(25_000, 27_750)  # On-screen Backspace key.
                 wait_for_frame("notes", "A")
                 tap(6_800, 27_700)  # On-screen Space key.
-                wait_for_log("UIAPP|NOTES|VIEW: revision=10 length=2")
+                wait_for_log("UIROUTER|VKEY: NOTES code=57")
                 tap(25_000, 27_750)  # Remove the trailing space.
-                wait_for_log("UIAPP|NOTES|VIEW: revision=12 length=1")
                 wait_for_frame("notes", "A")
                 qmp_execute(stream, "send-key", {
                     "keys": [{"type": "qcode", "data": "b"}], "hold-time": 150,
@@ -2793,10 +2798,15 @@ def input_test(timeout):
         r"UIROUTER\|BATCH: accepted=(\d+) forwarded=(\d+) unfocused=(\d+) "
         r"rejected=(\d+) call_errors=(\d+) dropped=(\d+)", trace
     )
-    if (not any(int(forwarded) >= 8 for _accepted, forwarded, _unfocused,
-                 _rejected, _call_errors, _dropped in batches) or
+    # Quiet builds only emit BATCH when the ring drops events. Routing success is
+    # already covered by expected_events / frames above.
+    if batches and (
+            not any(int(forwarded) >= 8 for _accepted, forwarded, _unfocused,
+                    _rejected, _call_errors, _dropped in batches) or
             any(rejected != "0" or call_errors != "0" or dropped != "0"
                 for _accepted, _forwarded, _unfocused, rejected, call_errors, dropped in batches)):
+        raise RuntimeError(f"Input event service rejected or dropped test events; inspect {serial_log}")
+    if re.search(r"UIROUTER\|BATCH:.* dropped=[1-9]", trace):
         raise RuntimeError(f"Input event service rejected or dropped test events; inspect {serial_log}")
     # Give the host a moment to release VirtIO input devices before the cold-boot QEMU.
     time.sleep(2.0)

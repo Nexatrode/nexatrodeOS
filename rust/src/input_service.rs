@@ -12,10 +12,11 @@ use core::{
 use input_protocol::{
     ABS_X, ABS_Y, BTN_LEFT, DEVICE_KEYBOARD, DEVICE_TABLET, DISPLAY_HEIGHT, DISPLAY_WIDTH,
     EVENT_ABS, EVENT_CAPACITY, EVENT_KEY, EVENT_SYN, EventRecord, EventRing, FocusTarget, KEY_ESC,
-    KEY_TAB, KeyOwners, NavigationAction, REPLY_ROUTED_EVENT_OK, REQUEST_ROUTED_EVENT, SYN_REPORT,
-    UiPointerState, focus_value, next_focus_target, onscreen_key_code, onscreen_keyboard_area,
-    tablet_axis_to_pixel, touch_calculator_action, touch_contacts_action, touch_focus_target,
-    touch_navigation_action, touch_notes_action, touch_notes_list_action, valid_event,
+    KEY_TAB, KeyOwners, NavigationAction, POINTER_PARK_X, POINTER_PARK_Y, REPLY_ROUTED_EVENT_OK,
+    REQUEST_ROUTED_EVENT, SYN_REPORT, UiPointerState, focus_value, next_focus_target,
+    onscreen_key_code, onscreen_keyboard_area, tablet_axis_to_pixel, touch_calculator_action,
+    touch_contacts_action, touch_focus_target, touch_navigation_action, touch_notes_action,
+    touch_notes_list_action, valid_event,
 };
 use sel4_microkit::{
     Channel, ChannelSet, Handler, Infallible, MessageInfo, MessageRegisterValue, debug_println,
@@ -62,6 +63,9 @@ fn init() -> InputService {
         rejected: 0,
         call_errors: 0,
         seen_dropped: 0,
+        gpu_dirty: false,
+        last_pointer_gpu_x: POINTER_PARK_X,
+        last_pointer_gpu_y: POINTER_PARK_Y,
     }
 }
 
@@ -81,6 +85,9 @@ struct InputService {
     rejected: u32,
     call_errors: u32,
     seen_dropped: u32,
+    gpu_dirty: bool,
+    last_pointer_gpu_x: u32,
+    last_pointer_gpu_y: u32,
 }
 
 impl InputService {
@@ -101,7 +108,16 @@ impl InputService {
                 let pixel_x = tablet_axis_to_pixel(x, DISPLAY_WIDTH);
                 let pixel_y = tablet_axis_to_pixel(y, DISPLAY_HEIGHT);
                 if unsafe { self.ui_pointer.as_mut() }.publish(pixel_x, pixel_y) {
-                    GPU_FOCUS_NOTIFICATION.notify();
+                    // Throttle pointer-only redraws: full frames are expensive and
+                    // stack up behind typing. Key/focus flushes still pick up the
+                    // latest shared pointer coordinates.
+                    let dx = pixel_x.abs_diff(self.last_pointer_gpu_x);
+                    let dy = pixel_y.abs_diff(self.last_pointer_gpu_y);
+                    if dx + dy >= 3 {
+                        self.last_pointer_gpu_x = pixel_x;
+                        self.last_pointer_gpu_y = pixel_y;
+                        self.gpu_dirty = true;
+                    }
                 }
             }
         }
@@ -219,13 +235,32 @@ impl InputService {
         {
             return;
         }
+        // Host keyboards also emit SYN_REPORT; apps only act on KEY.
+        if event.event_type == EVENT_SYN {
+            return;
+        }
 
         let target = self.key_owners.target_for_event(event, self.focus);
         self.dispatch_event(target, event);
     }
 
     fn set_focus(&mut self, focus: FocusTarget) {
-        if focus != FocusTarget::None && focus != self.focus {
+        let previous = self.focus;
+        if previous != FocusTarget::None && previous != focus {
+            // Flush vault-backed edits before leaving (Notes types without
+            // persisting every keystroke). SYN value must stay 0 (wire valid).
+            self.dispatch_event(
+                previous,
+                EventRecord {
+                    device: DEVICE_KEYBOARD,
+                    event_type: EVENT_SYN,
+                    code: SYN_REPORT,
+                    reserved: 0,
+                    value: 0,
+                },
+            );
+        }
+        if focus != FocusTarget::None && focus != previous {
             // Let the app restore its own view before the GPU reads its
             // snapshot. This matters when switching to an app without typing.
             self.dispatch_event(
@@ -245,7 +280,7 @@ impl InputService {
                 .as_ref()
                 .store(focus_value(focus), Ordering::Release)
         };
-        GPU_FOCUS_NOTIFICATION.notify();
+        self.gpu_dirty = true;
     }
 
     fn dispatch_virtual_key(&mut self, code: u16) {
@@ -285,7 +320,7 @@ impl InputService {
             self.forwarded = self.forwarded.saturating_add(1);
             if event.device == DEVICE_KEYBOARD && event.event_type == EVENT_KEY && event.value != 0
             {
-                GPU_FOCUS_NOTIFICATION.notify();
+                self.gpu_dirty = true;
             }
         } else {
             self.call_errors = self.call_errors.saturating_add(1);
@@ -293,6 +328,17 @@ impl InputService {
                 "UIROUTER|ERROR: {} endpoint rejected input",
                 focus_name(target)
             );
+        }
+    }
+
+    fn flush_gpu(&mut self) {
+        if self.gpu_dirty {
+            if let (Some(x), Some(y)) = (self.tablet_x, self.tablet_y) {
+                self.last_pointer_gpu_x = tablet_axis_to_pixel(x, DISPLAY_WIDTH);
+                self.last_pointer_gpu_y = tablet_axis_to_pixel(y, DISPLAY_HEIGHT);
+            }
+            self.gpu_dirty = false;
+            GPU_FOCUS_NOTIFICATION.notify();
         }
     }
 }
@@ -320,30 +366,62 @@ impl Handler for InputService {
             return Ok(());
         }
 
-        let forwarded_before = self.forwarded;
+        // Coalesce tablet ABS in this batch: keep KEY/BTN order, but only the
+        // latest X/Y matter for the guest cursor.
+        let mut latest_abs_x: Option<EventRecord> = None;
+        let mut latest_abs_y: Option<EventRecord> = None;
+        let mut coalesced = 0u32;
         for _ in 0..pending {
             let slot = (tail & (EVENT_CAPACITY - 1)) as usize;
             // The producer publishes head with release ordering after writing
             // the record; this acquire load makes the slot contents visible.
             let event = unsafe { ptr::read_volatile(ring.events[slot].get()) };
-            self.route_event(event);
             tail = tail.wrapping_add(1);
+            if event.device == DEVICE_TABLET && event.event_type == EVENT_ABS {
+                match event.code {
+                    ABS_X => latest_abs_x = Some(event),
+                    ABS_Y => latest_abs_y = Some(event),
+                    _ => self.route_event(event),
+                }
+                coalesced = coalesced.saturating_add(1);
+                continue;
+            }
+            if event.device == DEVICE_TABLET && event.event_type == EVENT_SYN {
+                // SYN only flushes the coalesced point; skip per-sample SYN.
+                continue;
+            }
+            if let Some(abs) = latest_abs_x.take() {
+                self.route_event(abs);
+            }
+            if let Some(abs) = latest_abs_y.take() {
+                self.route_event(abs);
+            }
+            self.route_event(event);
+        }
+        if let Some(abs) = latest_abs_x.take() {
+            self.route_event(abs);
+        }
+        if let Some(abs) = latest_abs_y.take() {
+            self.route_event(abs);
         }
 
         ring.tail.store(tail, Ordering::Release);
         let dropped = ring.dropped.load(Ordering::Acquire);
         let newly_dropped = dropped.wrapping_sub(self.seen_dropped);
         self.seen_dropped = dropped;
-        // Skip serial spam on pure pointer motion; still log drops and app IPC.
-        if newly_dropped != 0 || self.forwarded != forwarded_before {
+        // One GPU redraw per batch (pointer + text), not per sample/key.
+        self.flush_gpu();
+        // Serial is slow on UTM; only shout when the ring is losing events.
+        if newly_dropped != 0 {
             debug_println!(
-                "UIROUTER|BATCH: accepted={} forwarded={} unfocused={} rejected={} call_errors={} dropped={}",
+                "UIROUTER|BATCH: accepted={} forwarded={} unfocused={} rejected={} call_errors={} dropped={} coalesced={}",
                 self.accepted,
                 self.forwarded,
                 self.unfocused,
                 self.rejected,
                 self.call_errors,
-                newly_dropped
+                newly_dropped,
+                coalesced
             );
         }
         Ok(())
@@ -391,6 +469,6 @@ const fn screen_name(focus: FocusTarget) -> &'static str {
 }
 
 const _: () = assert!(core::mem::size_of::<UnsafeCell<input_protocol::EventRecord>>() == 12);
-const _: () = assert!(core::mem::size_of::<EventRing>() == 1552);
+const _: () = assert!(core::mem::size_of::<EventRing>() == 3088);
 const _: () = assert!(core::mem::align_of::<EventRing>() == 4);
 const _: () = assert!(BTN_LEFT == 272 && DEVICE_TABLET == 1 && EVENT_ABS == 3);

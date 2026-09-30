@@ -1,7 +1,7 @@
 //! Bounded handoff format and validation for untrusted virtual input events.
 #![allow(dead_code)]
 
-pub const EVENT_CAPACITY: u32 = 128;
+pub const EVENT_CAPACITY: u32 = 256;
 pub const DEVICE_KEYBOARD: u16 = 0;
 pub const DEVICE_TABLET: u16 = 1;
 
