@@ -26,8 +26,10 @@ Default / UTM images stay offline. The net merge injects:
   for Messages)
 - Channel `messages_app:3` (`pp`) → `dhcp_client:3` (dhcp priority raised to 101)
 - Client post-isolation `SEND_SEAL_DEMO`: Messages seals the fixed PSL1 demo
-  packet, `pp_call`s dhcp_client, which `udp_sendto`s `10.0.2.2:1237` and prints
-  `MSG NET TX`. Offline builds reply `REPLY_NO_NET` when magic `NET1` is absent.
+  packet, sets the shared-page peer (default `10.0.2.2:1237`), `pp_call`s
+  dhcp_client, which `udp_sendto`s that peer and prints `MSG NET TX`. Offline
+  builds reply `REPLY_NO_NET` when magic `NET1` is absent. Dual-UTM can retarget
+  the peer IP/port on the shared page without rebuilding dhcp_client.
 
 ## PSL1 sealed UDP smoke (non-production)
 
@@ -77,10 +79,10 @@ guest A can address guest B directly.
 4. Confirm both finish DHCP (or assign static IPs on the shared subnet) and that
    guest B still binds UDP **1236**.
 5. Peer path options:
-   - **Direct (goal):** change or temporarily override the Messages TX target
-     from `10.0.2.2:1237` to guest B’s shared-LAN IP `:1236`, then trigger
-     `SEND_SEAL_DEMO` and watch guest B print `SEAL OK` with **no**
-     `toy_router`.
+   - **Direct (goal):** set the shared-page peer to guest B’s shared-LAN IP
+     `:1236` (Messages `set_peer` / page fields; demo defaults are
+     `10.0.2.2:1237`), trigger `SEND_SEAL_DEMO`, and watch guest B print
+     `SEAL OK` with **no** `toy_router`.
    - **Host relay (interim):** keep SLIRP/user net or hostfwd and run
      [`toy_router.py`](../tests/net/toy_router.py) on the Mac as in test-net.
 6. Optional: TCP echo to guest A on shared-LAN IP `:1238` from the host or from
@@ -94,7 +96,8 @@ guest A can address guest B directly.
   QEMU layout, or graphics+net attempted in one VM (`timer_driver` name clash).
   Fall back to QEMU + `toy_router`; do not block U5 apps on this experiment.
 
-DNS/TLS and a configurable peer IP in Messages remain later U6 work.
+DNS/TLS remain later U6 work. The sealed TX peer IP/port is already on the
+shared `messages_net_tx` page (demo default `10.0.2.2:1237`).
 
 ## What passed
 
@@ -114,5 +117,4 @@ DNS/TLS and a configurable peer IP in Messages remain later U6 work.
 
 1. Run the dual-UTM Shared Network experiment when convenient; record results here.
 2. DNS / TLS and fake modem / audio / camera backends as needed.
-3. Configurable Messages peer IP (replace hard-coded `10.0.2.2:1237`) when a
-   real LAN path is wanted beyond the demo.
+3. Optional Messages UI / IPC to set peer IP without a rebuild (page fields already exist).

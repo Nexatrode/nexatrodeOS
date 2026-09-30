@@ -81,7 +81,7 @@ See [utm-vs-hardware.md](utm-vs-hardware.md#messaging-and-simplex-chat-long-term
 | Stage | Work |
 | --- | --- |
 | U5 | Contacts optional key-fingerprint field (PCT2, hex stub) done; Messages peer-key shell with vaulted PMS2 peers + local PSL1 sealed stubs on Home |
-| U6 | VirtIO Ethernet + Personal OS merge + Messages→dhcp_client sealed TX + host toy router to a second guest (`./dev test-net`, UDP/TCP echo); dual-UTM Shared Network is a manual sketch; next: DNS/TLS as needed |
+| U6 | VirtIO Ethernet + Personal OS merge + Messages→dhcp_client sealed TX (configurable peer on shared page) + host toy router to a second guest (`./dev test-net`, UDP/TCP echo); dual-UTM Shared Network is a manual sketch; next: DNS/TLS as needed |
 | U7 | Key lifecycle, backup of key material, threat notes |
 | Pixel P3+ | Same client over real IP; still not MSISDN-as-identity |
 | Later | Voice/video; replace or federate the central router |

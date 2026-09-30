@@ -205,6 +205,7 @@ impl NamespaceTest {
         }
         let mut packet = [0u8; MAX_PACKET];
         let length = message_seal::demo_udp_packet(&mut packet);
+        page.set_demo_peer();
         if !page.set_datagram(&packet[..length]) {
             return MessageInfo::new(REPLY_BAD_REQUEST, 0);
         }

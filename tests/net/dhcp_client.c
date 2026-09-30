@@ -40,6 +40,9 @@ static bool pending_messages_tx;
 struct messages_net_tx_page {
     uint32_t magic;
     uint32_t length;
+    uint8_t dest_ip[4];
+    uint16_t dest_port;
+    uint16_t reserved;
     uint8_t payload[MESSAGES_NET_TX_MAX];
 };
 
@@ -78,9 +81,21 @@ static int send_messages_datagram(void)
         return -1;
     }
     memcpy(p->payload, (const void *)page->payload, length);
+    uint8_t a = page->dest_ip[0];
+    uint8_t b = page->dest_ip[1];
+    uint8_t c = page->dest_ip[2];
+    uint8_t d = page->dest_ip[3];
+    uint16_t port = page->dest_port;
+    if ((a | b | c | d) == 0 || port == 0) {
+        a = 10;
+        b = 0;
+        c = 2;
+        d = 2;
+        port = UDP_HOST_TX_PORT;
+    }
     ip_addr_t dest;
-    IP_ADDR4(&dest, 10, 0, 2, 2);
-    err_t error = udp_sendto(udp_tx_socket, p, &dest, UDP_HOST_TX_PORT);
+    IP_ADDR4(&dest, a, b, c, d);
+    err_t error = udp_sendto(udp_tx_socket, p, &dest, port);
     pbuf_free(p);
     if (error != ERR_OK) {
         sddf_dprintf("DHCP_CLIENT|LOG: udp_sendto failed: %s\n", lwip_strerr(error));
@@ -114,6 +129,12 @@ void init(void)
             (volatile struct messages_net_tx_page *)messages_net_tx;
         page->magic = MESSAGES_NET_READY_MAGIC;
         page->length = 0;
+        page->dest_ip[0] = 10;
+        page->dest_ip[1] = 0;
+        page->dest_ip[2] = 2;
+        page->dest_ip[3] = 2;
+        page->dest_port = UDP_HOST_TX_PORT;
+        page->reserved = 0;
     }
 
     sddf_lwip_maybe_notify();
