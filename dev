@@ -1127,6 +1127,14 @@ def integrated_net_test(timeout, python, env):
     expected_sealed = subprocess.check_output(
         [tool("python3"), ROOT / "tests" / "net" / "seal_packet.py"]
     )
+    dns_stub = subprocess.Popen(
+        [
+            tool("python3"), ROOT / "tests" / "net" / "dns_stub.py",
+            "--listen", "53535", "--count", "0",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
     router = subprocess.Popen(
         [
             tool("python3"), ROOT / "tests" / "net" / "toy_router.py",
@@ -1177,6 +1185,7 @@ def integrated_net_test(timeout, python, env):
     isolation_marker = "ISOLATION COMPLETE: 27 checks passed"
     seal_marker = "SEAL OK"
     msg_tx_marker = "MSG NET TX"
+    dns_marker = "DNS OK"
     forbidden = ("faulting PD:", "Failed assertion", "MON|ERROR", "Kernel panic", "FAIL:")
     try:
         with guest_b_qemu.open("wb") as errors:
@@ -1213,6 +1222,24 @@ def integrated_net_test(timeout, python, env):
             else:
                 raise RuntimeError(
                     f"Integrated network guest missed isolation or DHCP; inspect {serial_log}"
+                )
+
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    raise RuntimeError(
+                        f"Integrated network QEMU exited before DNS; inspect {qemu_log}"
+                    )
+                trace = serial_log.read_text(errors="replace") if serial_log.exists() else ""
+                if any(marker in trace for marker in forbidden):
+                    raise RuntimeError(
+                        f"Integrated network guest faulted waiting for DNS; inspect {serial_log}"
+                    )
+                if dns_marker in trace:
+                    break
+                time.sleep(0.05)
+            else:
+                raise RuntimeError(
+                    f"Integrated network guest missed {dns_marker}; inspect {serial_log}"
                 )
 
             while time.monotonic() < deadline:
@@ -1335,7 +1362,7 @@ def integrated_net_test(timeout, python, env):
                     f"Integrated network guest missed {seal_marker}; inspect {serial_log}"
                 )
     finally:
-        for proc in (process, guest_b, router):
+        for proc in (process, guest_b, router, dns_stub):
             if proc is not None and proc.poll() is None:
                 proc.terminate()
                 try:
@@ -1348,6 +1375,7 @@ def integrated_net_test(timeout, python, env):
     trace_b = guest_b_serial.read_text(errors="replace") if guest_b_serial.exists() else ""
     if (isolation_marker not in trace
             or any(marker not in trace for marker in dhcp_markers)
+            or dns_marker not in trace
             or seal_marker not in trace
             or msg_tx_marker not in trace
             or seal_marker not in trace_b):
@@ -1356,7 +1384,7 @@ def integrated_net_test(timeout, python, env):
         )
     print(
         f"Integrated VirtIO network: PASS; Personal OS isolation completed with "
-        f"dhcp_client DHCP, Messages sealed TX, toy router → guest B SEAL OK, "
+        f"dhcp_client DHCP, DNS OK, Messages sealed TX, toy router → guest B SEAL OK, "
         f"UDP echo, TCP echo, and guest A SEAL OK; serial saved to {serial_log}"
     )
 

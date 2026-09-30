@@ -51,6 +51,14 @@
 #define LWIP_DHCP                       1
 
 /**
+ * Guest DNS client for ./dev test-net (host stub on UDP DNS_SERVER_PORT).
+ */
+#define LWIP_DNS                        1
+#define LWIP_DNS_SECURE                 0
+/* Host dns_stub.py listens here; avoid UDP/53 and macOS mDNS 5353. */
+#define DNS_SERVER_PORT                 53535
+
+/**
  * Should be set to the alignment of the CPU.
  */
 #define MEM_ALIGNMENT                   4
@@ -185,7 +193,7 @@
 #define MEMP_NUM_PBUF (TCP_ECHO_MAX_CONNS * TCP_SND_QUEUELEN) /* (TCP sender buffer space (pbufs)) */
 
 /**
- * DHCP plus UDP echo (1235), sealed demo (1236), and TX pcb.
+ * DHCP plus UDP echo (1235), sealed demo (1236), TX pcb, and DNS client pcb.
  */
 #define MEMP_NUM_UDP_PCB 8
 

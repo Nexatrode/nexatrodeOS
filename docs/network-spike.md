@@ -10,11 +10,12 @@
 
 2. **Integrated** — builds the serial-free fragment under [`tests/net/`](../tests/net/)
    and merges it into Personal OS. The merged guest proves isolation + DHCP +
-   UDP echo on **1235** + host→guest TCP echo on **1238** + host→guest PSL1
-   `SEAL OK` on **1236**, plus Messages→`dhcp_client` sealed TX to the host on
-   **1237**. A second QEMU (fragment-only guest B) receives that datagram via
-   [`toy_router.py`](../tests/net/toy_router.py) (`1237` → hostfwd `1246` →
-   guest B `:1236`) and must also print `SEAL OK`. Artifacts:
+   `DNS OK` (lwIP client → host [`dns_stub.py`](../tests/net/dns_stub.py) on UDP
+   **53535**) + UDP echo on **1235** + host→guest TCP echo on **1238** +
+   host→guest PSL1 `SEAL OK` on **1236**, plus Messages→`dhcp_client` sealed TX
+   to the host on **1237**. A second QEMU (fragment-only guest B) receives that
+   datagram via [`toy_router.py`](../tests/net/toy_router.py) (`1237` → hostfwd
+   `1246` → guest B `:1236`) and must also print `SEAL OK`. Artifacts:
    `build/sddf-net-spike/net-system.system`, `net-system-serial.log`,
    `guest-b-serial.log`.
 
@@ -47,6 +48,14 @@ Host helper [`tests/net/seal_host`](../tests/net/seal_host) /
 [`seal_packet.py`](../tests/net/seal_packet.py) emits the datagram;
 [`psl1_demo_packet.h`](../tests/net/include/psl1_demo_packet.h) locks guest
 `memcmp`. Port **1235** stays pure UDP echo; port **1238** is TCP echo.
+
+## DNS smoke (non-production)
+
+After DHCP, `dhcp_client` points lwIP at `10.0.2.2` and resolves
+`personal-os.test` → `10.0.2.2`, printing `DNS OK`. The host stub listens on
+UDP **53535** (`DNS_SERVER_PORT` in lwipopts) so CI does not need privileged
+port 53 and does not collide with macOS mDNS on 5353. This is offline-friendly
+and does not use the public Internet.
 
 ## Toy LAN router
 
@@ -96,25 +105,27 @@ guest A can address guest B directly.
   QEMU layout, or graphics+net attempted in one VM (`timer_driver` name clash).
   Fall back to QEMU + `toy_router`; do not block U5 apps on this experiment.
 
-DNS/TLS remain later U6 work. The sealed TX peer IP/port is already on the
-shared `messages_net_tx` page (demo default `10.0.2.2:1237`).
+The sealed TX peer IP/port is already on the shared `messages_net_tx` page
+(demo default `10.0.2.2:1237`). Guest TLS (mbedtls / lwIP altcp) is still later.
 
 ## What passed
 
 - Standalone: both echo clients DHCP + UDP echo through SLIRP.
-- Integrated: isolation, DHCP, Messages `MSG NET TX`, toy router → guest B
-  `SEAL OK`, host UDP echo on 1235, host TCP echo on 1238, guest A `SEAL OK`
-  on 1236.
+- Integrated: isolation, DHCP, `DNS OK`, Messages `MSG NET TX`, toy router →
+  guest B `SEAL OK`, host UDP echo on 1235, host TCP echo on 1238, guest A
+  `SEAL OK` on 1236.
 
 ## Limits
 
 - Emulated Ethernet / NAT is not Mac Wi‑Fi and not a Pixel radio.
 - Graphics+input+net still collide on the shared `timer_driver` name.
 - Dual-UTM shared LAN is documented as a manual sketch; not part of CI.
+- No guest TLS yet (needs an embedded TLS stack + cert story).
 - Fake modem / SMS / SimpleX are out of scope.
 
 ## Next
 
 1. Run the dual-UTM Shared Network experiment when convenient; record results here.
-2. DNS / TLS and fake modem / audio / camera backends as needed.
-3. Optional Messages UI / IPC to set peer IP without a rebuild (page fields already exist).
+2. Guest TLS smoke (mbedtls or similar over TCP) toward the explicit-contact path.
+3. Fake modem / audio / camera backends as needed.
+4. Optional Messages UI / IPC to set peer IP without a rebuild (page fields already exist).

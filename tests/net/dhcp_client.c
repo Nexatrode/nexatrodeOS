@@ -53,6 +53,7 @@ void netif_status_callback(char *ip_addr)
     /* Matches standalone echo_server wording so ./dev test-net can share markers. */
     sddf_printf("DHCP request finished, IP address for netif %s is: %s\n",
                 sddf_get_pd_name(), ip_addr);
+    start_dns_smoke();
     if (pending_messages_tx && send_messages_datagram() == 0) {
         pending_messages_tx = false;
     }
