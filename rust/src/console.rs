@@ -19,10 +19,13 @@ const REQUEST_CONSOLE_STATUS: MessageLabel = 0x202;
 const REQUEST_CONSOLE_CRASH: MessageLabel = 0x203;
 const REQUEST_CONSOLE_NETPEER: MessageLabel = 0x205;
 const REQUEST_CONSOLE_NETSEAL: MessageLabel = 0x206;
+const REQUEST_CONSOLE_MODEMRING: MessageLabel = 0x207;
+const REQUEST_CONSOLE_MODEMSMS: MessageLabel = 0x208;
 const REQUEST_CLOCK_STATUS: MessageLabel = 0x204;
 const REPLY_OK: MessageLabel = 0x100;
 const REPLY_OVERFLOW: MessageLabel = 0x102;
 const REPLY_NO_NET: MessageLabel = 0x412;
+const MODEM_SMS_MAX: usize = 16;
 
 const UART_DR: usize = 0x00;
 const UART_FR: usize = 0x18;
@@ -170,6 +173,50 @@ impl Console {
         debug_print!("sealed demo handed to dhcp_client\r\n");
     }
 
+    fn request_modemring() {
+        let reply = CLIENT_CALL.pp_call(MessageInfo::new(REQUEST_CONSOLE_MODEMRING, 0));
+        if reply.label() != REPLY_OK || reply.count() != 0 {
+            Self::print_reply_error(reply);
+            return;
+        }
+        debug_print!("modem ring injected\r\n");
+    }
+
+    fn request_modemsms(argument: &[u8]) {
+        let mut cursor = 0;
+        Self::skip_spaces(argument, &mut cursor);
+        let start = cursor;
+        while let Some(byte) = argument.get(cursor).copied() {
+            if !(byte.is_ascii_alphanumeric()) {
+                break;
+            }
+            cursor += 1;
+        }
+        let body = &argument[start..cursor];
+        Self::skip_spaces(argument, &mut cursor);
+        if body.is_empty() || body.len() > MODEM_SMS_MAX || cursor != argument.len() {
+            debug_print!("usage: modemsms BODY  (1-16 alphanumeric)\r\n");
+            return;
+        }
+        let mut words = [0u8; MODEM_SMS_MAX];
+        words[..body.len()].copy_from_slice(body);
+        set_mr(0, body.len() as MessageRegisterValue);
+        set_mr(
+            1,
+            u64::from_le_bytes(words[..8].try_into().unwrap()) as MessageRegisterValue,
+        );
+        set_mr(
+            2,
+            u64::from_le_bytes(words[8..].try_into().unwrap()) as MessageRegisterValue,
+        );
+        let reply = CLIENT_CALL.pp_call(MessageInfo::new(REQUEST_CONSOLE_MODEMSMS, 3));
+        if reply.label() != REPLY_OK || reply.count() != 0 {
+            Self::print_reply_error(reply);
+            return;
+        }
+        debug_print!("modem SMS injected\r\n");
+    }
+
     fn parse_octet(input: &[u8], cursor: &mut usize) -> Option<u8> {
         let mut parsed: u32 = 0;
         let mut found_digit = false;
@@ -290,7 +337,9 @@ impl Console {
                  calc A + B    add two unsigned integers in the isolated service\r\n\
                  crash         restart the isolated fault demonstration\r\n\
                  netpeer A.B.C.D:PORT  lock Messages sealed-TX peer (merged net image)\r\n\
-                 netseal       send the fixed PSL1 demo to the locked/default peer\r\n"
+                 netseal       send the fixed PSL1 demo to the locked/default peer\r\n\
+                 modemring     inject a fake incoming call ring\r\n\
+                 modemsms BODY inject a fake SMS (1-16 alphanumeric)\r\n"
             );
         } else if input == b"status" {
             Self::print_status();
@@ -305,6 +354,13 @@ impl Console {
             Self::request_netpeer(&input[8..]);
         } else if input == b"netseal" {
             Self::request_netseal();
+        } else if input == b"modemring" {
+            Self::request_modemring();
+        } else if input.len() >= 9
+            && &input[..8] == b"modemsms"
+            && matches!(input[8], b' ' | b'\t')
+        {
+            Self::request_modemsms(&input[9..]);
         } else {
             debug_print!("unknown command; enter help\r\n");
         }

@@ -36,7 +36,8 @@ UTM does **not** replace Pixel boot, GENI UART, Wi‑Fi, modem, or power.
 
 ## Still later on UTM
 
-- Fake modem / camera backends
+- Dialer UI / Settings alert counts on top of [modem-spike.md](modem-spike.md)
+- Camera backends
 - Graphics + net in one image (`timer_driver` name clash)
 - Real notification delivery (Settings currently shows `NO ALERTS YET`)
 - Production TLS/PKI beyond the test-net TOFU smoke

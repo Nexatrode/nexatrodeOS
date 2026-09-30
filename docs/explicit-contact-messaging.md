@@ -81,7 +81,7 @@ See [utm-vs-hardware.md](utm-vs-hardware.md#messaging-and-simplex-chat-long-term
 | Stage | Work |
 | --- | --- |
 | U5 | Contacts optional key-fingerprint field (PCT2, hex stub) done; Messages peer-key shell with vaulted PMS2 peers + local PSL1 sealed stubs on Home |
-| U6 | VirtIO Ethernet + Personal OS merge + Messages→dhcp_client sealed TX (demo UDP + UI compose UDP/TLS) + host toy router + DNS + TLS 1.2 ECDHE-ECDSA TOFU smoke (`./dev test-net`); `utm-net` dual-UTM Shared Network bundles + console `netpeer`/`netseal`; next: record dual-UTM results / fake modem |
+| U6 | VirtIO Ethernet + Personal OS merge + Messages→dhcp_client sealed TX (demo UDP + UI compose UDP/TLS) + host toy router + DNS + TLS 1.2 ECDHE-ECDSA TOFU smoke (`./dev test-net`); `utm-net` dual-UTM Shared Network + `SEAL OK`; serial fake modem stub ([modem-spike.md](modem-spike.md)) |
 | U7 | Key lifecycle, backup of key material, threat notes |
 | Pixel P3+ | Same client over real IP; still not MSISDN-as-identity |
 | Later | Voice/video; replace or federate the central router |

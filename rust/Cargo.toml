@@ -60,6 +60,12 @@ test = false
 bench = false
 
 [[bin]]
+name = "rust_fake_modem"
+path = "src/fake_modem.rs"
+test = false
+bench = false
+
+[[bin]]
 name = "rust_input_service"
 path = "src/input_service.rs"
 test = false

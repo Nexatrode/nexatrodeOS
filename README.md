@@ -35,7 +35,7 @@ The guest first prints twenty-five ordered supervisor checks and eight
 namespace-specific assertions, ending with:
 
 ```text
-ISOLATION COMPLETE: 27 checks passed; crasher stopped, services alive
+ISOLATION COMPLETE: 28 checks passed; crasher stopped, services alive
 ```
 
 It then starts a keyboard-driven serial console. Enter `help`, `status`,

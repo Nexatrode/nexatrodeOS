@@ -88,6 +88,10 @@
         <map mr="rng_mmio" vaddr="0x52000000" perms="rw" cached="false" setvar_vaddr="rng_regs" />
         <map mr="rng_dma" vaddr="0x53000000" perms="rw" cached="false" setvar_vaddr="rng_dma" />
     </protection_domain>
+    <!-- Carrier telephony stub for U6; no MMIO. Only the supervisor holds the channel. -->
+    <protection_domain name="fake_modem" priority="102" passive="true">
+        <program_image path="rust_fake_modem.elf" />
+    </protection_domain>
     <protection_domain name="console" priority="96" budget="3_000" period="10_000">
         <program_image path="rust_console.elf" />
         <map mr="uart0" vaddr="0x51000000" perms="rw" cached="false" setvar_vaddr="uart_regs" />
@@ -173,5 +177,10 @@
     <channel>
         <end pd="entropy_rng" id="0" notify="false" />
         <end pd="client" id="9" pp="true" notify="false" />
+    </channel>
+    <!-- Only the supervisor can inject fake RING / SMS; apps have no modem endpoint. -->
+    <channel>
+        <end pd="fake_modem" id="0" notify="false" />
+        <end pd="client" id="12" pp="true" notify="false" />
     </channel>
 </system>

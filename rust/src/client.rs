@@ -2,11 +2,16 @@
 #![no_main]
 
 mod entropy_protocol;
+mod modem_protocol;
 mod vault_protocol;
 
 use entropy_protocol::{
     CLIENT_CHANNEL as ENTROPY_CHANNEL, REPLY_OK as ENTROPY_OK, REQUEST_BYTES as ENTROPY_REQUEST,
     SAMPLE_BYTES as ENTROPY_SAMPLE_BYTES,
+};
+use modem_protocol::{
+    CLIENT_CHANNEL as MODEM_CHANNEL, REPLY_BAD_REQUEST as MODEM_BAD, REPLY_OK as MODEM_OK,
+    REQUEST_RING as MODEM_RING, REQUEST_SMS as MODEM_SMS, SMS_MAX_BYTES,
 };
 use sel4::{Fault, UserContext};
 use sel4_microkit::{
@@ -40,6 +45,7 @@ const CLIENT_TO_CONSOLE: Channel = Channel::new(3);
 const CONSOLE_START_CRASHER: Channel = Channel::new(5);
 const CRASHER_CHILD: Child = Child::new(1);
 const ENTROPY: Channel = Channel::new(ENTROPY_CHANNEL);
+const MODEM: Channel = Channel::new(MODEM_CHANNEL);
 
 const REQUEST_ADD: MessageLabel = 1;
 const REQUEST_COUNT: MessageLabel = 2;
@@ -55,6 +61,8 @@ const REQUEST_CONSOLE_STATUS: MessageLabel = 0x202;
 const REQUEST_CONSOLE_CRASH: MessageLabel = 0x203;
 const REQUEST_CONSOLE_NETPEER: MessageLabel = 0x205;
 const REQUEST_CONSOLE_NETSEAL: MessageLabel = 0x206;
+const REQUEST_CONSOLE_MODEMRING: MessageLabel = 0x207;
+const REQUEST_CONSOLE_MODEMSMS: MessageLabel = 0x208;
 const REPLY_CONSOLE_ERROR: MessageLabel = 0x2ff;
 
 // seL4's AArch64 fault tag and VMFault message length.
@@ -148,6 +156,12 @@ impl Supervisor {
         self.record(entropy_passed, "QEMU VirtIO RNG delivers fresh samples");
         if entropy_passed {
             debug_println!("ENTROPY|PASS: four distinct 128-bit samples received");
+        }
+
+        let modem_passed = modem_smoke_test();
+        self.record(modem_passed, "fake modem accepts RING and SMS inject");
+        if modem_passed {
+            debug_println!("MODEM|PASS: RING and SMS inject accepted");
         }
 
         set_mr(0, 19);
@@ -452,8 +466,8 @@ impl Supervisor {
             );
             debug_println!(
                 "{}",
-                if self.failures == 0 && self.checks == 27 {
-                    "ISOLATION COMPLETE: 27 checks passed; crasher stopped, services alive"
+                if self.failures == 0 && self.checks == 28 {
+                    "ISOLATION COMPLETE: 28 checks passed; crasher stopped, services alive"
                 } else {
                     "FAIL: isolation checks failed"
                 }
@@ -528,6 +542,50 @@ fn entropy_smoke_test() -> bool {
         if samples[..index].contains(&samples[index]) {
             return false;
         }
+    }
+    true
+}
+
+fn pack_sms_body(body: &[u8]) -> Option<()> {
+    if body.is_empty() || body.len() > SMS_MAX_BYTES {
+        return None;
+    }
+    if !body.iter().all(|byte| byte.is_ascii_alphanumeric()) {
+        return None;
+    }
+    let mut words = [0u8; SMS_MAX_BYTES];
+    words[..body.len()].copy_from_slice(body);
+    set_mr(0, body.len() as MessageRegisterValue);
+    set_mr(
+        1,
+        u64::from_le_bytes(words[..8].try_into().ok()?) as MessageRegisterValue,
+    );
+    set_mr(
+        2,
+        u64::from_le_bytes(words[8..].try_into().ok()?) as MessageRegisterValue,
+    );
+    Some(())
+}
+
+fn modem_smoke_test() -> bool {
+    let ring = MODEM.pp_call(MessageInfo::new(MODEM_RING, 0));
+    if ring.label() != MODEM_OK || ring.count() != 0 {
+        return false;
+    }
+    if pack_sms_body(b"HELLO").is_none() {
+        return false;
+    }
+    let sms = MODEM.pp_call(MessageInfo::new(MODEM_SMS, 3));
+    if sms.label() != MODEM_OK || sms.count() != 0 {
+        return false;
+    }
+    // Empty length must be rejected.
+    set_mr(0, 0);
+    set_mr(1, 0);
+    set_mr(2, 0);
+    let bad = MODEM.pp_call(MessageInfo::new(MODEM_SMS, 3));
+    if bad.label() != MODEM_BAD {
+        return false;
     }
     true
 }
@@ -607,6 +665,20 @@ impl Handler for Supervisor {
             }
             if reply.label() == REPLY_NO_NET {
                 return Ok(MessageInfo::new(REPLY_NO_NET, 0));
+            }
+            return Ok(MessageInfo::new(REPLY_CONSOLE_ERROR, 0));
+        }
+        if operation == REQUEST_CONSOLE_MODEMRING && count == 0 {
+            let reply = MODEM.pp_call(MessageInfo::new(MODEM_RING, 0));
+            if reply.label() == MODEM_OK && reply.count() == 0 {
+                return Ok(MessageInfo::new(REPLY_OK, 0));
+            }
+            return Ok(MessageInfo::new(REPLY_CONSOLE_ERROR, 0));
+        }
+        if operation == REQUEST_CONSOLE_MODEMSMS && count == 3 {
+            let reply = MODEM.pp_call(MessageInfo::new(MODEM_SMS, 3));
+            if reply.label() == MODEM_OK && reply.count() == 0 {
+                return Ok(MessageInfo::new(REPLY_OK, 0));
             }
             return Ok(MessageInfo::new(REPLY_CONSOLE_ERROR, 0));
         }

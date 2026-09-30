@@ -163,11 +163,13 @@ compose).
   (SPICE-only serial); host `qemu -netdev vmnet-shared` needs privileges.
   Notes: `build/utm-net-experiment/README.txt`.
 - TLS smoke uses a demo self-signed pin + deterministic entropy — not production PKI.
-- Fake modem / SMS / SimpleX are out of scope.
+- Fake modem / SMS / SimpleX are out of scope for `test-net`. Serial-image
+  carrier stub: [modem-spike.md](modem-spike.md) (`modemring` / `modemsms`).
 
 ## Next
 
 1. Dual-UTM Shared Network manual `SEAL OK` recorded (2026-09-29). Optional:
    script serial I/O if UTM gains attach, or privilege-capable vmnet harness.
-2. Fake modem / audio / camera backends as needed.
+2. Fake modem serial stub started ([modem-spike.md](modem-spike.md)); next:
+   Settings/alerts surface or dialer UI as needed.
 3. Production TLS/PKI (real entropy, clock, pin UX) when leaving smoke territory.

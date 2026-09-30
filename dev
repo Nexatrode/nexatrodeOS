@@ -144,7 +144,7 @@ def build(budget_pressure=False):
     run(cargo_build + ["--bins"], cwd=ROOT / "rust", env=rust_env)
     for component in ["rust_server", "rust_crasher", "rust_clock", "rust_client",
                       "rust_console", "rust_vault", "rust_vault_disk",
-                      "rust_entropy_rng", "rust_input_service",
+                      "rust_entropy_rng", "rust_fake_modem", "rust_input_service",
                       "rust_vault_test_client", "rust_vault_notes_test",
                       "rust_vault_contacts_test", "rust_calculator_app",
                       "rust_calendar_app", "rust_messages_app", "rust_settings_app"]:
@@ -965,7 +965,7 @@ def integrated_graphics_test(timeout, gpu_build, expected_pixels, converter):
                                 width = height = 0
                             if (width == 300 and height == 400 and
                                     parts[3] == expected_pixels and
-                                    "ISOLATION COMPLETE: 27 checks passed" in
+                                    "ISOLATION COMPLETE: 28 checks passed" in
                                     (serial_log.read_text(errors="replace") if serial_log.exists() else "")):
                                 shutil.copy2(frame_path, screenshot)
                                 rendered = True
@@ -985,7 +985,7 @@ def integrated_graphics_test(timeout, gpu_build, expected_pixels, converter):
         qmp_path.unlink(missing_ok=True)
 
     trace = serial_log.read_text(errors="replace") if serial_log.exists() else ""
-    if "ISOLATION COMPLETE: 27 checks passed" not in trace:
+    if "ISOLATION COMPLETE: 28 checks passed" not in trace:
         raise RuntimeError(f"Regular OS checks did not finish; inspect {serial_log}")
     if "PD 'timer_driver' is now passive!" not in trace:
         raise RuntimeError(f"Integrated GPU timer service did not start; inspect {serial_log}")
@@ -1237,7 +1237,7 @@ def integrated_net_test(timeout, python, env):
         "DHCP request finished",
         "10.0.2.15",
     )
-    isolation_marker = "ISOLATION COMPLETE: 27 checks passed"
+    isolation_marker = "ISOLATION COMPLETE: 28 checks passed"
     seal_marker = "SEAL OK"
     msg_tx_marker = "MSG NET TX"
     dns_marker = "DNS OK"
@@ -1730,7 +1730,7 @@ def verify_input_text_cold_boot(qemu_command, gpu_build, expected_pixels, timeou
                     if "faulting PD:" in trace or "Failed assertion" in trace or "MON|ERROR" in trace:
                         raise RuntimeError(f"QEMU cold-boot persistence run faulted; inspect {reboot_serial}")
                     if ("UIINPUT|READY:" in trace and
-                            "ISOLATION COMPLETE: 27 checks passed" in trace):
+                            "ISOLATION COMPLETE: 28 checks passed" in trace):
                         break
                     time.sleep(0.05)
                 else:
@@ -1830,7 +1830,7 @@ def verify_input_text_cold_boot(qemu_command, gpu_build, expected_pixels, timeou
         reboot_qmp.unlink(missing_ok=True)
 
     trace = reboot_serial.read_text(errors="replace") if reboot_serial.exists() else ""
-    if "ISOLATION COMPLETE: 27 checks passed" not in trace or "FAIL:" in trace:
+    if "ISOLATION COMPLETE: 28 checks passed" not in trace or "FAIL:" in trace:
         raise RuntimeError(f"QEMU cold-boot persistence run failed; inspect {reboot_serial}")
 
 
@@ -2231,7 +2231,7 @@ def input_test(timeout):
                         raise RuntimeError(f"Input integration guest faulted; inspect {serial_log}")
                     ready = (
                         "UIINPUT|READY:" in trace and
-                        "ISOLATION COMPLETE: 27 checks passed" in trace
+                        "ISOLATION COMPLETE: 28 checks passed" in trace
                     )
                     if ready:
                         break
@@ -2723,7 +2723,7 @@ def input_test(timeout):
         qmp_path.unlink(missing_ok=True)
 
     trace = serial_log.read_text(errors="replace") if serial_log.exists() else ""
-    if "ISOLATION COMPLETE: 27 checks passed" not in trace:
+    if "ISOLATION COMPLETE: 28 checks passed" not in trace:
         raise RuntimeError(f"Regular OS checks did not finish; inspect {serial_log}")
     expected_frames = {
         ("none", ""), ("notes", ""), ("notes", "A"),
@@ -3149,6 +3149,8 @@ def test(timeout, reset_disk=True, disk_image=TEST_DISK, prepare_disk=None,
         "ENTROPY|READY: QEMU VirtIO RNG initialized",
         "PASS: QEMU VirtIO RNG delivers fresh samples",
         "ENTROPY|PASS: four distinct 128-bit samples received",
+        "PASS: fake modem accepts RING and SMS inject",
+        "MODEM|PASS: RING and SMS inject accepted",
         "PASS: Rust server computes 19 + 23 = 42",
         "PASS: Rust server rejects missing operands",
         "PASS: Rust server rejects unknown operation",
@@ -3189,7 +3191,7 @@ def test(timeout, reset_disk=True, disk_image=TEST_DISK, prepare_disk=None,
         "PASS: vault record unchanged after denied child write",
         "PASS: independent server computes 100 + 23 after fault",
         "PASS: independent server state advances after fault",
-        "ISOLATION COMPLETE: 27 checks passed; crasher stopped, services alive",
+        "ISOLATION COMPLETE: 28 checks passed; crasher stopped, services alive",
     ]
     namespace_markers = [
         "NAMESPACE|NOTES|PASS: reads its own namespace",
