@@ -226,14 +226,13 @@ pub const fn touch_navigation_action(x: u32, y: u32) -> Option<NavigationAction>
     }
 }
 
-/// Map the visible Calculator keypad to ordinary app key events. Gaps and
-/// padding do not produce input, and the router calls this only for Calculator.
-pub const fn touch_calculator_action(focus: FocusTarget, x: u32, y: u32) -> Option<u16> {
-    if !matches!(focus, FocusTarget::Calculator) || x < 16 || x >= 284 {
+/// Shared digit-pad geometry used by Calculator and Phone.
+const fn touch_digit_pad_cell(x: u32, y: u32) -> Option<(u32, u32)> {
+    if x < 16 || x >= 284 {
         return None;
     }
     if x < 277 && y >= 330 && y < 352 {
-        return Some(KEY_F5);
+        return Some((4, 0));
     }
     let row = if y >= 226 && y < 248 {
         0
@@ -251,7 +250,20 @@ pub const fn touch_calculator_action(focus: FocusTarget, x: u32, y: u32) -> Opti
     if column >= 4 || within >= 60 {
         return None;
     }
+    Some((row, column))
+}
+
+/// Map the visible Calculator keypad to ordinary app key events. Gaps and
+/// padding do not produce input, and the router calls this only for Calculator.
+pub const fn touch_calculator_action(focus: FocusTarget, x: u32, y: u32) -> Option<u16> {
+    if !matches!(focus, FocusTarget::Calculator) {
+        return None;
+    }
+    let Some((row, column)) = touch_digit_pad_cell(x, y) else {
+        return None;
+    };
     match row {
+        4 => Some(KEY_F5),
         0 => match column {
             0 => Some(8),
             1 => Some(9),
@@ -278,6 +290,45 @@ pub const fn touch_calculator_action(focus: FocusTarget, x: u32, y: u32) -> Opti
             1 => Some(KEY_F7),
             2 => Some(KEY_F6),
             3 => Some(KEY_F1),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Map the Phone digit pad: digits, DEL, CLR, and CALL. Right-column operator
+/// faces are blank and produce no events.
+pub const fn touch_phone_action(focus: FocusTarget, x: u32, y: u32) -> Option<u16> {
+    if !matches!(focus, FocusTarget::Phone) {
+        return None;
+    }
+    let Some((row, column)) = touch_digit_pad_cell(x, y) else {
+        return None;
+    };
+    match row {
+        4 => Some(KEY_F5),
+        0 => match column {
+            0 => Some(8),
+            1 => Some(9),
+            2 => Some(10),
+            _ => None,
+        },
+        1 => match column {
+            0 => Some(5),
+            1 => Some(6),
+            2 => Some(7),
+            _ => None,
+        },
+        2 => match column {
+            0 => Some(2),
+            1 => Some(3),
+            2 => Some(4),
+            _ => None,
+        },
+        3 => match column {
+            0 => Some(11),
+            1 => Some(KEY_F7),
+            2 => Some(KEY_F6),
             _ => None,
         },
         _ => None,
@@ -717,6 +768,26 @@ mod tests {
             touch_calculator_action(FocusTarget::Calculator, 150, 356),
             None
         );
+    }
+
+    #[test]
+    fn phone_touch_maps_digits_del_clr_and_call() {
+        assert_eq!(touch_phone_action(FocusTarget::Phone, 30, 237), Some(8));
+        assert_eq!(touch_phone_action(FocusTarget::Phone, 113, 263), Some(6));
+        assert_eq!(touch_phone_action(FocusTarget::Phone, 245, 237), None);
+        assert_eq!(
+            touch_phone_action(FocusTarget::Phone, 97, 315),
+            Some(KEY_F7)
+        );
+        assert_eq!(
+            touch_phone_action(FocusTarget::Phone, 180, 315),
+            Some(KEY_F6)
+        );
+        assert_eq!(
+            touch_phone_action(FocusTarget::Phone, 150, 341),
+            Some(KEY_F5)
+        );
+        assert_eq!(touch_phone_action(FocusTarget::Calculator, 150, 341), None);
     }
 
     #[test]

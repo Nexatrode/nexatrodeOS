@@ -2068,6 +2068,8 @@ def input_test(timeout, build_only=False):
         ("messages", "COMPOSE KEY BE12CD34\nHI"),
         ("messages", "- KEY BE12CD34\n  SEALED 1"),
         ("phone", "ALERT\nRING 1\nSMS 1"),
+        ("phone", "DIAL\n5551234\nRING 1 SMS 1"),
+        ("phone", "CALLING\n5551234\nRING 1 SMS 1"),
         ("settings", "LOCAL ONLY\nVAULT LOCAL\nNO NET YET\nALERTS RING 1 SMS 1"),
     ]
     for focus, app_text in frame_cases:
@@ -2187,7 +2189,7 @@ def input_test(timeout, build_only=False):
     run([tool("rustc"), "--edition=2024", "--test",
          ROOT / "tests" / "input" / "phone_model_test.rs", "-o", phone_test])
     run([phone_test])
-    print("Phone model: PASS; fake-modem alert copy verified")
+    print("Phone model: PASS; dial pad, MODEM|CALL, and fake-modem alerts verified")
     protocol_test = gpu_build / "input-protocol-test"
     run([tool("rustc"), "--edition=2024", "--test",
          ROOT / "tests" / "input" / "protocol_test.rs", "-o", protocol_test])
@@ -2818,6 +2820,30 @@ def input_test(timeout, build_only=False):
                 wait_for_frame("none")
                 tap_pixel(80, 206)  # Open Phone from the launcher.
                 wait_for_frame("phone", "ALERT\nRING 1\nSMS 1")
+                tap_pixel(113, 263)  # 5
+                tap_pixel(113, 263)  # 5
+                tap_pixel(113, 263)  # 5
+                tap_pixel(30, 289)    # 1
+                tap_pixel(97, 289)   # 2
+                tap_pixel(164, 289)  # 3
+                tap_pixel(30, 263)    # 4
+                wait_for_frame("phone", "DIAL\n5551234\nRING 1 SMS 1")
+                tap_pixel(150, 341)  # CALL
+                wait_for_log("MODEM|CALL|5551234")
+                wait_for_frame("phone", "CALLING\n5551234\nRING 1 SMS 1")
+                for key in ("5", "5", "5", "1", "2", "3", "4"):
+                    qmp_execute(stream, "send-key", {
+                        "keys": [{"type": "qcode", "data": key}], "hold-time": 150,
+                    })
+                # Physical digits after CALLING start a fresh dial buffer.
+                wait_for_frame("phone", "DIAL\n5551234\nRING 1 SMS 1")
+                qmp_execute(stream, "send-key", {
+                    "keys": [{"type": "qcode", "data": "ret"}], "hold-time": 150,
+                })
+                wait_for_log_count("MODEM|CALL|5551234", 2)
+                wait_for_frame("phone", "CALLING\n5551234\nRING 1 SMS 1")
+                tap_pixel(180, 315)  # CLR
+                wait_for_frame("phone", "ALERT\nRING 1\nSMS 1")
                 tap_pixel(30, 24)
                 wait_for_frame("none")
                 tap_pixel(220, 206)  # Open Settings from the launcher.
@@ -2882,6 +2908,8 @@ def input_test(timeout, build_only=False):
                         ("messages", "COMPOSE KEY BE12CD34\nHI"),
                         ("messages", "- KEY BE12CD34\n  SEALED 1"),
                         ("phone", "ALERT\nRING 1\nSMS 1"),
+                        ("phone", "DIAL\n5551234\nRING 1 SMS 1"),
+                        ("phone", "CALLING\n5551234\nRING 1 SMS 1"),
         ("settings", "LOCAL ONLY\nVAULT LOCAL\nNO NET YET\nALERTS RING 1 SMS 1"),
                     }
                     expected_frames.update(multi_note_frame_keys)
@@ -2943,6 +2971,8 @@ def input_test(timeout, build_only=False):
         ("messages", "COMPOSE KEY BE12CD34\nHI"),
         ("messages", "- KEY BE12CD34\n  SEALED 1"),
         ("phone", "ALERT\nRING 1\nSMS 1"),
+        ("phone", "DIAL\n5551234\nRING 1 SMS 1"),
+        ("phone", "CALLING\n5551234\nRING 1 SMS 1"),
         ("settings", "LOCAL ONLY\nVAULT LOCAL\nNO NET YET\nALERTS RING 1 SMS 1"),
     }
     expected_frames.update(multi_note_frame_keys)
@@ -3419,8 +3449,8 @@ def test(timeout, reset_disk=True, disk_image=TEST_DISK, prepare_disk=None,
         "ENTROPY|READY: QEMU VirtIO RNG initialized",
         "PASS: QEMU VirtIO RNG delivers fresh samples",
         "ENTROPY|PASS: four distinct 128-bit samples received",
-        "PASS: fake modem accepts RING and SMS inject",
-        "MODEM|PASS: RING and SMS inject accepted",
+        "PASS: fake modem accepts RING and SMS inject; DIAL blocked on supervisor",
+        "MODEM|PASS: RING and SMS inject accepted; DIAL blocked on supervisor",
         "PASS: Rust server computes 19 + 23 = 42",
         "PASS: Rust server rejects missing operands",
         "PASS: Rust server rejects unknown operation",

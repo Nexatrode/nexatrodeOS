@@ -12,8 +12,9 @@ use entropy_protocol::{
     SAMPLE_BYTES as ENTROPY_SAMPLE_BYTES,
 };
 use modem_protocol::{
-    CLIENT_CHANNEL as MODEM_CHANNEL, REPLY_BAD_REQUEST as MODEM_BAD, REPLY_OK as MODEM_OK,
-    REQUEST_RING as MODEM_RING, REQUEST_SMS as MODEM_SMS, SMS_MAX_BYTES,
+    CLIENT_CHANNEL as MODEM_CHANNEL, DIAL_MAX_BYTES, REPLY_BAD_REQUEST as MODEM_BAD,
+    REPLY_OK as MODEM_OK, REQUEST_DIAL as MODEM_DIAL, REQUEST_RING as MODEM_RING,
+    REQUEST_SMS as MODEM_SMS, SMS_MAX_BYTES,
 };
 use phone_protocol::{
     CLIENT_CHANNEL as PHONE_CHANNEL, REPLY_OK as PHONE_OK,
@@ -188,9 +189,9 @@ impl Supervisor {
         }
 
         let modem_passed = modem_smoke_test();
-        self.record(modem_passed, "fake modem accepts RING and SMS inject");
+        self.record(modem_passed, "fake modem accepts RING and SMS inject; DIAL blocked on supervisor");
         if modem_passed {
-            debug_println!("MODEM|PASS: RING and SMS inject accepted");
+            debug_println!("MODEM|PASS: RING and SMS inject accepted; DIAL blocked on supervisor");
             self.modem_rings = 1;
             self.modem_sms = 1;
         }
@@ -608,6 +609,27 @@ fn pack_sms_body(body: &[u8]) -> Option<()> {
     Some(())
 }
 
+fn pack_dial_digits(digits: &[u8]) -> Option<()> {
+    if digits.is_empty() || digits.len() > DIAL_MAX_BYTES {
+        return None;
+    }
+    if !digits.iter().all(|byte| (b'0'..=b'9').contains(byte)) {
+        return None;
+    }
+    let mut words = [0u8; DIAL_MAX_BYTES];
+    words[..digits.len()].copy_from_slice(digits);
+    set_mr(0, digits.len() as MessageRegisterValue);
+    set_mr(
+        1,
+        u64::from_le_bytes(words[..8].try_into().ok()?) as MessageRegisterValue,
+    );
+    set_mr(
+        2,
+        u64::from_le_bytes(words[8..].try_into().ok()?) as MessageRegisterValue,
+    );
+    Some(())
+}
+
 fn modem_smoke_test() -> bool {
     let ring = MODEM.pp_call(MessageInfo::new(MODEM_RING, 0));
     if ring.label() != MODEM_OK || ring.count() != 0 {
@@ -626,6 +648,14 @@ fn modem_smoke_test() -> bool {
     set_mr(2, 0);
     let bad = MODEM.pp_call(MessageInfo::new(MODEM_SMS, 3));
     if bad.label() != MODEM_BAD {
+        return false;
+    }
+    // Supervisor must not be able to dial on the RING/SMS endpoint.
+    if pack_dial_digits(b"5551234").is_none() {
+        return false;
+    }
+    let dial_on_supervisor = MODEM.pp_call(MessageInfo::new(MODEM_DIAL, 3));
+    if dial_on_supervisor.label() != MODEM_BAD {
         return false;
     }
     true

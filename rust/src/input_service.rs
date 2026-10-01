@@ -16,7 +16,7 @@ use input_protocol::{
     REQUEST_ROUTED_EVENT, SYN_REPORT, UiPointerState, focus_value, next_focus_target,
     onscreen_key_code, onscreen_keyboard_area, tablet_axis_to_pixel, touch_calculator_action,
     touch_contacts_action, touch_focus_target, touch_navigation_action, touch_notes_action,
-    touch_notes_list_action, valid_event,
+    touch_notes_list_action, touch_phone_action, valid_event,
 };
 use sel4_microkit::{
     Channel, ChannelSet, Handler, Infallible, MessageInfo, MessageRegisterValue, debug_println,
@@ -30,6 +30,7 @@ const GPU_FOCUS_NOTIFICATION: Channel = Channel::new(4);
 const CALCULATOR_INPUT: Channel = Channel::new(5);
 const CALENDAR_INPUT: Channel = Channel::new(6);
 const MESSAGES_INPUT: Channel = Channel::new(7);
+const PHONE_INPUT: Channel = Channel::new(8);
 
 #[protection_domain]
 fn init() -> InputService {
@@ -216,6 +217,8 @@ impl InputService {
                     let pixel_y = tablet_axis_to_pixel(y, DISPLAY_HEIGHT);
                     let code = if self.focus == FocusTarget::Calculator {
                         touch_calculator_action(self.focus, pixel_x, pixel_y)
+                    } else if self.focus == FocusTarget::Phone {
+                        touch_phone_action(self.focus, pixel_x, pixel_y)
                     } else {
                         onscreen_key_code(pixel_x, pixel_y)
                     };
@@ -310,9 +313,10 @@ impl InputService {
             FocusTarget::Calculator => CALCULATOR_INPUT,
             FocusTarget::Calendar => CALENDAR_INPUT,
             FocusTarget::Messages => MESSAGES_INPUT,
+            FocusTarget::Phone => PHONE_INPUT,
             // Clock and Settings are read-only snapshots; no app endpoint
             // receives their input events.
-            FocusTarget::Clock | FocusTarget::Settings | FocusTarget::Phone => return,
+            FocusTarget::Clock | FocusTarget::Settings => return,
         };
 
         self.next_sequence = self.next_sequence.saturating_add(1);

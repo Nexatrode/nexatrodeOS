@@ -4,14 +4,16 @@
 mod modem_protocol;
 
 use modem_protocol::{
-    REPLY_BAD_REQUEST, REPLY_OK, REQUEST_RING, REQUEST_SMS, SMS_MAX_BYTES,
+    DIAL_MAX_BYTES, REPLY_BAD_REQUEST, REPLY_OK, REQUEST_DIAL, REQUEST_RING, REQUEST_SMS,
+    SMS_MAX_BYTES,
 };
 use sel4_microkit::{
     Channel, ChannelSet, Handler, Infallible, MessageInfo, MessageRegisterValue, debug_print,
     debug_println, get_mr, protection_domain,
 };
 
-const CLIENT_CHANNEL: Channel = Channel::new(0);
+const SUPERVISOR_CHANNEL: Channel = Channel::new(0);
+const PHONE_CHANNEL: Channel = Channel::new(1);
 
 #[protection_domain]
 fn init() -> FakeModem {
@@ -19,12 +21,14 @@ fn init() -> FakeModem {
     FakeModem {
         rings: 0,
         sms_count: 0,
+        calls: 0,
     }
 }
 
 struct FakeModem {
     rings: MessageRegisterValue,
     sms_count: MessageRegisterValue,
+    calls: MessageRegisterValue,
 }
 
 impl FakeModem {
@@ -60,6 +64,33 @@ impl FakeModem {
         debug_println!();
         MessageInfo::new(REPLY_OK, 0)
     }
+
+    fn handle_dial(&mut self, request: MessageInfo) -> MessageInfo {
+        if request.count() != 3 {
+            return MessageInfo::new(REPLY_BAD_REQUEST, 0);
+        }
+        let length = get_mr(0) as usize;
+        if length == 0 || length > DIAL_MAX_BYTES {
+            return MessageInfo::new(REPLY_BAD_REQUEST, 0);
+        }
+        let mut digits = [0u8; DIAL_MAX_BYTES];
+        let first = get_mr(1).to_le_bytes();
+        let second = get_mr(2).to_le_bytes();
+        digits[..8].copy_from_slice(&first);
+        digits[8..].copy_from_slice(&second);
+        for byte in &digits[..length] {
+            if !(b'0'..=b'9').contains(byte) {
+                return MessageInfo::new(REPLY_BAD_REQUEST, 0);
+            }
+        }
+        self.calls = self.calls.wrapping_add(1);
+        debug_print!("MODEM|CALL|");
+        for byte in &digits[..length] {
+            debug_print!("{}", *byte as char);
+        }
+        debug_println!();
+        MessageInfo::new(REPLY_OK, 0)
+    }
 }
 
 impl Handler for FakeModem {
@@ -75,13 +106,19 @@ impl Handler for FakeModem {
         channel: Channel,
         request: MessageInfo,
     ) -> Result<MessageInfo, Self::Error> {
-        if channel != CLIENT_CHANNEL {
-            return Ok(MessageInfo::new(REPLY_BAD_REQUEST, 0));
+        if channel == SUPERVISOR_CHANNEL {
+            return Ok(match request.label() {
+                REQUEST_RING if request.count() == 0 => self.handle_ring(),
+                REQUEST_SMS => self.handle_sms(request),
+                _ => MessageInfo::new(REPLY_BAD_REQUEST, 0),
+            });
         }
-        Ok(match request.label() {
-            REQUEST_RING if request.count() == 0 => self.handle_ring(),
-            REQUEST_SMS => self.handle_sms(request),
-            _ => MessageInfo::new(REPLY_BAD_REQUEST, 0),
-        })
+        if channel == PHONE_CHANNEL {
+            return Ok(match request.label() {
+                REQUEST_DIAL => self.handle_dial(request),
+                _ => MessageInfo::new(REPLY_BAD_REQUEST, 0),
+            });
+        }
+        Ok(MessageInfo::new(REPLY_BAD_REQUEST, 0))
     }
 }

@@ -41,7 +41,6 @@ UTM does **not** replace Pixel boot, GENI UART, Wi‑Fi, modem, or power.
 
 ## Still later on UTM
 
-- Dialer digit pad / outgoing CALL on top of [modem-spike.md](modem-spike.md)
 - Camera backends
 - Richer notification delivery beyond Settings alert counts
 - Production TLS/PKI beyond the test-net TOFU smoke

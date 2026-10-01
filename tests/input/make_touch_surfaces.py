@@ -410,7 +410,26 @@ def main():
         elif focus == "settings":
             frame.text(20, 204, "LOCAL ONLY  NO NET YET", (139, 184, 190))
         elif focus == "phone":
-            frame.text(20, 204, "MODEMRING  MODEMSMS", (139, 168, 190))
+            frame.text(20, 204, "DEL CLR  ENTER CALL", (139, 168, 190))
+            frame.rect(12, 222, 276, 140, (18, 38, 53))
+            frame.border(12, 222, 276, 140, (51, 73, 89), thickness=2)
+            keypad_rows = (("7", "8", "9", ""),
+                          ("4", "5", "6", ""),
+                          ("1", "2", "3", ""),
+                          ("0", "DEL", "CLR", ""))
+            for row, labels in enumerate(keypad_rows):
+                for column, label in enumerate(labels):
+                    if not label:
+                        continue
+                    x = 16 + column * 67
+                    y = 226 + row * 26
+                    frame.rect(x, y, 60, 22, (32, 58, 75))
+                    frame.border(x, y, 60, 22, (74, 101, 117), thickness=1)
+                    frame.text(x + (60 - len(label) * 6) // 2, y + 7,
+                               label, (232, 242, 245))
+            frame.rect(16, 330, 261, 22, (32, 58, 75))
+            frame.border(16, 330, 261, 22, (74, 101, 117), thickness=1)
+            frame.text(134, 337, "CALL", (232, 242, 245))
         elif app_text.startswith("ADD "):
             frame.text(20, 204, "ENTER NEXT  BACKSPACE EDIT", (139, 168, 190))
         elif app_text.startswith("NO CONTACTS") or app_text.startswith("NO REMINDERS"):

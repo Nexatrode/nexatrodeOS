@@ -60,6 +60,10 @@
         <end pd="messages_app" id="2" notify="false" />
     </channel>
     <channel>
+        <end pd="input_service" id="8" pp="true" notify="false" />
+        <end pd="phone_app" id="2" notify="false" />
+    </channel>
+    <channel>
         <end pd="input_service" id="4" />
         <end pd="gpu_client" id="2" />
     </channel>

@@ -600,6 +600,33 @@ static void draw_calculator_keypad(uint8_t *frame)
     draw_calculator_key(frame, 16, 330, 261, "ENTER", 5);
 }
 
+static void draw_phone_keypad(uint8_t *frame)
+{
+    static const char *labels[4][4] = {
+        { "7", "8", "9", "" },
+        { "4", "5", "6", "" },
+        { "1", "2", "3", "" },
+        { "0", "DEL", "CLR", "" },
+    };
+    draw_rect(frame, 12, 222, 276, 140, 53, 38, 18);
+    draw_border(frame, 12, 222, 276, 140, 2, 89, 73, 51);
+    for (int row = 0; row < 4; row++) {
+        for (int column = 0; column < 4; column++) {
+            const char *label = labels[row][column];
+            if (label[0] == '\0') {
+                continue;
+            }
+            int length = 1;
+            while (label[length] != '\0') {
+                length++;
+            }
+            draw_calculator_key(frame, 16 + column * 67, 226 + row * 26,
+                                60, label, length);
+        }
+    }
+    draw_calculator_key(frame, 16, 330, 261, "CALL", 4);
+}
+
 static void draw_notes_list(uint8_t *frame, const char *text, uint32_t length,
                             uint32_t selected_note, uint32_t note_count)
 {
@@ -890,7 +917,8 @@ static void draw_app_page(uint8_t *frame, uint32_t focus, const char *text,
     } else if (focus == 7) {
         draw_label(frame, 20, 204, "LOCAL ONLY  NO NET YET", 22, 190, 184, 139, 1);
     } else if (focus == 8) {
-        draw_label(frame, 20, 204, "MODEMRING  MODEMSMS", 19, 190, 168, 139, 1);
+        draw_label(frame, 20, 204, "DEL CLR  ENTER CALL", 19, 190, 168, 139, 1);
+        draw_phone_keypad(frame);
     } else {
         bool editing = length >= 4 && text[0] == 'A' && text[1] == 'D' &&
                        text[2] == 'D' && text[3] == ' ';
