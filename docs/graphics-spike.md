@@ -25,7 +25,7 @@ Personal OS UTM profile remain serial-only. `./dev test-input` adds a budgeted
 VirtIO input driver and a separately budgeted Rust router to that system. The
 32-record shared ring has bounded overflow accounting; the router validates
 keyboard/tablet events and delivers them over app-specific endpoints. QEMU
-checks the seven-workspace launcher and Notes, Contacts, Calculator, Clock,
+checks the eight-app launcher and Notes, Contacts, Calculator, Clock,
 Calendar,
 Messages, and Settings at exact 300 x 400 frames, then confirms Notes, Contacts,
 and
@@ -42,7 +42,7 @@ production VirtIO input driver; this input driver is a narrow QEMU test driver.
 `./dev utm-graphics` runs those verifications and exports a separate
 `dist/Personal OS Graphics.utm` profile with the VirtIO GPU, keyboard, and tablet
 devices plus a disposable vault disk. For the same UI with VirtIO net (shared GPU
-`timer_driver`), use `./dev test-input-net` / `./dev utm-graphics-net`. The profile includes the seven-workspace
+`timer_driver`), use `./dev test-input-net` / `./dev utm-graphics-net`. The profile includes the eight-app
 launcher, Notes, Contacts, the Calculator touch keypad, the read-only Clock
 screen, Calendar reminders, the Messages peer-key shell, and the Settings stub; the default
 serial profile is

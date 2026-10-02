@@ -207,7 +207,7 @@ a Pixel image. The two targets need separate builds and hardware descriptions.
 
 ## Home screen and app set (today vs planned)
 
-Today the graphics profile is a **six-card home** (not a full phone springboard):
+Today the graphics profile has an **eight-app home** (not a full phone springboard):
 
 | Slot | Status |
 | --- | --- |
@@ -220,8 +220,8 @@ Today the graphics profile is a **six-card home** (not a full phone springboard)
 | Settings | Done as read-only stub — isolated UI, local/vault/net/alerts status; real options come later |
 | Phone / dialer | Digit pad + `CALLING` + `MODEM|CALL` dial; real audio/carrier still Pixel P4 |
 
-Home is `FocusTarget::None`: tap a card or use Tab / the top app bar. Escape returns
-Home. There is no app drawer and no Phone icon yet.
+Home is `FocusTarget::None`: tap an app card or use Tab / the top app bar. Escape
+returns Home. There is no app drawer.
 
 **Messaging north star (not scheduled as the next spike):** identity by explicit
 QR / PGP-style key exchange over a data pipe, not by phone number as social ID.
@@ -242,8 +242,8 @@ default `10.0.2.2:1237`); a host toy router forwards to a second guest. Graphics
 UTM stays offline. Dual-UTM Shared Network LAN is a manual sketch (see
 [network-spike.md](network-spike.md)); not part of `./dev test-net`.
 
-**Settings** is a seventh Clock-style workspace under the 2×3 grid: isolated PD,
-static local-only status (`LOCAL ONLY` / `VAULT LOCAL` / `NO NET YET` /
+**Settings** is the eighth workspace alongside Phone, below the 2×3 grid:
+isolated PD, static local-only status (`LOCAL ONLY` / `VAULT LOCAL` / `NO NET YET` /
 `NO ALERTS YET` or `ALERTS RING N SMS M` after modem inject), no input endpoint
 and no vault.
 
@@ -285,7 +285,7 @@ distribution plan. A lab call demonstration does not establish those properties.
 ## Next concrete milestone
 
 Treat **UTM as the product shell** before Pixel bring-up. Refresh
-`./dev utm-graphics`, confirm tablet + amber guest cursor, and walk the seven
+`./dev utm-graphics`, confirm tablet + amber guest cursor, and walk the eight app
 workspaces (see [utm-prep.md](utm-prep.md)). Keep the default serial profile
 separate.
 

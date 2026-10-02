@@ -6,14 +6,15 @@ It owns the MMIO queues and IRQs, then publishes records into a 32-entry
 single-producer/single-consumer ring shared only with a separate Rust input
 service. The active Rust service has an MCS budget, validates device/type/code/
 value combinations, and sends validated events over separate protected
-endpoints to isolated Notes, Contacts, or Calculator apps. Apps receive neither
+endpoints to isolated Notes, Contacts, Calculator, Calendar, Messages, and
+Phone apps. Clock and Settings are read-only and receive no app input. Apps receive neither
 device registers nor the raw ring. Focus starts empty. The trusted router maps
-absolute tablet coordinates to seven visible launcher cards and opens an app on
+absolute tablet coordinates to eight visible launcher cards and opens an app on
 a left-button press inside a card. In an app, a visible top bar switches between
-Notes, Contacts, Calculator, Clock, Calendar, Messages, Settings, and Home;
+Notes, Contacts, Calculator, Clock, Calendar, Messages, Phone, Settings, and Home;
 Escape returns
 to Home from a physical keyboard. Tab cycles Notes → Contacts → Calculator →
-Clock → Calendar → Messages → Settings → Notes, starting at Notes, and the
+Clock → Calendar → Messages → Phone → Settings → Notes, starting at Notes, and the
 router consumes
 it. Clock and Settings remain read-only: the router does not forward app key
 events to them. Messages receives routed input for its peer-key shell (`PEER KEYS`

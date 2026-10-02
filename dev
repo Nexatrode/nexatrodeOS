@@ -3945,7 +3945,10 @@ def budget_pressure_test(timeout):
     deadline = time.monotonic() + timeout
     sent_status = sent_calculation = False
     completed_at = None
-    pressure_marker = "CRASHER: CPU budget pressure test started"
+    # Serial debug output from the spinning PD can interleave with console text,
+    # splitting the end of this line. Match the stable prefix so the harness
+    # still exercises console progress under load.
+    pressure_marker = "CRASHER: CPU budget pressure"
     forbidden = ["FAIL:", "MON|ERROR", "Kernel panic", "error: clock service did not respond"]
     try:
         with selectors.DefaultSelector() as selector:

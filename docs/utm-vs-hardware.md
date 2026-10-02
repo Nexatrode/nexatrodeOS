@@ -16,7 +16,7 @@ or power.
 | Keyboard | VirtIO keyboard | Physical keys / IME path TBD |
 | Pointing | VirtIO **tablet** (absolute); optional guest-drawn cursor | Digitizer + driver (different stack) |
 | Networking | Emulated Ethernet / NAT, not Mac Wi‑Fi | Wi‑Fi firmware + driver (P3) |
-| Cellular / calls / SMS | Serial fake modem stub ([modem-spike.md](modem-spike.md)); dialer UI later | Modem/IMS (P4); very large |
+| Cellular / calls / SMS | Phone has a digit-pad demo wired to the fake modem; no real audio or carrier | Modem/IMS (P4); very large |
 | Camera | Possible fake frames later | Sensor/ISP stack (P5); very large |
 | Battery / deep sleep | Not meaningfully modeled | P2/P6; cannot infer from UTM CPU use |
 | Bluetooth / NFC / USB host | Out of scope for now | Separate device work |

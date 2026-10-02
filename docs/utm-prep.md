@@ -7,13 +7,15 @@ UART cables and `sunfish` bring-up.
 
 ## What UTM is for
 
-- Isolation, vault, seven-workspace Home, keyboard + tablet input
+- Isolation, vault, eight-app Home, keyboard + tablet input
 - Experimental graphics profile: `./dev utm-graphics` →
   `dist/Personal OS Graphics.utm` (offline)
 - Graphics + net: `./dev utm-graphics-net` →
   `dist/Personal OS Graphics Net.utm` (tablet + Shared Network)
 - VirtIO net / TLS / sealed messaging on **QEMU** (`./dev test-net`); default and
   offline graphics UTM images stay **offline**
+- Scheduler smoke: `./dev test --budget-pressure` checks that the console, clock,
+  and calculator progress under a CPU-bound child; it is not a frame-rate test.
 
 UTM does **not** replace Pixel boot, GENI UART, Wi‑Fi, modem, or power.
 

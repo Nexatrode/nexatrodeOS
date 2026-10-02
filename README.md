@@ -301,7 +301,7 @@ Generated SDK files, build output, and UTM bundles are excluded from Git.
 ## Next milestones
 
 1. Run `./dev utm-graphics`, open `dist/Personal OS Graphics.utm` with USB Tablet,
-   and walk the [UTM prep checklist](docs/utm-prep.md) (amber cursor, seven
+   and walk the [UTM prep checklist](docs/utm-prep.md) (amber cursor, eight app
    workspaces, Settings local-only status).
 2. For clickable Messages over the network in one VM, run `./dev utm-graphics-net`
    (or `./dev test-input-net` on QEMU). Keep proving full TLS/seal with
