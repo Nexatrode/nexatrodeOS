@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<system>
+    <memory_region name="splash" size="0x1600000" page_size="0x200000"
+                   phys_addr="0x9c000000" />
+    <memory_region name="slint_heap" size="0x800000" page_size="0x1000" />
+    <memory_region name="touch_state" size="0x1000" page_size="0x1000" />
+    <memory_region name="notes_view" size="0x1000" page_size="0x1000" />
+    <memory_region name="touch_se7" size="0x4000" page_size="0x1000" phys_addr="0xa84000" />
+    <memory_region name="gcc_vote" size="0x1000" page_size="0x1000" phys_addr="0x152000" />
+    <memory_region name="gcc_s1" size="0x1000" page_size="0x1000" phys_addr="0x118000" />
+    <memory_region name="gpio6_north" size="0x1000" page_size="0x1000" phys_addr="0x3906000" />
+    <memory_region name="gpio7_north" size="0x1000" page_size="0x1000" phys_addr="0x3907000" />
+    <memory_region name="gpio8_north" size="0x1000" page_size="0x1000" phys_addr="0x3908000" />
+    <memory_region name="gpio72_north" size="0x1000" page_size="0x1000" phys_addr="0x3948000" />
+    <memory_region name="spmi_core" size="0x2000" page_size="0x1000" phys_addr="0xc440000" />
+    <memory_region name="spmi_config" size="0x1000" page_size="0x1000" phys_addr="0xc40a000" />
+    <memory_region name="spmi_gpio4_observer" size="0x1000" page_size="0x1000" phys_addr="0xe607000" />
+    <memory_region name="spmi_gpio4_writer" size="0x1000" page_size="0x1000" phys_addr="0xd440000" />
+    <protection_domain name="slint_pixel" priority="99" budget="200000" period="200000"
+                       stack_size="0x8000">
+        <program_image path="slint_notes_pixel.elf" />
+        <map mr="splash" vaddr="0x40000000" perms="rw" cached="false"
+             setvar_vaddr="slint_framebuffer" />
+        <map mr="slint_heap" vaddr="0x42000000" perms="rw"
+             setvar_vaddr="slint_heap" />
+        <map mr="touch_state" vaddr="0x44000000" perms="r" cached="false"
+             setvar_vaddr="slint_touch_state" />
+        <map mr="notes_view" vaddr="0x45000000" perms="r" cached="false"
+             setvar_vaddr="slint_notes_view" />
+    </protection_domain>
+    <protection_domain name="notes_service" priority="100" budget="200000" period="200000">
+        <program_image path="notes-service.elf" />
+        <map mr="notes_view" vaddr="0x40000000" perms="rw" cached="false" />
+    </protection_domain>
+    <protection_domain name="notes_volatile_vault" priority="101" passive="true">
+        <program_image path="notes-volatile-vault.elf" />
+    </protection_domain>
+    <protection_domain name="touch_service" priority="90" budget="200000" period="200000"
+                       stack_size="0x4000" smc="true">
+        <program_image path="touch-service.elf" />
+        <map mr="touch_se7" vaddr="0x40000000" perms="rw" cached="false" setvar_vaddr="touch_i2c_vaddr" />
+        <map mr="gcc_vote" vaddr="0x41000000" perms="rw" cached="false" setvar_vaddr="gcc_vote_vaddr" />
+        <map mr="gcc_s1" vaddr="0x41001000" perms="rw" cached="false" setvar_vaddr="gcc_s1_vaddr" />
+        <map mr="gpio6_north" vaddr="0x42000000" perms="rw" cached="false" setvar_vaddr="gpio6_vaddr" />
+        <map mr="gpio7_north" vaddr="0x42001000" perms="rw" cached="false" setvar_vaddr="gpio7_vaddr" />
+        <map mr="gpio8_north" vaddr="0x42002000" perms="rw" cached="false" setvar_vaddr="gpio8_vaddr" />
+        <map mr="gpio72_north" vaddr="0x42003000" perms="rw" cached="false" setvar_vaddr="gpio72_vaddr" />
+        <map mr="spmi_core" vaddr="0x43000000" perms="r" cached="false" setvar_vaddr="spmi_core_vaddr" />
+        <map mr="spmi_config" vaddr="0x43002000" perms="r" cached="false" setvar_vaddr="spmi_config_vaddr" />
+        <map mr="spmi_gpio4_observer" vaddr="0x44000000" perms="rw" cached="false" setvar_vaddr="spmi_gpio4_observer_vaddr" />
+        <map mr="spmi_gpio4_writer" vaddr="0x45000000" perms="rw" cached="false" setvar_vaddr="spmi_gpio4_writer_vaddr" />
+        <map mr="touch_state" vaddr="0x46000000" perms="rw" cached="false" setvar_vaddr="touch_shared_vaddr" />
+    </protection_domain>
+    <protection_domain name="slint_reset" priority="1" smc="true">
+        <program_image path="slint-reset.elf" />
+    </protection_domain>
+    <channel>
+        <end pd="touch_service" id="0" />
+        <end pd="slint_pixel" id="0" />
+    </channel>
+    <channel>
+        <end pd="notes_service" id="0" />
+        <end pd="slint_pixel" id="1" pp="true" />
+    </channel>
+    <channel>
+        <end pd="notes_volatile_vault" id="0" />
+        <end pd="notes_service" id="1" pp="true" />
+    </channel>
+</system>

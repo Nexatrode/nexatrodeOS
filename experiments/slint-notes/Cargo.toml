@@ -1,0 +1,46 @@
+[package]
+name = "personal-os-slint-notes-spike"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+iphone-pd = []
+pixel-pd = []
+pixel-notes-smoke = ["pixel-pd"]
+workspace-ui = []
+full-suite-ui = []
+full-suite-profile = ["full-suite-ui", "frame-timing"]
+full-suite-input-profile = ["full-suite-profile"]
+full-suite-press-click = ["full-suite-profile"]
+full-suite-queued-touch = ["full-suite-press-click"]
+full-suite-snapshot-boot = ["full-suite-ui", "snapshot-boot"]
+full-suite-half-res = ["full-suite-profile"]
+full-suite-two-thirds = ["full-suite-profile"]
+full-suite-two-thirds-row-copy = ["full-suite-two-thirds"]
+frame-timing = ["iphone-pd"]
+stage-timing = ["frame-timing"]
+line-timing = ["frame-timing"]
+fill-timing = ["frame-timing"]
+row-copy = ["frame-timing"]
+raster-profile = ["frame-timing"]
+snapshot-boot = ["frame-timing"]
+
+[[bin]]
+name = "slint_notes_iphone"
+path = "src/iphone.rs"
+required-features = ["iphone-pd"]
+
+[[bin]]
+name = "slint_notes_pixel"
+path = "src/pixel.rs"
+required-features = ["pixel-pd"]
+
+[dependencies]
+slint = { version = "=1.18.1", default-features = false, features = ["renderer-software", "unsafe-single-threaded", "libm", "compat-1-18"] }
+
+[build-dependencies]
+slint-build = "=1.18.1"
+
+[target.'cfg(target_os = "none")'.dependencies]
+sel4-microkit = { git = "https://github.com/seL4/rust-sel4", rev = "891b59622306e94ad428193838f0d6214bb5c7aa" }

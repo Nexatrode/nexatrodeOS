@@ -55,18 +55,19 @@ can carry over once hardware exists. They do not replace bring-up.
 ## Messaging and SimpleX Chat (long term)
 
 The Linux/macOS/Android SimpleX Chat apps assume a POSIX-class OS (Haskell RTS,
-TCP/TLS, SQLCipher). They will not run natively on Microkit. Options later:
+TCP/TLS, SQLCipher). The chosen direction is a native GHC runtime and
+dependency port for Microkit, with reusable time, scheduling, networking,
+entropy, and storage services added to the OS along the way. The ARM64 Linux
+build is a reference for package versions and behavior, not a guest deployment
+plan. The port is tracked in [simplex-port-feasibility.md](simplex-port-feasibility.md).
 
-1. **Companion:** keep SimpleX on Mac or Lineage; Personal OS stays offline-first.
-2. **U6 toy/net messaging:** our own Messages UI + VirtIO Ethernet experiments.
-3. **Linux guest under seL4** (if EL2/VMM exists): run upstream SimpleX inside Linux.
-4. **Native rewrite:** a small Rust client inspired by SimpleX’s threat model—not a
-   GHC port. AGPL-3 applies if we ship their code.
-
-Do not schedule SimpleX-on-Personal-OS until networking (U6) and a conscious
-VM-vs-native decision exist. A Home-screen Messages stub card is already present
-(read-only, no net); Phone cards and real messaging still wait on U6.
-as non-networked stubs if useful for UX layout.
+The full SimpleX app remains a long-term target: first make the Haskell runtime
+and its required capabilities work as bounded native protection domains, then
+run an upstream-compatible chat core and verify it against another SimpleX
+client. The current U6 network experiment and read-only Messages stub are
+useful groundwork; they do not yet provide an app socket API, TLS 1.3, or the
+SimpleX storage and runtime requirements. Other Phone and messaging screens can
+remain non-networked stubs while the UI and capability boundaries develop.
 
 The preferred product story for *our* Messages app is explicit QR / PGP-style
 contact add and sealed traffic over a data pipe (central router first, relays

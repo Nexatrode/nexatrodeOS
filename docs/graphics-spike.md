@@ -58,3 +58,36 @@ has no display by default, and the guest needs matching graphics and input drive
 [QEMU VirtIO GPU](https://www.qemu.org/docs/master/system/devices/virtio/virtio-gpu.html),
 [UTM display settings](https://docs.getutm.app/settings-qemu/devices/display/)).
 See also [UTM vs hardware limits](utm-vs-hardware.md).
+
+## Slint UI toolkit feasibility
+
+The separate [Slint Notes experiment](../experiments/slint-notes/README.md)
+renders a responsive Notes screen through Slint 1.18.1's software renderer at
+300 x 400, 1080 x 2340 for Pixel 4a (estimated scale 2.75), and 1080 x 1920 for
+iPhone 7 Plus (native scale 2.6087); it also checks a 440 x 900 portrait frame.
+Its host test dispatches touch and key events through Slint and verifies text
+entry and Save. A simulated bottom keyboard inset moves Save above the keyboard
+and shrinks the editor; touch and text entry pass with the inset enabled at both
+phone resolutions. The no-`std` UI library also passes a Rust type-check for the
+custom seL4/Microkit AArch64 target. A bounded 300 x 400 RGB8 shared-frame
+contract and a validated RGB-to-BGRA reader are also in place, with matching C
+and Rust tests; the reader falls back to the existing view renderer when no
+frame is published. Separately, the iPhone 7 Plus now has an isolated native
+Slint Notes protection domain with a bounded boot allocator, a Microkit
+`Platform` adapter, direct software rendering to the mapped D11 framebuffer,
+and contact events from the existing touch service. Phone runs showed the
+Slint UI and a tap changed the status through its Save callback. A temporary
+touch marker confirmed that a center-of-Save tap mapped onto the visible Save
+button. Display color tuning and first-frame presentation remain to be checked.
+It is
+one experimental screen, not the multi-workspace QEMU app suite.
+
+`./dev utm-pixel4a-probe` builds a separate GPU-only Microkit loader with a
+16 MiB client frame region and sends the Pixel 4a Slint preview through QEMU's
+VirtIO GPU at exactly 1080 x 2340. QEMU verifies that the captured guest frame
+matches every source pixel, then exports
+`dist/Personal OS Pixel 4a Probe.utm`. This confirms native-size buffer
+allocation and scanout in the VM. The probe shows a static Slint-rendered image;
+Slint still does not execute inside the guest, and the probe does not include
+the regular OS services or touch routing. The existing 300 x 400 Personal OS
+and Graphics UTM profiles are left intact.

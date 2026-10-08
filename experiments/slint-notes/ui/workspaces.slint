@@ -1,0 +1,176 @@
+// A phone-side Slint navigation shell. Notes and Contacts are UI views here;
+// neither the vault nor a keyboard is connected in this Microkit image.
+export component NotesWindow inherits Window {
+    title: "Personal OS — Workspaces";
+    background: #081522;
+    preferred-width: 414px;
+    preferred-height: 736px;
+    min-width: 280px;
+    min-height: 400px;
+
+    in-out property <int> page: 0; // 0 Home, 1 Notes, 2 Contacts
+    in-out property <string> note: "A private place for your thoughts.";
+    in-out property <string> status: "NOT STORED YET";
+    in property <length> keyboard-inset: 0px;
+    callback save-note(string);
+
+    Rectangle {
+        width: 100%; height: 100%;
+        background: #081522;
+
+        Text {
+            x: 18px; y: 15px;
+            text: "PERSONAL OS";
+            color: #ffffff;
+            font-size: 22px;
+            font-weight: 700;
+        }
+        Text {
+            x: 18px; y: 58px;
+            text: root.page == 0 ? "WORKSPACES" : root.page == 1 ? "PRIVATE NOTES" : "CONTACTS";
+            color: #ffffff;
+            font-size: root.width < 360px ? 24px : 34px;
+            font-weight: 700;
+        }
+        Text {
+            x: 19px; y: 105px;
+            text: root.page == 0 ? "TOUCH A WORKSPACE" : root.page == 1 ? "PRIVATE SPACE · ON DEVICE" : "PEOPLE AND DETAILS";
+            color: #ffffff;
+            font-size: root.width < 360px ? 17px : 22px;
+        }
+
+        // The three tabs are always present so every view has a direct way back.
+        Rectangle {
+            x: 16px; y: 147px;
+            width: (parent.width - 40px) / 3; height: 48px;
+            background: root.page == 0 ? #183a50 : #132b3b;
+            border-color: #68ddc2; border-width: 2px;
+            Text {
+                width: parent.width; height: parent.height;
+                text: "HOME"; color: #ffffff; font-size: 17px;
+                horizontal-alignment: center; vertical-alignment: center;
+            }
+            TouchArea { width: parent.width; height: parent.height; clicked => { root.page = 0; } }
+        }
+        Rectangle {
+            x: 20px + (parent.width - 40px) / 3; y: 147px;
+            width: (parent.width - 40px) / 3; height: 48px;
+            background: root.page == 1 ? #403517 : #132b3b;
+            border-color: #ffcc55; border-width: 2px;
+            Text {
+                width: parent.width; height: parent.height;
+                text: "NOTES"; color: #ffffff; font-size: 17px;
+                horizontal-alignment: center; vertical-alignment: center;
+            }
+            TouchArea { width: parent.width; height: parent.height; clicked => { root.page = 1; } }
+        }
+        Rectangle {
+            x: 24px + 2 * (parent.width - 40px) / 3; y: 147px;
+            width: (parent.width - 40px) / 3; height: 48px;
+            background: root.page == 2 ? #302c51 : #132b3b;
+            border-color: #b4a0ff; border-width: 2px;
+            Text {
+                width: parent.width; height: parent.height;
+                text: "PEOPLE"; color: #ffffff; font-size: 17px;
+                horizontal-alignment: center; vertical-alignment: center;
+            }
+            TouchArea { width: parent.width; height: parent.height; clicked => { root.page = 2; } }
+        }
+
+        if root.page == 0: Rectangle {
+            x: 18px; y: root.height < 500px ? 204px : 218px;
+            width: parent.width - 36px;
+            height: root.height < 500px ? 72px : max(72px, (parent.height - 320px) / 2);
+            background: #17394e;
+            border-color: #68ddc2; border-width: 3px;
+            Text {
+                x: 22px; y: root.height < 500px ? 8px : 24px;
+                text: "NOTES"; color: #ffffff;
+                font-size: root.width < 360px ? 24px : 34px;
+                font-weight: 700;
+            }
+            Text {
+                x: 22px; y: root.height < 500px ? 43px : 73px;
+                text: "PRIVATE NOTES SPACE"; color: #ffffff;
+                font-size: root.width < 360px ? 14px : 22px;
+            }
+            TouchArea { width: parent.width; height: parent.height; clicked => { root.page = 1; } }
+        }
+        if root.page == 0: Rectangle {
+            x: 18px; y: root.height < 500px ? 288px : 234px + max(72px, (parent.height - 320px) / 2);
+            width: parent.width - 36px;
+            height: root.height < 500px ? 72px : max(72px, (parent.height - 320px) / 2);
+            background: #282d4d;
+            border-color: #b4a0ff; border-width: 3px;
+            Text {
+                x: 22px; y: root.height < 500px ? 8px : 24px;
+                text: "CONTACTS"; color: #ffffff;
+                font-size: root.width < 360px ? 24px : 34px;
+                font-weight: 700;
+            }
+            Text {
+                x: 22px; y: root.height < 500px ? 43px : 73px;
+                text: "PEOPLE AND DETAILS"; color: #ffffff;
+                font-size: root.width < 360px ? 14px : 22px;
+            }
+            TouchArea { width: parent.width; height: parent.height; clicked => { root.page = 2; } }
+        }
+
+        if root.page == 1: Rectangle {
+            x: 18px; y: 218px;
+            width: parent.width - 36px;
+            height: max(65px, parent.height - 365px - root.keyboard-inset);
+            background: #17394e;
+            border-color: #68ddc2; border-width: 2px;
+            TextInput {
+                x: 16px; y: 16px;
+                width: parent.width - 32px; height: parent.height - 32px;
+                text <=> root.note;
+                color: #ffffff; font-size: 24px;
+                single-line: false; wrap: word-wrap;
+            }
+        }
+        if root.page == 1: Text {
+            x: 18px; y: root.height < 500px ? 283px : root.height - 132px - root.keyboard-inset;
+            text: root.status;
+            color: #ffffff; font-size: root.width < 360px ? 17px : 22px;
+        }
+        if root.page == 1: Rectangle {
+            x: parent.width - 132px;
+            y: parent.height - 95px - root.keyboard-inset;
+            width: 112px; height: 62px;
+            background: #68ddc2;
+            Text {
+                width: parent.width; height: parent.height;
+                text: "SAVE"; color: #081522; font-size: 22px;
+                horizontal-alignment: center; vertical-alignment: center;
+            }
+            TouchArea { width: parent.width; height: parent.height; clicked => { root.save-note(root.note); } }
+        }
+
+        if root.page == 2: Rectangle {
+            x: 18px; y: 218px;
+            width: parent.width - 36px;
+            height: max(95px, parent.height - 275px);
+            background: #282d4d;
+            border-color: #b4a0ff; border-width: 3px;
+            Text {
+                x: 20px; y: 28px;
+                text: "NO CONTACTS LOADED"; color: #ffffff;
+                font-size: root.width < 360px ? 17px : 22px;
+            }
+            Text {
+                x: 20px; y: 79px;
+                text: "PHONE DATA NOT CONNECTED"; color: #ffffff;
+                font-size: root.width < 360px ? 17px : 22px;
+            }
+        }
+
+        Text {
+            x: 18px; y: parent.height - 25px;
+            text: root.page == 0 ? "LOCAL SHELL · TWO VIEWS" : root.page == 1 ? "NO KEYBOARD · NO STORAGE" : "CONTACTS SERVICE PENDING";
+            color: #ffffff;
+            font-size: root.width < 360px ? 12px : 17px;
+        }
+    }
+}

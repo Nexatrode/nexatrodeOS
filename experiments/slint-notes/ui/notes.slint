@@ -1,0 +1,127 @@
+export component NotesWindow inherits Window {
+    title: "Personal OS — Notes";
+    background: #081522;
+    preferred-width: 300px;
+    preferred-height: 400px;
+    min-width: 280px;
+    min-height: 360px;
+
+    in-out property <string> note: "A private place for your thoughts.";
+    in-out property <string> status: "SAVED LOCALLY";
+    in property <length> keyboard-inset: 0px;
+    callback save-note(string);
+
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: 100%;
+        height: 100%;
+        background: #081522;
+
+        Text {
+            x: 18px; y: 18px;
+            text: "●  PERSONAL OS";
+            color: #ffffff;
+            font-size: parent.width < 400px ? 17px : 22px;
+            font-weight: 700;
+        }
+        Text {
+            x: 18px; y: 58px;
+            text: "PRIVATE NOTES";
+            color: #ffffff;
+            font-size: 34px;
+            font-weight: 700;
+        }
+        Text {
+            x: 19px; y: 106px;
+            text: "PRIVATE SPACE · ON DEVICE";
+            color: #ffffff;
+            font-size: parent.width < 400px ? 14px : 22px;
+            font-weight: 700;
+        }
+
+        Rectangle {
+            x: 16px; y: 145px;
+            width: parent.width - 32px;
+            height: max(80px, parent.height - 313px - root.keyboard-inset);
+            background: #132b3b;
+            border-color: #68ddc2;
+            border-width: 2px;
+            border-radius: 8px;
+
+            TextInput {
+                x: 16px; y: 16px;
+                width: parent.width - 32px;
+                height: parent.height - 32px;
+                text <=> root.note;
+                color: #ffffff;
+                font-size: 24px;
+                single-line: false;
+                wrap: word-wrap;
+            }
+        }
+
+        Text {
+            x: 18px; y: parent.height - root.keyboard-inset - 146px;
+            text: root.status;
+            color: #ffffff;
+            font-size: parent.width < 400px ? 16px : 23px;
+            font-weight: 700;
+        }
+
+        Rectangle {
+            x: parent.width - 132px; y: parent.height - root.keyboard-inset - 118px;
+            width: 110px; height: 64px;
+            background: #68ddc2;
+            border-radius: 6px;
+            Text {
+                width: parent.width; height: parent.height;
+                text: "SAVE";
+                color: #081522;
+                font-size: 20px;
+                font-weight: 700;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            TouchArea {
+                width: parent.width; height: parent.height;
+                clicked => { root.save-note(root.note); }
+            }
+        }
+
+        Text {
+            x: 18px; y: parent.height - root.keyboard-inset - 24px;
+            text: "LOCAL NOTES · NO SYNC";
+            color: #ffffff;
+            font-size: parent.width < 400px ? 12px : 18px;
+            font-weight: 700;
+        }
+
+        if root.keyboard-inset > 0px: Rectangle {
+            x: 0px;
+            y: parent.height - root.keyboard-inset;
+            width: parent.width;
+            height: root.keyboard-inset;
+            background: #0d1d2a;
+            border-color: #314756;
+            border-width: 1px;
+
+            Text {
+                x: 18px; y: 10px;
+                text: "SYSTEM KEYBOARD · RESERVED AREA";
+                color: #91a8b5;
+                font-size: 9px;
+            }
+            Text {
+                x: 18px; y: 34px;
+                width: parent.width - 36px;
+                text: "Q   W   E   R   T   Y   U   I   O   P\n A   S   D   F   G   H   J   K   L\n     Z   X   C   V   B   N   M\n          SPACE          RETURN";
+                color: #dce8eb;
+                font-size: 13px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+    }
+}
