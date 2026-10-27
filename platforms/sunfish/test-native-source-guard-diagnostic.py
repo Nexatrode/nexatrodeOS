@@ -36,6 +36,16 @@ def load_boot_audit():
     return module
 
 
+def load_runtime_layout_audit():
+    spec = importlib.util.spec_from_file_location(
+        "audit_native_mpss_runtime_layout", PORT / "audit-native-mpss-runtime-layout.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
 class NativeSourceGuardDiagnosticTests(unittest.TestCase):
     def test_hex_formatter_renders_all_sixteen_uppercase_digits_on_value_line(self):
         header = PORT / "loader-boot-checkpoints.h"
@@ -123,13 +133,36 @@ int main(void) {
     def test_source_guard_acceptance_addresses_and_bounds_are_unchanged(self):
         prepare = load_prepare()
         self.assertEqual(prepare.LINK, 0xC0000000)
-        self.assertEqual(prepare.RUNTIME_SOURCE, 0xB0081000)
+        self.assertEqual(prepare.RUNTIME_SOURCE, 0xB1281000)
         self.assertIn("diagnostic_only", inspect.signature(prepare.native_startup_entry).parameters)
-        code = prepare.native_startup_entry(ENTRY, diagnostic_only=True)
-        self.assertIn("ldr x1, =LINK_ADDRESS", code)
-        self.assertIn("ldr x1, =0xb0081000", code)
-        self.assertIn("ldr x1, =0x20000", code)
-        self.assertIn("ldr x1, =0x6000000", code)
+        for diagnostic_only in (False, True):
+            with self.subTest(diagnostic_only=diagnostic_only):
+                code = prepare.native_startup_entry(ENTRY, diagnostic_only=diagnostic_only)
+                guard = code.split(ANCHOR, 1)[0]
+                self.assertIn("ldr x1, =LINK_ADDRESS", guard)
+                self.assertIn("ldr x1, =0xb1281000", guard)
+                self.assertNotIn("0xb0081000", guard)
+                self.assertNotIn("0xb1282000", guard)
+                self.assertRegex(
+                    guard,
+                    r"ldr x1, =0xb1281000\n\s+cmp x0, x1\n\s+b\.ne \.Lnative_source_(?:address_fail|fail)",
+                )
+                self.assertIn("ldr x1, =0x20000", guard)
+                self.assertIn("b.hi .Lnative_source_", guard)
+                self.assertIn("ldr x1, =0x6000000", guard)
+                self.assertIn("adds x3, x3, x4", guard)
+                self.assertIn("b.cs .Lnative_source_", guard)
+                self.assertLess(guard.index("ldr x1, =0x20000"), code.index("    bl     relocate"))
+                self.assertLess(guard.index("ldr x1, =0x6000000"), code.index("    bl     relocate"))
+
+    def test_runtime_layout_audit_derives_source_bounds_from_prepare_constant(self):
+        prepare = load_prepare()
+        audit = load_runtime_layout_audit()
+        self.assertEqual(
+            audit.runtime_source_bounds(prepare),
+            (prepare.RUNTIME_SOURCE - 0x1000, prepare.RUNTIME_SOURCE),
+        )
+        self.assertEqual(audit.runtime_source_bounds(prepare), (0xB1280000, 0xB1281000))
 
     def test_diagnostic_mode_stops_before_relocation_on_fail_and_pass(self):
         prepare = load_prepare()

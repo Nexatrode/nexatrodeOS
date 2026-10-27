@@ -741,7 +741,8 @@ def main():
                 and not profile['task_images'] and profile['entry_interrupt_masked'],
                 'closed diagnostic loader profile')
         require(profile['loader_link_address'] == '0xc0000000'
-                and profile['expected_runtime_source'] == '0xb0081000'
+                and profile['expected_runtime_source'] == '0xb1281000'
+                and profile['source_image_base'] == '0xb1280000'
                 and profile['native_startup_max_relocation_bytes'] == 0x6000000,
                 'exact runtime source/envelope guard')
         result = validate_source_diagnostic(profile, out)
@@ -767,10 +768,11 @@ def main():
             and profile['kernel_initialiser_monitor_unchanged']
             and not profile['task_images'] and profile['entry_interrupt_masked'], 'closed native loader profile')
     require(profile['loader_link_address'] == '0xc0000000'
-            and profile['expected_runtime_source'] == '0xb0081000'
+            and profile['expected_runtime_source'] == '0xb1281000'
+            and profile['source_image_base'] == '0xb1280000'
             and profile['native_startup_max_relocation_bytes'] == 0x6000000, 'exact runtime source/envelope guard')
     code = (out / 'loader-checkpoint-source/src/aarch64/crt0.S').read_text()
-    require(code.index('ldr x1, =0xb0081000') < code.index('    bl     relocate'), 'source guard before relocation')
+    require(code.index('ldr x1, =0xb1281000') < code.index('    bl     relocate'), 'source guard before relocation')
     source_guard_audit = None
     if profile.get('native_source_diagnostic', False):
         source_guard_audit = validate_source_diagnostic(profile, out)
@@ -815,15 +817,15 @@ def main():
     for dt in (live, memory.DEFAULT_DTB, ROOT / '.cache/sunfish-mobian-comparison/artifacts/sm7150-google-sunfish.dtb'):
         reserved, _ = memory.read_regions(dt)
         # Audit the entire permitted envelope, not merely today's image size.
-        layout.validate_range('runtime-guarded source envelope', 0xb0080000, 0x6001000, ram, reserved)
+        layout.validate_range('runtime-guarded source envelope', 0xb1280000, 0x6001000, ram, reserved)
         layout.validate_range('runtime-guarded relocated envelope', 0xc0000000, 0x6000000, ram, reserved)
         layout.validate_range('complete initial task', initial_start, initial_end - initial_start, ram, reserved)
         for start, length in targets:
             layout.validate_range('actual copy destination', start, length, ram, reserved)
-    layout.validate_disjoint(0xb0080000, len(image), 0xc0000000, len(payload))
+    layout.validate_disjoint(0xb1280000, len(image), 0xc0000000, len(payload))
     for i, (start, length) in enumerate(targets):
         layout.validate_disjoint(start, length, 0xc0000000, len(payload))
-        layout.validate_disjoint(start, length, 0xb0080000, len(image))
+        layout.validate_disjoint(start, length, 0xb1280000, len(image))
         for other, size in targets[i+1:]:
             layout.validate_disjoint(start, length, other, size)
     reused_boot_frames = 0
@@ -840,7 +842,7 @@ def main():
     require(packed['dtb'] == reference['dtb'] and packed['ramdisk'] == reference['ramdisk'], 'preserved reference DTB/ramdisk')
     require(packed['kernel'] == (out / 'native-startup-preflight.Image.lz4').read_bytes(), 'packed native kernel binding')
     require((out / 'fastboot.img').stat().st_size <= 0x10000000, 'device download limit')
-    result = dict(source_image_base='0xb0080000', source_placement_checked_before_relocation=True,
+    result = dict(source_image_base='0xb1280000', source_placement_checked_before_relocation=True,
                   unexpected_source_stops_before_copy=True, relocated_loader_base='0xc0000000',
                   loader_bytes=len(payload), initial_task_start=hex(initial_start), initial_task_end=hex(initial_end),
                   copy_targets=[[hex(a), hex(b)] for a, b in targets],

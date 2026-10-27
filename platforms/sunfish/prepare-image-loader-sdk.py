@@ -12,10 +12,10 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parents[2]
 BASE=ROOT/'.cache/microkit-src-2.3.1-sunfish/release/microkit-sdk-2.3.1-sunfish'
 SOURCE=ROOT/'.cache/microkit-src-2.3.1-sunfish/loader'
-# The native input snapshot placed this large Image at b0080000. A b0000000
+# The measured Fastboot Image begins at b1280000. A b0000000
 # destination overlaps its body even though the loader code prefixes differ.
 LINK=0xc0000000
-RUNTIME_SOURCE=0xb0081000
+RUNTIME_SOURCE=0xb1281000
 
 def task_manifest_path(stage_modem_image=False,authenticate_modem=False,observe_modem_ready=False,handshake_modem_status=False,fatal_trace=False,qrtr_servreg=False,qrtr_servreg_pdr_followup=False,glink_open_plan_snapshot=False,glink_open_probe=False,glink_channel_probe=False,glink_intents_probe=False,glink_rx_packet_probe=False,glink_done_probe=False,qrtr_hello_probe=False,qrtr_next_probe=False,qrtr_discovery_probe=False,qrtr_credit_probe=False,qrtr_wait_probe=False,qrtr_servreg_pdr_reply=False,modem_servreg_state_probe=False,modem_servreg_restart_probe=False,modem_tftp_observer=False):
     assert sum([stage_modem_image,authenticate_modem,observe_modem_ready,handshake_modem_status])<=1
@@ -138,12 +138,12 @@ def native_startup_entry(text, diagnostic_only=False):
     .balign 8
 '''
     else:
-        guard='''    msr daifset, #0xf
+        guard=f'''    msr daifset, #0xf
     adr x0, _start
     ldr x1, =LINK_ADDRESS
     cmp x0, x1
     b.eq .Lnative_source_ok
-    ldr x1, =0xb0081000
+    ldr x1, ={hex(RUNTIME_SOURCE)}
     cmp x0, x1
     b.ne .Lnative_source_fail
     adrp x2, _bss_end
