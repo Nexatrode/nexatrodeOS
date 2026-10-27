@@ -7,6 +7,23 @@
 #endif
 void loader_checkpoint(const char *text);
 void loader_checkpoint_hex(const char *title, uint64_t value);
+
+static inline void loader_checkpoint_store(volatile uint32_t *fb,
+                                           uint64_t pixel_index,
+                                           uint32_t color)
+{
+#if defined(__aarch64__)
+    uintptr_t address;
+    __asm__ volatile("add %0, %1, %2, lsl #2\n\t"
+                     "str %w3, [%0]"
+                     : "=&r"(address)
+                     : "r"((uintptr_t)fb), "r"(pixel_index), "r"(color)
+                     : "memory");
+#else
+    fb[pixel_index] = color;
+#endif
+}
+
 static const uint8_t checkpoint_font[36][7] = {
     {14, 17, 17, 31, 17, 17, 17},
     {30, 17, 17, 30, 17, 17, 30},
@@ -53,7 +70,8 @@ void loader_checkpoint(const char *text)
         unsigned base = buffer * width * height;
         for (unsigned y = 160; y < 320; y++)
             for (unsigned x = 0; x < width; x++)
-                fb[base + y * width + x] = 0x00122b52;
+                loader_checkpoint_store(fb, (uint64_t)base + (uint64_t)y * width + x,
+                                        0x00122b52);
         for (unsigned column = 0; column < 24 && text[column]; column++) {
             unsigned c = (unsigned char)text[column], glyph;
             if (c >= 'A' && c <= 'Z') glyph = c - 'A';
@@ -65,7 +83,9 @@ void loader_checkpoint(const char *text)
                     if (checkpoint_font[glyph][gy] & (1u << (4 - gx)))
                         for (unsigned dy = 0; dy < scale; dy++)
                             for (unsigned dx = 0; dx < scale; dx++)
-                                fb[base + (200 + gy * scale + dy) * width + x + gx * scale + dx] = 0x0000e5e5;
+                                loader_checkpoint_store(
+                                    fb, (uint64_t)base + (uint64_t)(200 + gy * scale + dy) * width
+                                        + x + gx * scale + dx, 0x0000e5e5);
         }
     }
 #if defined(__aarch64__)
@@ -88,7 +108,9 @@ static void loader_checkpoint_draw_line(volatile uint32_t *fb, unsigned base,
                 if (checkpoint_font[glyph][gy] & (1u << (4 - gx)))
                     for (unsigned dy = 0; dy < scale; dy++)
                         for (unsigned dx = 0; dx < scale; dx++)
-                            fb[base + (y + gy * scale + dy) * width + x + gx * scale + dx] = 0x0000e5e5;
+                            loader_checkpoint_store(
+                                fb, (uint64_t)base + (uint64_t)(y + gy * scale + dy) * width
+                                    + x + gx * scale + dx, 0x0000e5e5);
     }
 }
 
@@ -105,7 +127,8 @@ void loader_checkpoint_hex(const char *title, uint64_t value)
         if (row == 0)
             for (unsigned y = 160; y < 440; y++)
                 for (unsigned x = 0; x < width; x++)
-                    fb[base + y * width + x] = 0x00122b52;
+                    loader_checkpoint_store(fb, (uint64_t)base + (uint64_t)y * width + x,
+                                            0x00122b52);
         loader_checkpoint_draw_line(fb, base, title, 180 + row * 120);
     }
 

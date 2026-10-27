@@ -26,6 +26,8 @@
 - Arithmetic overflow must be reported distinctly and stop; cover the carry branch in the source-guard test.
 - An oversized complete source extent must identify the failing extent; cover it in the source-guard test.
 - A passing source check must still stop in diagnostic mode; cover the unconditional diagnostic halt in the source-guard test and actual AArch64 disassembly audit.
+- Display-helper stores through absolute or unresolved aliases must fail closed while LR is saved; only the source-bounded framebuffer region, proven disjoint from the runtime loader stack, is allowed.
+- Account for full-width pair stores, including suffixed CASP encodings and STGP; add overlap regressions at the saved LR word.
 
 ---
 
@@ -41,11 +43,11 @@
 - Add `loader_checkpoint_hex(const char *title, uint64_t value)` to render a 64-bit uppercase hexadecimal value on a second screen line.
 - Extend `native_startup_entry(text, diagnostic_only=False)` so each failed check shows its specific title/value; with `diagnostic_only=True`, every path displays the check result and stops before `relocate`.
 
-- [ ] **Step 1: Write failing tests** for hexadecimal display, each failed guard branch, unchanged limits/accepted addresses, and the diagnostic-only halt on both pass and fail paths.
-- [ ] **Step 2: Run `python3 platforms/sunfish/test-native-source-guard-diagnostic.py` and confirm the new assertions fail for the missing formatter/branch distinctions.**
-- [ ] **Step 3: Implement the display helper and generated assembly branches** without changing source acceptance constants.
-- [ ] **Step 4: Run the focused test and validate a real generated AArch64 loader.** The validator must confirm every failure title/value branch and that `relocate` is unreachable in diagnostic-only mode.
-- [ ] **Step 5: Run the relevant existing boot-layout/source validation** and record its output in the new private build directory.
+- [x] **Step 1: Write failing tests** for hexadecimal display, each failed guard branch, unchanged limits/accepted addresses, and the diagnostic-only halt on both pass and fail paths.
+- [x] **Step 2: Run `python3 platforms/sunfish/test-native-source-guard-diagnostic.py` and confirm the new assertions fail for the missing formatter/branch distinctions.**
+- [x] **Step 3: Implement the display helper and generated assembly branches** without changing source acceptance constants.
+- [x] **Step 4: Run the focused test and validate a real generated AArch64 loader.** The validator must confirm every failure title/value branch and that `relocate` is unreachable in diagnostic-only mode.
+- [x] **Step 5: Run the relevant existing boot-layout/source validation** and record its output in the new private build directory.
 
 ### Task 2: Freeze a distinct diagnostic image and one-shot receipt
 
@@ -54,19 +56,21 @@
 - Modify: `platforms/sunfish/freeze-native-mpss-auth.py`
 - Modify: `platforms/sunfish/run-native-mpss-auth.py`
 - Modify: `platforms/sunfish/test-native-mpss-auth-runner.py`
-- Create output only: `.cache/sunfish-native-wifi/private/native-startup-mpss-auth-source-diagnostic-v1/`
+- Create output only: `.cache/sunfish-native-wifi/private/native-startup-mpss-auth-source-diagnostic-v6/`
 
 **Interfaces:**
 - Add `--native-source-diagnostic` to `prepare-image-loader-sdk.py`, activate it with `SUNFISH_SOURCE_GUARD_DIAGNOSTIC=1`, and emit manifest feature `sunfish-native-startup-mpss-auth-source-diagnostic` with diagnostic-only scope.
 - Let the runner accept the exact diagnostic feature while retaining identity, hash, cold-confirmation, atomic-consumption, and no-retry checks.
 
-- [ ] **Step 1: Add runner tests** named `test_source_diagnostic_feature_is_accepted_for_verified_image`, `test_auth_manifest_is_not_misclassified_as_source_diagnostic`, `test_cold_confirmation_binds_source_diagnostic_image_hash`, and `test_consumed_source_diagnostic_cannot_be_retried`.
-- [ ] **Step 2: Run `python3 platforms/sunfish/test-native-mpss-auth-runner.py -v` and confirm those cases fail for the missing diagnostic feature handling.**
-- [ ] **Step 3: Add the distinct manifest feature/scope and source-diagnostic build flag**; keep the ordinary auth feature and one-shot behavior unchanged.
-- [ ] **Step 4: Run the focused runner and source-guard suites.**
-- [ ] **Step 5: Build and validate the diagnostic image** using the pinned Sunfish inputs, into the new private directory; run the source-guard, capability, and boot-layout audits and freeze the exact artifacts.
-- [ ] **Step 6: Run the runner in offline verification mode** and confirm it reports the new image hash with no device action. Do not execute the runner until the user separately confirms a fresh cold-Fastboot state for this image.
+- [x] **Step 1: Add runner tests** named `test_source_diagnostic_feature_is_accepted_for_verified_image`, `test_auth_manifest_is_not_misclassified_as_source_diagnostic`, `test_cold_confirmation_binds_source_diagnostic_image_hash`, and `test_consumed_source_diagnostic_cannot_be_retried`.
+- [x] **Step 2: Run `python3 platforms/sunfish/test-native-mpss-auth-runner.py -v` and confirm those cases fail for the missing diagnostic feature handling.**
+- [x] **Step 3: Add the distinct manifest feature/scope and source-diagnostic build flag**; keep the ordinary auth feature and one-shot behavior unchanged.
+- [x] **Step 4: Run the focused runner and source-guard suites.**
+- [x] **Step 5: Build and validate the v6 diagnostic image** using the pinned Sunfish inputs, into the new private directory; run the source-guard, capability, and boot-layout audits and freeze the exact artifacts. Earlier v4/v5 bundles are stale because the final helper-store audit changed afterward.
+- [x] **Step 6: Run the runner in offline verification mode** and confirm it reports the v6 image hash with no device action. Do not execute the runner until the user separately confirms a fresh cold-Fastboot state for this image.
+
+The v5 image was frozen and offline-verified but not attempted. A fresh review then found loop-carried framebuffer pointer movement could escape the range proof. V6 changes the display helper so every AArch64 framebuffer write computes its address from the fixed framebuffer base; the validator now rejects loop-carried dynamic pointer advances. V6 is frozen with SHA-256 `4c6fe17b85c7010da0a357710f02704b4ff6a7fa42bf40366ccd69a1f834874f` and passed the runner's offline verification.
 
 ## Execution boundary
 
-The current auth image attempt is consumed. The diagnostic image requires its own cold-Fastboot confirmation. A successful Fastboot command is not a source-address, MPSS-ready, GLINK, WLAN, or network-traffic result.
+The current auth image attempt is consumed. The v4 and v5 diagnostic bundles are stale and must not be booted. The v6 diagnostic image requires its own cold-Fastboot confirmation bound to its exact hash. A successful Fastboot command is not a source-address, MPSS-ready, GLINK, WLAN, or network-traffic result.

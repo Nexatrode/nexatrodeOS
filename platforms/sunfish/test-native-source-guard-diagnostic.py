@@ -26,6 +26,16 @@ def load_prepare():
     return module
 
 
+def load_boot_audit():
+    spec = importlib.util.spec_from_file_location(
+        "validate_native_mpss_auth_boot", PORT / "validate-native-mpss-auth-boot.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
 class NativeSourceGuardDiagnosticTests(unittest.TestCase):
     def test_hex_formatter_renders_all_sixteen_uppercase_digits_on_value_line(self):
         header = PORT / "loader-boot-checkpoints.h"
@@ -142,6 +152,358 @@ int main(void) {
         self.assertNotIn(".Lnative_source_diagnostic_stop:", guard)
         self.assertIn("bl loader_checkpoint", code)
         self.assertIn("bl     relocate", code)
+
+    def test_compiled_guard_cfg_rejects_escape_and_indirect_transfer(self):
+        audit = load_boot_audit()
+        rows = {
+            0: ("cmp", "", None, None, "_text"),
+            4: ("b.eq", "0xc", 12, None, "_text"),
+            8: ("nop", "", None, None, "_text"),
+            12: ("bl", "0x40 <loader_checkpoint_hex>", 64, "loader_checkpoint_hex", "_text"),
+            16: ("b", "0x1c", 28, None, "_text"),
+            28: ("b", "0x1c", 28, None, "_text"),
+        }
+        result = audit.audit_guard_control_flow(
+            rows, entry=0, relocation_call=32, stop=28,
+            allowed_helpers={"loader_checkpoint_hex"})
+        self.assertTrue(result["all_paths_stop_before_relocation"])
+        self.assertEqual(result["stop_loop_address"], "0x1c")
+        for address, bad_row in (
+            (8, ("b", "0x20", 32, None, "_text")),
+            (8, ("br", "x0", None, None, "_text")),
+            (8, ("b", "0x14", 20, None, "_text")),
+        ):
+            with self.subTest(bad_row=bad_row):
+                mutant = dict(rows)
+                mutant[address] = bad_row
+                with self.assertRaises(ValueError):
+                    audit.audit_guard_control_flow(
+                        mutant, entry=0, relocation_call=32, stop=28,
+                        allowed_helpers={"loader_checkpoint_hex"})
+
+    def test_closed_display_helper_cfg_accepts_local_call_and_lr_restore(self):
+        audit = load_boot_audit()
+        symbols = {
+            "loader_checkpoint": 0x100,
+            "loader_checkpoint_hex": 0x200,
+            "loader_checkpoint_draw_line": 0x300,
+            "next_symbol": 0x400,
+        }
+        instructions = {
+            0x100: ("sub", "sp, sp, #0x20", None, None, "loader_checkpoint"),
+            0x104: ("stp", "x29, x30, [sp, #0x10]", None, None, "loader_checkpoint"),
+            0x108: ("add", "x30, x20, x27", None, None, "loader_checkpoint"),
+            0x10C: ("bl", "0x300 <loader_checkpoint_draw_line>", 0x300,
+                    "loader_checkpoint_draw_line", "loader_checkpoint"),
+            0x110: ("ldp", "x29, x30, [sp, #0x10]", None, None, "loader_checkpoint"),
+            0x114: ("add", "sp, sp, #0x20", None, None, "loader_checkpoint"),
+            0x118: ("ret", "", None, None, "loader_checkpoint"),
+            0x200: ("ret", "", None, None, "loader_checkpoint_hex"),
+            0x300: ("ret", "", None, None, "loader_checkpoint_draw_line"),
+        }
+        result = audit.audit_closed_display_helpers(symbols, instructions,
+                                                     (0xc0007000, 0xc0008000))
+        self.assertEqual(result["helpers_checked"], 3)
+
+    def test_closed_display_helper_cfg_rejects_alternate_return_register(self):
+        audit = load_boot_audit()
+        symbols = {
+            "loader_checkpoint": 0x100,
+            "loader_checkpoint_hex": 0x200,
+            "loader_checkpoint_draw_line": 0x300,
+            "next_symbol": 0x400,
+        }
+        instructions = {
+            0x100: ("ret", "x0", None, None, "loader_checkpoint"),
+            0x200: ("ret", "", None, None, "loader_checkpoint_hex"),
+            0x300: ("ret", "", None, None, "loader_checkpoint_draw_line"),
+        }
+        with self.assertRaisesRegex(ValueError, "normal LR return"):
+            audit.audit_closed_display_helpers(symbols, instructions,
+                                                (0xc0007000, 0xc0008000))
+
+    def test_closed_display_helper_cfg_rejects_unpreserved_lr_scratch(self):
+        audit = load_boot_audit()
+        symbols = {
+            "loader_checkpoint": 0x100,
+            "loader_checkpoint_hex": 0x200,
+            "loader_checkpoint_draw_line": 0x300,
+            "next_symbol": 0x400,
+        }
+        instructions = {
+            0x100: ("add", "x30, x20, x27", None, None, "loader_checkpoint"),
+            0x104: ("ret", "", None, None, "loader_checkpoint"),
+            0x200: ("ret", "", None, None, "loader_checkpoint_hex"),
+            0x300: ("ret", "", None, None, "loader_checkpoint_draw_line"),
+        }
+        with self.assertRaisesRegex(ValueError, "preserves LR before reuse"):
+            audit.audit_closed_display_helpers(symbols, instructions,
+                                                (0xc0007000, 0xc0008000))
+
+    def test_closed_display_helper_cfg_rejects_mismatched_or_duplicate_lr_restore(self):
+        audit = load_boot_audit()
+        symbols = {
+            "loader_checkpoint": 0x100,
+            "loader_checkpoint_hex": 0x200,
+            "loader_checkpoint_draw_line": 0x300,
+            "next_symbol": 0x400,
+        }
+        tails = {
+            0x200: ("ret", "", None, None, "loader_checkpoint_hex"),
+            0x300: ("ret", "", None, None, "loader_checkpoint_draw_line"),
+        }
+        prefix = {
+            0x100: ("stp", "x29, x30, [sp, #-0x10]!", None, None, "loader_checkpoint"),
+        }
+        mutants = (
+            {
+                0x104: ("ldp", "x29, x30, [sp, #0x8]", None, None, "loader_checkpoint"),
+                0x108: ("ret", "", None, None, "loader_checkpoint"),
+            },
+            {
+                0x104: ("ldp", "x29, x30, [sp], #0x10", None, None, "loader_checkpoint"),
+                0x108: ("ldp", "x29, x30, [sp], #0x10", None, None, "loader_checkpoint"),
+                0x10C: ("ret", "", None, None, "loader_checkpoint"),
+            },
+        )
+        for mutant in mutants:
+            with self.subTest(mutant=mutant):
+                with self.assertRaises(ValueError):
+                    audit.audit_closed_display_helpers(
+                        symbols, {**tails, **prefix, **mutant},
+                        (0xc0007000, 0xc0008000))
+
+    def test_closed_display_helper_cfg_rejects_store_over_saved_lr_word(self):
+        audit = load_boot_audit()
+        symbols = {
+            "loader_checkpoint": 0x100,
+            "loader_checkpoint_hex": 0x200,
+            "loader_checkpoint_draw_line": 0x300,
+            "next_symbol": 0x400,
+        }
+        tails = {
+            0x200: ("ret", "", None, None, "loader_checkpoint_hex"),
+            0x300: ("ret", "", None, None, "loader_checkpoint_draw_line"),
+        }
+        prefix = {
+            0x100: ("stp", "x29, x30, [sp, #-0x10]!", None, None, "loader_checkpoint"),
+        }
+        mutants = (
+            (("str", "x0, [sp, #0x8]"),),
+            (("stp", "x0, x1, [sp]"),),
+            (("stp", "xzr, x0, [sp]"),),
+            (("str", "x0, [sp, x2]"),),
+            (("cas", "x0, x1, [sp, #0x8]"),),
+            (("caspal", "x0, x1, x2, x3, [sp]"),),
+            (("stgp", "x0, x1, [sp]"),),
+            (("mov", "x29, sp"), ("str", "x0, [x29, #0x8]")),
+            (("mov", "x29, sp"), ("str", "x0, [x29, x2]")),
+            (("mov", "x29, sp"), ("movz", "x10, #4"),
+             ("add", "x9, x29, x10, lsl #1"), ("strb", "w0, [x9]")),
+        )
+        for steps in mutants:
+            with self.subTest(steps=steps):
+                instructions = {**tails, **prefix}
+                address = 0x104
+                for mnemonic, operands in steps:
+                    instructions[address] = (mnemonic, operands, None, None, "loader_checkpoint")
+                    address += 4
+                instructions[address] = ("ldp", "x29, x30, [sp], #0x10", None,
+                                         None, "loader_checkpoint")
+                address += 4
+                instructions[address] = ("ret", "", None, None, "loader_checkpoint")
+                with self.assertRaises(ValueError):
+                    audit.audit_closed_display_helpers(
+                        symbols, instructions, (0xc0007000, 0xc0008000))
+
+    def test_closed_display_helper_cfg_accounts_for_two_granule_tag_stores(self):
+        audit = load_boot_audit()
+        symbols = {
+            "loader_checkpoint": 0x100,
+            "loader_checkpoint_hex": 0x200,
+            "loader_checkpoint_draw_line": 0x300,
+            "next_symbol": 0x400,
+        }
+        tails = {
+            0x200: ("ret", "", None, None, "loader_checkpoint_hex"),
+            0x300: ("ret", "", None, None, "loader_checkpoint_draw_line"),
+        }
+        for mnemonic in ("st2g", "stz2g"):
+            with self.subTest(mnemonic=mnemonic):
+                instructions = {
+                    **tails,
+                    0x100: ("stp", "x29, x30, [sp, #-0x20]!", None,
+                            None, "loader_checkpoint"),
+                    0x104: (mnemonic, "x0, [sp, #-0x10]", None,
+                            None, "loader_checkpoint"),
+                    0x108: ("ldp", "x29, x30, [sp], #0x20", None,
+                            None, "loader_checkpoint"),
+                    0x10C: ("ret", "", None, None, "loader_checkpoint"),
+                }
+                with self.assertRaisesRegex(ValueError, "does not overwrite saved LR"):
+                    audit.audit_closed_display_helpers(
+                        symbols, instructions, (0xc0007000, 0xc0008000))
+
+    def test_closed_display_helper_cfg_rejects_unproven_absolute_store_bases(self):
+        audit = load_boot_audit()
+        symbols = {
+            "loader_checkpoint": 0x100,
+            "loader_checkpoint_hex": 0x200,
+            "loader_checkpoint_draw_line": 0x300,
+            "next_symbol": 0x400,
+        }
+        tails = {
+            0x200: ("ret", "", None, None, "loader_checkpoint_hex"),
+            0x300: ("ret", "", None, None, "loader_checkpoint_draw_line"),
+        }
+        prefix = {
+            0x100: ("stp", "x29, x30, [sp, #-0x10]!", None, None, "loader_checkpoint"),
+        }
+        mutants = (
+            ((('adr', 'x9, 0xc0007ff8 <_stack_alias>', 0xc0007ff8,
+               '_stack_alias'),), ('str', 'x0, [x9]')),
+            ((('adrp', 'x9, 0xc0007000 <_stack_page>', 0xc0007000,
+               '_stack_page'),
+              ('add', 'x9, x9, #0xff8', None, None)), ('str', 'x0, [x9]')),
+            ((('movz', 'x9, #0x7ff8', None, None),
+              ('movk', 'x9, #0xc000, lsl #16', None, None)), ('str', 'x0, [x9]')),
+        )
+        for address_instructions, store in mutants:
+            with self.subTest(address_instructions=address_instructions):
+                instructions = {**tails, **prefix}
+                address = 0x104
+                for mnemonic, operands, target, target_name in address_instructions:
+                    instructions[address] = (mnemonic, operands, target,
+                                             target_name, "loader_checkpoint")
+                    address += 4
+                instructions[address] = (store[0], store[1], None, None,
+                                         "loader_checkpoint")
+                address += 4
+                instructions[address] = ("ldp", "x29, x30, [sp], #0x10", None,
+                                         None, "loader_checkpoint")
+                address += 4
+                instructions[address] = ("ret", "", None, None, "loader_checkpoint")
+                with self.assertRaisesRegex(ValueError, "write base may alias saved LR"):
+                    audit.audit_closed_display_helpers(
+                        symbols, instructions, (0xc0007000, 0xc0008000))
+
+    def test_closed_display_helper_cfg_accepts_only_declared_framebuffer_addresses(self):
+        audit = load_boot_audit()
+        symbols = {
+            "loader_checkpoint": 0x100,
+            "loader_checkpoint_hex": 0x200,
+            "loader_checkpoint_draw_line": 0x300,
+            "next_symbol": 0x400,
+        }
+        instructions = {
+            0x100: ("stp", "x29, x30, [sp, #-0x10]!", None, None, "loader_checkpoint"),
+            0x104: ("movz", "x9, #0x0000", None, None, "loader_checkpoint"),
+            0x108: ("movk", "x9, #0x9c00, lsl #16", None, None, "loader_checkpoint"),
+            0x10C: ("movk", "x9, #0x9ca4, lsl #16", None, None, "loader_checkpoint"),
+            0x110: ("str", "x0, [x9]", None, None, "loader_checkpoint"),
+            0x114: ("ldp", "x29, x30, [sp], #0x10", None, None, "loader_checkpoint"),
+            0x118: ("ret", "", None, None, "loader_checkpoint"),
+            0x200: ("ret", "", None, None, "loader_checkpoint_hex"),
+            0x300: ("ret", "", None, None, "loader_checkpoint_draw_line"),
+        }
+        result = audit.audit_closed_display_helpers(
+            symbols, instructions, (0xc0007000, 0xc0008000))
+        self.assertEqual(result["helpers_checked"], 3)
+
+    def test_closed_display_helper_cfg_rejects_framebuffer_derived_out_of_range_store(self):
+        audit = load_boot_audit()
+        symbols = {
+            "loader_checkpoint": 0x100,
+            "loader_checkpoint_hex": 0x200,
+            "loader_checkpoint_draw_line": 0x300,
+            "next_symbol": 0x400,
+        }
+        instructions = {
+            0x100: ("stp", "x29, x30, [sp, #-0x10]!", None, None, "loader_checkpoint"),
+            0x104: ("movz", "x9, #0x0000", None, None, "loader_checkpoint"),
+            0x108: ("movk", "x9, #0x9c00, lsl #16", None, None, "loader_checkpoint"),
+            0x10C: ("add", "x9, x9, #0x1347f00", None, None, "loader_checkpoint"),
+            0x110: ("str", "x0, [x9]", None, None, "loader_checkpoint"),
+            0x114: ("ldp", "x29, x30, [sp], #0x10", None, None, "loader_checkpoint"),
+            0x118: ("ret", "", None, None, "loader_checkpoint"),
+            0x200: ("ret", "", None, None, "loader_checkpoint_hex"),
+            0x300: ("ret", "", None, None, "loader_checkpoint_draw_line"),
+        }
+        with self.assertRaisesRegex(ValueError, "framebuffer"):
+            audit.audit_closed_display_helpers(
+                symbols, instructions, (0xc0007000, 0xc0008000))
+
+    def test_closed_display_helper_cfg_rejects_shifted_dynamic_framebuffer_store(self):
+        audit = load_boot_audit()
+        symbols = {
+            "loader_checkpoint": 0x100,
+            "loader_checkpoint_hex": 0x200,
+            "loader_checkpoint_draw_line": 0x300,
+            "next_symbol": 0x400,
+        }
+        instructions = {
+            0x100: ("stp", "x29, x30, [sp, #-0x10]!", None, None, "loader_checkpoint"),
+            0x104: ("movz", "x9, #0x0000", None, None, "loader_checkpoint"),
+            0x108: ("movk", "x9, #0x9c00, lsl #16", None, None, "loader_checkpoint"),
+            0x10C: ("add", "x9, x9, x10", None, None, "loader_checkpoint"),
+            0x110: ("add", "x9, x9, #4", None, None, "loader_checkpoint"),
+            0x114: ("str", "w0, [x9]", None, None, "loader_checkpoint"),
+            0x118: ("ldp", "x29, x30, [sp], #0x10", None, None, "loader_checkpoint"),
+            0x11C: ("ret", "", None, None, "loader_checkpoint"),
+            0x200: ("ret", "", None, None, "loader_checkpoint_hex"),
+            0x300: ("ret", "", None, None, "loader_checkpoint_draw_line"),
+        }
+        with self.assertRaisesRegex(ValueError, "framebuffer"):
+            audit.audit_closed_display_helpers(
+                symbols, instructions, (0xc0007000, 0xc0008000))
+
+    def test_closed_display_helper_cfg_rejects_loop_carried_framebuffer_pointer(self):
+        audit = load_boot_audit()
+        symbols = {
+            "loader_checkpoint": 0x100,
+            "loader_checkpoint_hex": 0x200,
+            "loader_checkpoint_draw_line": 0x300,
+            "next_symbol": 0x400,
+        }
+        instructions = {
+            0x100: ("stp", "x29, x30, [sp, #-0x10]!", None, None, "loader_checkpoint"),
+            0x104: ("movz", "x9, #0x0000", None, None, "loader_checkpoint"),
+            0x108: ("movk", "x9, #0x9c00, lsl #16", None, None, "loader_checkpoint"),
+            0x10C: ("add", "x9, x9, x10", None, None, "loader_checkpoint"),
+            0x110: ("add", "x9, x9, #4", None, None, "loader_checkpoint"),
+            0x114: ("str", "w0, [x9]", None, None, "loader_checkpoint"),
+            0x118: ("cbz", "x8, 0x120", 0x120, None, "loader_checkpoint"),
+            0x11C: ("b", "0x110", 0x110, None, "loader_checkpoint"),
+            0x120: ("ldp", "x29, x30, [sp], #0x10", None, None, "loader_checkpoint"),
+            0x124: ("ret", "", None, None, "loader_checkpoint"),
+            0x200: ("ret", "", None, None, "loader_checkpoint_hex"),
+            0x300: ("ret", "", None, None, "loader_checkpoint_draw_line"),
+        }
+        with self.assertRaisesRegex(ValueError, "framebuffer"):
+            audit.audit_closed_display_helpers(
+                symbols, instructions, (0xc0007000, 0xc0008000))
+
+    def test_closed_display_helper_cfg_rejects_fallthrough_and_escape(self):
+        audit = load_boot_audit()
+        symbols = {
+            "loader_checkpoint": 0x100,
+            "loader_checkpoint_hex": 0x200,
+            "loader_checkpoint_draw_line": 0x300,
+            "next_symbol": 0x400,
+        }
+        good_tail = {
+            0x200: ("ret", "", None, None, "loader_checkpoint_hex"),
+            0x300: ("ret", "", None, None, "loader_checkpoint_draw_line"),
+        }
+        mutants = (
+            {0x100: ("nop", "", None, None, "loader_checkpoint")},
+            {0x100: ("b", "0x200", 0x200, None, "loader_checkpoint")},
+        )
+        for first in mutants:
+            with self.subTest(first=first):
+                with self.assertRaises(ValueError):
+                    audit.audit_closed_display_helpers(
+                        symbols, {**good_tail, **first}, (0xc0007000, 0xc0008000))
 
 
 if __name__ == "__main__":
