@@ -6,6 +6,7 @@ __pycache__/
 rust/target/
 tests/net/seal_host/target/
 tests/input/messages_model/target/
+.worktrees/
 
 # Pixel P0 local binaries (DT sources and README stay in git)
 docs/pixel-p0-assets/lineage-ref/
