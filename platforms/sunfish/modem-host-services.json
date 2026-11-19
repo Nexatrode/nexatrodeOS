@@ -1,0 +1,1953 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-22",
+  "device": "Pixel 4a sunfish",
+  "scope": "Historical working-Lineage comparison, current offline bounded host services and native transport owner, plus a read-only LineageOS sysfs check of UFS IOMMU attachment.",
+  "evidence": {
+    "baseline_directory": ".cache/pixel-sunfish/lineage-modem-baseline-20261020T193451Z",
+    "trace_directory": ".cache/pixel-sunfish/modem-host-service-trace-20261020",
+    "namespace_complete": true,
+    "namespace_server_records": 123,
+    "modem_state_after_query": "ONLINE",
+    "modem_crashes_this_boot": 0,
+    "linux_uptime_seconds_after_query": 661.84,
+    "adb_restored_uid": 2000,
+    "helper_uploaded_then_removed": true,
+    "query_effect": "One local namespace NEW_LOOKUP and socket close; no new server registration or service-specific request.",
+    "firmware_hash_comparison": ".cache/pixel-sunfish/lineage-modem-baseline-20261020T193451Z/firmware-comparison.json"
+  },
+  "services": [
+    {
+      "name": "remote_storage",
+      "qmi_service_id": 14,
+      "version": 1,
+      "instance": 0,
+      "packed_instance": 1,
+      "live_servers": [
+        {
+          "service": 14,
+          "version": 1,
+          "instance": 0,
+          "node": 1,
+          "port": 16500
+        }
+      ],
+      "reference_ids": [
+        "rmtfs_registration",
+        "rmtfs_handlers",
+        "rmtfs_wire",
+        "rmtfs_paths",
+        "rmtfs_memory_setup",
+        "rmtfs_dynamic_allocation",
+        "rmtfs_memory_bounds"
+      ],
+      "messages": {
+        "OPEN": 1,
+        "CLOSE": 2,
+        "RW_IOVEC": 3,
+        "ALLOC_BUFFER": 4,
+        "GET_DEVICE_ERROR": 5,
+        "FORCE_SYNC_INDICATION": 6
+      },
+      "observed_working_boot": [
+        "Four OPEN requests for modem_fs1, modem_fs2, modem_fsg and modem_fsc.",
+        "2 MiB ALLOC_BUFFER request.",
+        "512-byte header reads from modem_fs1/fs2, then 2,096,128-byte modem_fs1 read and 65,536-byte modem_fsc read.",
+        "A later 2 MiB modem_fs2 write completed at Linux uptime about 130 seconds; persistence cannot be treated as universally unused."
+      ],
+      "path_bindings": [
+        {
+          "request": "/boot/modem_fs1",
+          "partition": "modemst1",
+          "live_block_device": "/dev/block/sdf2"
+        },
+        {
+          "request": "/boot/modem_fs2",
+          "partition": "modemst2",
+          "live_block_device": "/dev/block/sdf3"
+        },
+        {
+          "request": "/boot/modem_fsg",
+          "partition": "fsg",
+          "live_block_device": "/dev/block/sdf4"
+        },
+        {
+          "request": "/boot/modem_fsc",
+          "partition": "fsc",
+          "live_block_device": "/dev/block/sdf5"
+        }
+      ],
+      "memory": {
+        "transfer_bytes": 2097152,
+        "allocation_guard_bytes_each_side": 4096,
+        "source_vmids": [
+          3
+        ],
+        "destination_vmids": [
+          3,
+          15
+        ],
+        "destination_permissions": "read/write for HLOS and MSS_MSA",
+        "live_uio": "/dev/uio0",
+        "live_address_observation_only": "0xf4601000",
+        "reuse_live_address_in_custom_boot": false,
+        "distinct_from": [
+          "SMEM GLINK FIFOs",
+          "modem executable image pool",
+          "5 MiB heap-memory service",
+          "WLAN MSA"
+        ]
+      },
+      "missing": [
+        "Concrete native provider for the allowed per-device storage images or block backend, including verified persistence and sync semantics.",
+        "Dedicated guarded 2 MiB storage reservation with validated mappings and confirmed HLOS/MSS shared SCM access/reclaim.",
+        "Attach the tested generic handlers to native provider/callback lifetime before service publication; current native readiness remains false.",
+        "Production lifecycle teardown/recovery, hardware proof and optional FORCE_SYNC indication support."
+      ],
+      "compatibility_limit": "linux-msm/rmtfs is a protocol/reference implementation, not source attestation for the proprietary rmt_storage binary. Live service tuple and working log sequence agree; raw service-specific request bytes have not been captured."
+    },
+    {
+      "name": "heap_memory_sharing",
+      "qmi_service_id": 52,
+      "version": 1,
+      "instance": 1,
+      "packed_instance": 257,
+      "live_servers": [
+        {
+          "service": 52,
+          "version": 1,
+          "instance": 1,
+          "node": 1,
+          "port": 16454
+        }
+      ],
+      "reference_ids": [
+        "memshare_service",
+        "memshare_registration",
+        "memshare_assignment",
+        "memshare_allocate",
+        "memshare_query",
+        "memshare_config",
+        "memshare_allocation_schema",
+        "memshare_message_ids",
+        "captured_memshare_config"
+      ],
+      "messages": {
+        "ALLOC_GENERIC": 34,
+        "FREE_GENERIC": 35,
+        "QUERY_SIZE": 36
+      },
+      "observed_client": {
+        "client_id": 1,
+        "proc_id": 0,
+        "label": "modem",
+        "request_bytes": 5242880,
+        "dt_max_bytes": 5242880,
+        "policy": "allocate-on-request"
+      },
+      "observed_working_boot": [
+        "QUERY_SIZE returns 5,242,880 bytes with success.",
+        "ALLOC_GENERIC for client 1 / processor 0 requests 5,242,880 bytes and logs a successful response."
+      ],
+      "memory": {
+        "source_vmids": [
+          3
+        ],
+        "destination_vmids": [
+          15
+        ],
+        "destination_permissions": "read/write for MSS_MSA only; unlike the storage pool, HLOS is not retained in the destination list",
+        "allocation": "dma_alloc_attrs with DMA_ATTR_NO_KERNEL_MAPPING",
+        "guard_band_for_observed_client": false,
+        "distinct_from": [
+          "2 MiB remote-storage transfer pool",
+          "WLAN MSA",
+          "WMI host-memory request buffers"
+        ]
+      },
+      "allocation_request_tlvs": {
+        "0x01": "u32 num_bytes",
+        "0x02": "u32 client_id",
+        "0x03": "u32 proc_id",
+        "0x04": "u32 sequence_id",
+        "0x10": "optional u8 alloc_contiguous",
+        "0x11": "optional u32 block_alignment"
+      },
+      "minimum_qrtr_v1_allocation_datagram_bytes": 67,
+      "missing": [
+        "Dedicated guarded 5 MiB native reservation and narrow SCM assignment/reclaim provider with truthful confirmed ownership receipts.",
+        "Attach the tested client/sequence/exact-free policy and paired owner callbacks to those real native providers before publication.",
+        "Native quiescence/restart policy and physical ownership/cache verification. Freed pages are intentionally not reused within a handler generation."
+      ],
+      "source_caveat": "The Linux shared_hyp_mapping helper returns void and logs assignment errors; the allocation result is filled before that helper. A success log is not independent proof that VMID assignment succeeded."
+    },
+    {
+      "name": "tftp_file_service",
+      "service_id": 4096,
+      "live_servers": [
+        {
+          "service": 4096,
+          "version": 7,
+          "instance": 0,
+          "node": 1,
+          "port": 16507
+        },
+        {
+          "service": 4096,
+          "version": 10,
+          "instance": 0,
+          "node": 1,
+          "port": 16494
+        },
+        {
+          "service": 4096,
+          "version": 10,
+          "instance": 0,
+          "node": 1,
+          "port": 16510
+        },
+        {
+          "service": 4096,
+          "version": 3,
+          "instance": 0,
+          "node": 1,
+          "port": 16484
+        },
+        {
+          "service": 4096,
+          "version": 3,
+          "instance": 0,
+          "node": 1,
+          "port": 16503
+        },
+        {
+          "service": 4096,
+          "version": 7,
+          "instance": 0,
+          "node": 1,
+          "port": 16490
+        },
+        {
+          "service": 4096,
+          "version": 6,
+          "instance": 0,
+          "node": 1,
+          "port": 16506
+        },
+        {
+          "service": 4096,
+          "version": 9,
+          "instance": 0,
+          "node": 1,
+          "port": 16493
+        },
+        {
+          "service": 4096,
+          "version": 9,
+          "instance": 0,
+          "node": 1,
+          "port": 16509
+        },
+        {
+          "service": 4096,
+          "version": 12,
+          "instance": 0,
+          "node": 1,
+          "port": 16496
+        },
+        {
+          "service": 4096,
+          "version": 2,
+          "instance": 0,
+          "node": 1,
+          "port": 16483
+        },
+        {
+          "service": 4096,
+          "version": 12,
+          "instance": 0,
+          "node": 1,
+          "port": 16512
+        },
+        {
+          "service": 4096,
+          "version": 5,
+          "instance": 0,
+          "node": 1,
+          "port": 16486
+        },
+        {
+          "service": 4096,
+          "version": 2,
+          "instance": 0,
+          "node": 1,
+          "port": 16502
+        },
+        {
+          "service": 4096,
+          "version": 5,
+          "instance": 0,
+          "node": 1,
+          "port": 16505
+        },
+        {
+          "service": 4096,
+          "version": 8,
+          "instance": 0,
+          "node": 1,
+          "port": 16492
+        },
+        {
+          "service": 4096,
+          "version": 8,
+          "instance": 0,
+          "node": 1,
+          "port": 16508
+        },
+        {
+          "service": 4096,
+          "version": 11,
+          "instance": 0,
+          "node": 1,
+          "port": 16495
+        },
+        {
+          "service": 4096,
+          "version": 1,
+          "instance": 0,
+          "node": 1,
+          "port": 16482
+        },
+        {
+          "service": 4096,
+          "version": 11,
+          "instance": 0,
+          "node": 1,
+          "port": 16511
+        },
+        {
+          "service": 4096,
+          "version": 4,
+          "instance": 0,
+          "node": 1,
+          "port": 16485
+        },
+        {
+          "service": 4096,
+          "version": 1,
+          "instance": 0,
+          "node": 1,
+          "port": 16501
+        },
+        {
+          "service": 4096,
+          "version": 6,
+          "instance": 0,
+          "node": 1,
+          "port": 16488
+        },
+        {
+          "service": 4096,
+          "version": 4,
+          "instance": 0,
+          "node": 1,
+          "port": 16504
+        }
+      ],
+      "missing": [
+        "Pixel runtime selection of the TFTP server service and an authorized fixed-extent read-only firmware-file provider; protocol policy does not supply or license image bytes."
+      ],
+      "limit": "Servers are present and startup shows a TFTP wake lock, but this capture contains no file-level requests. The pinned linux-msm reference publishes version 1; the vendor namespace advertises versions 1 through 12. Offline qcom_tftp parses bounded read-only RRQs for firmware-observed wlanmdsp.mbn aliases; qcom_qrtr_tftp and the native-owner service adapter support fixed-extent random-access sources and fetch only negotiated DATA blocks. ReadSourceCell can adapt mutable storage I/O while validating the live extent; source-read faults retire the transfer without retry. Authorized-image constructors remain test-only: the current Pixel image is observer-only, no firmware bytes have been served, and no production image source or applicable license authorization is selected. Do not assume protocol parity or claim a specific missing firmware file.",
+      "observer_probe_2026_10_22": {
+        "artifact": ".cache/pixel-sunfish/modem-tftp-observer-probe/fastboot.img",
+        "size_bytes": 41299968,
+        "sha256": "2b39dd7c506575a175ad255e0408b2fe51f230b2580c967c636bef5c7d69db23",
+        "native_pd_elf_sha256": "f2cf59f89ade9901a266215bad3b28733eaaf05e371a0659dfb0571345a85aa9",
+        "task_manifest": "platforms/sunfish/loader-task-regions-modem-tftp-observer.json",
+        "status": "temporarily_booted_result_captured_no_tracked_wlfw_or_tftp_rrq",
+        "scope": "One read-only SERVREG state query; passive QRTR IPA and WLFW service-announcement observation; and bounded TFTP RRQ/WRQ metadata only. No IPA QMI request, TFTP response or file bytes, PDR, WLFW client, MSA grant, WLAN DMA, firmware transfer, or radio start.",
+        "previous_capture": {
+          "image_sha256": "180be7f373ad7c03c16ab238c1b656db71ebce0cdf49fde9cac83f96a309eb5d",
+          "native_pd_elf_sha256": "798c88179ba33ab875c0523e5d24882ddddc8751817bf81d6a829032019164bc",
+          "result": "SERVREG query stopped; peer hello seen; no tracked IPA/WLFW service and no TFTP packet or RRQ."
+        },
+        "latest_capture": {
+          "image_sha256": "2b39dd7c506575a175ad255e0408b2fe51f230b2580c967c636bef5c7d69db23",
+          "native_pd_elf_sha256": "f2cf59f89ade9901a266215bad3b28733eaaf05e371a0659dfb0571345a85aa9",
+          "result": "QMI state query result/error 0/0 returned WLAN UNINIT; QRTR peer HELLO and two servers observed, with service IDs 0x42 and 0x2b; no tracked IPA/WLFW announcement or TFTP RRQ; later owner stop reason was modem-facing SMP2P err-fatal. No TFTP response, firmware bytes, PDR, or WLAN DMA."
+        }
+      }
+    },
+    {
+      "name": "ipa_control",
+      "service_id": 49,
+      "live_host_servers": [
+        {
+          "service": 49,
+          "version": 1,
+          "instance": 1,
+          "node": 1,
+          "port": 16451
+        }
+      ],
+      "live_modem_servers": [
+        {
+          "service": 49,
+          "version": 1,
+          "instance": 2,
+          "node": 0,
+          "port": 27
+        }
+      ],
+      "observed_working_boot": "INIT_MODEM_DRIVER request and response complete before WLAN QMI connection.",
+      "missing": [
+        "A trusted native IPA runtime snapshot/readiness provider remains absent. The opt-in IpaServerServices adapter now calls the AP service transport hooks for instance 1, matched 0x0020/0x0035 responses, and the 0x0022 indication, but it can advertise only with a generation-matched ApReadyPermit from a trusted live provider. The default phone path still selects NoServices."
+      ],
+      "init_modem_driver_request": {
+        "message_id": "0x0021",
+        "client_lookup": {
+          "service": 49,
+          "version": 1,
+          "instance": 2,
+          "live_modem_endpoint": {
+            "node": 0,
+            "port": 27
+          }
+        },
+        "runtime_inputs": [
+          "IPA_SHARED_MEM_SIZE shared_mem_baddr and shared_mem_sz register values, each in 8-byte units",
+          "APPS_WAN_CONS endpoint mapping after IPA initialization (endpoint 9 when allocated; absent otherwise)",
+          "IPA uC-loaded state distinguishing first boot from SSR",
+          "Read-only Lineage capture reads /sys/kernel/debug/ipa/hw_type and gen_reg; rust/src/sunfish_ipa_snapshot.rs parses the 8-byte-unit SRAM fields"
+        ],
+        "source_behavior": "The AP IPA driver uses service 0x31/version1 as both a local server (instance 1) and a client of modem instance 2. Its client builds 0x0021 from live IPA_MEM_PART values, SRAM geometry, SMEM restriction and endpoint mappings, then validates the modem response. The response can carry modem_driver_init_pending; when true, the AP must wait for the separate 0x0035 completion request. The AP server also handles 0x0020 indication registration and may send 0x0022 after its own QMI initialization completes. None of these states prove WLAN readiness, and the request is not safely reproducible as an all-zero or guessed static packet.",
+        "offline_status": "rust/src/qcom_ipa.rs implements the bounded no_std INIT_MODEM_DRIVER codec, source maximum, optional-field rules, and range validation. rust/src/sunfish_ipa_profile.rs derives the Sunfish IPA v4.2 request from static rules plus required live SRAM, endpoint, and uC-state inputs; rust/src/sunfish_ipa_snapshot.rs parses matched Lineage hw_type/gen_reg output without inventing unknown endpoint or uC state. The client is integrated in the host GLINK/QMI model, but the phone runtime does not enable it. rust/src/qcom_ipa_service.rs provides the bounded AP-side 0x0020/0x0035 response core and gated 0x0022 indication. The GLINK/QMI session, FIFO adapter, and native owner now expose AP service registration, readiness-controlled availability, source-matched response queuing, and indication queuing. AP response state commits only after both GLINK RX_DONE and QRTR RESUME_TX; response and indication completion tokens have offline exchange coverage. The opt-in IpaServerServices runtime adapter now prepares the instance-1 endpoint, gates advertisement on a generation-matched ApReadyPermit and QRTR peer HELLO, dispatches only the exact modem peer requests, and commits responses/indications after both GLINK RX_DONE and QRTR RESUME_TX. Native owner request demultiplexing leaves IPA and SERVREG requests for their dedicated dispatchers instead of passing them to storage/heap handlers. No trusted live IPA hardware-readiness provider exists and the default phone path remains NoServices, so this adapter is compiled/tested offline but is not enabled on the phone. The saved successful Lineage trace lacks raw QMI response fields, so it does not reveal whether modem_driver_init_pending was set. The no-radio AArch64 synthetic-codec probe was temporarily booted on 2026-10-24. The first response-fixture correction still omitted a byte; the exact check was factored into shared code, host-tested, and now passes. The latest rebuilt image awaits target retest. The read-only Lineage capture can inspect IPA hw_type/gen_reg and existing init log records without root or state changes. The read-only LineageOS IPA capture was rerun on 2026-10-23 with the Pixel attached; ordinary shell still could not read hw_type or gen_reg. The kernel log recorded the INIT_MODEM_DRIVER request and response 39 ms apart without a raw payload. Boot logs showed modem out of reset, QRTR readiness, wlan_pd state 0x1fffffff acknowledged, icnss QMI connected at 0x980, and WLAN FW ready 0xd87 followed by the WMA ready event. APPS_WAN_CONS and IPA uC-loaded state remain unknown; no evidence yet proves this exchange causes the custom modem failure. The native IpaModemInitServices adapter now reserves the client before QRTR startup, sends one source-matched request after exact modem IPA service discovery, and gates MSA progression on a successful response. If modem_driver_init_pending is true, it also requires the AP IPA server to commit the separate 0x0035 completion response. This adapter is only exercised with a test-only InitPermit: no trusted live IPA provider can mint the production permit, so the phone runtime does not enable it.",
+        "device_check_plan": {
+          "lineage_read_only_capture": "Run platforms/sunfish/capture-lineage-ipa-state.sh on normal LineageOS. It verifies the connected phone is sunfish/LineageOS, reports ro.baseband, the vendor.mdm_helper init service state/PID, and read-only presence checks for /vendor/bin/init.mdm.sh and /vendor/bin/mdm_helper; reads IPA hw_type/gen_reg where available; and asks ordinary logcat for at most 2,500 recent kernel records filtered to IPA INIT_MODEM_DRIVER markers/fields. It filters available all-buffer logcat records for QRTR/PD-mapper startup, SERVREG_LOC connection, modem loading, IPA init, SERVREG_NOTIF instance-180 connection and wlan_pd notification/ACK, plus targeted MDM-helper, PerMgrSrv/PerMgrLib/PerMgrProxy and cnss-daemon PM registration, connect/vote, event-ack, modem proxy-vote, and WLFW lifecycle lines, plus per_mgr/per_proxy init timestamps and tftp_server log records. No root, dynamic-debug changes, writable debugfs endpoint reads, QMI requests, modem restart, or radio startup.",
+          "temporary_no_radio_probe": {
+            "artifact": ".cache/pixel-sunfish/wlan-protocol-probe/fastboot.img",
+            "size_bytes": 18669568,
+            "sha256": "66c711c3b6f41cfe1801f120af316668995a981d015c8737ce83d153ada16986",
+            "status": "rebuilt_after_second_target_codec_failure_pending_retest",
+            "scope": "Splash-only target execution of a synthetic codec check; no IPA/WLAN MMIO, SMMU, modem, GLINK, IRQ, SMC, DMA, or firmware capability.",
+            "latest_screen_result": "2026-10-24 photos: CE descriptor, QRTR, WMI 10.4, HTC WMI TX, scan frame, and QCACLD INIT pass; IPA codec still failed after the first fix because the success response omitted one zero byte from the 4-byte result TLV. The exact shared check is now host-tested and passes, and the full test-modem-qmi.py validation completed successfully; rebuilt image awaits target retest."
+          },
+          "current_device_state": "On 2026-10-24, the Pixel remained on the earlier no-radio protocol probe screen after its IPA codec check failed. The Mac currently enumerates neither ADB nor Fastboot. The corrected probe is built and waiting for a temporary Fastboot boot; no partition was flashed."
+        }
+      },
+      "limit": "Adjacent startup dependency; no evidence yet establishes whether this is required for the observed watchdog or WLAN availability."
+    }
+  ],
+  "common_transport_gaps": [
+    "The fatal-trace build delegates to the measured-wait discovery path. It performs QRTR HELLO and passive service inventory, not remote-storage or memory service registration.",
+    "Discovery service() only accepts a 52-byte QRTR v1 NEW_SERVER control datagram; it cannot dispatch QMI DATA packets to local service endpoints.",
+    "The discovery buffers are 64 bytes and verified/copy52 assumes 52 payload bytes. A minimum heap allocation datagram is 32-byte QRTR + 7-byte QMI + four 7-byte TLVs = 67 bytes.",
+    "Storage IOVEC request arrays and other messages require bounded variable-length receiving and GLINK fragment handling, not only larger constants.",
+    "No native block mapping or separate modem-accessible storage/heap pool appears in the fatal-trace system. Its private buffers do not supply those remote address contracts.",
+    "Optional standalone SERVREG replies are not implementations of service 0x0e or 0x34 and are not enabled by the fatal-trace build."
+  ],
+  "implementation_order": [
+    {
+      "step": 1,
+      "work": "Build and host-validate bounded QRTR endpoint routing, QMI envelope/TLV parsing and GLINK variable-length assembly. Keep peer ports, transaction IDs, intent IDs and memory addresses separate.",
+      "status": "implemented and tested offline; native provider/attachment and hardware validation still pending"
+    },
+    {
+      "step": 2,
+      "work": "Specify storage handles/path allowlist, sector/IOVEC bounds, storage backend and separate storage-transfer / heap memory leases; use known data fixtures offline.",
+      "status": "implemented and tested offline, including bounded storage, verified host-file sync/reopen, composed SCM-pool backend, and audited UFS resource/lifecycle model; native UFS platform adapter, ownership and data authority pending"
+    },
+    {
+      "step": 3,
+      "work": "Reserve and validate disjoint pools; trace and implement exact SCM assignment semantics and failure/quarantine handling. Linux dynamic addresses are observations, never addresses to replay.",
+      "status": "implemented and tested offline: fixed reservations, CapDL/DT/loader validation and bounded SCM adapter; native ownership contract/gate and hardware verification pending"
+    },
+    {
+      "step": 4,
+      "work": "Implement QUERY_SIZE and storage OPEN as bounded service handlers, then real ALLOC/transfer support only when backing data and memory authority are ready. Advertising a service alone is not completion.",
+      "status": "implemented and tested offline; native provider/attachment and hardware validation still pending"
+    },
+    {
+      "step": 5,
+      "work": "Before attempting WLFW startup, establish whether the Sunfish IPA INIT_MODEM_DRIVER exchange is required and either provide a reviewed IPA resource provider plus exact QMI client request, or document evidence that the modem/WLAN path can proceed without it.",
+      "status": "Source and successful-boot ordering confirmed; bounded request client and AP-side service core now have offline-tested native-owner transport hooks, including dual-ack response/indication completion. A trusted live IPA readiness provider and runtime call sites remain absent, as does evidence that this exchange is required to fix the observed failure."
+    },
+    {
+      "step": 6,
+      "work": "Prepare one integrated temporary boot that logs endpoint registration, request/response progress and fatal status; only run it when the completed host implementation gives a specific hypothesis to test.",
+      "status": "pending native implementation/validation"
+    }
+  ],
+  "conclusion": "Remote storage and heap-memory host services are confirmed missing from the tested path and confirmed active during a successful Lineage boot. The IPA INIT_MODEM_DRIVER exchange also completes before WLAN QMI connects in the successful boot. The bounded request client and AP-side service core are now connected to native-owner transport hooks and offline-tested through both transport acknowledgements. A trusted live IPA readiness provider and runtime call sites remain absent, so the owner does not yet publish the AP IPA service or run the exchanges on the phone. The modem response can require a second completion exchange, but the saved Lineage logs do not show whether that branch ran. IPA necessity for the observed modem failure remains unproven. The watchdog reason does not identify which missing dependency, or exclude another cause.",
+  "limits": [
+    "No modem partition contents were read or copied; only symlinks, descriptor targets, UIO metadata and existing startup logs were inspected.",
+    "The live namespace shows service registration, not the exact ordering or content of every request.",
+    "Lineage uptime and custom-probe elapsed time have different origins.",
+    "Source-base equality is not exact running-kernel binary provenance.",
+    "No device root filesystem, radio settings or partitions were modified; a temporary helper was uploaded and removed, and adb root/unroot was used."
+  ],
+  "source_references": {
+    "rmtfs_registration": {
+      "path": ".cache/pixel-sunfish/modem-host-service-trace-20261020/reference/rmtfs/rmtfs.c",
+      "line": 24,
+      "sha256": "ff99083eb0d8bdd84a42306fcb1e357e87be9e49b45f607493df99c9f3b42f7b",
+      "url": "https://github.com/linux-msm/rmtfs/blob/b30a3eb38f9af283f18dbd3c7755653efc52c094/rmtfs.c",
+      "snapshot_path": ".cache/pixel-sunfish/modem-host-service-trace-20261020/source-snapshots/.cache/pixel-sunfish/modem-host-service-trace-20261020/reference/rmtfs/rmtfs.c"
+    },
+    "rmtfs_handlers": {
+      "path": ".cache/pixel-sunfish/modem-host-service-trace-20261020/reference/rmtfs/rmtfs.c",
+      "line": 360,
+      "sha256": "ff99083eb0d8bdd84a42306fcb1e357e87be9e49b45f607493df99c9f3b42f7b",
+      "url": "https://github.com/linux-msm/rmtfs/blob/b30a3eb38f9af283f18dbd3c7755653efc52c094/rmtfs.c",
+      "snapshot_path": ".cache/pixel-sunfish/modem-host-service-trace-20261020/source-snapshots/.cache/pixel-sunfish/modem-host-service-trace-20261020/reference/rmtfs/rmtfs.c"
+    },
+    "rmtfs_transfer": {
+      "path": ".cache/pixel-sunfish/modem-host-service-trace-20261020/reference/rmtfs/rmtfs.c",
+      "line": 149,
+      "sha256": "ff99083eb0d8bdd84a42306fcb1e357e87be9e49b45f607493df99c9f3b42f7b",
+      "url": "https://github.com/linux-msm/rmtfs/blob/b30a3eb38f9af283f18dbd3c7755653efc52c094/rmtfs.c",
+      "snapshot_path": ".cache/pixel-sunfish/modem-host-service-trace-20261020/source-snapshots/.cache/pixel-sunfish/modem-host-service-trace-20261020/reference/rmtfs/rmtfs.c"
+    },
+    "rmtfs_wire": {
+      "path": ".cache/pixel-sunfish/modem-host-service-trace-20261020/reference/rmtfs/qmi_rmtfs.qmi",
+      "line": 10,
+      "sha256": "d02cc77f0a0138bee4a54d11c44150c5adb53a02ad083b6e4d3e4ed17587f2fa",
+      "url": "https://github.com/linux-msm/rmtfs/blob/b30a3eb38f9af283f18dbd3c7755653efc52c094/qmi_rmtfs.qmi",
+      "snapshot_path": ".cache/pixel-sunfish/modem-host-service-trace-20261020/source-snapshots/.cache/pixel-sunfish/modem-host-service-trace-20261020/reference/rmtfs/qmi_rmtfs.qmi"
+    },
+    "rmtfs_paths": {
+      "path": ".cache/pixel-sunfish/modem-host-service-trace-20261020/reference/rmtfs/storage.c",
+      "line": 39,
+      "sha256": "7d69325b8e035af2682d6bfed8dcfabaf083a9e33a749614dbb57f79eda852e7",
+      "url": "https://github.com/linux-msm/rmtfs/blob/b30a3eb38f9af283f18dbd3c7755653efc52c094/storage.c",
+      "snapshot_path": ".cache/pixel-sunfish/modem-host-service-trace-20261020/source-snapshots/.cache/pixel-sunfish/modem-host-service-trace-20261020/reference/rmtfs/storage.c"
+    },
+    "rmtfs_shadow_write": {
+      "path": ".cache/pixel-sunfish/modem-host-service-trace-20261020/reference/rmtfs/storage.c",
+      "line": 242,
+      "sha256": "7d69325b8e035af2682d6bfed8dcfabaf083a9e33a749614dbb57f79eda852e7",
+      "url": "https://github.com/linux-msm/rmtfs/blob/b30a3eb38f9af283f18dbd3c7755653efc52c094/storage.c",
+      "snapshot_path": ".cache/pixel-sunfish/modem-host-service-trace-20261020/source-snapshots/.cache/pixel-sunfish/modem-host-service-trace-20261020/reference/rmtfs/storage.c"
+    },
+    "rmtfs_memory_bounds": {
+      "path": ".cache/pixel-sunfish/modem-host-service-trace-20261020/reference/rmtfs/sharedmem.c",
+      "line": 338,
+      "sha256": "8919421c90578f8bcd8093231c599678ebca0d28ed82ffc460eefe07d3dfd5f7",
+      "url": "https://github.com/linux-msm/rmtfs/blob/b30a3eb38f9af283f18dbd3c7755653efc52c094/sharedmem.c",
+      "snapshot_path": ".cache/pixel-sunfish/modem-host-service-trace-20261020/source-snapshots/.cache/pixel-sunfish/modem-host-service-trace-20261020/reference/rmtfs/sharedmem.c"
+    },
+    "rmtfs_memory_setup": {
+      "path": ".cache/sunfish-lineage-kernel/drivers/uio/msm_sharedmem/msm_sharedmem.c",
+      "line": 78,
+      "sha256": "2bf7783a24c7c68ba80e7b8060530338faa7323432296cce8bb479b913382389",
+      "url": "https://github.com/LineageOS/android_kernel_google_msm-4.14/blob/28f9290ae067d3e7857126eb6312720dbe9c7c80/drivers/uio/msm_sharedmem/msm_sharedmem.c",
+      "snapshot_path": ".cache/pixel-sunfish/modem-host-service-trace-20261020/source-snapshots/.cache/sunfish-lineage-kernel/drivers/uio/msm_sharedmem/msm_sharedmem.c"
+    },
+    "rmtfs_dynamic_allocation": {
+      "path": ".cache/sunfish-lineage-kernel/drivers/uio/msm_sharedmem/msm_sharedmem.c",
+      "line": 157,
+      "sha256": "2bf7783a24c7c68ba80e7b8060530338faa7323432296cce8bb479b913382389",
+      "url": "https://github.com/LineageOS/android_kernel_google_msm-4.14/blob/28f9290ae067d3e7857126eb6312720dbe9c7c80/drivers/uio/msm_sharedmem/msm_sharedmem.c",
+      "snapshot_path": ".cache/pixel-sunfish/modem-host-service-trace-20261020/source-snapshots/.cache/sunfish-lineage-kernel/drivers/uio/msm_sharedmem/msm_sharedmem.c"
+    },
+    "memshare_service": {
+      "path": ".cache/sunfish-lineage-kernel/drivers/soc/qcom/memshare/msm_memshare.h",
+      "line": 17,
+      "sha256": "3b90507d3b48b2b809ae30993b93d07218dcbf75646ae43d38bd1469ff63e83e",
+      "url": "https://github.com/LineageOS/android_kernel_google_msm-4.14/blob/28f9290ae067d3e7857126eb6312720dbe9c7c80/drivers/soc/qcom/memshare/msm_memshare.h",
+      "snapshot_path": ".cache/pixel-sunfish/modem-host-service-trace-20261020/source-snapshots/.cache/sunfish-lineage-kernel/drivers/soc/qcom/memshare/msm_memshare.h"
+    },
+    "memshare_registration": {
+      "path": ".cache/sunfish-lineage-kernel/drivers/soc/qcom/memshare/msm_memshare.c",
+      "line": 758,
+      "sha256": "aa598c86a7593881e108afce32bd2cb348d37203fea4bc0d427cf29e4223aa76",
+      "url": "https://github.com/LineageOS/android_kernel_google_msm-4.14/blob/28f9290ae067d3e7857126eb6312720dbe9c7c80/drivers/soc/qcom/memshare/msm_memshare.c",
+      "snapshot_path": ".cache/pixel-sunfish/modem-host-service-trace-20261020/source-snapshots/.cache/sunfish-lineage-kernel/drivers/soc/qcom/memshare/msm_memshare.c"
+    },
+    "memshare_assignment": {
+      "path": ".cache/sunfish-lineage-kernel/drivers/soc/qcom/memshare/msm_memshare.c",
+      "line": 415,
+      "sha256": "aa598c86a7593881e108afce32bd2cb348d37203fea4bc0d427cf29e4223aa76",
+      "url": "https://github.com/LineageOS/android_kernel_google_msm-4.14/blob/28f9290ae067d3e7857126eb6312720dbe9c7c80/drivers/soc/qcom/memshare/msm_memshare.c",
+      "snapshot_path": ".cache/pixel-sunfish/modem-host-service-trace-20261020/source-snapshots/.cache/sunfish-lineage-kernel/drivers/soc/qcom/memshare/msm_memshare.c"
+    },
+    "memshare_allocate": {
+      "path": ".cache/sunfish-lineage-kernel/drivers/soc/qcom/memshare/msm_memshare.c",
+      "line": 441,
+      "sha256": "aa598c86a7593881e108afce32bd2cb348d37203fea4bc0d427cf29e4223aa76",
+      "url": "https://github.com/LineageOS/android_kernel_google_msm-4.14/blob/28f9290ae067d3e7857126eb6312720dbe9c7c80/drivers/soc/qcom/memshare/msm_memshare.c",
+      "snapshot_path": ".cache/pixel-sunfish/modem-host-service-trace-20261020/source-snapshots/.cache/sunfish-lineage-kernel/drivers/soc/qcom/memshare/msm_memshare.c"
+    },
+    "memshare_query": {
+      "path": ".cache/sunfish-lineage-kernel/drivers/soc/qcom/memshare/msm_memshare.c",
+      "line": 617,
+      "sha256": "aa598c86a7593881e108afce32bd2cb348d37203fea4bc0d427cf29e4223aa76",
+      "url": "https://github.com/LineageOS/android_kernel_google_msm-4.14/blob/28f9290ae067d3e7857126eb6312720dbe9c7c80/drivers/soc/qcom/memshare/msm_memshare.c",
+      "snapshot_path": ".cache/pixel-sunfish/modem-host-service-trace-20261020/source-snapshots/.cache/sunfish-lineage-kernel/drivers/soc/qcom/memshare/msm_memshare.c"
+    },
+    "memshare_config": {
+      "path": ".cache/sunfish-lineage-kernel/drivers/soc/qcom/memshare/msm_memshare.c",
+      "line": 771,
+      "sha256": "aa598c86a7593881e108afce32bd2cb348d37203fea4bc0d427cf29e4223aa76",
+      "url": "https://github.com/LineageOS/android_kernel_google_msm-4.14/blob/28f9290ae067d3e7857126eb6312720dbe9c7c80/drivers/soc/qcom/memshare/msm_memshare.c",
+      "snapshot_path": ".cache/pixel-sunfish/modem-host-service-trace-20261020/source-snapshots/.cache/sunfish-lineage-kernel/drivers/soc/qcom/memshare/msm_memshare.c"
+    },
+    "memshare_allocation_schema": {
+      "path": ".cache/sunfish-lineage-kernel/drivers/soc/qcom/memshare/heap_mem_ext_v01.c",
+      "line": 45,
+      "sha256": "55b7c7bb298064de84bcb2fc3f24f271ecae572eddb9e69ed98ce71258fc2a32",
+      "url": "https://github.com/LineageOS/android_kernel_google_msm-4.14/blob/28f9290ae067d3e7857126eb6312720dbe9c7c80/drivers/soc/qcom/memshare/heap_mem_ext_v01.c",
+      "snapshot_path": ".cache/pixel-sunfish/modem-host-service-trace-20261020/source-snapshots/.cache/sunfish-lineage-kernel/drivers/soc/qcom/memshare/heap_mem_ext_v01.c"
+    },
+    "memshare_message_ids": {
+      "path": ".cache/sunfish-lineage-kernel/drivers/soc/qcom/memshare/heap_mem_ext_v01.h",
+      "line": 265,
+      "sha256": "62389bc4b6b311838be8617bbf8af1efa14ab633c339308a8d6bf0e85cfa82d7",
+      "url": "https://github.com/LineageOS/android_kernel_google_msm-4.14/blob/28f9290ae067d3e7857126eb6312720dbe9c7c80/drivers/soc/qcom/memshare/heap_mem_ext_v01.h",
+      "snapshot_path": ".cache/pixel-sunfish/modem-host-service-trace-20261020/source-snapshots/.cache/sunfish-lineage-kernel/drivers/soc/qcom/memshare/heap_mem_ext_v01.h"
+    },
+    "qmi_registration_encoding": {
+      "path": ".cache/sunfish-lineage-kernel/drivers/soc/qcom/qmi_interface.c",
+      "line": 183,
+      "sha256": "9523acf8e9b1e91077914571165323d042ecde84a63c193460fbbeeed16381d7",
+      "url": "https://github.com/LineageOS/android_kernel_google_msm-4.14/blob/28f9290ae067d3e7857126eb6312720dbe9c7c80/drivers/soc/qcom/qmi_interface.c",
+      "snapshot_path": ".cache/pixel-sunfish/modem-host-service-trace-20261020/source-snapshots/.cache/sunfish-lineage-kernel/drivers/soc/qcom/qmi_interface.c"
+    },
+    "memory_assignment_abi": {
+      "path": ".cache/sunfish-lineage-kernel/drivers/soc/qcom/secure_buffer.c",
+      "line": 289,
+      "sha256": "ba5da5450b8e06e750a8e8927f0770ee364fd11f6b3b9d9f8e5fad45cd2d2403",
+      "url": "https://github.com/LineageOS/android_kernel_google_msm-4.14/blob/28f9290ae067d3e7857126eb6312720dbe9c7c80/drivers/soc/qcom/secure_buffer.c",
+      "snapshot_path": ".cache/pixel-sunfish/modem-host-service-trace-20261020/source-snapshots/.cache/sunfish-lineage-kernel/drivers/soc/qcom/secure_buffer.c"
+    },
+    "vmid_constants": {
+      "path": ".cache/sunfish-lineage-kernel/include/soc/qcom/secure_buffer.h",
+      "line": 27,
+      "sha256": "d68520e50b1e822b11a962a68d21c9e57e94b3590a0bd8bf4fa241791d0e6b0d",
+      "url": "https://github.com/LineageOS/android_kernel_google_msm-4.14/blob/28f9290ae067d3e7857126eb6312720dbe9c7c80/include/soc/qcom/secure_buffer.h",
+      "snapshot_path": ".cache/pixel-sunfish/modem-host-service-trace-20261020/source-snapshots/.cache/sunfish-lineage-kernel/include/soc/qcom/secure_buffer.h"
+    },
+    "ipa_registration": {
+      "path": ".cache/sunfish-lineage-kernel/drivers/platform/msm/ipa/ipa_v3/ipa_qmi_service.c",
+      "line": 1855,
+      "sha256": "ad863bcdfe150a8d1b4857130621f5aac3a0e3f684da8bb55b20ea4d540c789f",
+      "url": "https://github.com/LineageOS/android_kernel_google_msm-4.14/blob/28f9290ae067d3e7857126eb6312720dbe9c7c80/drivers/platform/msm/ipa/ipa_v3/ipa_qmi_service.c",
+      "snapshot_path": ".cache/pixel-sunfish/modem-host-service-trace-20261020/source-snapshots/.cache/sunfish-lineage-kernel/drivers/platform/msm/ipa/ipa_v3/ipa_qmi_service.c"
+    },
+    "ipa_init_modem_driver_request": {
+      "path": ".cache/sunfish-lineage-kernel/drivers/platform/msm/ipa/ipa_v3/ipa_qmi_service.c",
+      "line": 517,
+      "line_end": 700,
+      "sha256": "ad863bcdfe150a8d1b4857130621f5aac3a0e3f684da8bb55b20ea4d540c789f",
+      "url": "https://github.com/LineageOS/android_kernel_google_msm-4.14/blob/28f9290ae067d3e7857126eb6312720dbe9c7c80/drivers/platform/msm/ipa/ipa_v3/ipa_qmi_service.c",
+      "snapshot_path": ".cache/pixel-sunfish/modem-host-service-trace-20261020/source-snapshots/.cache/sunfish-lineage-kernel/drivers/platform/msm/ipa/ipa_v3/ipa_qmi_service.c"
+    },
+    "discovery_parser": {
+      "path": "rust/src/pixel_qrtr_discovery.rs",
+      "line": 239,
+      "sha256": "e58b7798ffc637a10cd63dd1104110159c9df6009c39826778c33e25e4e36124",
+      "snapshot_path": ".cache/pixel-sunfish/modem-host-service-trace-20261020/source-snapshots/rust/src/pixel_qrtr_discovery.rs"
+    },
+    "receive_buffer": {
+      "path": "rust/src/pixel_glink_rx.rs",
+      "line": 22,
+      "sha256": "3efb69af6ec5b70fb4a0cbd89111860b38a0c3bc29eb3fa0dbae6e6c9272f4e0",
+      "snapshot_path": ".cache/pixel-sunfish/modem-host-service-trace-20261020/source-snapshots/rust/src/pixel_glink_rx.rs"
+    },
+    "probe_capabilities": {
+      "path": "platforms/sunfish/modem-fatal-trace-probe.system",
+      "line": 22,
+      "sha256": "49dd7da45ac310606b08fb7578ab9eb781a343ef06bc9f273aad49aad6b13d40",
+      "snapshot_path": ".cache/pixel-sunfish/modem-host-service-trace-20261020/source-snapshots/platforms/sunfish/modem-fatal-trace-probe.system"
+    },
+    "pas_adapter": {
+      "path": "rust/src/pixel_pas_smc.rs",
+      "line": 3,
+      "sha256": "d6912c148f123d598a2eceb2df080efaddc2997d53fbbf5e00d43d03a7985e61",
+      "snapshot_path": ".cache/pixel-sunfish/modem-host-service-trace-20261020/source-snapshots/rust/src/pixel_pas_smc.rs"
+    },
+    "captured_device_tree": {
+      "path": ".cache/pixel-sunfish/live-lineage-20261010.dts",
+      "line": 4971,
+      "sha256": "1e20ee44f3e1c6c37e1eb125b146fe2eacd3524aa239eaf06b95040d840c07c0",
+      "snapshot_path": ".cache/pixel-sunfish/modem-host-service-trace-20261020/source-snapshots/.cache/pixel-sunfish/live-lineage-20261010.dts"
+    },
+    "captured_memshare_config": {
+      "path": ".cache/pixel-sunfish/live-lineage-20261010.dts",
+      "line": 510,
+      "sha256": "1e20ee44f3e1c6c37e1eb125b146fe2eacd3524aa239eaf06b95040d840c07c0",
+      "snapshot_path": ".cache/pixel-sunfish/modem-host-service-trace-20261020/source-snapshots/.cache/pixel-sunfish/live-lineage-20261010.dts"
+    }
+  },
+  "offline_implementation": {
+    "date": "2026-10-21",
+    "status": "Offline provider, UFS codec/HCI core, bounded IRQ dispatcher, resource/lifecycle contract, capability-gated native adapters, and exact-SID SMMU route planner pass synthetic tests. The verified-GPT UFS provider now also composes with the SCM pool backend in a host integration test. The native DMA gate requires a live exact translated route for SID 0x300; the saved ABL snapshot instead shows a broad route and no translated contexts. The candidate UFS profile remains separate. There is no production Gate or PlatformIo, actual DMA/SMMU aperture, IRQ-to-host runtime wiring, LUN/partition verification, or physical media access. Native ownership/readiness stays disabled; Pixel untouched.",
+    "test_command": "python3 platforms/sunfish/test-modem-qmi.py",
+    "validation": {
+      "host_tests_passed": 310,
+      "host_tests_failed": 0,
+      "warnings_are_errors": true,
+      "aarch64_unknown_none_no_std_compilation": "passed",
+      "fixtures": "hand-authored and source-derived; observed 30-entry intent inventory represented; not captured service-specific phone traffic",
+      "routing_tests_passed": 30,
+      "glink_exchange_tests_passed": 38,
+      "fifo_tests_passed": 33,
+      "aarch64_native_backend_compilation": "passed",
+      "aarch64_concrete_adapter_codegen": "passed; assembly includes dsb sy, ldrb, strb and str",
+      "owner_tests_passed": 27,
+      "owner_gate_tests_passed": 6,
+      "native_handoff_tests_passed": 6,
+      "mapping_capability_python_tests_passed": 23,
+      "ufs_protocol_tests_passed": 8,
+      "total_offline_tests_passed": 356,
+      "owner_microkit_pd_link": "passed",
+      "microkit_capdl_construction": "passed",
+      "generated_irq_and_continuation_caps": "passed",
+      "owner_cargo_warnings": "Unused probe/import, duplicate-bin and nightly atomic fetch_update deprecation warnings remain, including the compatible handler instance-ID counter; target build is not warnings-clean.",
+      "qrtr_control_tests_passed": 21,
+      "service_handler_tests_passed": 29,
+      "service_owner_integration_tests_passed": 7,
+      "aarch64_concrete_handler_owner_codegen": "passed with a stand-in that cannot perform actions; not a native backend proof",
+      "pool_scm_tests_passed": 38,
+      "pool_manifest_tests_passed": 14,
+      "aarch64_pool_scm_codegen": "passed: concrete stage/zero/grant/reclaim wrappers; monitor stand-in never invokes SCM",
+      "pool_physical_capability_and_loader_validation": "passed: 1799 reserved pages, six unmapped guards, 19387 actual allocations, DT RAM/fixed exclusions and eleven loader copy targets",
+      "storage_backend_tests_passed": 23,
+      "host_file_provider_tests_passed": 10,
+      "composed_qmi_file_request_tests_passed": 4,
+      "host_file_process_reopen_tests": "passed: writer and reader run in fresh subprocesses with disposable generated files",
+      "aarch64_composed_backend_handler_owner_codegen": "passed with a non-operating storage/monitor stand-in; host filesystem adapter is not linked into native target",
+      "owner_fifo_service_tests_passed": 2,
+      "ufs_host_control_tests_passed": 23,
+      "ufs_platform_contract_tests_passed": 16,
+      "ufs_native_adapter_tests_passed": 6,
+      "ufs_smmu_route_planner_tests_passed": 2,
+      "candidate_ufs_microkit_profile": "passed: separate HCI/PHY/ICE MMIO and SPI265/IRQ297 profile, CapDL mapping and level-trigger route; 1 MiB owner stack; fixed 2 MiB (512-page) WLAN MSA reservation retained unmapped; no DMA aperture or setvar symbols",
+      "aarch64_ufs_native_adapter_codegen": "passed in the compile-only native harness; gate remains a non-operating stand-in",
+      "ufs_irq_dispatcher_tests_passed": 4,
+      "ufs_gpt_tests_passed": 13,
+      "ufs_modem_storage_adapter_tests_passed": 8,
+      "ufs_scsi_block_io_tests_passed": 3
+    },
+    "bounds": {
+      "qrtr_datagram_bytes": 4096,
+      "qmi_tlvs": 16,
+      "configured_endpoints": 2,
+      "in_flight_requests": 8,
+      "storage_iovecs": 255,
+      "storage_transfer_bytes": 2097152,
+      "heap_free_blocks": 64,
+      "heap_bytes": 5242880,
+      "glink_receive_slots": 8,
+      "glink_transmit_slots": 8,
+      "glink_remote_intents": 32,
+      "glink_pending_requests": 4,
+      "glink_receive_fragments": 64,
+      "glink_tx_chunk_bytes": 256,
+      "glink_private_buffer_bytes": 65536,
+      "glink_intent_request_acks": 1,
+      "native_fifo_bytes": 16384,
+      "native_descriptor_bytes": 32,
+      "native_tx_reserve_bytes": 16,
+      "native_max_rx_record_bytes": 4112,
+      "native_records_per_call": 1,
+      "owner_work_rounds_per_callback": 16,
+      "owner_pending_handles": 4,
+      "owner_stack_bytes": 524288,
+      "owner_irq_channels": [
+        0,
+        1
+      ],
+      "owner_local_continue_send": 2,
+      "owner_local_continue_receive": 3,
+      "qrtr_control_datagram_bytes": 52,
+      "qrtr_remote_server_slots": 64,
+      "qrtr_unsent_control_flags": 3,
+      "qrtr_local_service_states": 2,
+      "qrtr_receive_intent_target": 2,
+      "service_io_payload_bytes_per_step": 4096,
+      "service_action_io_calls_per_callback": 1,
+      "service_active_jobs": 1,
+      "storage_handle_slots": 8,
+      "service_cached_response_bytes": 32,
+      "service_layout_exclusions": 16,
+      "heap_active_leases": 1,
+      "storage_active_leases": 1,
+      "heap_retired_pages_reused_per_generation": false,
+      "scm_calls_per_transition": 1,
+      "scm_argument_bytes": 256,
+      "scm_scratch_page_bytes": 4096,
+      "pool_guard_pages": 6,
+      "pool_data_bytes_per_call": 4096,
+      "pool_layout_exclusions": 64,
+      "storage_partition_bytes": 67108864,
+      "storage_data_call_bytes": 4096,
+      "storage_sector_bytes": 512,
+      "storage_binding_slots": 4,
+      "storage_device_digest_bytes": 32,
+      "storage_source_digest_bytes": 32
+    },
+    "remaining": [
+      "Provide verified per-device backing data and a native Sunfish UFS provider. The offline resource contract and caller-selected LUN discovery flow do not execute platform bring-up, DMA/SMMU ownership, physical LUN identification, partition extent validation, or device/checkpoint authentication.",
+      "Supply a truthful native fresh-boot HLOS/SCM64 ownership contract and lifecycle/mapping gate; allocator/DT checks and Linux source alone do not establish secure-world authority. Reservations and the native adapter are now implemented offline.",
+      "Attach actual native storage and ownership providers through the tested composed backend and paired owner callbacks before enabling service announcements.",
+      "Secondary GLINK channels and SMP2P service dispatch; initial secondary OPENs remain retained and unacknowledged.",
+      "Production shutdown/recovery, quiescence and deadlines; heap page rotation/reuse requires a new trusted generation, and FORCE_SYNC indications are not implemented.",
+      "Native stack high-water, physical ownership, backing-data fidelity, cache and IRQ delivery verification before an integrated modem test."
+    ],
+    "source_files": [
+      {
+        "path": ".cache/pixel-sunfish/live-runtime.dts",
+        "sha256": "d181b7012ee24ad6bb950613233f026b7a7ac0fbe9f087b496cc6eae50378abf"
+      },
+      {
+        "path": "docs/pixel-modem-lifecycle-design.md",
+        "sha256": "1795c851b11721ae0121ab0e7c5049ce2085e7446a98442f72adfa39da6bb701"
+      },
+      {
+        "path": "docs/pixel-p0-assets/sm7150-google-sunfish.dts",
+        "sha256": "bb3757e66d2c0567cdafa81067f34e7c04d59d8da6ff9e5a463e9a86ca52cb77"
+      },
+      {
+        "path": "docs/pixel-p0-assets/sm7150.dtsi",
+        "sha256": "1f6160d716ec40ae5c37c49bc7af261ca6a78f6cbb66bf8126eaaf8907877799"
+      },
+      {
+        "path": "experiments/modem-storage-host/Cargo.lock",
+        "sha256": "03a9c0c16349a36a29a2ad0f3330a48f7b043c4b52246e5f4f4d269c9fbcaca2"
+      },
+      {
+        "path": "experiments/modem-storage-host/Cargo.toml",
+        "sha256": "fe8ce6530e9152a18aa7fe551a37e75cbf16097e5589427ee7f68c0e615e3dcc"
+      },
+      {
+        "path": "experiments/modem-storage-host/src/lib.rs",
+        "sha256": "3c8850656541d367c2821df1d9619ecaf62f7f64879d034c6b65797618d3989b"
+      },
+      {
+        "path": "experiments/modem-storage-host/tests/common/mod.rs",
+        "sha256": "abd561b1c0457ffe92789a762ab92eb0fe2ca931a0197cd8a998e37a72831f9b"
+      },
+      {
+        "path": "experiments/modem-storage-host/tests/files.rs",
+        "sha256": "a725fd8e9f1f427a04536c882e864369660c7f80c2a3fd8d330c5008bef670b0"
+      },
+      {
+        "path": "experiments/modem-storage-host/tests/owner.rs",
+        "sha256": "eae5c7e3a583922237389b7b056c2e9ceb80404cb6c34a57411055a1d54d7e02"
+      },
+      {
+        "path": "experiments/modem-storage-host/tests/requests.rs",
+        "sha256": "5e09273edc82ccb5d9a0d6e081d2df61d0e56228f1c9e4105a5a84da66fee670"
+      },
+      {
+        "path": "experiments/modem-storage-host/tests/storage.rs",
+        "sha256": "15e44714ea7f5764d1e70393f95b7c6899604a646bf9942762c4e12035add623"
+      },
+      {
+        "path": "experiments/modem-storage-host/tests/ufs_host.rs",
+        "sha256": "1936d11601221c0c9f2e530b983dc60f4bee5380be902d23d6a110e07eef5607"
+      },
+      {
+        "path": "experiments/modem-storage-host/tests/ufs_platform.rs",
+        "sha256": "c785462030d6c132816361568cb1bef864341bcb5b525e2ced23f9a81a018c85"
+      },
+      {
+        "path": "experiments/modem-storage-host/tests/ufs_protocol.rs",
+        "sha256": "12dfbcc2e65a734e87d8d63009860bb2f3aab432b38247d134f4d6b9cd89739c"
+      },
+      {
+        "path": "platforms/sunfish/README.md",
+        "sha256": "5d7cc10fb40b3fc46127a35cc40020406e8b1f237c88d0a36563c387d9148105"
+      },
+      {
+        "path": "platforms/sunfish/build-modem-owner-offline.sh",
+        "sha256": "94e308411cbb385c9dfbca4cb3fc351ce3e71fc1e4715da70d920629f6fb04c2"
+      },
+      {
+        "path": "platforms/sunfish/modem-owner.system",
+        "sha256": "3b75bf9fd8ae701763b307b0908c34d018f2a5ce0013b34cd0565ff5e8ccb010"
+      },
+      {
+        "path": "platforms/sunfish/test-modem-qmi.py",
+        "sha256": "3712fef7026066da397c83c3f943fc58d88cbfb3e2da08a5236ed77af40eb3cb"
+      },
+      {
+        "path": "platforms/sunfish/validate-modem-owner.py",
+        "sha256": "65307b8f8a158aff8702e80c888fc41d88a58170360954715ff16f5a2ab747c9"
+      },
+      {
+        "path": "platforms/sunfish/validate-modem-pools.py",
+        "sha256": "ec536feb897eb1c20300d0185af86677e7e18ccdeb4320361ad348094fbf0d16"
+      },
+      {
+        "path": "rust/Cargo.toml",
+        "sha256": "49c57abbfaf6dcad5124440f5b2925b0a21f01ff65c0dcffbf367c91f6360511"
+      },
+      {
+        "path": "rust/src/lib.rs",
+        "sha256": "264d82f8647719b5c06d0f813f638041bbae5b04214a38bae47f7c03f6d9701e"
+      },
+      {
+        "path": "rust/src/pixel_glink_channel.rs",
+        "sha256": "9e20d3035486105c602850b536090518cfc6799b6450031c27d23d8a19f9a1b8"
+      },
+      {
+        "path": "rust/src/pixel_glink_inventory.rs",
+        "sha256": "bf86b9f9d79526502a404f164af855bdaa0f46f79a377df74035ae35882c7b73"
+      },
+      {
+        "path": "rust/src/pixel_glink_prepare.rs",
+        "sha256": "78616cd0b60304963316aac4332cce88a78640dbb50af9b69b808d409b90f972"
+      },
+      {
+        "path": "rust/src/pixel_modem_owner.rs",
+        "sha256": "ad3e2be5486b93345a8cc5fd0d7efa67fecfe6b7f41c155f58d94455b2444810"
+      },
+      {
+        "path": "rust/src/pixel_modem_owner_gate.rs",
+        "sha256": "b6de86e5637f8b5f4ce186702e48ca89915bc3c1f10c91104c28ecdaad1debbb"
+      },
+      {
+        "path": "rust/src/pixel_modem_pool_resources.rs",
+        "sha256": "e84246664a71534e040483ed7dd4279d41f362a14044688eebeaf0a919b220d5"
+      },
+      {
+        "path": "rust/src/pixel_modem_status.rs",
+        "sha256": "7480999e6a607cc06437a40d96e595a3cb99932e258f4eb518fd1bcca6918080"
+      },
+      {
+        "path": "rust/src/pixel_smp2p_handshake.rs",
+        "sha256": "cb8cdce203737abf7980a7a704b3e5def2566f039c3f4ca98ae13b569ff59a9e"
+      },
+      {
+        "path": "rust/src/qcom_glink_fifo.rs",
+        "sha256": "a4b2610362a513fcd8ea9e4369f09d408f4bffa8cc592663b11b8b986402a259"
+      },
+      {
+        "path": "rust/src/qcom_glink_native_io.rs",
+        "sha256": "16961e9144c7825b86e970d3d7072730f153411ab1f5c4afb91d7b96494059c7"
+      },
+      {
+        "path": "rust/src/qcom_glink_qmi.rs",
+        "sha256": "5571714c642299cc0c0680423a66b5cc035848073b215f30968b300ed33bea6f"
+      },
+      {
+        "path": "rust/src/qcom_modem_backend.rs",
+        "sha256": "a010e28880613361099b881825b6a09a5e28ba0135ac67572a331c302cd8c7fc"
+      },
+      {
+        "path": "rust/src/qcom_modem_handlers.rs",
+        "sha256": "75ced9ada2f4b6cfbd0111aedd07e94f1fbd0fd80c504e7515454e17be26364a"
+      },
+      {
+        "path": "rust/src/qcom_modem_owner.rs",
+        "sha256": "02a47177b6671af226f8be6ac95e6ac9c258257a750d3f9defd76a209167d6a1"
+      },
+      {
+        "path": "rust/src/qcom_modem_pool_native.rs",
+        "sha256": "abca9362746739a095cbc7257875e893ea0c2418d73c6d2750b163e80851add9"
+      },
+      {
+        "path": "rust/src/qcom_modem_pools.rs",
+        "sha256": "8cd7a13eb94c2f6584a3e6527369b65495a61b33ea11221b84ea5743684a10f6"
+      },
+      {
+        "path": "rust/src/qcom_modem_services.rs",
+        "sha256": "c1cec546f403f5a77e4748e5dd6fe7fe4993f3fb6bc5005b0166e7c64e55c26f"
+      },
+      {
+        "path": "rust/src/qcom_modem_status.rs",
+        "sha256": "36c2d9f2c4fbf92f0d821f3b43f3255d8cd449b677999be4b355fab6182b429e"
+      },
+      {
+        "path": "rust/src/qcom_modem_storage.rs",
+        "sha256": "69b0303d279d2106fe94170c07e44373520e076c096a4eff5124bd65a2c14ff3"
+      },
+      {
+        "path": "rust/src/qcom_qmi.rs",
+        "sha256": "0f7f9ec020cef799f988bff275dca833f16dc7ad4553ebd5b73f031486ccd3c0"
+      },
+      {
+        "path": "rust/src/qcom_qmi_router.rs",
+        "sha256": "7f571d68accba5ef22bbed1c0ba8ea1548994200c949d16f7081f23af7396888"
+      },
+      {
+        "path": "rust/src/qcom_qrtr_control.rs",
+        "sha256": "4470f7852c97cbf0536a5678e060704647d24e88dc0782552b3bb5033e9ae508"
+      },
+      {
+        "path": "rust/src/qcom_ufs_host.rs",
+        "sha256": "91063b41e0615dbf8b5b5e68624e9f3021abe05f5e1e8dd5496342cf821839fb"
+      },
+      {
+        "path": "rust/src/qcom_ufs_platform.rs",
+        "sha256": "795b8dc49cd178ca71f8377bd849841c9e0cf390570fbc89c88deb16e3c5178d"
+      },
+      {
+        "path": "rust/src/qcom_ufs_protocol.rs",
+        "sha256": "5099e06d27a475c0c76235ef3682104e091adc8f9a2e57d9f62da001cd3f21e1"
+      },
+      {
+        "path": "rust/src/sunfish_modem_smp2p_probe.rs",
+        "sha256": "066b3f9ec43e98f5f96b103f4872ebc4839efefd2c6acd459857930add41063b"
+      },
+      {
+        "path": "tests/modem_handlers_fixture.rs",
+        "sha256": "a566bcc9a0dd84c8d0a49526bea92dd3f6c093685ca20cc2618f96b77aa85274"
+      },
+      {
+        "path": "tests/sunfish_glink_channel_test.rs",
+        "sha256": "b466fb68ae5071bb735a4962e4d00ab373b873c87247608cebc4e51196652b0e"
+      },
+      {
+        "path": "tests/sunfish_glink_fifo_test.rs",
+        "sha256": "f7653832b2c821797c44f5e8550f6fa52c1cfee7283637f4965ac8de3037bb33"
+      },
+      {
+        "path": "tests/sunfish_glink_inventory_test.rs",
+        "sha256": "eb4c61bd51dcece93695ffd03099d98f62245f15df578ce1447d56f075c0b5ce"
+      },
+      {
+        "path": "tests/sunfish_glink_prepare_test.rs",
+        "sha256": "4bbc43219f6a9fefef6c1e8c71b64d865095632abec14f5e511a8c685f0bf15e"
+      },
+      {
+        "path": "tests/sunfish_glink_qmi_test.rs",
+        "sha256": "dadf5c3251cbe2be51d851bd65a4938a89851d4dfa901aa3c0a27c596640a7a5"
+      },
+      {
+        "path": "tests/sunfish_modem_handlers_test.rs",
+        "sha256": "b3eb6346ed166a18bb3e35d312bb6a92b2ad2ad334c7247959d871d9c7cacbab"
+      },
+      {
+        "path": "tests/sunfish_modem_owner_gate_test.rs",
+        "sha256": "337b8755aa8a22d882365e185667138ead366b6d910c936d38752f9e119b48a3"
+      },
+      {
+        "path": "tests/sunfish_modem_owner_manifest_test.py",
+        "sha256": "6bb137d195cfdae4897f9850be8274305f55e0deaca882ac5122079d26753ac5"
+      },
+      {
+        "path": "tests/sunfish_modem_owner_native_test.rs",
+        "sha256": "371bf3be26e8fea014fb5d76054d602e0556ef9d7cf8c7eb709f8b79a44deee5"
+      },
+      {
+        "path": "tests/sunfish_modem_owner_test.rs",
+        "sha256": "9c8693c9487b29827dad5940df305ef5d3e360a71b528dedc896177e080ce9f4"
+      },
+      {
+        "path": "tests/sunfish_modem_pool_manifest_test.py",
+        "sha256": "b6ea001a293450db551f7d6600a7e4331e53482d6b189c4b2961a73076a043bf"
+      },
+      {
+        "path": "tests/sunfish_modem_pools_test.rs",
+        "sha256": "e6dadaa227a94955142a2593034f040dac1a1700885ef0a17352c507d616c1cb"
+      },
+      {
+        "path": "tests/sunfish_qmi_routing_test.rs",
+        "sha256": "643fd65d00c9b8f8198cf7b6116347059bb178e07c786d30d39e774a0d796c73"
+      },
+      {
+        "path": "tests/sunfish_qrtr_control_test.rs",
+        "sha256": "5ec671856246a3d72b5d0bca6c8f91df8e5fbe5ae04718b3e29ee42a942dc7c0"
+      },
+      {
+        "path": "tests/sunfish_smp2p_handshake_test.rs",
+        "sha256": "0f88bf5b7fb0a0a076ae17605986d4aaafe73e7b4300dfc907d3180448fea726"
+      },
+      {
+        "path": "platforms/sunfish/build-modem-ufs-profile-offline.sh",
+        "sha256": "8b9efcc6b278ad423387252f68db3062118620aae8f6674f6ad98893c8bd5fba"
+      },
+      {
+        "path": "platforms/sunfish/modem-owner-ufs-profile.system",
+        "sha256": "6952ae5ed92f11b9e9c2b43fad2282a516bce70f1eeac89f4e1ff4446fa5799f"
+      },
+      {
+        "path": "rust/src/qcom_ufs_native_io.rs",
+        "sha256": "7a6b34d630d0aca52e746b5755c3924a12a57862b2ef6058208b6e8dcebca988"
+      },
+      {
+        "path": "rust/src/sunfish_smmu.rs",
+        "sha256": "e20b2653beebc6f927a88c5c8a76909a3d7a67eefa451ae8ca9946767eb93f29"
+      },
+      {
+        "path": "tests/sunfish_ufs_native_test.rs",
+        "sha256": "592a61ca974557184e1ff8511e1884a7bbd7364e8277756f9059f2fdad59621f"
+      },
+      {
+        "path": "rust/src/qcom_ufs_irq.rs",
+        "sha256": "30b82e4968d8cfcdbf6743264fd2bfc82fcd45f234f1ef57daac406eaf6d2792"
+      },
+      {
+        "path": "rust/src/qcom_ufs_gpt.rs",
+        "sha256": "9b738b3fbe94ce8bb6b69a78abc025dd4b40f6b5f1e98f4ea018885129fec420"
+      },
+      {
+        "path": "experiments/modem-storage-host/tests/ufs_gpt.rs",
+        "sha256": "63aba076d86658ae766a524c992d95b1a26866a59f246983538c0c86bc3836a4"
+      },
+      {
+        "path": "rust/src/qcom_ufs_dma.rs",
+        "sha256": "08c2d3dc1682b6455ebd236ac1c2ecd2ee9c6da3b25dd4b758e1ec866c4cfbe9"
+      },
+      {
+        "path": "rust/src/sunfish_smmu_program.rs",
+        "sha256": "086a5ac031c17aab890e354a5c38da36b613c0417a1f6cb298bbae50d6226ade"
+      },
+      {
+        "path": "tests/sunfish_smmu_program_test.rs",
+        "sha256": "b2fc80836c22233e3ce7a3dca0ab57fb6b69529ec4df1c8030b61db2aa61d334"
+      }
+    ],
+    "device_commands_performed": false,
+    "transport_contract": {
+      "input": "one complete aligned GLINK record on an already negotiated IPCRTR channel, plus trusted generation",
+      "publication": "whole record exactly once, WouldBlock publishes nothing, uncertain or unwinding writer quarantines session",
+      "request_retirement": "both peer GLINK completion and matching QRTR RESUME_TX; one reply per destination flow",
+      "local_intents": "one-shot; monotonic IDs; published backing required before use",
+      "remote_intents": "up to 32 descriptors; new IDs above prior batch high-water mark; reuse only when negotiated",
+      "malformed_complete_message": "held without RX_DONE or automatic reply until trusted reset",
+      "success_fields": "structural TLV checks only; action backend must implement response schema and authority checks",
+      "hardware_quiescence": "required caller precondition; logical generation does not revoke DMA or SCM ownership"
+    },
+    "evidence_directory": ".cache/pixel-sunfish/modem-ufs-host-offline-20261020",
+    "native_adapter": {
+      "descriptor_order": [
+        "peer_tx_tail",
+        "ap_tx_head",
+        "ap_rx_tail",
+        "peer_rx_head",
+        "reserved0",
+        "reserved1",
+        "reserved2",
+        "reserved3"
+      ],
+      "attachment": "requires established channel and pristine session; never clears or resets ring bytes/cursors",
+      "rx": "bounded private copy and duplicate readback; one record per call; session ingestion precedes release/tail publication",
+      "tx": "reserve16; exact free span staging/readback; release before one head store; system completion before fixed bit12 doorbell",
+      "read_notification": "incoming13 consumed before notification; one outgoing13 at a time tracked by peer tail progress",
+      "fault_policy": "halt with no retry after uncertain IO, core rejection or unwinding IO; private session cannot bypass FIFO owner",
+      "reset": "strictly newer observed local generation, same mapping identity, empty rings, and caller-proven native quiescence; no cursor reset",
+      "gate": "Implemented locked live lifecycle/allocation/route gate and exact PD mapping wiring under the opt-in sunfish-modem-owner feature; offline validated only.",
+      "unsupported": "other-channel/negotiation/SIGNALS/unknown commands halt without guessed length or consumption",
+      "target_barriers": "dsb sy at acquire/release/completion; host fences are simulation only",
+      "primary_source": "https://github.com/LineageOS/android_kernel_google_msm-4.14/blob/28f9290ae067d3e7857126eb6312720dbe9c7c80/drivers/rpmsg/qcom_glink_smem.c"
+    },
+    "owner_integration": {
+      "feature": "sunfish-modem-owner",
+      "native_entry": "rust/src/sunfish_modem_smp2p_probe.rs",
+      "native_runtime": "rust/src/pixel_modem_owner.rs",
+      "host_service_runtime": "Default attach retains NoServices; opt-in attach_with_handlers retains and dispatches caller-owned validated Handlers. No production backend is constructed or attached.",
+      "live_gate": "rust/src/pixel_modem_owner_gate.rs",
+      "core": "rust/src/qcom_modem_owner.rs",
+      "system": "platforms/sunfish/modem-owner.system",
+      "build": "sh platforms/sunfish/build-modem-owner-offline.sh",
+      "handoff": "Consumes actual authenticated ChannelCheckpoint; retains validated 88-byte prelude and commits RX tail 8 -> 96 once; secondary OPENs remain unacknowledged.",
+      "gate": "locked repeated directory snapshots; exact AP/peer/route/allocation identity and ready/fatal checks; failures latch; unrelated valid directory growth allowed",
+      "generation": "one consumed fresh boot only; no runtime restart or IRQ-minted generation",
+      "irqs": [
+        {
+          "intid": 481,
+          "channel": 0,
+          "trigger": "edge"
+        },
+        {
+          "intid": 483,
+          "channel": 1,
+          "trigger": "edge"
+        }
+      ],
+      "continuation": "Local output 2 -> own input 3, badge 8; busy drain keeps IRQs masked; post-ACK self-check prevents dependence on another peer edge.",
+      "mapping_policy": "exact contiguous injected symbols, five AP RW pages only; disjoint descriptor/TX/RX byte spans; RX may share final AP page but has no backend write operation; no new physical aliases or GIC mappings; now also reserves dedicated uncached RW/NX 2 MiB storage, 5 MiB heap and 4 KiB SCM scratch, six unmapped guard frames, validated by actual CapDL/report/DT/loader checks",
+      "recovery": "faulted owner retains session and mappings; no automatic retry/reset/rearm",
+      "proof_limit": "host buffers and kernel-API mocks plus actual target ELF/CapDL build; physical hardware/cache/IRQ/boot behavior unverified",
+      "initial_irq_control": "Overrides the Rust Microkit default event loop to suppress unconditional startup ACKs. Initial IRQs enter the same bounded drain/lifecycle/rearm path; stopped or failed init never reaches an automatic ACK.",
+      "host_fifo_service_tests": 2,
+      "host_fifo_service_test": "QRTR HELLO, both readiness-gated announcements, and storage OPEN reply traversed fake GLINK FIFO and owner; missing SCM ownership contract kept both services unavailable."
+    },
+    "qrtr_control": {
+      "source": "rust/src/qcom_qrtr_control.rs",
+      "tests": "tests/sunfish_qrtr_control_test.rs",
+      "mode": "Native owner enables the controller before any receive intent; codec-only simulation remains explicit.",
+      "accepted": [
+        "HELLO",
+        "NEW_SERVER",
+        "DEL_SERVER",
+        "DEL_CLIENT",
+        "BYE",
+        "DEL_PROC with matched magic"
+      ],
+      "ignored_without_echo": [
+        "PING",
+        "EXIT"
+      ],
+      "profile": "Exact QRTR-v1 52-byte controls; fixed peer identity; local/broadcast control destination; no forwarding or remote lookup registration.",
+      "local_readiness": "Trusted backend availability separate from decoder registration. Generic handlers validate backend state and bind to the owner before readiness; the native runtime has no real action backend attached and stays unannounced.",
+      "announcements": "One HELLO; NEW_SERVER/DEL_SERVER use service descriptors and configured local endpoint ports. Announcements require peer HELLO, local HELLO publication and explicit readiness.",
+      "publication": "Shares eight bounded TX slots; commit readiness/announcement state only after whole known publication; await GLINK completion without QRTR credit. Existing QMI replies retain both completion requirements.",
+      "remote_registry": "64 entries keyed by peer port; duplicate coalescing, descriptor replacement, exact stale-delete protection, no eviction or authority grants.",
+      "wlfw_discovery": "Read-only passive lookup of one exact peer announcement: service 0x45, packed version/instance 1. Wrong versions and ambiguous duplicates fail closed; native reads repeat the live SMEM lifecycle gate. QRTR NEW_LOOKUP is local to the name service and is never forwarded over GLINK.",
+      "receives": "Target two backed receive intents within eight RX slots; consumed controls retire after RX_DONE publication; fresh monotonic one-shot IDs.",
+      "peer_loss": "BYE/DEL_PROC quarantine; client/server closure affecting pending QMI state stops without releasing buffers or native RX tail; no automatic generation/restart.",
+      "native_test": "Real native buffers, SMEM gate, FIFO and IRQ owner decode peer HELLO plus completion; unready backends remain unannounced.",
+      "source_references": [
+        {
+          "path": ".cache/pixel-sunfish/modem-qrtr-control-offline-20261020/reference/lineage-qrtr.c",
+          "url": "https://raw.githubusercontent.com/LineageOS/android_kernel_google_msm-4.14/28f9290ae067d3e7857126eb6312720dbe9c7c80/net/qrtr/qrtr.c",
+          "sha256": "30a00bff7215670cb06b51d28192b5ebf1de26a6a16fbd11581c3d6bef4aba14"
+        },
+        {
+          "path": ".cache/pixel-sunfish/modem-qrtr-control-offline-20261020/reference/lineage-qrtr.h",
+          "url": "https://raw.githubusercontent.com/LineageOS/android_kernel_google_msm-4.14/28f9290ae067d3e7857126eb6312720dbe9c7c80/net/qrtr/qrtr.h",
+          "sha256": "3e95f9a4f22ec86f0038c08c2b6e159831af6cb13c59b9bb6685ab6109500529"
+        },
+        {
+          "path": ".cache/pixel-sunfish/modem-qrtr-control-offline-20261020/reference/lineage-uapi-qrtr.h",
+          "url": "https://raw.githubusercontent.com/LineageOS/android_kernel_google_msm-4.14/28f9290ae067d3e7857126eb6312720dbe9c7c80/include/uapi/linux/qrtr.h",
+          "sha256": "42593f2699f949ef59ca3bcd7854f965a1fa9714b530837a7cbb7d8302f06a52"
+        },
+        {
+          "path": ".cache/pixel-sunfish/modem-qrtr-control-offline-20261020/reference/linux-msm-libqrtr.c",
+          "url": "https://raw.githubusercontent.com/linux-msm/qrtr/29e36ae164389580a0f8ea7a7fdb728140ae978d/lib/qrtr.c",
+          "sha256": "e2aaa6829bb109c22f2b97c6eca8a1cbf6ff4d1c65d5283c83aa58bc89d91391"
+        },
+        {
+          "path": ".cache/pixel-sunfish/modem-qrtr-control-offline-20261020/reference/linux-v6.12-ns.c",
+          "url": "https://raw.githubusercontent.com/torvalds/linux/v6.12/net/qrtr/ns.c",
+          "sha256": "c57b3cb3e3e2b29a2672de5a848453f4db8ad0bca9b402d73d8e374fb365ecd7"
+        }
+      ]
+    },
+    "service_handlers": {
+      "source": "rust/src/qcom_modem_handlers.rs",
+      "unit_tests": "tests/sunfish_modem_handlers_test.rs",
+      "backend_composition_tests": "tests/sunfish_modem_pools_test.rs::composite_backend_tests",
+      "fixture": "tests/modem_handlers_fixture.rs",
+      "storage_requests": [
+        "OPEN",
+        "CLOSE",
+        "ALLOC_BUFFER",
+        "RW_IOVEC",
+        "GET_DEVICE_ERROR"
+      ],
+      "heap_requests": [
+        "QUERY_SIZE",
+        "ALLOC_GENERIC",
+        "FREE_GENERIC"
+      ],
+      "profile": "Generation/node/endpoint bindings; four allowlisted partition enums and truthful geometry/write/durability metadata; page-aligned, guarded, disjoint pools and bounded exclusions. Configuration checks are not proof of native ownership.",
+      "storage_handles": "Eight full-peer-scoped handles; monotonic IDs never recycle. One confirmed shared storage lease serves same-peer open handles and is reclaimed only after the last closes.",
+      "storage_io": "Validate all IOVECs before effects. Check disk/granted-range/total bounds and reject overlapping spans or zero-length entries. One private 4096-byte chunk per IO step; all writes sync before success. Known partial failures are not atomic and latch device error.",
+      "heap_policy": "Client1/processor0; one contiguous active lease; page alignment satisfies supported enum0..11. Return exact requested length after zeroing/confirmed ownership. Exact active retries are idempotent; conflicting requests and stale successful sequences fail.",
+      "heap_free": "Exact owner/address/length, one block. Confirm reclaim before retirement. Never reuse freed physical pages within the generation because FREE has no sequence field; later grants advance a bounded reservation cursor.",
+      "backend": "Owned opaque backend plus non-dropping receipts. Observation identity covers all pools and partition bindings. Grant serial/region/peer/generation/mode and current ownership must match. Uncertainty, lost lifecycle or unwinding IO stops and retains state without retry or cleanup.",
+      "owner_integration": "Bind one exact handler instance and endpoint profile. activate_handlers enables readiness only after validation. notified_with_handlers runs bounded transport plus one action step. Ordinary notification/reply calls reject bypass. Cache completed results through FlowBusy/NoCapacity without repeated effects.",
+      "native_status": "Generic storage/SCM-pool composition is implemented and tested with verified disposable host files. No native UFS/block provider or truthful boot/SCM ownership gate is attached; native service announcements remain disabled.",
+      "proof_limit": "Host private images and simulated committed/durability/ownership states; AArch64 generic codegen uses an action-failing stand-in. This does not prove persistence, SCM, cache behavior or device operation.",
+      "source_references": [
+        {
+          "path": ".cache/pixel-sunfish/modem-service-handlers-offline-20261020/reference/qmi_rmtfs.qmi",
+          "url": "https://raw.githubusercontent.com/linux-msm/rmtfs/b30a3eb38f9af283f18dbd3c7755653efc52c094/qmi_rmtfs.qmi",
+          "sha256": "d02cc77f0a0138bee4a54d11c44150c5adb53a02ad083b6e4d3e4ed17587f2fa"
+        },
+        {
+          "path": ".cache/pixel-sunfish/modem-service-handlers-offline-20261020/reference/rmtfs.c",
+          "url": "https://raw.githubusercontent.com/linux-msm/rmtfs/b30a3eb38f9af283f18dbd3c7755653efc52c094/rmtfs.c",
+          "sha256": "ff99083eb0d8bdd84a42306fcb1e357e87be9e49b45f607493df99c9f3b42f7b"
+        },
+        {
+          "path": ".cache/pixel-sunfish/modem-service-handlers-offline-20261020/reference/heap_mem_ext_v01.h",
+          "url": "https://raw.githubusercontent.com/LineageOS/android_kernel_google_msm-4.14/28f9290ae067d3e7857126eb6312720dbe9c7c80/drivers/soc/qcom/memshare/heap_mem_ext_v01.h",
+          "sha256": "62389bc4b6b311838be8617bbf8af1efa14ab633c339308a8d6bf0e85cfa82d7"
+        },
+        {
+          "path": ".cache/pixel-sunfish/modem-service-handlers-offline-20261020/reference/heap_mem_ext_v01.c",
+          "url": "https://raw.githubusercontent.com/LineageOS/android_kernel_google_msm-4.14/28f9290ae067d3e7857126eb6312720dbe9c7c80/drivers/soc/qcom/memshare/heap_mem_ext_v01.c",
+          "sha256": "55b7c7bb298064de84bcb2fc3f24f271ecae572eddb9e69ed98ce71258fc2a32"
+        },
+        {
+          "path": ".cache/pixel-sunfish/modem-service-handlers-offline-20261020/reference/msm_memshare.c",
+          "url": "https://raw.githubusercontent.com/LineageOS/android_kernel_google_msm-4.14/28f9290ae067d3e7857126eb6312720dbe9c7c80/drivers/soc/qcom/memshare/msm_memshare.c",
+          "sha256": "aa598c86a7593881e108afce32bd2cb348d37203fea4bc0d427cf29e4223aa76"
+        },
+        {
+          "path": ".cache/pixel-sunfish/modem-service-handlers-offline-20261020/reference/qmi.h",
+          "url": "https://raw.githubusercontent.com/LineageOS/android_kernel_google_msm-4.14/28f9290ae067d3e7857126eb6312720dbe9c7c80/include/linux/soc/qcom/qmi.h",
+          "sha256": "4ad1922c9c823d61d3720fa9df2663bd7387aa002898acf40dae6b800d7861c0"
+        }
+      ]
+    },
+    "pools_scm": {
+      "core": "rust/src/qcom_modem_pools.rs",
+      "native_adapter": "rust/src/qcom_modem_pool_native.rs",
+      "private_capability_and_symbols": "rust/src/pixel_modem_pool_resources.rs",
+      "validator": "platforms/sunfish/validate-modem-pools.py",
+      "storage": {
+        "physical": "0xa2001000",
+        "virtual": "0x61001000",
+        "bytes": 2097152,
+        "grant_vmids": [
+          3,
+          15
+        ]
+      },
+      "heap": {
+        "physical": "0xa2401000",
+        "virtual": "0x62001000",
+        "bytes": 5242880,
+        "grant_vmids": [
+          15
+        ]
+      },
+      "scratch": {
+        "physical": "0xa2a01000",
+        "virtual": "0x63001000",
+        "bytes": 4096
+      },
+      "permissions": 6,
+      "guards": "4096-byte reserved physical page and unmapped virtual hole before/after each resource; six guards total",
+      "profile": "Fresh seL4 reservations, not addresses replayed from Linux. Exact injected addresses, RW/NX uncached mappings, kernel/live RAM and fixed DT exclusions, all actual allocations, actual VSpace graph and raw loader/copy ranges checked offline.",
+      "ownership_evidence": "Explicit trusted initial-HLOS and reviewed SCM64 zero-return ownership contract required; absent in native runtime. No independent owner-query API established. Current manager tests use a monitor stand-in.",
+      "scm_abi": {
+        "function": "0x42000c16",
+        "arginfo": "0x1117",
+        "range_bytes": 16,
+        "destination_record_bytes": 24,
+        "arguments": 7,
+        "extra_argument_pointer_register": "x5",
+        "source_vmids_on_grant": [
+          3
+        ],
+        "reclaim_destination_vmids": [
+          3
+        ],
+        "mode": "one call; no interrupted resume, busy retry, SMC32 fallback or automatic rollback"
+      },
+      "faults": "Pre-submit known staging failure leaves prior lease valid. Set target owner Unknown before submission. Kernel/transport error, nonzero x0, completion or post-call lifecycle failure stops without a success receipt. Failed reclaim retains receipt/reservation. Lifecycle observation loss invalidates both owners. Unwind latches before external calls. No Drop actions.",
+      "data": "Every granted page needs successful full-page zero/readback. At most4096 data bytes per call. Active receipt bounds every shared storage copy; all host heap data APIs denied after assignment. Monotonic manager instance and grant serial stop stale receipts.",
+      "native_status": "Only reserved symbols are added to owner image. Runtime never constructs Native/Pools and no SCM call, phone command or pool data access occurred. Paired native service announcements remain disabled.",
+      "proof_limit": "Offline geometry/capability/codegen and private-vector protocol tests; no live SCM acceptance, QHEE authority, device persistence/cache/IRQ/stack or modem boot proof.",
+      "source_references": [
+        {
+          "path": ".cache/pixel-sunfish/modem-pools-scm-offline-20261020/reference/drivers__firmware__qcom_scm-64.c",
+          "url": "https://raw.githubusercontent.com/LineageOS/android_kernel_google_msm-4.14/28f9290ae067d3e7857126eb6312720dbe9c7c80/drivers/firmware/qcom_scm-64.c",
+          "sha256": "7bf796bf4f4bfc3ec99392ea1361c49ee7b28670b7f819b10d09dcf2dafed748",
+          "role": "comparison only; this is not the selected downstream scm_call2 path"
+        },
+        {
+          "path": ".cache/pixel-sunfish/modem-pools-scm-offline-20261020/reference/drivers__firmware__qcom_scm.c",
+          "url": "https://raw.githubusercontent.com/LineageOS/android_kernel_google_msm-4.14/28f9290ae067d3e7857126eb6312720dbe9c7c80/drivers/firmware/qcom_scm.c",
+          "sha256": "1148fb8c82200d46efcdc32e1752d78f4962e95433f71f11b9835740ef36a1f5",
+          "role": "comparison only; this is not the selected downstream scm_call2 path"
+        },
+        {
+          "path": ".cache/pixel-sunfish/modem-pools-scm-offline-20261020/reference/drivers__soc__qcom__scm.c",
+          "url": "https://raw.githubusercontent.com/LineageOS/android_kernel_google_msm-4.14/28f9290ae067d3e7857126eb6312720dbe9c7c80/drivers/soc/qcom/scm.c",
+          "sha256": "ce875eb31fd5b93c4ce33ba79defd5a521847396f0fa8cfe869026950fb318f1",
+          "role": "ABI/VMID reference"
+        },
+        {
+          "path": ".cache/pixel-sunfish/modem-pools-scm-offline-20261020/reference/drivers__soc__qcom__secure_buffer.c",
+          "url": "https://raw.githubusercontent.com/LineageOS/android_kernel_google_msm-4.14/28f9290ae067d3e7857126eb6312720dbe9c7c80/drivers/soc/qcom/secure_buffer.c",
+          "sha256": "ba5da5450b8e06e750a8e8927f0770ee364fd11f6b3b9d9f8e5fad45cd2d2403",
+          "role": "ABI/VMID reference"
+        },
+        {
+          "path": ".cache/pixel-sunfish/modem-pools-scm-offline-20261020/reference/include__soc__qcom__scm.h",
+          "url": "https://raw.githubusercontent.com/LineageOS/android_kernel_google_msm-4.14/28f9290ae067d3e7857126eb6312720dbe9c7c80/include/soc/qcom/scm.h",
+          "sha256": "95b9ae940c86791fd5036d8c29b3c1c3c0182025950fdc737fd202ebaedb5a62",
+          "role": "ABI/VMID reference"
+        },
+        {
+          "path": ".cache/pixel-sunfish/modem-pools-scm-offline-20261020/reference/include__soc__qcom__secure_buffer.h",
+          "url": "https://raw.githubusercontent.com/LineageOS/android_kernel_google_msm-4.14/28f9290ae067d3e7857126eb6312720dbe9c7c80/include/soc/qcom/secure_buffer.h",
+          "sha256": "d68520e50b1e822b11a962a68d21c9e57e94b3590a0bd8bf4fa241791d0e6b0d",
+          "role": "ABI/VMID reference"
+        }
+      ]
+    },
+    "storage_backend": {
+      "controller": "rust/src/qcom_modem_storage.rs",
+      "composition": "rust/src/qcom_modem_backend.rs",
+      "host_provider": "experiments/modem-storage-host/src/lib.rs",
+      "profile": "Four ordered enum/capability bindings, generation, device fingerprint, source/checkpoint digests, unique object IDs, fixed capacity/write/durability metadata. Profile parsing is not source/device authentication.",
+      "io": "Sector512 aligned, checked offset+length, at most4096 bytes per data action. One provider call per operation; no hidden short IO retries. Short reads fail; short/ambiguous writes latch dirty and stop. Failed sync never clears dirty or acknowledges persistence.",
+      "composition_lifetime": "One exact storage/pool pair with independent observed identities and a unique combined identity. Both lifetimes checked around every action. Initial storage must be clean and pools host-owned. Storage loss after successful grant withholds receipt/address; pool loss after disk write withholds success. Resources retained without automatic rollback.",
+      "host_setup": "Open only existing regular files without create/truncate/append. Reject symlinks, hardlinks, aliases, incomplete metadata, lock conflicts and checkpoint mismatch; compare inode, device, length, mode and setup timestamps. Private locked descriptors, bounded full-image SHA256 before attachment.",
+      "host_persistence": "One positional read/write per data action and explicit File.sync_all. Successful write plus sync was verified across reopening and fresh writer/reader processes; other files remained unchanged.",
+      "host_dependencies": "Separate host crate/lockfile pins cached sha2 0.10.9; no new main Rust/Microkit dependency. Runner uses locked offline Cargo with warnings denied and a temporary target directory.",
+      "source_authority": "Device, origin and expected current checkpoint authenticity are caller-supplied trusted inputs. Checkpoint must be explicitly updated for verified mutable-file restart. No rollback protection or phone data provisioner is implemented.",
+      "host_lock_limit": "Advisory locks require cooperating exclusive users, not protection from arbitrary external writers. File descriptors close on explicit object/process teardown; closure is not a flush acknowledgement. Faults retain owned descriptors.",
+      "test_counts": {
+        "storage_and_composition": 23,
+        "host_files": 10,
+        "complete_qmi_requests": 4,
+        "ignored_root_helper": 1,
+        "helper_child_runs_inside_parent_test": 2,
+        "fifo_owner_service_integration": 2
+      },
+      "native_status": "No native instance or service readiness is enabled; the native target has no UFS/block provider. Two host tests exercise owner activation and request/reply routing with fake files/pools; the host file adapter runs only on disposable fixtures.",
+      "proof_limits": [
+        "Host filesystem persistence and process reopening are not a physical power-cut, host-crash or Pixel UFS durability test.",
+        "SCM outcomes remain simulated in these tests. Native boot/ownership contract is still required.",
+        "No actual modem partition image was read, copied, created or collected. No phone, ADB, Fastboot, partition or live SCM action occurred."
+      ],
+      "references": [
+        {
+          "title": "Rust FileExt positional IO and short operations",
+          "url": "https://doc.rust-lang.org/std/os/unix/fs/trait.FileExt.html"
+        },
+        {
+          "title": "Rust File synchronization and advisory locking",
+          "url": "https://doc.rust-lang.org/std/fs/struct.File.html"
+        }
+      ]
+    },
+    "native_storage_resource_audit": {
+      "status": "Saved source audit plus offline packet/HCI core, resource contract, capability-gated adapters, one-snapshot IRQ dispatcher, verified-GPT-to-modem-storage composition, and bounded SCSI block-I/O bridge; no native storage authority or physical media access.",
+      "matching_kernel_source": {
+        "repository": "https://android.googlesource.com/kernel/msm",
+        "branch": "android-msm-sunfish-4.14-android13",
+        "commit": "6ef255005ceaae118d35fba8585de7ba1d4d5efb",
+        "files_reviewed": [
+          "drivers/scsi/ufs/ufs-qcom.c",
+          "drivers/scsi/ufs/ufshcd.c",
+          "drivers/scsi/ufs/ufshci.h",
+          "drivers/scsi/ufs/ufs.h",
+          "drivers/phy/qualcomm/phy-qcom-ufs-qmp-v3.c"
+        ],
+        "scope": "Reference evidence only; no Linux driver code is copied. The native provider must still implement controller ownership and bring-up."
+      },
+      "offline_packet_codec": {
+        "path": "rust/src/qcom_ufs_protocol.rs",
+        "operations": [
+          "SCSI TEST UNIT READY",
+          "SCSI standard INQUIRY",
+          "SCSI READ CAPACITY(10)",
+          "SCSI READ(10)",
+          "SCSI WRITE(10)",
+          "SCSI SYNCHRONIZE CACHE(10)"
+        ],
+        "maximum_transfer_bytes": 4096,
+        "prdt_entries_per_data_command": 1,
+        "completion_checks": [
+          "successful UFSHCI OCS",
+          "matching response transaction, LUN and task tag",
+          "successful UPIU response and SCSI status",
+          "zero residual bytes"
+        ],
+        "tests": 8,
+        "native_status": "Packet construction and response parsing only. The offline HCI host can run the fixed read-only TEST UNIT READY / INQUIRY / READ CAPACITY(10) sequence against a caller-selected LUN using synthetic DMA/register fixtures. No physical LUN discovery, partition map, UFSHCI MMIO, PHY/ICE initialization, IRQ, DMA/SMMU mapping, or media IO."
+      },
+      "partition_bindings": [
+        {
+          "service_path": "/boot/modem_fs1",
+          "partition": "modemst1",
+          "lineage_block": "/dev/block/sdf2"
+        },
+        {
+          "service_path": "/boot/modem_fs2",
+          "partition": "modemst2",
+          "lineage_block": "/dev/block/sdf3"
+        },
+        {
+          "service_path": "/boot/modem_fsg",
+          "partition": "fsg",
+          "lineage_block": "/dev/block/sdf4"
+        },
+        {
+          "service_path": "/boot/modem_fsc",
+          "partition": "fsc",
+          "lineage_block": "/dev/block/sdf5"
+        }
+      ],
+      "saved_lineage_runtime_tree": {
+        "path": ".cache/pixel-sunfish/live-runtime.dts",
+        "host": {
+          "node": "ufshc_mem@1d84000",
+          "reg": "0x1d84000 + 0x3000",
+          "compatible": "qcom,ufshc",
+          "iommus_property": "absent from captured Lineage runtime tree"
+        },
+        "phy": {
+          "node": "ufsphy_mem@1d87000",
+          "reg": "0x1d87000 + 0xddc",
+          "compatible": "qcom,ufs-phy-qmp-v3"
+        },
+        "inline_crypto": {
+          "node": "ufsice@1d90000",
+          "reg": "0x1d90000 + 0x8000",
+          "compatible": "qcom,ice"
+        },
+        "host_interrupt_cells": "<0x00 0x109 0x00>",
+        "host_clock_names": [
+          "core_clk",
+          "bus_aggr_clk",
+          "iface_clk",
+          "core_clk_unipro",
+          "core_clk_ice",
+          "ref_clk",
+          "tx_lane0_sync_clk",
+          "rx_lane0_sync_clk"
+        ],
+        "status": "active vendor nodes in saved Lineage tree"
+      },
+      "live_lineage_sysfs_check_2026_10_21": {
+        "method": "Read-only adb shell inspection; no sysfs writes or debugfs mounts",
+        "platform_device": "/sys/devices/platform/soc/1d84000.ufshc",
+        "driver": "ufshcd-qcom",
+        "iommu_group_link": "absent",
+        "ufs_devices_in_sys_kernel_iommu_groups": false,
+        "debugfs": "not mounted",
+        "interpretation": "Consistent with Linux using direct physical DMA for UFS, but this does not establish the ABL handoff SMMU route or authorize native seL4 DMA."
+      },
+      "abl_handoff_smmu_probe_2026_10_21": {
+        "source": "platforms/sunfish/smmu-read-probe.c",
+        "artifact": ".cache/pixel-sunfish/smmu-read-probe/fastboot.img",
+        "scope": "Read Apps SMMU global register space offset 0x000 (the bank visible to the probe's current security state) and report UFS SID 0x300 route type, mask, context bank and context-bank translation state at ABL handoff alongside existing WLAN SID observations.",
+        "smmu_access": "Read-only Microkit mapping; no SMMU register writes",
+        "boot_mode": "temporary fastboot boot; no flash",
+        "status": "Probe screen and global configuration value observed; WLAN routes absent from the five checked SIDs; UFS route and context-bank state reported; secure versus non-secure register bank is not confirmed",
+        "observation": {
+          "image": "D7A6FEBA-5368-46A9-9995-3D5C154CC90C_4_5005_c.jpeg",
+          "wlan_sid_routes": {
+            "0x240": "no route",
+            "0x241": "no route",
+            "0x520": "no route",
+            "0x521": "no route",
+            "0x522": "no route"
+          },
+          "ufs_sid_0x300": "one matching TRANS route to CB 2; context-bank translation OFF",
+          "context_bank_2_user_transcription": {
+            "cbar": "0x0001F000",
+            "sctlr": "0x000000E0",
+            "ttbr0": "0x0000000000000000",
+            "tcr": "0x00000000"
+          },
+          "smmu_global_cfg0": {
+            "offset": "0x000",
+            "value": "0x002A0406",
+            "display_label_in_probe": "SMMU SCR0",
+            "bank_identity": "not confirmed; SMMUv2 exposes secure SMMU_SCR0 and non-secure SMMU_CR0 banks according to access security state",
+            "decoded_common_fields": {
+              "CLIENTPD_bit0": 0,
+              "GFRE_bit1": 1,
+              "GFIE_bit2": 1,
+              "USFCFG_bit10": 1,
+              "MemAttr_bits19_16": "0xA (inactive while MTCFG_bit20 is 0)",
+              "MTCFG_bit20": 0,
+              "SMCFCFG_bit21": 1
+            }
+          },
+          "interpretation": "The value has SMMU client processing enabled (CLIENTPD=0), global fault reporting and interrupt enabled (GFRE=1, GFIE=1), unidentified-stream faults enabled (USFCFG=1), and multiple-stream-match conflicts configured to fault (SMCFCFG=1). MTCFG=0 leaves the MemAttr field inactive. The source label SCR0 does not establish that the secure bank was read; the register bank depends on the probe's security state. The observed UFS context bank is not translating, and the five checked WLAN SIDs have no matching route in the displayed stream-match table. This does not authorize DMA; the exact WLAN SID match mask, ownership transfer, and context-bank delegation remain unverified."
+        }
+      },
+      "checked_in_platform_dts": {
+        "host": {
+          "compatible": [
+            "qcom,sm7150-ufshc",
+            "qcom,ufshc",
+            "jedec,ufs-2.0"
+          ],
+          "reg": "0x01d84000 + 0x3000",
+          "interrupt": "GIC_SPI 265, level-high",
+          "iommus_property": "<&apps_smmu 0x300 0x0>",
+          "smmu_stream_id": "0x300",
+          "power_domain": "UFS_PHY_GDSC",
+          "reset": "GCC_UFS_PHY_BCR",
+          "interconnects": [
+            "aggre1_noc: MASTER_UFS_MEM -> SLAVE_EBI_CH0",
+            "gem_noc: MASTER_AMPSS_M0 -> SLAVE_UFS_MEM_CFG"
+          ]
+        },
+        "phy": {
+          "compatible": "qcom,sm7150-qmp-ufs-phy",
+          "reg": "0x01d87000 + 0x1000",
+          "power_domain": "UFS_PHY_GDSC"
+        },
+        "board_enable": {
+          "host_status": "okay",
+          "device_reset_gpio": "TLMM 119, active-low",
+          "supplies": [
+            "vcc",
+            "vccq2",
+            "vdda-phy",
+            "vdda-pll",
+            "vddp-ref-clk (separate client vote sharing the vdda-pll rail)"
+          ]
+        },
+        "inline_crypto": {
+          "compatible": [
+            "qcom,sm7150-inline-crypto-engine",
+            "qcom,inline-crypto-engine"
+          ],
+          "reg": "0x01d90000 + 0x8000"
+        }
+      },
+      "owner_profile": {
+        "path": "platforms/sunfish/modem-owner.system",
+        "ufs_host_phy_ice_mapped": false,
+        "ufs_irq_mapped": false,
+        "dma_smmu_provider": false,
+        "candidate_profile": {
+          "path": "platforms/sunfish/modem-owner-ufs-profile.system",
+          "ufs_host_phy_ice_mapped": true,
+          "ufs_irq": "GIC SPI 265 -> Microkit IRQ 297, level-triggered",
+          "dma_smmu_aperture_mapped": false,
+          "setvar_symbols_exposed": false,
+          "selected_by_active_build": false
+        }
+      },
+      "native_provider_requirements": [
+        "Exclusive UFS controller/PHY and relevant ICE ownership at fresh boot.",
+        "A production Gate and PlatformIo binding that verifies and pins the real Microkit mappings, IRQ, clocks, reset, regulators, interconnect/power-domain sequence, and SMMU stream.",
+        "A validated DMA reservation and IOVA translation; no synthetic aperture may be substituted.",
+        "Connect the bounded one-snapshot dispatcher and Microkit channel-4 acknowledger to the operational host only after platform readiness and DMA/SMMU proof.",
+        "Bind qcom_ufs_scsi_block_io to production RegisterIo/DmaIo implementations and provide an ObservationSource tied to the retained physical UFS lease; every identity, capacity, sync, and exact translated SID 0x300 route-to-context-bank observation must come from live owner state, not caller constants.",
+        "Verified modem partition content/device identity and true persistence for writes; the saved Lineage block paths alone do not provision images.",
+        "Integrate bounded command submission/completion with the operational native host, then physically identify the UFS LUN and verify modem partition extents before media attachment. The existing caller-selected discovery flow is tested only with synthetic registers and DMA."
+      ],
+      "interpretation": "The command codec, caller-selected offline LUN discovery flow, primary GPT partition validator, HCI core, bounded IRQ dispatcher, and capability-gated volatile adapters are testable components, not a physical block provider. The separate candidate Microkit map proves only static MMIO/IRQ layout and includes no DMA authority or live platform bring-up. Native attachment still requires a production authority owner for UFS/PHY/ICE, clocks, rails, reset, interconnect, DMA/SMMU, and IRQ, followed by physical LUN and both-table partition verification against trusted device identity. The host regular-file adapter supplies neither. The new qcom_ufs_modem_storage adapter composes a verified paired-GPT proof with the modem remote-storage trait and enforces bounded extents and live SID 0x300 route-to-context-bank gates, but it has no production BlockIo or physical-media path. The qcom_ufs_scsi_block_io bridge submits bounded READ(10), WRITE(10), and SYNCHRONIZE CACHE commands through the existing Host core, but has only synthetic RegisterIo/DmaIo/ObservationSource fixtures and is not a production storage path.",
+      "sources": [
+        {
+          "path": ".cache/pixel-sunfish/live-runtime.dts",
+          "line": 4869,
+          "sha256": "d181b7012ee24ad6bb950613233f026b7a7ac0fbe9f087b496cc6eae50378abf",
+          "role": "saved active Lineage UFS host/PHY/ICE tree"
+        },
+        {
+          "path": "docs/pixel-p0-assets/sm7150.dtsi",
+          "line": 1960,
+          "sha256": "1f6160d716ec40ae5c37c49bc7af261ca6a78f6cbb66bf8126eaaf8907877799",
+          "role": "controller clocks, power, reset, interconnect and SMMU source bindings"
+        },
+        {
+          "path": "docs/pixel-p0-assets/sm7150.dtsi",
+          "line": 2058,
+          "sha256": "1f6160d716ec40ae5c37c49bc7af261ca6a78f6cbb66bf8126eaaf8907877799",
+          "role": "QMP UFS PHY resource and dependencies"
+        },
+        {
+          "path": "docs/pixel-p0-assets/sm7150-google-sunfish.dts",
+          "line": 869,
+          "sha256": "bb3757e66d2c0567cdafa81067f34e7c04d59d8da6ff9e5a463e9a86ca52cb77",
+          "role": "board enable, reset GPIO and supply assignments"
+        },
+        {
+          "path": "platforms/sunfish/modem-owner.system",
+          "line": 1,
+          "sha256": "f8d4d0fc6908e33a56373043487aa090921a8e2f9911681c6780b2255919c156",
+          "role": "current owner map/IRQ profile lacks UFS resources"
+        },
+        {
+          "path": "platforms/sunfish/modem-owner-ufs-profile.system",
+          "line": 1,
+          "sha256": "6952ae5ed92f11b9e9c2b43fad2282a516bce70f1eeac89f4e1ff4446fa5799f",
+          "role": "candidate offline Microkit UFS MMIO and IRQ capability profile; fixed WLAN MSA pool retained unmapped"
+        },
+        {
+          "path": "rust/src/qcom_ufs_native_io.rs",
+          "line": 1,
+          "sha256": "566715c07014c7223c8c66fbaeedf5186daa1624f89849d45265a9240a32c112",
+          "role": "capability-gated HCI MMIO and translated DMA adapter"
+        },
+        {
+          "path": "tests/sunfish_ufs_native_test.rs",
+          "line": 1,
+          "sha256": "592a61ca974557184e1ff8511e1884a7bbd7364e8277756f9059f2fdad59621f",
+          "role": "offline native UFS adapter lifecycle and range tests"
+        },
+        {
+          "path": "rust/src/qcom_ufs_irq.rs",
+          "line": 1,
+          "sha256": "30b82e4968d8cfcdbf6743264fd2bfc82fcd45f234f1ef57daac406eaf6d2792",
+          "role": "bounded UFS status snapshot and Microkit IRQ acknowledge dispatcher"
+        },
+        {
+          "path": "experiments/modem-storage-host/tests/ufs_host.rs",
+          "line": 1,
+          "sha256": "c819c242db8539e0a38d5d959760ea20dd10fc6e2dc052eca91c3e6652f97fd1",
+          "role": "offline UFS interrupt ordering and failure tests"
+        },
+        {
+          "path": "rust/src/pixel_modem_owner.rs",
+          "line": 1,
+          "sha256": "ab7ba31f0e2acb840a851e6ffe64691770b38cb7cbd5945f4ef9e7ec21e3cbb3",
+          "role": "Microkit channel-4 acknowledger; not attached without live UFS authority"
+        }
+      ],
+      "offline_hci_control_core": {
+        "path": "rust/src/qcom_ufs_host.rs",
+        "states": [
+          "disabled",
+          "enabled",
+          "link up",
+          "operational",
+          "failed/quarantined"
+        ],
+        "operations": [
+          "HCI 2.0/2.1 gate and bounded HCE enable",
+          "bounded DME_LINK_STARTUP with UIC result and device-present checks",
+          "aligned/non-overlapping UTRDL and UTMRDL DMA base validation",
+          "HCS list-readiness gate before transfer/task run-stop activation",
+          "single-slot SCSI UCD/UTRD/PRDT staging, doorbell submit, IRQ wait and response validation",
+          "interrupt status acknowledgement and fatal/lifecycle-loss quarantine"
+        ],
+        "tests": 17,
+        "test_adapter": "Fake register and DMA banks; native capability-gated adapters have six gate tests and the IRQ dispatcher has four offline routing/ordering/failure tests.",
+        "native_status": "The bounded native HCI/DMA adapter and IRQ dispatcher exist behind live Gate/PlatformIo contracts. The adapter rejects broad or bypass routes and requires a live exact translated route for SID 0x300. The saved ABL snapshot reports a broader 0x300/0xf route and no translated contexts, so it cannot authorize DMA. No production Gate, PlatformIo, DMA/SMMU aperture, IRQ-to-host runtime wiring, PHY/ICE/power sequencing, physical SCSI submission or LUN/partition identification exists."
+      },
+      "offline_platform_contract": {
+        "path": "rust/src/qcom_ufs_platform.rs",
+        "expected_resources": {
+          "host_mmio": "0x1d84000 + 0x3000",
+          "phy_mmio": "0x1d87000 + 0x1000; saved runtime window 0xddc",
+          "ice_mmio": "0x1d90000 + 0x8000",
+          "interrupt": "GIC SPI 265, level-high, exclusive",
+          "smmu_stream_id": "0x300; translated exclusive aperture required",
+          "power_domain": "UFS_PHY_GDSC",
+          "reset_controller": "GCC",
+          "reset_name": "GCC_UFS_PHY_BCR",
+          "reset_id": 3,
+          "device_reset": "TLMM GPIO 119, active-low",
+          "supplies": [
+            "vcc",
+            "vccq2",
+            "vdda-phy",
+            "vdda-pll",
+            "vddp-ref-clk (separate client vote sharing the vdda-pll rail)"
+          ],
+          "host_clocks": [
+            "core_clk",
+            "bus_aggr_clk",
+            "iface_clk",
+            "core_clk_unipro",
+            "core_clk_ice",
+            "ref_clk",
+            "tx_lane0_sync_clk",
+            "rx_lane0_sync_clk"
+          ],
+          "host_clock_sources": {
+            "core_clk": "GCC 0x7e",
+            "bus_aggr_clk": "GCC 0x09",
+            "iface_clk": "GCC 0x7d",
+            "core_clk_unipro": "GCC 0x89",
+            "core_clk_ice": "GCC 0x81",
+            "ref_clk": "RPMh 0x00",
+            "tx_lane0_sync_clk": "GCC 0x88",
+            "rx_lane0_sync_clk": "GCC 0x87"
+          },
+          "phy_clock_sources": {
+            "ref_clk_src": "RPMh 0x00",
+            "ref_clk": "GCC 0x7c",
+            "ref_aux_clk": "GCC 0x84"
+          },
+          "interconnect_paths": [
+            "aggre1_noc: MASTER_UFS_MEM -> SLAVE_EBI_CH0",
+            "gem_noc: MASTER_AMPSS_M0 -> SLAVE_UFS_MEM_CFG"
+          ]
+        },
+        "lineage_source_order": {
+          "commit": "28f9290ae067d3e7857126eb6312720dbe9c7c80",
+          "before_hci_cap_version_reads": [
+            "ufshcd_hba_init: enable the HBA regulator",
+            "ufshcd_init_clocks: obtain each named clock and set nonzero DT maximum rates (core 200 MHz, UniPro 150 MHz, ICE 300 MHz)",
+            "generic ufshcd_setup_clocks: enable every parsed host-clock entry, including tx_lane0_sync_clk and rx_lane0_sync_clk",
+            "enable standard UFS device rails; initialize and power the PHY; acquire lane-clock handles; apply the UFS bus vote; run Qualcomm POST_CHANGE setup",
+            "ufshcd_init: read CAP and HCI version after variant initialization returns"
+          ],
+          "during_hce_enable_after_cap_version_reads": [
+            "assert PHY reset, wait 1000-1100 us, calibrate, and deassert reset",
+            "wait 1000-1100 us, start SerDes, verify PCS ready, and select UniPro mode",
+            "call the Qualcomm lane-clock enable helper again, then initialize ICE"
+          ],
+          "audit_script": "platforms/sunfish/validate-ufs-platform-source.py"
+        },
+        "ordered_steps": [
+          "exclusive fresh-boot lease for the UFS host, PHY, and platform-control resources",
+          "enable HBA power",
+          "acquire named host clocks and set the captured nonzero maximum rates",
+          "enable all eight host clocks, including TX/RX lane-sync clocks",
+          "enable UFS device rails, power the PHY, acquire lane-clock handles, apply the UFS bus vote, and run Qualcomm POST_CHANGE setup",
+          "read-only CAP/VER/HCS snapshot; no DMA or IRQ readiness implied",
+          "reserve the DMA aperture and bind the IRQ after the capability snapshot",
+          "assert PHY reset; wait 1000-1100 us; calibrate; deassert reset; wait 1000-1100 us",
+          "start SerDes, verify PCS ready, and select UniPro mode",
+          "run Qualcomm lane-clock enable helper and initialize ICE",
+          "live lease check before and after every platform step"
+        ],
+        "tests": 20,
+        "failure_policy": "Every stage and lease-loss path quarantines and retains the claim; no inferred rollback or release.",
+        "native_status": "Staged offline model only. Controller-power readiness permits CAP/VER/HCS reads without IRQ binding or DMA/SMMU readiness; post-CAP readiness requires the reserve/bind stage. The synthetic DMA address is not a device mapping; there is no native PlatformIo, production Gate, actual DMA aperture, or readiness wiring to qcom_ufs_host."
+      },
+      "candidate_microkit_profile": {
+        "path": "platforms/sunfish/modem-owner-ufs-profile.system",
+        "build_script": "platforms/sunfish/build-modem-ufs-profile-offline.sh",
+        "mmio": {
+          "host": "0x01d84000 + 0x3000 at vaddr 0x64000000",
+          "phy": "0x01d87000 + 0x1000 at vaddr 0x64003000",
+          "ice": "0x01d90000 + 0x8000 at vaddr 0x64004000"
+        },
+        "interrupt": {
+          "gic_spi": 265,
+          "microkit_irq": 297,
+          "trigger": "level"
+        },
+        "stack_size": "0x100000",
+        "wlan_msa_pool": {
+          "phys_addr": "0x98d00000",
+          "size": "0x200000",
+          "pages": 512,
+          "mapped": false
+        },
+        "dma_aperture": "not mapped; requires an audited physical reservation and live SMMU translation",
+        "setvar_symbols": false,
+        "active_owner_changed": false,
+        "offline_build_and_capdl_validation": "passed"
+      },
+      "offline_irq_dispatch": {
+        "path": "rust/src/qcom_ufs_irq.rs",
+        "microkit_irq_number": 297,
+        "microkit_channel_id": 4,
+        "behavior": "One HCI interrupt-status snapshot is handled and W1C-cleared before the kernel IRQ capability is acknowledged; MMIO failures leave the kernel IRQ masked.",
+        "tests": 4,
+        "native_status": "Microkit channel-4 acknowledger is defined in pixel_modem_owner.rs, tested to reject other channels, and compiles in the freestanding owner build; no runtime connection to an operational UFS host is enabled."
+      },
+      "offline_gpt_partition_validation": {
+        "path": "rust/src/qcom_ufs_gpt.rs",
+        "test_path": "experiments/modem-storage-host/tests/ufs_gpt.rs",
+        "scope": "Primary and backup GPT headers plus 16 KiB entry arrays; validates reciprocal locations, CRCs, matching disk GUID/usable geometry/entry geometry, byte-identical arrays, non-overlapping active entries, and exact modemst1/modemst2/fsg/fsc names against caller-supplied LUN capacity.",
+        "limits": "Synthetic buffers only; no protective MBR, physical disk identity, partition-table read or attachment.",
+        "tests": 13,
+        "standard": "https://uefi.org/specs/UEFI/2.10/05_GUID_Partition_Table_Format.html"
+      },
+      "offline_modem_storage_adapter": {
+        "path": "rust/src/qcom_ufs_modem_storage.rs",
+        "test_path": "experiments/modem-storage-host/tests/ufs_modem_storage.rs",
+        "scope": "Maps verified modemst1/modemst2/fsg/fsc GPT extents to the modem remote-storage names; enforces disk GUID, exact configured byte sizes, READ(10) bounds, fresh device/checkpoint identity, LUN capacity, exclusive translated DMA, and an exact unmasked translated SID 0x300 route whose target matches the enabled context bank on each operation. Ambiguous writes and cache synchronization are quarantined.",
+        "tests": 8,
+        "native_status": "AArch64 no_std code-generation and synthetic integration tests pass, including composition with the SCM pool backend. Composition only: no production BlockIo, physical GPT read, live UFS lease, or SMMU authority is wired."
+      },
+      "offline_scsi_block_io_bridge": {
+        "path": "rust/src/qcom_ufs_scsi_block_io.rs",
+        "test_path": "experiments/modem-storage-host/tests/ufs_host.rs",
+        "scope": "Connects the bounded UFSHCI Host core to modem BlockIo using READ(10), WRITE(10), and SYNCHRONIZE CACHE. Rejects invalid block ranges before command submission and maps any submitted-command failure to uncertain completion to prevent replay.",
+        "tests": 3,
+        "native_status": "The bridge is compiled by the AArch64 no_std harness and tested with synthetic registers/DMA. Production RegisterIo, DmaIo and live media/SMMU authority are not wired."
+      }
+    }
+  },
+  "current_owner_note": "Historical phone traces remain unchanged. Offline GLINK/QMI handlers compose with validated pools and a host file backend; the host provider proves filesystem sync/reopen only. The default native owner keeps services disabled; opt-in attach_with_handlers retains caller-owned storage/heap handlers, and opt-in IpaServerServices wires the AP IPA QMI server behind a provider-minted readiness permit. No trusted production storage, IPA, SCM-ownership, UFS or DMA provider is constructed or attached. A separate TftpServerServices adapter can route QRTR requests over an explicitly supplied fixed-extent random-access source, reading only requested DATA blocks and retiring a transfer on source I/O or extent faults; ReadSourceCell adapts mutable storage I/O with live extent checks. Authorized-image constructors remain test-only and the Pixel runtime selects only the payload-free observer. No WLAN firmware bytes have been served and no production image source or applicable license authorization is selected. UFS codec/HCI, capability-gated native adapters, the resource lifecycle model, exact-SID UFS route-to-aperture composition and ordered SMMU install planning, a bounded one-snapshot IRQ dispatcher, the verified-GPT-to-modem-storage adapter, and the READ(10)/WRITE(10)/SYNCHRONIZE CACHE bridge pass synthetic tests. The UFS provider is also composed with the SCM pool backend in a host integration test. The bridge has no production RegisterIo/DmaIo or live ObservationSource. The planner rejects the inherited broad SID 0x300 route; the candidate Microkit profile maps UFS MMIO/IRQ but has no DMA aperture, and the dispatcher is not connected to an operational host. A production Gate/PlatformIo, actual DMA/SMMU authority, UFS platform bring-up, SCM ownership, physical GPT verification, and physical UFS provider remain absent, so service readiness stays false.",
+  "source_files": [
+    {
+      "path": "docs/pixel-modem-lifecycle-design.md",
+      "sha256": "1795c851b11721ae0121ab0e7c5049ce2085e7446a98442f72adfa39da6bb701"
+    },
+    {
+      "path": "docs/pixel-wifi-feasibility.md",
+      "sha256": "115d7557fe851092e7ba934eeaa14330aff300d63af42f50dd3662a05a219afd"
+    },
+    {
+      "path": "docs/sunfish-ath10k-port-plan.md",
+      "sha256": "820c9f0e7b7dda6d6b7e5d8936d011a108a4fd3351f9bd91aef3f4500459eb03"
+    },
+    {
+      "path": "experiments/modem-storage-host/src/lib.rs",
+      "sha256": "3c8850656541d367c2821df1d9619ecaf62f7f64879d034c6b65797618d3989b"
+    },
+    {
+      "path": "experiments/modem-storage-host/tests/ufs_gpt.rs",
+      "sha256": "63aba076d86658ae766a524c992d95b1a26866a59f246983538c0c86bc3836a4"
+    },
+    {
+      "path": "experiments/modem-storage-host/tests/ufs_host.rs",
+      "sha256": "1936d11601221c0c9f2e530b983dc60f4bee5380be902d23d6a110e07eef5607"
+    },
+    {
+      "path": "experiments/modem-storage-host/tests/ufs_modem_storage.rs",
+      "sha256": "fb77a9f8d27bb90cbd42453d4fc56daadbadee52c652f06959608b64201a0164"
+    },
+    {
+      "path": "platforms/sunfish/capture-lineage-ipa-state.sh",
+      "sha256": "7eb14e114c6220f9529ba4f127acfabab055e0508fcec81dcf5f1da8271487d7"
+    },
+    {
+      "path": "platforms/sunfish/test-modem-qmi.py",
+      "sha256": "3712fef7026066da397c83c3f943fc58d88cbfb3e2da08a5236ed77af40eb3cb"
+    },
+    {
+      "path": "rust/src/lib.rs",
+      "sha256": "264d82f8647719b5c06d0f813f638041bbae5b04214a38bae47f7c03f6d9701e"
+    },
+    {
+      "path": "rust/src/qcom_glink_fifo.rs",
+      "sha256": "a4b2610362a513fcd8ea9e4369f09d408f4bffa8cc592663b11b8b986402a259"
+    },
+    {
+      "path": "rust/src/qcom_glink_qmi.rs",
+      "sha256": "5571714c642299cc0c0680423a66b5cc035848073b215f30968b300ed33bea6f"
+    },
+    {
+      "path": "rust/src/qcom_ipa.rs",
+      "sha256": "852b366377d0491e269cc85d1678ee22bdb51d37f7ba6204bd73e1607e96ed75"
+    },
+    {
+      "path": "rust/src/qcom_ipa_client.rs",
+      "sha256": "072abea1deeb087217272dbd180fc732f39ff12642f324d10c85594617aceb94"
+    },
+    {
+      "path": "rust/src/qcom_modem_owner.rs",
+      "sha256": "02a47177b6671af226f8be6ac95e6ac9c258257a750d3f9defd76a209167d6a1"
+    },
+    {
+      "path": "rust/src/qcom_ufs_gpt.rs",
+      "sha256": "9b738b3fbe94ce8bb6b69a78abc025dd4b40f6b5f1e98f4ea018885129fec420"
+    },
+    {
+      "path": "rust/src/qcom_ufs_modem_storage.rs",
+      "sha256": "f8dc6ec82214b0bc5c6559fa16684b6d0a60c77a18f0e40f69e466575794c1d7"
+    },
+    {
+      "path": "rust/src/qcom_ufs_scsi_block_io.rs",
+      "sha256": "fc37a7649bce94fecc0fc1e6b489245d20296d31af2918d85c832142e4a90ecb"
+    },
+    {
+      "path": "rust/src/sunfish_ipa_profile.rs",
+      "sha256": "5e6bec1ea1487556b4ad526224eda5bedce605a25c3faf6d44cccc9eec14edfb"
+    },
+    {
+      "path": "rust/src/sunfish_ipa_snapshot.rs",
+      "sha256": "b6f8b60eef86d9addf92e50dde186503b6d308405472f1dfd6f8c2e1e3485cde"
+    },
+    {
+      "path": "rust/src/wlan_protocol_probe.rs",
+      "sha256": "9bcbb5618506cf25ce70044f1fc3db5ffb142b6bb34c56d171a0d199cf21158b"
+    },
+    {
+      "path": "rust/src/wlan_protocol_probe_ipa.rs",
+      "sha256": "763160fee7645314b97dde3e796c9e657cb0f976b86353964bddd0969263c2fd"
+    },
+    {
+      "path": "tests/sunfish_modem_owner_test.rs",
+      "sha256": "9c8693c9487b29827dad5940df305ef5d3e360a71b528dedc896177e080ce9f4"
+    },
+    {
+      "path": "rust/src/pixel_modem_owner.rs",
+      "sha256": "ad3e2be5486b93345a8cc5fd0d7efa67fecfe6b7f41c155f58d94455b2444810"
+    },
+    {
+      "path": "platforms/sunfish/loader-task-regions-modem-tftp-observer.json",
+      "sha256": "739d5d40eeba552dfe68eed84454f8bcdf9962712ac7229b6c966fc3526b617d"
+    },
+    {
+      "path": "platforms/sunfish/build-modem-tftp-observer-probe.sh",
+      "sha256": "af194a79e2daa8a83e1fca45d1cf68b9b5719cae324a94090e952b1eee0a33cd"
+    },
+    {
+      "path": "rust/src/qcom_ipa_service.rs",
+      "sha256": "67178c4b32a50c7789ee1e614060cc635e4581c9b64efc9ee74827643e32d2de"
+    }
+  ]
+}

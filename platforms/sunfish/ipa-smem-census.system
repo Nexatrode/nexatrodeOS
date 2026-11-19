@@ -1,0 +1,12 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<system>
+    <memory_region name="splash" size="0x1600000" page_size="0x200000" phys_addr="0x9c000000" />
+    <memory_region name="smem_snapshot" size="0x200000" page_size="0x1000" phys_addr="0x86000000" />
+    <memory_region name="tcsr_smem_lock" size="0x1000" page_size="0x1000" phys_addr="0x01f43000" />
+    <protection_domain name="native_startup_preflight" priority="99" smc="false">
+        <program_image path="ipa-smem-census.elf" />
+        <map mr="splash" vaddr="0x42000000" perms="rw" cached="false" setvar_vaddr="splash_vaddr" />
+        <map mr="smem_snapshot" vaddr="0x40000000" perms="r" cached="false" setvar_vaddr="smem_vaddr" />
+        <map mr="tcsr_smem_lock" vaddr="0x41000000" perms="rw" cached="false" setvar_vaddr="tcsr_lock_vaddr" />
+    </protection_domain>
+</system>

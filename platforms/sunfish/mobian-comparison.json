@@ -1,0 +1,142 @@
+{
+  "schema_version": 1,
+  "purpose": "Reproduce the community Sunfish Linux host-side WLAN startup before comparing with native seL4.",
+  "integration": {
+    "repository": "https://github.com/miromraz/mobian-pixel4a-port",
+    "commit": "789679f25f859bd741d690fe221d1cc68a23444e",
+    "cache": ".cache/mobian-pixel4a-port-789679",
+    "config": "kernel-config-7.1.0-rc3-sm7150.txt",
+    "files": {
+      "kernel-config-7.1.0-rc3-sm7150.txt": "f368f5c1c94ad8fdea43131a1f3475af8a268d3b0211ff51828c73ff24b45fdb",
+      "work/patch.sh": "d5cb7d288e279fbad216d242c76845e73f56b145d0c7039092d6d7f0456c8a09",
+      "work/wcn/sbin/wcn-wifi-bringup.sh": "9dd5fc8ae9302c3275b23ccef23112ee2627239b133802a3583c467aeeccc8b2",
+      "work/wcn/units/wcn-wifi.service": "d1caf6a33764f7811932afb38fc1c709c47cb5ff3db1fc8020b5e9447c396006",
+      "work/wcn/units/pd-mapper.service": "3979f0a7f76e550d5cc6fc5bb8fbd472fefec73afe507474704495bcec1438db",
+      "work/wcn/units/tqftpserv.service": "91fc19b01f322e00b2b5644e2df1048832cf71a7f65024588ef44b53b1058c0f"
+    }
+  },
+  "kernel": {
+    "repository": "https://github.com/miromraz/linux",
+    "commit": "2267e248204e7e051e0f7355298949a6440de579",
+    "branch_label": "sunfish-venus-v7.2",
+    "version_from_makefile": "7.1.0",
+    "archive_url": "https://codeload.github.com/miromraz/linux/tar.gz/2267e248204e7e051e0f7355298949a6440de579",
+    "archive_name": "linux-2267e248.tar.gz",
+    "archive_size": 265935117,
+    "archive_sha256": "d55c453cea03bc7aeb3381df2538da5423fb926ce6b88dd33eadecbc12a29cb2",
+    "files": {
+      "Makefile": "e2f006121f567e0717de1a228490cd16ff011d332555b8699c889f5cdaa045cb",
+      "arch/arm64/boot/dts/qcom/sm7150-google-sunfish.dts": "e0bcc6b30771b3b82319397b042a44f6b4edf87b00bf8e8443803864f7ed3417",
+      "arch/arm64/boot/dts/qcom/sm7150.dtsi": "948e12f932b4e3079ea5a1637fa06569b56a32902fa45a947480906fd737944e",
+      "drivers/remoteproc/qcom_q6v5_pas.c": "0b5ca9ccfce526af1a2e481666458a8b6c82fd3718e5deefc04405931e9fa15f",
+      "drivers/net/wireless/ath/ath10k/qmi.c": "e887b26f2b2023dbc3bd1685673f4dfcb622e3161fb316800ccbb535beb3d051",
+      "drivers/net/wireless/ath/ath10k/snoc.c": "d29f7cbd484078ae5f1d1e13c4d8d310b09c762eb2be68252a1636ac8be9853e"
+    },
+    "dtb": "qcom/sm7150-google-sunfish.dtb",
+    "critical_config": {
+      "CONFIG_ATH10K_SNOC": "m",
+      "CONFIG_QRTR": "y",
+      "CONFIG_QRTR_SMD": "m",
+      "CONFIG_QCOM_Q6V5_PAS": "m",
+      "CONFIG_QCOM_QMI_HELPERS": "y",
+      "CONFIG_QCOM_PD_MAPPER": "m",
+      "CONFIG_QCOM_IPA": "m",
+      "CONFIG_RPMSG_QCOM_GLINK_SMEM": "m",
+      "CONFIG_ARM_SMMU": "y",
+      "CONFIG_ARM_SMMU_QCOM": "y",
+      "CONFIG_IOMMU_DEFAULT_DMA_STRICT": "y",
+      "CONFIG_QCOM_SMP2P": "y",
+      "CONFIG_QCOM_RMTFS_MEM": "y",
+      "CONFIG_USB_CONFIGFS": "y",
+      "CONFIG_BLK_DEV_INITRD": "y"
+    }
+  },
+  "boot_environment": {
+    "reported_chain": [
+      "unlocked vendor ABL",
+      "U-Boot",
+      "systemd-boot",
+      "Linux EFI stub",
+      "initramfs/Mobian"
+    ],
+    "comparison_transport": "undecided_pending_boot_chain_audit",
+    "resident_privileged_firmware": "Retained vendor secure firmware; its PAS and memory-assignment decisions remain external to the host driver.",
+    "must_record": [
+      "power/reset procedure",
+      "MPSS state before host services",
+      "execution level",
+      "resident hypervisor observations",
+      "ABL and secure-firmware identifiers",
+      "SMEM handoff"
+    ],
+    "uboot_reference": {
+      "repository": "https://github.com/sm7150-mainline/u-boot",
+      "commit": "f8c04469e8284aa2f1691a30aa3b7dc59fa0b8cd",
+      "subject": "HACK: Hardcode text offset for sunfish to boot",
+      "header_path": "arch/arm/cpu/armv8/linux-kernel-image-header-vars.h",
+      "header_sha256": "f6e311a62fe04296dd5d1e3639a23171bb12eff3bbbf093551ed7d6d5c673392",
+      "kernel_text_offset": "0x00080000",
+      "status": "source_audited_not_built_or_booted"
+    }
+  },
+  "reference_storage": {
+    "rmtfs_arguments": [
+      "-P",
+      "-s"
+    ],
+    "persistent_efs_writes": true,
+    "source": "integration:work/patch.sh",
+    "comparison_choice": "not_selected",
+    "note": "The reference removes Debian's -r in-memory-shadow mode. Do not silently inherit this persistent-storage change. A RAM-shadow experiment would be an explicit deviation and cannot establish persistent EFS behavior."
+  },
+  "firmware_inputs": [
+    {
+      "path": "qcom/sm7150/google/sunfish/modem.mbn",
+      "role": "MPSS executable",
+      "reference_repository": "https://github.com/sm7150-mainline/firmware-google-sunfish",
+      "reference_commit": "fe63598e1bd9884bd68ba89e4670dae4d70b1e3e",
+      "status": "local_provenance_and_terms_to_be_checked_before_staging"
+    },
+    {
+      "path": "qcom/sm7150/google/sunfish/wlanmdsp.mbn",
+      "role": "WLAN DSP executable served through TQFTP",
+      "reference_commit": "fe63598e1bd9884bd68ba89e4670dae4d70b1e3e",
+      "sha256": "a2ee6c86b82b42140e39964900cb9cc10ca263085a7125002fdb9c448df94f2e",
+      "status": "metadata_only_not_staged"
+    },
+    {
+      "path": "ath10k/WCN3990/hw1.0/board-2.bin",
+      "role": "Sunfish calibration board-data container",
+      "reference_repository": "https://github.com/sm7150-mainline/firmware-qcom-sm7150-ath10k",
+      "reference_commit": "792c716c85c06861c4d17bce5ec21fba7f0f7de6",
+      "sha256": "051607c79e6f26c68076bcdada3a77b762aadcc368ce89eee38c2531893bbc63",
+      "board_key": "bus=snoc,qmi-board-id=ff,qmi-chip-id=30224,variant=google_sunfish",
+      "status": "metadata_only_not_staged"
+    },
+    {
+      "path": "ath10k/WCN3990/hw1.0/firmware-5.bin",
+      "role": "60-byte ath10k API metadata, not the WLAN DSP executable",
+      "reference_commit": "afabaf773c4c2e2c841429933a6a084a5af4d14d",
+      "sha256": "fef6539e0127579536bc977be57a90d018b83f2931fedc3a8870fbe38d6c4127",
+      "status": "metadata_only_not_staged"
+    }
+  ],
+  "acceptance_milestones": [
+    "Record a powered-off starting procedure and verify MPSS is not already running before starting services.",
+    "Record kernel/config/DTB/module/service/firmware hashes and boot-firmware identifiers.",
+    "Observe PAS start result and modem readiness, including any existing fatal status and crash reason.",
+    "Observe firmware-file requests, WLFW registration, QMI/MSA responses and SCM ownership results.",
+    "Observe a PHY/netdev, scan, association and sustained bidirectional traffic.",
+    "Capture SMMU faults and CE interrupt deltas; a netdev alone is not a data-path pass."
+  ],
+  "userspace": {
+    "distribution": "Debian 13 trixie",
+    "snapshot": "20261025T000000Z",
+    "mirror": "https://snapshot.debian.org/archive/debian/20261025T000000Z",
+    "release_sha256": "ed56aac47e7911e65ee63aae8d67e29f20e023f840e49f8ed037043a33de138a",
+    "desktop": false,
+    "default_target": "sunfish-comparison.target",
+    "radio_services": "held_in_staging_image",
+    "package_versions": "recorded_in_artifacts/userspace-packages.tsv"
+  }
+}

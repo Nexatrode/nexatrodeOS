@@ -620,15 +620,22 @@ def audit_closed_display_helpers(symbols, instructions, stack_range):
             'helper_paths_stay_in_bounded_functions': True}
 
 
-def audit_guard_control_flow(instructions, entry, relocation_call, stop, allowed_helpers):
-    """Prove every direct path in the source guard ends at its diagnostic loop."""
+def audit_guard_control_flow(instructions, entry, relocation_call, stop, allowed_helpers,
+                             continue_success=False):
+    """Prove source-guard failures stop, and optionally the pass path relocates."""
     conditional = {'cbz', 'cbnz', 'tbz', 'tbnz'}
     state = {}
     def visit(address):
-        require(address < relocation_call, 'reachable source guard instruction reaches relocation')
         if address == stop:
             state[address] = 'done'
             return
+        if continue_success and address == relocation_call:
+            mnemonic, _, target, target_name, _ = instructions[address]
+            require(mnemonic == 'bl' and target_name == 'relocate',
+                    'passing source guard reaches the unique relocation call')
+            state[address] = 'relocated'
+            return
+        require(address < relocation_call, 'reachable source guard instruction reaches relocation')
         require(address in instructions, 'source guard control flow reaches non-code at ' + hex(address))
         if state.get(address) == 'visiting':
             raise ValueError('source guard contains a non-diagnostic control-flow cycle at ' + hex(address))
@@ -656,14 +663,18 @@ def audit_guard_control_flow(instructions, entry, relocation_call, stop, allowed
         state[address] = 'done'
     visit(entry)
     require(state.get(stop) == 'done', 'diagnostic stop loop is not reachable')
+    if continue_success:
+        require(state.get(relocation_call) == 'relocated',
+                'source-guard success path reaches relocation')
     return {'entry_address': hex(entry), 'relocation_call_address': hex(relocation_call),
             'stop_loop_address': hex(stop), 'reachable_guard_instructions': len(state),
             'closed_display_helpers': sorted(allowed_helpers),
-            'all_paths_stop_before_relocation': True}
+            'all_failure_paths_stop_before_relocation': True,
+            'pass_path_reaches_relocation': continue_success}
 
 
-def validate_source_diagnostic(profile, out):
-    """Audit diagnostic guard branches in generated assembly and AArch64 ELF."""
+def validate_source_diagnostic(profile, out, continue_success=False):
+    """Audit labeled source-guard failures and the configured pass behavior."""
     code_path = out / 'loader-checkpoint-source/src/aarch64/crt0.S'
     elf_path = out / 'loader-relocated-build/loader.elf'
     code = code_path.read_text()
@@ -672,6 +683,8 @@ def validate_source_diagnostic(profile, out):
         code) is not None,
         'diagnostic display helpers run on the compiled loader stack range')
     guard = code.split('    /* May not have been loaded in the right location.', 1)[0]
+    for unchanged_limit in ('ldr x1, =0x20000', 'ldr x1, =0x6000000'):
+        require(unchanged_limit in guard, 'source guard retains existing bound: ' + unchanged_limit)
     for branch in ('b.ne .Lnative_source_address_fail',
                    'b.hi .Lnative_source_prefix_fail',
                    'b.cs .Lnative_source_overflow_fail',
@@ -685,9 +698,56 @@ def validate_source_diagnostic(profile, out):
         value_move = re.escape(label) + r'\n\s+mov x1, ' + register
         require(re.search(value_move, guard) is not None, 'diagnostic value for ' + title)
         require('.asciz "' + title + '"' in guard, 'diagnostic title for ' + title)
+    if profile.get('native_source_report_guard', False):
+        require('ldr x1, =0x80081000' in guard
+                and 'b.ne .Lnative_source_address_fail' in guard
+                and 'add x4, x0, x3' in guard
+                and 'ldr x1, =0x85700000' in guard
+                and 'b.hi .Lnative_source_reservation_fail' in guard,
+                'observed source has an explicit hypervisor-reservation ceiling')
+        require(re.search(r'\.Lnative_source_reservation_fail:\n\s+mov x1, x4\n'
+                          r'\s+adr x0, \.Lnative_source_reservation_text\n'
+                          r'\s+bl loader_checkpoint_hex\n\s+b \.Lnative_source_diagnostic_stop', guard)
+                is not None and '.asciz "SOURCE RANGE END"' in guard,
+                'reservation failure flushes the measured occupied end then stops')
+    else:
+        require('0x80081000' not in guard and '0x85700000' not in guard,
+                'legacy diagnostic mode retains its original source allowlist')
+    failure_blocks = (
+        ('.Lnative_source_address_fail:', '.Lnative_source_prefix_fail:', True),
+        ('.Lnative_source_prefix_fail:', '.Lnative_source_overflow_fail:', True),
+        ('.Lnative_source_overflow_fail:', '.Lnative_source_extent_fail:', True),
+        ('.Lnative_source_extent_fail:', '.Lnative_source_diagnostic_stop:', False),
+    )
+    for label, next_label, has_explicit_stop in failure_blocks:
+        block = guard.split(label, 1)[1].split(next_label, 1)[0]
+        if has_explicit_stop:
+            require('b .Lnative_source_diagnostic_stop' in block,
+                    'failure handler stops after displaying ' + label)
+        else:
+            require('bl loader_checkpoint_hex' in block,
+                    'extent failure displays its measured value before falling into the stop loop')
+    if profile.get('native_source_report_guard', False):
+        reservation_block = guard.split('.Lnative_source_reservation_fail:', 1)[1].split(
+            '.Lnative_source_diagnostic_stop:', 1)[0]
+        require('b .Lnative_source_diagnostic_stop' in reservation_block,
+                'reservation failure cannot fall through to the pass path')
     stop = '.Lnative_source_diagnostic_stop:\n    b .Lnative_source_diagnostic_stop'
-    require(stop in guard and guard.count('bl loader_checkpoint_hex') == 6,
-            'diagnostic pass and failures all halt before relocation')
+    expected_calls = 7 if profile.get('native_source_report_guard', False) else 6
+    require(stop in guard and guard.count('bl loader_checkpoint_hex') == expected_calls,
+            'labeled source guard emits each measured value')
+    if continue_success:
+        require('    b .Lnative_source_continue' in guard
+                and '.Lnative_source_continue:' in guard
+                and guard.index('    b .Lnative_source_continue') < guard.index('.Lnative_source_address_fail:'),
+                'passing guard skips failure handlers and continues to relocation')
+        require(profile.get('native_source_report_guard', False)
+                and not profile.get('native_source_diagnostic', False),
+                'pass-through source-guard profile is explicit')
+    else:
+        require('    b .Lnative_source_diagnostic_stop' in guard
+                and not profile.get('native_source_report_guard', False),
+                'standalone source diagnostic stops even when checks pass')
     require('IMAGE SOURCE STOP' not in guard, 'diagnostic never falls back to ambiguous stop')
     disassembly = subprocess.check_output(
         ['/opt/homebrew/opt/llvm/bin/llvm-objdump', '-d', str(elf_path)], text=True)
@@ -698,8 +758,10 @@ def validate_source_diagnostic(profile, out):
     require(len(relocation_calls) == 1, 'unique compiled call to relocate')
     relocation_call = relocation_calls[0]
     machine_guard = {address: row for address, row in instructions.items() if address < relocation_call}
+    if continue_success:
+        machine_guard[relocation_call] = instructions[relocation_call]
     require(sum(row[0] == 'bl' and row[3] == 'loader_checkpoint_hex'
-                for row in machine_guard.values()) == 6,
+                for row in machine_guard.values()) == expected_calls,
             'all six source diagnostics compiled to the AArch64 image')
     self_loops = [address for address, row in machine_guard.items()
                   if row[0] == 'b' and row[2] == address]
@@ -718,11 +780,11 @@ def validate_source_diagnostic(profile, out):
     stack_range = (stack_start, stack_start + int(stack_size.group(1)))
     helper_audit = audit_closed_display_helpers(symbols, instructions, stack_range)
     cfg = audit_guard_control_flow(machine_guard, symbols['_text'], relocation_call,
-                                   self_loops[0], helpers)
+                                   self_loops[0], helpers, continue_success=continue_success)
     return {'generated_assembly_sha256': hashlib.sha256(code_path.read_bytes()).hexdigest(),
             'compiled_loader_sha256': hashlib.sha256(elf_path.read_bytes()).hexdigest(),
             'loader_stack_range': [hex(stack_range[0]), hex(stack_range[1])],
-            'diagnostic_calls': 6, **helper_audit, **cfg}
+            'diagnostic_calls': expected_calls, **helper_audit, **cfg}
 
 
 def main():
@@ -735,7 +797,9 @@ def main():
     out = a.output_dir
     if a.loader_only:
         profile = json.loads((out / 'loader-sdk-profile.json').read_text())
-        require(profile.get('native_source_diagnostic', False), 'source-diagnostic loader profile')
+        source_report_guard = profile.get('native_source_report_guard', False)
+        require(profile.get('native_source_diagnostic', False) or source_report_guard,
+                'source-guard diagnostic loader profile')
         require(profile['native_startup_entry_guard'] and profile['base_sdk_unchanged']
                 and profile['kernel_initialiser_monitor_unchanged']
                 and not profile['task_images'] and profile['entry_interrupt_masked'],
@@ -745,9 +809,12 @@ def main():
                 and profile['source_image_base'] == '0xb1280000'
                 and profile['native_startup_max_relocation_bytes'] == 0x6000000,
                 'exact runtime source/envelope guard')
-        result = validate_source_diagnostic(profile, out)
+        result = validate_source_diagnostic(profile, out, continue_success=source_report_guard)
         (out / 'source-guard-loader-audit.json').write_text(json.dumps(result, indent=2) + '\n')
-        print('PASS: generated AArch64 source diagnostic reports each guard value and stops before relocation.')
+        if source_report_guard:
+            print('PASS: generated AArch64 source guard reports labeled failures, stops on failure, and reaches relocation on pass.')
+        else:
+            print('PASS: generated AArch64 source diagnostic reports each guard value and stops before relocation.')
         return
     require(a.reference is not None, '--reference is required for complete image validation')
     paths = [out / name for name in ['loader-sdk-profile.json', 'loader.img', 'native-startup-preflight.Image',
@@ -774,8 +841,9 @@ def main():
     code = (out / 'loader-checkpoint-source/src/aarch64/crt0.S').read_text()
     require(code.index('ldr x1, =0xb1281000') < code.index('    bl     relocate'), 'source guard before relocation')
     source_guard_audit = None
-    if profile.get('native_source_diagnostic', False):
-        source_guard_audit = validate_source_diagnostic(profile, out)
+    if profile.get('native_source_diagnostic', False) or profile.get('native_source_report_guard', False):
+        source_guard_audit = validate_source_diagnostic(
+            profile, out, continue_success=profile.get('native_source_report_guard', False))
     else:
         require('    b.ne .Lnative_source_fail' in code and '    b.cs .Lnative_source_fail' in code
                 and '    b.hi .Lnative_source_fail' in code and 'IMAGE SOURCE STOP' in code,
@@ -788,6 +856,40 @@ def main():
     image = (out / 'native-startup-preflight.Image').read_bytes()
     require(image[4096:] == payload and len(payload) <= 0x6000000, 'complete Image binding/envelope')
     require(payload[:64] == segments[0][3][:64], 'loader entry from actual ELF')
+    source_range_audit = None
+    if profile.get('native_source_report_guard', False):
+        source_base, source_entry = 0x80080000, 0x80081000
+        source_end = source_base + len(image)
+        checked_dtbs = [ROOT / '.cache/pixel-sunfish/live-runtime.dtb',
+                        ROOT / '.cache/microkit-src-2.3.1-sunfish/build/sunfish/debug/sel4/build/kernel.dtb']
+        hyp_starts = []
+        for dt in checked_dtbs:
+            cells = memory.read_cells(dt, '/memory', 'reg')
+            require(cells and len(cells) % 4 == 0, 'RAM cells for observed Fastboot source audit')
+            ram = [((cells[i] << 32) | cells[i+1], (cells[i+2] << 32) | cells[i+3])
+                   for i in range(0, len(cells), 4)]
+            reservations, _ = memory.read_regions(dt)
+            hyp = [region for region in reservations if region[0].startswith('hyp_region@')]
+            require(len(hyp) == 1 and hyp[0][1] == 0x85700000 and hyp[0][3],
+                    'fixed no-map hypervisor reservation in ' + dt.name)
+            hyp_starts.append(hyp[0][1])
+            layout.validate_range('exact observed Fastboot source image', source_base,
+                                  len(image), ram, reservations)
+            layout.validate_range('relocated loader destination', 0xc0000000,
+                                  0x6000000, ram, reservations)
+            layout.validate_disjoint(source_base, len(image), 0xc0000000, 0x6000000)
+        require(source_entry + len(payload) <= min(hyp_starts),
+                'actual loader payload ends below the hypervisor reservation')
+        require(source_entry + 0x6000000 > min(hyp_starts),
+                '96 MiB source ceiling is rejected as a physical envelope at the measured base')
+        source_range_audit = {
+            'source_entry': hex(source_entry), 'source_base': hex(source_base),
+            'exact_image_bytes': len(image), 'exact_image_end': hex(source_end),
+            'loader_payload_end': hex(source_entry + len(payload)),
+            'hyp_region_start': hex(min(hyp_starts)),
+            '96mib_ceiling_crosses_reservation': True,
+            'exact_source_and_relocation_ranges_safe_in_live_and_kernel_dtbs': True,
+        }
     header_at = segments[0][2]
     require(header_at % 8 == 0 and header_at <= 0x20000, 'loader prefix bound/alignment')
     header = struct.unpack_from('<8Q', payload, header_at)
@@ -852,6 +954,7 @@ def main():
                   base_kernel_monitor_and_initialiser_unchanged=True,
                   scope='Offline range/packing audit plus compiled runtime source guard. Device boot and actual MPSS authentication remain unproved.')
     result['source_guard_diagnostic_audit'] = source_guard_audit
+    result['observed_fastboot_source_range_audit'] = source_range_audit
     for path, expected in hashes.items():
         require(hashlib.sha256(Path(path).read_bytes()).hexdigest() == expected, 'audit input changed')
     result['input_sha256'] = hashes

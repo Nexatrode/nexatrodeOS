@@ -1,0 +1,11 @@
+[    0.763496] arm-smmu 15000000.apps-smmu: SUNFISH_SMMU sid=0x240 mask=0x1 dev=18800000.qcom,icnss sme=13 stage=0 type=0 cb=6 smr=0x80010240 s2cr=0x00000306 cbar=0x0001f300 sctlr=0x00c000e6
+[    5.252722] arm-smmu 15000000.apps-smmu: SUNFISH_SMMU sid=0x540 mask=0x0 dev=a600000.ssusb sme=3 stage=0 type=0 cb=1 smr=0x80000540 s2cr=0x00000301 cbar=0x0001f300 sctlr=0x00c000e6
+[    5.261807] arm-smmu 15000000.apps-smmu: SUNFISH_SMMU sid=0x800 mask=0x440 dev=ae00000.qcom,mdss_mdp sme=5 stage=0 type=0 cb=3 smr=0x84400800 s2cr=0x00000303 cbar=0x0001f300 sctlr=0x00c000e6
+[    8.249829] arm-smmu 15000000.apps-smmu: SUNFISH_SMMU sid=0x540 mask=0x0 dev=a600000.ssusb sme=3 stage=0 type=0 cb=23 smr=0x80000540 s2cr=0x00000317 cbar=0x0001f300 sctlr=0x00c000e6
+[    8.798013] arm-smmu 15000000.apps-smmu: SUNFISH_SMMU sid=0x540 mask=0x0 dev=a600000.ssusb sme=3 stage=0 type=0 cb=23 smr=0x80000540 s2cr=0x00000317 cbar=0x0001f300 sctlr=0x00c000e6
+[    8.893025] arm-smmu 15000000.apps-smmu: SUNFISH_SMMU sid=0x540 mask=0x0 dev=a600000.ssusb sme=3 stage=0 type=0 cb=23 smr=0x80000540 s2cr=0x00000317 cbar=0x0001f300 sctlr=0x00c000e6
+[    8.908796] arm-smmu 15000000.apps-smmu: SUNFISH_SMMU sid=0x540 mask=0x0 dev=a600000.ssusb sme=3 stage=0 type=0 cb=23 smr=0x80000540 s2cr=0x00000317 cbar=0x0001f300 sctlr=0x00c000e6
+[    9.588663] arm-smmu 15000000.apps-smmu: SUNFISH_SMMU sid=0x540 mask=0x0 dev=a600000.ssusb sme=3 stage=0 type=0 cb=23 smr=0x80000540 s2cr=0x00000317 cbar=0x0001f300 sctlr=0x00c000e6
+[   17.793941] arm-smmu 15000000.apps-smmu: SUNFISH_SMMU sid=0x520 mask=0x0 dev=soc:ipa_smmu_ap sme=8 stage=0 type=0 cb=37 smr=0x80000520 s2cr=0x00000325 cbar=0x0001f300 sctlr=0x00c000e6
+[   17.794232] arm-smmu 15000000.apps-smmu: SUNFISH_SMMU sid=0x521 mask=0x0 dev=soc:ipa_smmu_wlan sme=9 stage=0 type=0 cb=38 smr=0x80000521 s2cr=0x00000326 cbar=0x0001f300 sctlr=0x00c000e6
+[   17.794692] arm-smmu 15000000.apps-smmu: SUNFISH_SMMU sid=0x522 mask=0x0 dev=soc:ipa_smmu_uc sme=10 stage=0 type=0 cb=39 smr=0x80000522 s2cr=0x00000327 cbar=0x0001f300 sctlr=0x00c000e6

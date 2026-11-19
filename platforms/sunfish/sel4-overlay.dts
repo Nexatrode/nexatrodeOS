@@ -1,0 +1,33 @@
+/* Applied to the exact live Lineage boot_a DTB decompilation. */
+/ {
+    chosen {
+        seL4,elfloader-devices =
+            &{/soc/qcom,qup_uart@0xa88000},
+            &{/psci},
+            &{/soc/timer};
+        seL4,kernel-devices =
+            &{/soc/qcom,qup_uart@0xa88000},
+            &{/soc/interrupt-controller@17a00000},
+            &{/soc/timer};
+    };
+
+    /* ABL's two contiguous DRAM entries: 0x80000000 + 0xc0000000, then
+     * 0x140000000 + 0xbcc00000. Retain all live DT reserved-memory nodes. */
+    memory {
+        device_type = "memory";
+        reg = <0x0 0x80000000 0x1 0x7cc00000>;
+    };
+
+    soc {
+        qcom,qup_uart@0xa88000 {
+            status = "okay";
+        };
+
+        /* Architected timer PPIs terminate at the GIC. The Android DT's
+         * inherited interrupt-parent is the Qualcomm PDC, which seL4's
+         * hardware generator cannot decode for this timer node. */
+        timer {
+            interrupt-parent = <&{/soc/interrupt-controller@17a00000}>;
+        };
+    };
+};

@@ -1,0 +1,51 @@
+# Diagnostic-only patch for LineageOS 4.14.357, commit 28f9290ae067d3e7857126eb6312720dbe9c7c80.
+# Logs WLAN/IPA SIDs and Linux attachments matching all six ABL SMMU handoff patterns.
+# Read-only register logging at existing driver attach; no routing behavior changes.
+diff --git a/drivers/iommu/arm-smmu.c b/drivers/iommu/arm-smmu.c
+index 2be67ea9c..5f2f3e09a 100644
+--- a/drivers/iommu/arm-smmu.c
++++ b/drivers/iommu/arm-smmu.c
+@@ -2723,13 +2723,37 @@ static int arm_smmu_domain_add_master(struct arm_smmu_domain *smmu_domain,
+ 
+ 	mutex_lock(&smmu->stream_map_mutex);
+ 	for_each_cfg_sme(fwspec, i, idx) {
+-		if (s2cr[idx].attach_count++ > 0)
+-			continue;
++		u16 sid = fwspec->ids[i] & SID_MASK;
++		u32 raw_smr, raw_s2cr, cbar, sctlr;
+ 
+-		s2cr[idx].type = type;
+-		s2cr[idx].privcfg = S2CR_PRIVCFG_DEFAULT;
+-		s2cr[idx].cbndx = cbndx;
+-		arm_smmu_write_sme(smmu, idx);
++		if (s2cr[idx].attach_count++ == 0) {
++			s2cr[idx].type = type;
++			s2cr[idx].privcfg = S2CR_PRIVCFG_DEFAULT;
++			s2cr[idx].cbndx = cbndx;
++			arm_smmu_write_sme(smmu, idx);
++		}
++
++		if (sid == 0x240 || sid == 0x520 || sid == 0x521 || sid == 0x522 ||
++		    ((sid ^ 0x0340) & (SID_MASK & ~0x000f)) == 0 ||
++		    ((sid ^ 0x02a0) & (SID_MASK & ~0x000f)) == 0 ||
++		    ((sid ^ 0x02c0) & (SID_MASK & ~0x000f)) == 0 ||
++		    ((sid ^ 0x0300) & (SID_MASK & ~0x000f)) == 0 ||
++		    sid == 0x0540 ||
++		    ((sid ^ 0x0800) & (SID_MASK & ~0x0440)) == 0) {
++			raw_smr = readl_relaxed(ARM_SMMU_GR0(smmu) +
++						ARM_SMMU_GR0_SMR(idx));
++			raw_s2cr = readl_relaxed(ARM_SMMU_GR0(smmu) +
++						 ARM_SMMU_GR0_S2CR(idx));
++			cbar = readl_relaxed(ARM_SMMU_GR1(smmu) +
++						 ARM_SMMU_GR1_CBAR(cbndx));
++			sctlr = readl_relaxed(ARM_SMMU_CB(smmu, cbndx) +
++						  ARM_SMMU_CB_SCTLR);
++			dev_info(smmu->dev,
++				  "SUNFISH_SMMU sid=0x%x mask=0x%x dev=%s sme=%d stage=%d type=%d cb=%d smr=0x%08x s2cr=0x%08x cbar=0x%08x sctlr=0x%08x\n",
++				  sid, fwspec->ids[i] >> SMR_MASK_SHIFT,
++				  dev_name(smmu_domain->dev), idx, smmu_domain->stage, type, cbndx,
++				  raw_smr, raw_s2cr, cbar, sctlr);
++		}
+ 	}
+ 	mutex_unlock(&smmu->stream_map_mutex);
+ 

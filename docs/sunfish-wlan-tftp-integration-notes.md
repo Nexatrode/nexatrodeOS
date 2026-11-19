@@ -1,0 +1,511 @@
+# WLAN TFTP integration: offline findings
+
+The native runtime currently services the server-check path at QRTR port
+`0x5000`; the separately authorized firmware server is retained in the
+preboot factory and is not handed to that runtime. Merely enabling both
+services would not multiplex their requests.
+
+The firmware read server emits one DATA packet per incoming ACK. A client
+requesting `wsize > 1` could wait for a second DATA packet forever. The server
+now negotiates a one-packet window, and a host test exercises a multiblock
+transfer through the final ACK. The server also supports an explicitly bounded,
+non-reusing transfer-port range, with host coverage of exhaustion.
+
+Before connecting the two implementations, the runtime still needs an
+end-to-end design and tests for routing requests and responses on the shared
+service port, retaining replies under backpressure, duplicate RRQs, and
+`DEL_CLIENT` while replies are retained, queued, or in flight. The existing
+GLINK close cleanup handles particular server-check OACKs and flows, not a
+general firmware session. The firmware server does not implement transport
+retransmission timers or general client-close handling. Do not interpret the
+host tests as evidence that a combined runtime is safe or that WLAN has moved.
+
+No combined image was produced from these changes. Revisit the runtime's
+explicit host-only close-handoff compile guard when designing its interaction
+with firmware traffic; preserve the firmware capability's existing digest,
+device binding, and one-use ownership checks.
+
+## Follow-up offline work
+
+The firmware session now repeats an unacknowledged initial OACK or optionless
+DATA for a duplicate RRQ from the same peer rather than allocating a new port.
+It also has an exact-peer retirement operation, which must only be called
+after the transport has handled outstanding replies. Tests cover both cases.
+An offline-only shared-port dispatcher exercises concurrent server-check and
+firmware traffic and non-overlapping transfer ports. It is not wired into the
+native runtime. The outstanding transport issue remains: the existing
+`DEL_CLIENT` handoff recognizes a particular server-check WRQ, and an active
+firmware peer is not included in the owner snapshot. A client close must fence
+retained, queued, and published responses before retiring the session. The
+host-only close-handoff compile guard is still present. No new boot image has
+been built or verified for the firmware server.
+
+## Transport close fence experiment
+
+The opt-in `sunfish-tftp-close-owner-fence` quarantines a transport if
+`DEL_CLIENT` names an owner-snapshot peer or an outstanding TFTP transmit.
+The ordinary server-check deferred-close handoff still takes precedence. Two
+new transport tests cover an owner-held reply and an already queued TFTP
+reply; the full 151-test GLINK fixture passed with the existing handoff
+prototype and the fence enabled. The 35-test TFTP suite passed with the
+extended-session, peer-close, mcfg, and missing-file configurations.
+
+This is a conservative stop, not successful close recovery. The firmware
+server now exposes a tested active-peer snapshot, and an opt-in owner method
+copies it to the transport before each poll. A host owner fixture explicitly
+refreshes the snapshot and verifies a close of an otherwise idle active
+firmware peer quarantines the session. The full owner harness passed 499 tests
+with one ignored after the fence was narrowed to firmware traffic so existing
+server-check close recovery remains unchanged. This method requires the
+combined runtime to refresh the snapshot immediately after each firmware state
+transition. The opt-in combined runtime now hands off the unique firmware
+capability and refreshes the snapshot when dispatch changes firmware state.
+An owner test exercises a firmware OACK through the real combined dispatch,
+and another verifies fail-closed handling when a peer closes before dispatch.
+The combined owner harness passed 500 tests with one ignored, the GLINK suite
+passed 151 tests, and the TFTP suite passed 35. A target ELF built with the
+existing host-only close prototype disabled; no boot image was produced.
+
+The firmware path now shares the existing QRTR destination-flow accounting:
+the previous forced per-packet confirmation could retain each response and
+block the next DATA. A GLINK test verifies the first firmware DATA does not
+force confirmation and retires on matching GLINK completion.
+
+Close handling remains conservative: a close while a firmware request,
+transfer or response is outstanding quarantines the transport. It does not
+yet perform the normal safe cleanup and allow other peers to continue. The
+combined tests do not yet cover a complete firmware transfer through the real
+owner with backpressure, duplicate requests, peer close, and reset/faults. An
+additional fixture completes a synthetic 19-byte, three-block read through
+the combined owner and final ACK. A separate injected validation fault checks
+that dispatch creates no transfer and stops the owner. Neither demonstrates
+close recovery or the complete backpressure and retry lifecycle. The
+production close-handoff compile guard remains in place. At that stage the
+target ELF was not a verified cold-boot image; see the candidate below.
+
+## WLAN TFTP MUX candidate verification
+
+The separately gated WLAN close handoff now fences the exact peer and retires
+its firmware session when the owner can account for its state. It cancels
+provably unpublished firmware transmissions and exact owner-retained replies;
+fully published transmissions remain owned until real GLINK completion.
+Partially published or uncertain cases still stop rather than assume delivery.
+The prior unrelated host-only server-check close prototype remains disabled
+and its compile guard remains in the source.
+
+The owner fixture with the exact image feature closure passed 509 tests with
+one ignored. It includes a three-block combined transfer, an RRQ retry while
+the original OACK is in flight and retained under backpressure, close cases,
+and an injected close-validation fault. A separate synthetic read of 3,751,004
+bytes completed through final ACK. The GLINK suite passed 153 and the TFTP
+suite passed 36. The boot layout and compressed-image round trip passed. The
+CapDL audit rejected 280 mutations; its stated capability-audit scope is the
+RAM server-check profile and it is not an on-device WLAN result.
+
+The exact temporary image is frozen at
+`native-tftp-wlan-mux-frozen-v1/fastboot.img`, SHA-256
+`eab63ba8d4921421818892c1983d7ab0c78a714654757b6236360628474cbb75`.
+Its panel title is `WLAN TFTP MUX`. A cold boot is still needed to establish
+whether the modem requests WLAN firmware or announces WLFW; no hardware
+result is claimed by the offline tests.
+
+## IMG_9590 and the combined startup comparison
+
+IMG_9590 (SHA-256 `7502209e3ef5d4975fa2b91be45ad7f2542d04f4129673f52baac98613f1e456`) is the settled WLAN TFTP MUX run. The observed WLAN image RRQ count, active firmware transfer count and WLFW server count were zero. The next firmware port was still its initial 0x5100. Port 0x49 had a server-check OACK queue time, eight writer passes and no recorded OACK publication or peer DATA. The writer total was 416.917 ms, callback I/O was 416.675 ms and the longest inter-pass gap was 393.524 ms. The 196.297 ms barrier subtotal overlaps the I/O total. These are service-loop observations after boot and cannot determine the modem’s internal timeout. The screen did not report aggregate completed writes, ELF completion, or the queried WLAN PD state. A zero runtime error cannot fill those gaps.
+
+The working Linux locator capture's five event, path and interface log hashes still match its summary. The TFTP socket trace follows peer 30 through server-check WRQ, OACK, DATA and final ACK. File-not-found replies followed for modem_efs and the ruleset reads. The first wlanmdsp.mbn socket read followed the likely ELF-reply GLINK completion by 691.852 microseconds. Linux then logged WLFW service 69 version 1 at node 0 port 81 and had wlan0. The ELF association uses the mapper log, sizes, order and intent ID. The reference does not contain the QMI payload to establish that association independently.
+
+Native IMG_9446 completed IPA and the observed locator, missing-file and final-ACK exchanges. WLAN queried UNINIT with no firmware RRQ or WLFW. A later ELF WLAN TIMELINE boot matched the expected ELF reply body, then saw a server-check WRQ from peer 0x21 as its first post-ELF request. The first completed write's ACK completed at GLINK 38.856 seconds after ELF. Linux had already sent its write ACK before the likely ELF reply. The native and Linux ACK timestamps refer to different layers. Event order is evidence of a different startup path. It does not establish which condition inside the modem caused the divergence.
+
+The combined image also differs from the earlier writer-I/O experiment in its close handling. It enables the firmware close handoff and excludes the host-only server-check close prototype. Results from that older build must stay attributed to their original boot. The pinned Android ICNSS and Linux ath10k QMI clients register a lookup and handle arrival of the WLFW service. The upstream Linux tqftpserv handles firmware reads initiated by its remote client.
+
+The WLAN MUX STARTUP image selects the same combined profile as IMG_9590 with one additional display feature. It presents the aggregate write and first completed write ACK, first missing-read outcome, IPA, locator masks, ELF receive/publication/completion, reference QMI-body match, first post-completion TFTP request, firmware allocations and WLAN query/discovery together. Times use the native runtime origin. FFFFFFFF denotes an unavailable timestamp or value. A reference-body match checks the native serialization against the source-derived fixture. GLINK completion records receipt at transport level. The first post-ELF row classifies a request observed at the advertised TFTP service after matching GLINK completion. It excludes prior requests and traffic on transfer ports.
+
+If ELF is missing, compare the earliest service that lacks a response with the known-good reference. If ELF completes and post-ELF traffic again consists of server-check writes or mcfg reads with no WLAN request, the existing native result is reproduced with the provider present. That outcome alone would not justify another writer timing screen. If a firmware RRQ appears, the next port and WLFW fields distinguish entry into the provider from later service discovery.
+
+The AArch64 boot image passed the layout and packed-kernel LZ4 checks. The exact-profile owner harness passed 509 tests with one ignored, the runtime source suite passed 29 and the stack-mapping suite passed eight. The CapDL audit rejected 280 capability mutations. The temporary image is archived at `native-wlan-mux-startup-frozen-v1/fastboot.img`, SHA-256 `b19ba4c107a4c99c024912df1dcba914daea9886a9572ee8b63501458c8b1019`.
+
+## IMG_9592 and IMG_9593 hardware result
+
+Both photos show the same ELF request and reply timestamps and the same completed write ACK. IMG_9592 caught IPA pending and the PD query at phase 2. By IMG_9593 IPA had completed, and the phase-4 WLAN query returned UNINIT (0x7fffffff). TFTP WRQs increased from 13 to 18 and RRQs from two to four. One write completed on peer 0x52. The queued and completed locator masks both read 0x75. The ELF reply matched the source-derived QMI reference and reached GLINK completion about 16 seconds after receipt, including 14.79 seconds before publication. The write’s final ACK completed about 2.5 seconds after ELF completion. The first post-ELF request was an RRQ for mcfg.tmp from peer 0x54. The first missing-file reply had flags 0x1f. No WLAN image RRQ, firmware transfer-port allocation or WLFW advertisement was observed. This places the visible divergence before firmware transfer and reproduces a different post-ELF branch from the working Linux reference. The panel cannot establish what condition inside the modem selected it.
+
+## Comparing the 14.791-second ELF publication interval
+
+The MUX startup photographs give 34,754,340 µs for first accepted ELF request and 49,545,423 µs for observed full publication on the native runtime clock, a difference of 14,791,083 µs. This spans host registry service and transmit work. The later GLINK completion is outside the interval. The panel omitted the selection and queue timestamps.
+
+The closest saved native example by duration is the REGISTRY TURNS run (investigation note at line 1107). Registry entry to first selection of ELF consumed 13,216 ms. The preceding tms/servreg transaction 4 retried 12 times before queueing, then ELF queued on first selection. A separate TX4 FLOWBUSY TRACE run found 12 same-peer rejections and the previous registry transaction 3 still unpublished. Other profiles had different dominant phases. IMG_9464 spent 2,750 ms of a 2,900 ms preselection gap in router dispatch. In IMG_9465, checked I/O accounted for 2,851 ms out of 2,854 ms of router time during its longest gap. A later ELF completion handoff reduced the observed time from the blocking reply’s completion to ELF admission from 2,065 ms to 138 ms across two runs. The MUX image already enables this handoff. None of the older gap measurements can be assigned to IMG_9593 by matching duration.
+
+I verified the saved Linux locator, GLINK, TFTP metadata and TFTP path log hashes. On the GLINK clock the likely 60-byte ELF request arrived at 138.272783 s, the 88-byte reply was sent at 138.273077 s, and its matching RX_DONE arrived at 138.273157 s. Request to transmit took 294 µs and transmit to completion took 80 µs. Attribution to ELF uses the matching locator log, sizes and ordering. The Linux GLINK receive tracepoint and the native owner's accepted-request event mark different boundaries.
+
+The WLAN MUX ELF PHASES panel reads the existing timestamps for receive-pass end, first registry entry, selection, admission, full publication and matching completion. The five phases from receipt to publication partition RX TO PUB MS apart from integer rounding when all boundaries are available. PRESEL RUN 0 and 1 show the first two compressed transaction/name/outcome/count runs. They cover only the initial runs if the work is more varied. TX4 PEER WAITS and ELF PEER WAITS count same-destination queue rejections for their respective requests. BLOCK TXN is the first unpublished registry reply identified blocking ELF directly. REG GAP MS and GAP ROUTER MS refer to the same longest measured preselection gap. RX PUB IO MS sums the four top-level I/O deltas between ELF receipt and publication. This includes transport work on other traffic during the interval. These subtotals overlap the phase durations. A missing measurement is FFFFFFFF.
+
+For the device comparison, first identify the largest of the five phases. A long REG TO ELF interval with repeat FlowBusy runs and matching TX4 waits supports the earlier registry ordering explanation. A long ELF ENQUEUE interval with a blocker transaction points to the direct ELF admission guard. A long QUEUE TO PUB interval places the wait in dispatch after successful queueing. The post-ELF path and WLAN state remain visible in the same frame.
+
+Verified temporary image `native-wlan-mux-elf-phases-frozen-v1/fastboot.img`, SHA-256 `7116bba7c843f3f49db955246de59a8f7ed73aec96b7874c01c243f2420d58dd`. The combined owner suite passed 509 cases with one ignored. All 22 timing, 29 source and eight stack-mapping tests passed. The boot layout and extracted LZ4 payload passed verification. The capability audit rejected 280 mutations.
+
+## IMG_9595 ELF phase result
+
+The new boot took about 16.0 s from ELF receipt to publication. Finishing the receive pass took 1,561 ms, entry to the registry rounded to zero, first registry entry to ELF selection took 12,049 ms, ELF selection to admission took 2,151 ms, and admission to publication took 234 ms. Matching GLINK completion took another 1,446 ms after publication. The two preselection records 0004120C and 00041101 decode to transaction 4 (tms/servreg), twelve FlowBusy results followed by one successful queue admission. ELF then recorded two same-peer waits, with transaction 4 identified as its direct blocker. The interval from observing that blocker to its completion was 1,943 ms, followed by 173 ms to ELF queueing. The largest registry gap lasted 2,200 ms, including 1,992 ms in the router. Checked transport I/O accounted for about 12.7 s across the full receive-to-publication interval and overlaps those phases. This panel identifies the direct ELF blocker but not the preceding packet that caused transaction 4 itself to wait.
+
+One server-check write completed. The first post-ELF TFTP request came from 0x54 for mcfg.tmp. No WLAN firmware RRQ or WLFW service was observed. IPA completion was still zero and the PD query value was unavailable in this frame.
+
+IMG_9596 is the later frame of the same boot. It retains the same ELF timings and records IPA completion and a valid PD query state of 0x7fffffff (UNINIT), with zero WLAN RRQs and zero WLFW servers.
+
+## Offline replay of transaction 4 with the ELF PHASES feature set
+
+The owner/FIFO replay queued transaction 3 and attempted transaction 4 on the same peer. The owner reported transaction 3 as the unpublished blocker. Servicing an already-pending router continuation earlier advanced publication of transaction 3 and subsequent admission of transaction 4. A completion for transaction 3 on a different peer left transaction 4 waiting. Its admission required the matching GLINK completion for the original reply. The two schedules used synthetic ticks and a scripted peer completion. They measure ordering, not expected time saved on the phone.
+
+With a pending 52-byte intent grant and a QRTR credit owed, the actual writer emitted the backing advertisement, grant ACK, request RX_DONE, QRTR RESUME and transaction 3 reply in that order. Injected blocked writes retried the same bytes. The replay and existing owner suite passed 511 cases with one ignored. The runner and log are under `.cache/sunfish-native-wifi/private/tx4-mux-offline-replay-v1/`.
+
+The older settled TX4 BLOCKER TX GATES run identified transaction 3 at transaction 4’s last rejection. IMG_9596 directly identifies transaction 4 blocking ELF and does not identify transaction 4’s predecessor. Before requesting another boot, check whether the current combined service loop actually leaves a runnable router continuation waiting while the transaction 3 reply is eligible.
+
+## Transaction 3 across the MUX service pass
+
+The MUX service pass calls the bounded registry handler, then the storage burst, ordinary IPA if due, and WLAN query/listener steps. The outer loop dispatches the retained router continuation on its next pass. The host replay injected avs/audio (3), tms/servreg (4) and kernel/elf_loader (5) on peer port 9. It called the actual registry handler and the service steps that follow it with a simulated peer and storage backend. This exercises the interval after registry service. The incoming FIFO history and pre-registry TFTP activity from IMG_9596 were not captured.
+
+In all four trials, the bounded registry handler queued transaction 3 and its second attempt found transaction 4 blocked by that unpublished reply. An ordinary router dispatch immediately at that boundary published transaction 3 before storage service. With normal ordering, the reply remained unpublished through the service steps and went out on the next router dispatch. Both outcomes held with idle storage and with a separate storage OPEN pending. The OPEN reply was published in both runs with storage work. In all cases transaction 4 waited for the matching GLINK completion and then published. The host suite passed 512 tests with one ignored. Runner and log are under `.cache/sunfish-native-wifi/private/tx3-runtime-boundary-replay-v1/`.
+
+This establishes that an eligible turn can exist at this boundary. Its contribution to the latest phone boot is unknown. The largest observed 2,200 ms registry gap included 1,992 ms inside the router. An older phone run with zero transaction 4 same-peer waits still reported WLAN UNINIT and no firmware read (investigation note, GLINK INTENT ACK TURN). A timing-only boot has limited value for establishing the prerequisite for the first firmware request.
+
+## Comparing final ACK and ELF at GLINK transmit
+
+The Linux locator reference contains a single 36-byte outgoing IPCRTR data record from tqftpserv between the completed write’s nine-byte DATA socket receive and four-byte ACK socket send return. Those socket records both identify peer 0:0x1e and transfer port 1:0x4007. The 36 bytes fit the 32-byte QRTR header plus the four-byte TFTP ACK. The full-length GLINK TX tracepoint was at 136.690828 s on intent 0, the socket send returned 24.290 µs later, and the corresponding peer RX_DONE was at 136.690985 s. The 52-byte record on intent 1 at 136.690887 s was already outside the socket-send window. The independent GLINK/TFTP capture shows the same unique 36-byte match at 212.502915 s, with its socket send returning 22.001 µs later. This is attribution by socket identity, size, task, direction and time. The GLINK trace contains no ACK payload.
+
+The likely ELF reply in the Linux locator reference has its TX tracepoint at 138.273077 s, 1,582,249 µs after the final ACK’s TX tracepoint. The older native ELF WLAN TIMELINE run with both publication timestamps instead has ELF at 36,151,140 µs, the completed peer 0x57’s final DATA acceptance at 74,598,969 µs and its ACK publication from local port 0x500d at 74,949,450 µs. Thus 38,447,829 µs of the 38,798,310 µs from ELF publication to final ACK publication had already elapsed when final DATA was accepted. The remaining 350,481 µs span that acceptance to full ACK publication. The first native write client had yielded zero DATA. These deltas compare events within individual boots. Linux TX tracepoints and native full-publication observations are related host transport milestones.
+
+The newer MUX STARTUP run exposed only the final ACK completion for peer 0x52, and MUX ELF PHASES exposed the completed-write count. Neither frame supplies the ACK publication timestamp for its own boot. The opposite transmit ordering is established for the older timeline run. The modem’s WLAN dependency and the newer runs’ transmit ordering remain open.
+
+## First-client OACK between IPA publication and completion
+
+The saved Linux header capture identifies the WRQ client as 0:0x1e and the IPA registration client as 0:0x1f. From first WRQ GLINK RX, IPA reply TX was at +352 µs, its peer RX_DONE at +421 µs, OACK TX at +758 µs, OACK RX_DONE at +846 µs and the 44-byte record carrying the client’s DATA at +976 µs. The IPA reply and OACK used the same reusable peer intent sequentially. The final ACK and close of the host’s transfer port precede the modem’s DEL_CLIENT for 0:0x1e. The first native client in the detailed traces is 0:0x1f. Ports identify clients within a boot.
+
+The MUX ELF PHASES build enables ipa-reply-before-oack as well as tftp-first-oack-unheld. Runtime initialization consequently leaves the first OACK held until matching IPA registration completion. On the earlier IPA REPLY FIFO GRANT panel, the IPA reply published about 157 ms before the first close. The observed peer tail crossed that reply about 146 ms before the close. Its matching completion first became visible about 20.4 seconds after the close. On the separate FIRST TFTP FIFO boot with no hold, the peer tail crossed the OACK about 1.30 seconds before the close and no matching first DATA appeared. Tail crossing establishes transport consumption only.
+
+An offline seven-case link fixture used the frozen MUX Rust source and feature set. It staged the exact first server-check OACK and an IPA registration response, using the existing diagnostic unhold switch only after full IPA publication in the alternative arms. With a second fitting peer receive intent, the writer emitted the correct OACK to the original peer before IPA completion, on a different intent. With a blocked write followed by peer close the unpublished OACK was canceled. Under scarce intents the writer issued a 72-byte intent request. Return of the reusable IPA buffer alone left the intent handshake pending. A peer advertisement and grant ACK allowed the open client's OACK to proceed, while the closed client's OACK remained canceled. The control arm held the OACK until IPA completion and canceled on earlier close. This proves conditional transport feasibility. Neither a spare intent in the phone’s 157 ms interval nor acceptance by modem TFTP was observed. Test runner and output are under `.cache/sunfish-native-wifi/private/mux-first-client-order-offline-v1/`.
+
+## FIRST OACK AFTER IPA TX temporary boot candidate
+
+The combined MUX runtime explicitly enables one attempted write of the original first client's OACK between full publication of the exact IPA registration reply and its matching completion. Eligibility uses the outstanding IPA publication identity, the original WRQ intent and transfer route, and an already available fitting peer buffer. Pending grant ACKs and queued QRTR credits retain their turns. The early exception participates only in the normal data selector. It cannot start an intent request. An attempted write consumes the exception even on WouldBlock. The existing fallback requires IPA completion, and client close cancels a provably unpublished OACK. A separate peer completion is required for a published OACK.
+
+The first-client DATA time is the device success criterion. EARLY ATTEMPT counts a writer call, including a blocked write. Compare FIRST OACK US with IPA REPLY DONE US and FIRST CLOSE US to establish publication order. FINAL ACK PEER and FINAL ACK PORT identify the tracked completed transfer independently of FIRST PEER and FIRST XFER PORT. All timestamps use the native runtime origin.
+
+The dedicated regression failed against the previous implementation and passed against the candidate. Six modeled combinations covered a spare or exhausted peer buffer, blocked write, fallback, close and independent completion. The writer preserved a backing advertisement before the grant ACK and sent a queued QRTR RESUME first. The exact-profile link suite passed 206 tests, the owner suite passed 509 with one previously ignored, and the timing, source and stack suites passed 22, 29 and 8. The AArch64 panel label, extracted boot-v2 LZ4 payload, loader placement and CapDL audit all passed, including 280 rejected mutations. The frozen temporary image is native-wlan-first-oack-pub-frozen-v1/fastboot.img with SHA-256 c27ca5e5e2fb8fe8ea63c07ae7ee7acaba3f4502afee7bd51458ac080e81a1ad. On-device result pending.
+
+## IMG_9598 first OACK result
+
+First client 0x1f on transfer port 0x5001 had WRQ 0x01515124, host WRQ RX_DONE 0x015659F0, retry 0x015B4190 and close 0x016158FE. EARLY ATTEMPT was zero. First OACK publication, matching completion and DATA were all unavailable. The retry was 651.372 ms after WRQ and close was 1,050.586 ms after WRQ. The counters establish that the new exception did not reach the writer. They do not identify the failed eligibility condition.
+
+One write completed, from a different client, 0x52 on transfer port 0x5006. ELF published at 0x02F0DD06 and completed at 0x03049BAB. That client's final DATA was accepted at 0x030D504B, 570.528 ms after ELF completion. Its final ACK could only be published subsequently. Its exact publication and matching completion times cannot be read. Runtime error and detail were zero, IPA complete was one, WLAN was UNINIT, and WLAN RRQs and WLFW servers were zero.
+
+The display's 24-column hex renderer skips labels longer than 15 bytes. Four labels in the frozen image exceeded this limit, leaving unrelated text on the IPA publication/completion and final ACK publication/completion rows. The source now uses shorter labels and a regression checks widths for every numeric row of this panel. Rerunning the same image would retain this limitation.
+
+## FIRST OACK ELIGIBILITY
+
+This image measures the original accepted server-check WRQ, identified by its receive intent, peer and transfer port. OACK QUEUE US records admission of its exact OACK. WRITER PASSES counts ordinary writer selections from server admission through the first early attempt, OACK publication or client close. IPA OPEN PASSES counts the subset that sampled the exact fully published IPA reply still awaiting its matching GLINK completion. ELIGIBLE PASSES counts selections in that window with every measured guard clear. READY CMD is the GLINK command offered to the writer on the most recent eligible pass. FFFFFFFF means no such callback was recorded for that pass.
+
+BLOCK ANY is the union and BLOCK ALL the intersection of simultaneous blocker masks across IPA OPEN PASSES. Both fields default to zero with zero samples. CLOSE BLOCK is an independent snapshot at the original peer's first decoded DEL_CLIENT, before cancellation. It can show a clear condition even when no writer ran in that interval. FFFFFFFF means there was no close snapshot. Bit values are hexadecimal.
+
+| Bit | Condition at sample |
+| --- | --- |
+| 01 | No queue record matched the original request and transfer addresses |
+| 02 | The exact IPA publication was outside its in-flight interval |
+| 04 | A receive-intent grant ACK was pending |
+| 08 | A QRTR RESUME had unsent bytes |
+| 10 | An outbound intent request was waiting |
+| 20 | An older unsent reservation preceded the OACK on its destination flow |
+| 40 | The matching record had no fitting remote intent |
+| 80 | The one-shot writer attempt was already consumed |
+| 100 | The matching record had sent bytes or exceeded the single-write bound |
+
+The registration and final ACK timestamps now use labels that fit the display. The existing scheduling policy determines all writes. The hardware question is whether there was a writer selection with a queued, eligible OACK before this client's close. WLAN RRQ RX and WLFW SERVERS provide the separate firmware-startup outcome.
+
+The frozen candidate is native-wlan-first-oack-eligibility-frozen-v1/fastboot.img, SHA-256 8f250769a8ac3d604432e6b65e0a478120b3c72d368bbb79aeb5ddb4fb501327. Offline verification covered 206 link tests, 509 owner tests (one previously ignored), 22 timing tests, 30 source tests and 8 stack tests. The AArch64 payload, boot-v2 layout, decompression round trip, and runtime authority audit passed, including 280 rejected mutations. On-device result pending.
+
+## IMG_9599 first OACK eligibility result
+
+Peer 0x1f sent WRQ at 0x0151B86A. Its OACK queued at 0x0153D56F (+138.501 ms). IPA published at 0x015F0139 (+870.607 ms), leaving 179.860 ms before client close at 0x0161BFCD. Four ordinary writer passes were sampled. One saw the exact IPA reply in flight and zero were eligible. BLOCK ANY, BLOCK ALL and CLOSE BLOCK were each 0x04, the pending GLINK receive-intent ACK. The samples distinguish this guard from shortage of a fitting remote intent or queued QRTR credit. They do not identify the grant, its backing advertisement state, or the command written on that pass. EARLY ATTEMPT was zero and the first OACK, OACK completion and DATA timestamps were absent. IPA completed 21.812 seconds after close. Peer 0x52 completed one write. WLAN RRQ and WLFW counts stayed zero, PD state was 0x7FFFFFFF and runtime error was zero.
+
+## IMG_9599 grant and close replay
+
+The host replay uses the frozen eligibility build's Session and feature set. A synthetic positive 128-byte intent request represents one possible grant. With the original OACK queued and the exact IPA reply in flight, the ordinary writer committed the backing advertisement (command 5), then the positive ACK (8), then the exact TFTP OACK (GLINK DATA, 9) to peer 0x1f on a distinct remote intent. Closing after one turn reproduced one IPA-open pass, zero eligible passes and close mask 0x04. Closing after two turns gave mask zero but still no OACK. Allowing the third turn published it before the injected close. Starting the measured sequence after the advertisement committed required two further turns. A blocked ACK also left 0x04 at close, including in a synthetic denial case. The panel cannot distinguish those histories. The tests also checked blocked writes, close cancellation, and independent OACK completion. All 207 link tests passed. The host supplied the close boundary and a synthetic clock. The 179.860 ms on the Pixel is an upper bound from IPA publication to processed close, not measured time available to a particular callback or evidence of the modem's internal deadline.
+
+Replay and emitted-record log: .cache/sunfish-native-wifi/private/img9599-first-grant-replay-v1/. The next hardware experiment would give the original open client a bounded follow-up, rechecking the normal writer guards and incoming close before each additional write, and measure actual publication, peer consumption and DATA. Rebooting the current eligibility image is unnecessary.
+
+## FIRST OACK GRANT WINDOW
+
+This opt-in image follows only the original server-check client's exact queued OACK. The ordinary writer must first commit either the pending positive grant's own backing advertisement or its positive ACK while the exact IPA registration reply is in flight and the pending grant is the sole sampled blocker. After the advertisement it may give the ordinary arbiter two bounded calls, one for that grant ACK and one for the exact OACK. After an already-backed grant ACK only the OACK call is allowed. A different record choice, a queued credit, a blocked write, or incoming RX can end the follow-up. The existing receive path processes pending input and cancels a provably unpublished OACK on close. Readback and cursor validation remain in force. The last RX sample before publishing a borrowed write can detect newly arrived input even after bytes have been staged. As on the ordinary transport, the modem can move independently after a sample.
+
+TRIGGER CMD is 5 for the backing advertisement and 8 for the ordinary positive ACK. A trigger of zero means the bounded sequence never started. BACKING AD US is recorded only for an advertisement that triggered this sequence. GRANT ACK US is a host observation after commit. FOLLOW RESULT is 1 for a fully published OACK, 2 for yielding to input, 3 for a blocked write, 4 for another selection or no usable record, and 0 before a trigger. RX BYTES is the sampled unread ring byte count, which can be zero for a buffered startup record. OACK TAIL US records the peer FIFO cursor crossing this OACK. FIRST DATA US measures an actual DATA record from the first peer to its matching transfer port. A different peer's completed write has its own COMPLETED PEER. WLAN RRQ RX and WLFW SERVERS are the independent startup indicators.
+
+The FIFO replay used the exact target feature set, a prepared Session and fake CPU-memory rings. The ordinary-only control emitted command 5 in one call. The candidate emitted 5, 8, 9, or 8, 9 if the advertisement had already committed. It checked the peer, transfer port, remote intent, OACK bytes, observed tail and matching injected DATA. Injecting close during command 5, 8 or 9 suppressed subsequent uncommitted writes. Cases also covered a denied grant, a pending QRTR credit, TX backpressure with READ_NOTIF, and a transport fault with quarantine. Replay inputs and results are under .cache/sunfish-native-wifi/private/native-first-oack-grant-window-v1/. The offline clocks do not predict whether modem DATA arrives on the Pixel.
+
+Frozen temporary image: native-first-oack-grant-window-frozen-v1/fastboot.img. SHA-256 eaa3e2026e5f5fbd664c2082277c06c7902376a8befee9394501f72ed9791b73. The boot-layout audit, independent packed-kernel extraction and comparison, and capability audit with 280 rejected mutations passed. The link suite passed 206, the owner suite passed 509 with one previously ignored, and the ordinary FIFO suite passed 118. The timing, source and stack suites passed 22, 30 and 8 respectively. Device result pending.
+
+## IMG_9602 first OACK grant window result
+
+The first WRQ was from 0x1f at 0x01520ED5. Its OACK queued at 0x01542C4A (+138.613 ms). IPA published at 0x015F5A15. The grant's backing advertisement committed at 0x01611D32 (trigger 5), 76.054 ms before the matching client close was processed at 0x01624648. The follow-up yielded to 0x48 unread RX bytes (result 2). Their contents were not captured. The positive grant ACK had no timestamp in this follow-up and was still pending at close (mask 4). There was no early OACK attempt, publication, peer-tail crossing, completion or matching DATA. IPA completed and one other peer (0x54) completed a write. Runtime error was zero, WLAN remained UNINIT, WLAN RRQ count and WLFW server count were zero.
+
+The saved Linux first-WRQ window contains four inbound QRTR records that individually occupy 72 FIFO bytes. All four are DEL_CLIENT records. The first transfer used modem port 0x1e and exchanged OACK, DATA and final ACK before its close (first-wrq-window.txt lines 11–23). The close has a 52-byte QRTR message, a 16-byte GLINK header and 4 bytes of padding. The full Linux capture also contains other QRTR record types with this footprint.
+
+An offline replay against the grant-window adapter injected a 72-byte DEL_CLIENT during the backing advertisement. Closing 0x1f immediately and closing unrelated port 0x70 followed by 0x1f on a separate intent produced the same recorded trigger (5), yield (2), unread bytes (72) and pending grant ACK at close (mask 4). Only the first case closed 0x1f on the first decode. The observation on the Pixel cannot distinguish these cases. If another capture is needed, associate the saved RX cursor range at yield with the records subsequently decoded by the ordinary receiver, including the node and port in each DEL_CLIENT body. Replay source and results are under .cache/sunfish-native-wifi/private/img9602-rx72-offline-v1/.
+
+## FIRST OACK YIELD RX
+
+This image uses the same original-client writer policy as IMG_9602. On a receive-side yield it latches the validated RX tail and unread byte count. It classifies complete frames while the ordinary receiver consumes that byte range, including across ring wrap. It reads the node and port named in the DEL_CLIENT body. Later arrivals cannot replace the captured endpoint. A frame that extended beyond the sampled range sets PARTIAL FRAME. A tail mismatch sets CURSOR LOST and stops attribution. Already buffered startup events do not spend captured FIFO bytes.
+
+For the previous 72-byte case, one complete GLINK DATA frame containing DEL_CLIENT would show WHOLE RECORDS 1, GLINK CMD MASK 0x200 and QRTR TYPE MASK 0x40. DEL NODE and DEL PORT identify the first complete close in the sample. MATCHED CLOSE covers any complete close for the original peer in that sample. Check FOLLOW RESULT 2, BYTES LEFT 0, PARTIAL FRAME 0 and CURSOR LOST 0 before interpreting a zero match as exclusion for a fully decoded byte range. Several whole records can share the same command or type bit.
+
+The fake-ring replay injected a matching close, an unrelated close followed by the original client's close outside the sample, a read notification followed by a matching close in the same sample, and a partial close completed with later bytes. All crossed the ring boundary. The source and replay outputs are under .cache/sunfish-native-wifi/private/native-first-oack-yield-rx-v1/.
+
+The verified temporary image is native-first-oack-yield-rx-frozen-v1/fastboot.img. SHA-256 ad77064a640287038fefcd4ffd85688be880cd054a28b6a426e54c668c312c55. The capability audit rejected all 280 mutations. Hardware result pending.
+
+## First write and WLAN firmware comparison across three Linux captures
+
+Measured from tqftpserv's first successful WRQ receive to the OACK send return, DATA receive return and final ACK send return on the same connected transfer socket. All three captures identify remote peer 0:0x1e and local transfer port 1:0x4007. The recorded message lengths are 73, 39, 9 and 4 bytes respectively.
+
+| Saved reference | OACK (ms) | DATA (ms) | Final ACK (ms) |
+| --- | ---: | ---: | ---: |
+| elf-locator-reference-prepared-v1 | 0.468 | 0.845 | 0.944 |
+| glink-tftp-reference-prepared-v1 | 0.476 | 0.935 | 1.036 |
+| qrtr-header-reference-prepared-v1 | 0.445 | 0.849 | 0.955 |
+
+Source files are run/logs/tftp-metadata.txt under each private reference. These are host socket boundaries. Native FIFO timestamps and the modem application's clock are distinct. In the older native TFTP WRQ REPEAT run, the modem FIFO tail crossed the first OACK at +372.700 ms, before a repeat WRQ and about 1.390 s before the host observed the close. There was no matching DATA in that run. The native OACK bytes still match the pinned tqftpserv option encoder in the host oracle. The pinned WRQ handler sends its OACK on the per-client socket without consulting IPA.
+
+Two Linux path logs show the same three WLAN firmware spellings after the initial resource reads. An offline check fed those paths as synthetic octet RRQs through the current native request observer. All three satisfied the WLAN RRQ counter's suffix check. This verifies pathname coverage for normally delivered requests. It does not establish what the remote application received. Android ICNSS and Linux ath10k both register a WLFW service lookup. The first named WLAN firmware read and subsequent WLFW announcement remain independent hardware milestones.
+
+## IMG_9603 first OACK yield RX result
+
+The writer committed the backing advertisement (command 5) at 0x0160C0C6 and yielded to receive (result 2). The full sampled 0x48 bytes decoded as a single GLINK DATA record (mask 0x200) carrying QRTR DEL_CLIENT (mask 0x40), naming node 0 port 0x1f, the original WRQ peer. MATCHED CLOSE was 1. BYTES LEFT, PARTIAL FRAME and CURSOR LOST were all zero. The host processed the close at 0x0161E9AE, 76.008 ms after the advertisement. That interval measures host processing, not remaining client lifetime. The positive grant ACK was still pending at close (mask 4). The original OACK and DATA timestamps were absent. IPA registration completed at 0x02AEBB10, a different peer (0x54) completed a write, and WLAN remained UNINIT with zero firmware RRQs and zero WLFW servers. Runtime error and detail were zero. The RX-priority decision at this yield is resolved; further writer-order investigation belongs before the advertisement.
+
+## First OACK opportunity before the grant advertisement
+
+Times below are relative to the host observing the first server-check WRQ within each boot. IMG_9602 supplies queue and IPA publication times that IMG_9603 does not display. In IMG_9602 the OACK queued at +138.613 ms, the exact IPA reply published at +871.232 ms, the backing advertisement committed at +986.717 ms and the close was decoded at +1062.771 ms. The first 732.619 ms after OACK queueing preceded the software exception opening. Publication was a necessary condition, not proof of a free writer turn. IMG_9599 independently measured +138.501 ms to queue, +870.607 ms to IPA publication, and one in-flight writer pass with a positive-grant ACK pending. IMG_9603 identifies its own 72-byte yield as the original client's close.
+
+In the old TFTP FIRST OACK run the OACK queued at +138.893 ms, the immediate router turn began 20 µs later, publication was at +304.070 ms and the modem FIFO cursor crossed at +315.644 ms. The client repeated the WRQ at +1435.580 ms with zero DATA or ERROR observed. See sunfish-mpss-9222-investigation.md, TFTP FIRST OACK. The queue times agree within 0.4 ms in these runs. Sender and receiver processing after queueing differed.
+
+Two saved registration visibility photos distinguish arrival from host service. Both panels first saw the registration frame in the initial sample about 6 µs after WRQ, with 224 bytes ahead and no preceding absent sample. The actual enqueue time is unbounded on the early side by this trace. The visibility build serviced registration at +1110.790 ms and sent OACK at +456.578 ms. The receive-first build serviced registration at +627.513 ms using six extra RX passes, but the first OACK remained unpublished and the client closed. Source photos are native-ipa-reg-rx-visibility-v1/device-result/complete.heic and native-ipa-reg-rx-first-v1/device-result/complete.heic. These builds do not provide IMG_9603's early receive timing.
+
+The saved Linux GLINK header window shows request-buffer returns, IPA publication, peer IPA RX_DONE, OACK publication, peer OACK RX_DONE, and client DATA all within 0.976 ms of the first WRQ. Comparing that sequence with first-client DATA and the later successful native transfer gives an offline discriminator beyond advancing the same grant turn. Native transport consumption alone has already been demonstrated without first-client DATA; the modem application's internal reason remains unknown.
+
+## Same-boot comparison of the first and successful server-check writes
+
+TFTP WRQ RXDONE (photo 5fa5dcc6) measures each transfer from its own WRQ. For 0x1f the host returned the request buffer at +304.117 ms, published OACK at +457.727 ms, observed retry at +1435.867 ms and close at +1650.969 ms, and processed the peer's OACK RX_DONE at +2627.674 ms. For 0x57 the corresponding OACK publication was +393.739 ms, peer completion +431.609 ms, host return of the request buffer +547.367 ms, and matching DATA +742.575 ms. The requested QRTR credit was published after DATA. The successful peer had zero host receive intents ready at the publication sample and the first peer had one. The older TFTP OACK COMPARE run (photo 360b549a) independently found the failed peer published OACK first in WRQ-relative time (+304.325 versus +455.115 ms), both requests had confirmation clear, and only the later peer supplied DATA. Returning the request buffer earlier, a larger instantaneous count of host receive intents, and earlier OACK publication from WRQ are each insufficient explanations in these runs.
+
+FIRST TFTP FIFO (native-first-tftp-fifo-v1/device-result/complete.png) provides one common clock. The first 0x1f OACK crossed the transmit tail +11.584 ms after publication. Its matching completion was absent at client close and was processed +21.685 s after publication. That first OACK completion preceded matching IPA registration reply completion by 327.136 ms. The successful peer 0x51 OACK was published 3.340 s after IPA registration completion, and the peer's matching completion was observed 37.816 ms later, 426.575 ms before ELF reply completion. The IPA REG RX VISIBILITY boot independently places first OACK publication 1574.596 ms before IPA reply publication; first OACK completion precedes IPA reply completion by 326.402 ms. Its successful write's OACK follows IPA reply completion by 3331.940 ms and completes in 37.739 ms. Linux's named first-exchange header capture shows matching IPA RX_DONE before OACK, OACK RX_DONE 88 µs after OACK publication, then first-client DATA. These observations distinguish transport completion, TFTP acceptance and ordering around IPA. They do not establish a modem rule requiring IPA to complete before DATA. WLAN RRQ and WLFW counts remain zero in the cited native boots.
+
+## Matching IPA completion relative to the last intent grant
+
+IMG_9536 (IPA GRANT HEADERS) captures QMI response kind 2, transaction 1, message 0x20 on GLINK intent 0. Relative to registration publication 0x013F55D0, the modem TX tail crossed at +11.551 ms. The last sample excluding the matching completion was +20497.674 ms and the first sample including it was +20532.835 ms. The host retired it at +20715.802 ms. First-client close was processed at +156.772 ms and no first OACK was published. The ring samples bracket the complete record becoming visible. They do not timestamp modem QMI acceptance.
+
+The final retained sequence includes a 52-byte intent request, host RX_DONE for 0x4c, a fresh advertisement, a DEL_CLIENT naming 0:0x49, the positive grant ACK, and matching RX_DONE_W_REUSE for intent 0. The first covering sample (0x0278A433) precedes processing that DEL_CLIENT (0x027918C5) by 29.842 ms and the recorded host positive ACK (0x027ADB6D) by 145.210 ms. The advertisement (0x02787719) falls inside the 35.161 ms visibility bracket. Thus processing the 0x49 close and issuing that ACK cannot account for initial visibility. The trace leaves the order of actual completion arrival versus advertisement unresolved. 203 records were omitted. The retained records do not expose the modem's internal cause.
+
+In the Linux QRTR-header reference the 48-byte registration response on intent 0 is followed by its reusable completion 69 µs later. The first OACK subsequently used that same peer intent. Counting host-to-modem RX_DONE in logs/glink-events.txt from first WRQ through the original client close gives two reusable returns, followed by 16 reusable returns on IDs 1–5 in the next 100 ms. The native header window includes ordinary one-use returns for IDs 0x23, 0x4b and 0x4c and repeated grant traffic. These are host receive-buffer policies on the other traffic, distinct from the modem's reusable completion of the outbound IPA reply. Testing broader buffer reuse would first require an offline lifetime/retry audit; the observed counts establish a difference in transport work, not its effect on WLAN.
+
+## Reusing receive buffers for startup control traffic
+
+Host replay in `.cache/sunfish-native-wifi/private/receive-reuse-offline-v1` starts with the native-first-oack-yield-rx-v1 source and feature profile. The private variant returns a reusable intent for a consumed QRTR v1 DEL_CLIENT or RESUME_TX only when the wire slot is in Control state, has neither request context nor ticket, another wire slot is free and no grant ACK is pending. The existing first-WRQ rule remains in both profiles.
+
+Six alternating synthetic closes and resumes required 12 host GLINK writes with normal native replenishment and seven with control reuse. The first backing advertisement was already selected before the first return. In a separate peer model that requested another intent after each ordinary return, the corresponding counts were 16 and six, excluding setup and teardown. A registry request remained live across those six receives. A second registry transaction arrived on the last buffer, and both replies carried their original destination and transaction and retired on their own peer completion. At full occupancy the writer returned the slot ordinarily, advertised new backing, then acknowledged the pending 52-byte grant. A blocked write retried the same bytes and an uncertain write quarantined the session. The reference peer fixture follows command 14 before reusing an ID. Both offline profiles passed 209 transport/link tests.
+
+In the saved Linux first-wrq-window.txt, the two host returns before the first OACK correspond to the 108-byte write request and the 44-byte IPA registration request. Neither packet is one of the control types added by the prototype. The original client's DEL_CLIENT follows its DATA and final ACK. Control reuse can reduce later grant traffic, but the reference gives no reason to boot it alone to explain the missing first DATA. Ordinary QMI request lookup still uses the wire intent in its handle, unlike TFTP's separate per-datagram identity. Reuse of a still-live IPA registration buffer therefore needs separate ownership and an offline overlap test before use on hardware.
+
+## IPA registration receive buffer and overlapping transactions
+
+The private replay in `.cache/sunfish-native-wifi/private/ipa-registration-reuse-overlap-v1` runs the registration request (QMI message 0x20, transaction 1, confirmation clear). The host queues the encoded response. In the prototype the committed RX_DONE_W_REUSE transfers the request ticket to a bounded field keyed by the reply's publication ID. A second QMI request with transaction 0x1234 arrives on the identical wire intent, either before response publication or between publication and matching peer RX_DONE. The two request handles are distinct. The bytes and destination of each reply match the original request, and outstanding tickets drop from two to one to zero. The full-pool case returns the intent ordinarily. Returning a buffer before queuing the reply remains one-use. The uncertain-write case quarantines the link. Generation reset clears the outstanding ticket.
+
+The blocked-return replay found a separate correctness issue in the unmodified native-first-oack-yield-rx-v1 transport. The writer attempts the registration request's RX_DONE and gets WouldBlock. It subsequently publishes an advertisement (5) and the encoded reply (9). An immediate peer completion retires the reply and clears its receive entry, losing the pending host RX_DONE. The writer then reports idle. Preserving the pending wire return across retirement leads to exactly one subsequent command 6, while the reply completes once. The correction works independently of broader intent reuse. Both the correction-only build and the combined prototype passed all 213 host link tests. The unmodified transport failed this new ordering test and passed the other 212. These were host experiments.
+
+The Linux reference's incoming registration used intent 2 and was returned reusable at 248.450081. First-client DATA arrived on intent 3 at 248.450888. The first observed subsequent use of intent 2 was at 248.461387 (11.306 ms after return), after the first client had closed. The return policy can affect available capacity; immediate reuse of the registration ID for first TFTP DATA was unnecessary in that run. The native IPA REPLY FIFO GRANT panel also recorded the request RX_DONE before the matching reply completion, ruling out the lost-return ordering for that particular exchange. Neither trace establishes a cause for WLAN remaining UNINIT.
+
+## Pending IPA buffer return and the receive pool before the first write
+
+The working transport now preserves a pending request-buffer return when retiring a Linux IPA reply. A regression against the unmodified worktree completed the registration but produced zero returns for wire intent 3. With the correction the writer returns the original intent exactly once. The device feature profile passed 207 link tests, the base Linux IPA profile passed 153, and the AArch64 seL4 release library built. The control-reuse and detached-ticket prototypes were not integrated.
+
+The Linux default of five reusable receive intents was already documented on November 1. The three saved first-write captures let us establish when the specific buffer subsequently carrying DATA was last returned. In each capture, the last observed event on each of host intents 1 through 5 before the first WRQ was a reusable return. The DATA intent had no intervening observed use. In elf-locator it was intent 4 last returned 50.076 ms before WRQ, in glink-tftp it was intent 4 at 55.949 ms, and in qrtr-header it was intent 3 at 56.169 ms. For the first two captures the DATA frame is attributed by its unique inbound 44-byte GLINK record between the exact transfer socket's OACK send and DATA receive. The third also records its QRTR header. These times are from GLINK events and describe host-side evidence.
+
+In a separate host replay the peer delivered the initial WRQ and IPA registration before another writer turn. With the usual two starting receive intents the scripted peer delivered DATA on the returned WRQ intent. With five starting intents it used a previously untouched third intent. In both cases the four writes from that burst through OACK were 14, 6, 9 and 9 (WRQ return, IPA request return, IPA reply and OACK). Both reached the final ACK. The five-intent arm made three extra advertisements before the measured interval. The replay injected prompt peer completions and a nine-byte synthetic DATA block, so it tests host acceptance and work within the window, not whether a modem will send DATA. Native RX READY in the earlier WRQ REUSE boot measured availability at OACK; it did not timestamp availability before WRQ. The evidence supports keeping the current receive target for now. The replay and reference analysis live under `.cache/sunfish-native-wifi/private/ipa-registration-return-integrated-v1`.
+
+## The first file reads following a successful server check
+
+The four EFS inputs named by the target's relocated Rust includes and its three firmware inputs (modem, IPA and wlanmdsp) have the same SHA-256 values as the archived starting inputs of cold-wifi-20261025T200752Z. The EFS snapshot's recorded Linux boot ID also matches that run. Linux associated and transferred network traffic in that boot. This comparison covers the starting bytes. It cannot establish which sectors the native modem actually read. The working journal shows four storage opens, allocation and four reads before WLAN firmware access. It records no explicit RMTFS close or write in that interval. In particular a QRTR client deletion is a different event from an RMTFS file close.
+
+In the working qrtr-header reference, Linux sent the first write's final ACK at 248.451188. The modem deleted the writer's port 0x1e at 248.451417. Two different peers reached the TFTP service at 248.451490 (0x20) and 248.451503 (0x21), 73 and 86 µs after that deletion. The socket and path logs identify an ota_firewall/ruleset read and a modem_efs read. Both arrived more than 22 ms before the host sent the first file-not-found packet at 248.473586. A third peer requested the ruleset again. The named elf-locator capture has the same two initial names in reverse order. Neither file had to exist for Linux to progress to wlanmdsp.mbn. These traces do not establish a required modem startup dependency.
+
+The combined native owner replay pushes both requests into the simulated FIFO before servicing either, with confirmation clear and bounded synthetic options. In each of the two name orders it publishes the reference 19-byte error to each exact peer from distinct transfer ports. The test then exercises a temporary-file read, an unclassified name, a repeated ruleset and WLAN as a sixth read. It checks peer identity, the five retained records, the aggregate kind mask and WLAN count after the capture fills. The test exercises an available transport with no real modem or boot-time contention.
+
+IMG_9593 identifies four service reads and only the first post-ELF name, mcfg.tmp. The TFTP SERVER INVENTORY source displays port 0x49's write and the completed write's intent resources. Neither saved panel identifies all four reads. The WLAN STARTUP READS diagnostic therefore records the first five service-port reads at host dispatch, before server admission, alongside the completed write's ACK publication, ACK completion and observed peer close. The cumulative kind mask includes later reads. Values 1 through 5 identify the ruleset, modem_efs, mcfg.tmp, wlanmdsp.mbn suffix and other, respectively. Each mask bit is 1 shifted by its kind. Times describe when the host handled the records. An absent read here leaves open whether a packet was generated but never delivered to host dispatch.
+
+## IMG_9604 hardware result
+
+The settled WLAN STARTUP READS panel recorded one completed write, with final ACK peer 0x54, and nine read requests at native service dispatch. The cumulative kind mask was 0x08, so all nine were for /readwrite/mcfg.tmp, including the four beyond the five displayed records. Relative to the host-observed write close at 0x03382E3E µs, the first five arrived at +402.262 and +893.788 ms from 0x55, +7.800003 and +8.618037 s from 0x57, and +10.693530 s from 0x58. Repeated reads from the same peer do not alone prove a retransmission. The runtime error and detail were zero, the PD query state was 0x7fffffff (UNINIT), and both WLAN RRQ and WLFW counts were zero. The visible rows 8 and 9 are labeled REG PUB US and REG DONE US, so the final write ACK timing cannot be recovered from this photo.
+
+The working Linux qrtr-header capture received the ruleset and modem_efs pair immediately after the first successful writer closed. In the associated cold-wifi journal WLAN firmware reads precede mcfg.tmp. The native boot completed a later server-check write and reached mcfg.tmp without either early lookup reaching the native dispatcher. This rules out failure to generate file-not-found replies *after dispatch of that pair* as the immediate point of divergence in this run. The remaining comparison is between the original Linux and native writer lifetimes and service state at that early point. The native trace gives no visibility into requests never delivered to dispatch.
+
+## Original writer relative to outbound IPA initialization
+
+In qrtr-header, Linux registered the modem IPA service (49, instance/version 0x201, port 28) at 248.409679. A 140-byte QRTR request from the AP IPA client to that endpoint was published on GLINK intent 16 at 248.409812. Its matching transport completion arrived at 248.449902, followed by the original server-check WRQ at 248.449912. The source and endpoint identify the candidate INIT_DRIVER exchange. The capture did not decode the QMI ID of the 140-byte packet. The glink-tftp and elf-locator captures show the same direction, size, intent and event sequence corroborated by the first transfer's socket metadata. Relative to first WRQ, publication led by 40.100, 40.096 and 33.363 ms in qrtr-header, glink-tftp and elf-locator. Matching completion led by 10, 10 and 6 µs. These are host observations. They do not show that the completion caused the WRQ.
+
+At original writer close the registration reply, first OACK, DATA and final TFTP ACK had all gone through in qrtr-header. The modem's QMI DRIVER_INIT_COMPLETE request (0x35) arrived 9.993 ms after the close, after the first ruleset and modem_efs reads. Full IPA protocol completion was unnecessary for those reads in this Linux boot. The separate ipa-qmi-ftrace boot shows ipa_client_init_driver_work starting 35 µs after ipa_client_new_server and 39.305 ms before the registration callback. Linux ipa_qmi.c schedules this worker in the discovery callback. The Android IPA service also schedules client work on discovery.
+
+On the earlier native HANDOFF TX TRACE, RXDONE GRANT TURN and REPLY GRANT TURN panels, the original client closed 1716.045, 1722.113 and 1715.961 ms after the first WRQ. INIT_DRIVER only reached its transmit queue another 610.143, 612.356 and 610.144 ms after close. IMG_9604 does not display the original client's INIT timing. Its terminal count of nine mcfg.tmp reads and the Linux sequence should not be combined into a single timestamp series.
+
+In a host replay of the IMG_9604 feature profile, a validated advertisement alone made the ordinary owner return Discovered. The discovery continuation took zero extra steps without a pending registration. Two subsequent ordinary owner steps returned Prepared and Queued. The normal writer published one QMI request with message ID 0x21 to the discovered modem endpoint. The simulated peer returned the same intent; no registration or TFTP input had been supplied, and protocol_complete stayed false. The replay has ready buffers and synthetic scheduling; it verifies independence from the incoming registration, not the time at which an opportunity existed on hardware. The exact remaining boundary is the host's first acceptance of the modem IPA service announcement relative to the first WRQ, followed by discovery, INIT admission and publication. Elapsed time between registration reply and first-client close cannot answer this. Offline comparison and replay are saved in .cache/sunfish-native-wifi/private/original-writer-ipa-discovery-v1/.
+
+## IPA DISCOVERY AND WRQ timing diagnostic
+
+The earlier owner discovery timestamp marks creation of the IPA core. The new NEW SERVER US timestamp marks QRTR's first accepted NEW_SERVER for the modem service 0x31, packed instance/version 0x201, in the current channel generation. It retains the validated modem port even if the clock was absent. It can precede a locally published HELLO. Repeated announcements cannot move it; unrelated services and the AP IPA instance are excluded. IPA DISC US, INIT PREP/QUEUE/PUB/RETIRE US, and the original FIRST WRQ/OACK/DATA/CLOSE US use the same runtime clock. RETIRE is the transport's recorded retirement, and INIT RESPONSE US separately reports the response observation. The aggregate read kind mask and WLAN/WLFW counts remain visible. Rows 8 and 9 are intentionally allocated to registration publication and completion.
+
+If NEW SERVER US precedes FIRST WRQ US, compare the intervals up to discovery, preparation, admission and publication against the WRQ. If INIT publication and retirement also precede WRQ, inspect first-client DATA and the read mask before attributing failure to late initialization. If NEW SERVER US follows WRQ, the native dispatcher had not yet accepted this announcement when it handled the first write. Host processing order cannot locate an unread record in the modem's FIFO or give modem transmit time. FFFFFFFF is unavailable and does not establish an ordering. This diagnostic adds timestamp capture and display only. Source and offline replay artifacts are in .cache/sunfish-native-wifi/private/native-ipa-discovery-wrq-v1/.
+
+## IPA DISCOVERY AND WRQ hardware result
+
+The settled panel reports runtime error and detail zero. Relative to the first WRQ from peer 0x1f (0x0152957F µs), QRTR accepted the modem IPA endpoint 0x1d at −1.159854 s and the IPA owner recorded discovery at +0.354130 s. The original client closed at +1.065360 s with no OACK publication or DATA recorded for it. INIT preparation, queue admission, full publication and transport retirement were at +1.712051, +4.342579, +25.722172 and +25.771596 s. The intervals were 1.513984 s from announcement to discovery, 1.357921 s to preparation, 2.630528 s to queueing, 21.379593 s in the queue before full publication, and 49.424 ms to retirement. These are host observations. The panel cannot attribute the long queue interval to a particular writer or guard. Row 13 shows MAX GAP US, so it does not provide the INIT response time.
+
+The distinct IPA registration reply was published before first-client close. IPA eventually completed and another writer (0x52) completed a transfer. All four observed service reads were mcfg.tmp (mask 0x08), the PD query returned UNINIT (0x7fffffff), and WLAN firmware RRQ and WLFW server counts were both zero.
+
+### Offline replay of the announcement-to-discovery interval
+
+The same hardware clock places 1,159,854 µs between acceptance of the modem announcement and the first WRQ, 203,626 µs from WRQ to registration RX, and 150,504 µs from registration RX to owner discovery. This panel has no FIFO-visibility timestamp for the first WRQ and no per-callback timings over that interval.
+
+With those three incoming records buffered in the observed order, the frozen-profile host replay reproduced one path through the runtime. The ordinary router consumed NEW_SERVER and WRQ in one dispatch. The combined TFTP server queued the OACK locally. Its nested transport dispatch received registration, and the cold-registration service created the IPA core and admitted the registration reply before INIT admission. The handset timestamps establish the receive order. The replay establishes a possible callback sequence and gives no measure of how long those callbacks took on the handset.
+
+A host-only comparison yielded after the checked writer iteration for the accepted announcement. With both HELLOs complete, the local IPA advertisement published, a fitting remote intent and a writer opportunity, normal owner steps admitted INIT and the ordinary writer published QMI 0x21 to the modem before a later WRQ. With the WRQ already buffered, INIT entered the queue first but the normal receive-first dispatch processed the WRQ before publication. With only 64-byte peer intents, INIT stayed queued through the later fitting advertisement and published after the associated grant ACK. An unconditional early attempt reproduced a fault: discovery and preparation succeeded before local IPA advertisement, then queueing returned Control(Unavailable) and stopped the owner. Letting ordinary control publication finish first avoided that fault. The fresh replay uses synthetic arrival schedules and does not change device code.
+
+The six replay cases and full test log live under .cache/sunfish-native-wifi/private/ipa-announcement-turn-replay-v1/. The next hardware comparison needs the first eligible boundary (HELLO and local IPA advertisement complete), first WRQ FIFO visibility, and actual INIT publication. This would distinguish unavailable transmit time from a missed service turn.
+
+### IPA READY AND WRQ FIFO diagnostic
+
+The diagnostic observes the ordinary scheduler. ENDPT READY US marks the first time the unique modem IPA endpoint is discoverable, both QRTR HELLOs are complete, and the host IPA service is ready and published. SVC PASS US is the first recorded outer service-pass entry after that milestone. INIT WRITER US and INIT PUB US record the ordinary writer's first attempt for admitted INIT and its full publication. Endpoint readiness alone gives no guarantee of a fitting intent, QRTR credit, or an idle writer.
+
+WRQ ABSENT US and WRQ VISIBLE US bound when the final GLINK record of the original, exact server-check write request became fully visible to the host. The bounds use validated RX-head samples and the handle returned by normal TFTP decoding. They use the same clock as the IPA events. WRQ BYTES AHEAD counts unread bytes preceding the matched record at the observation. FFFFFFFF denotes an unavailable bound, including a missing retained sample. FIRST WRQ US is the later host processing observation. A service pass before the last-absent bound demonstrates an earlier service opportunity. A pass after the first-visible bound encountered a WRQ already visible. A pass between the bounds leaves their order unresolved. A single photograph after RESTART WHEN DONE records these milestones together with WLAN RRQ and WLFW counts.
+
+### IMG_9608 result and offline INIT writer replay
+
+The complete original WRQ was already visible at 0x013CF67E, 264.590 ms before the host accepted the IPA announcement and recorded endpoint readiness. Its last-absent to first-visible bracket spans 35.294 ms. The FIFO contained 176 bytes ahead of the matched record at the visibility sample. The owner processed the WRQ 1,424.475 ms after visibility. INIT queue admission followed first-client close by 3,278.178 ms. From admission to full publication took 21,380.023 ms, compared with 21,379.593 ms on the preceding panel. The first checked writer call for any record came 107.340 ms after admission, leaving 21,272.683 ms until publication. Retirement followed publication by 49.412 ms. IMG_9608 does not display the first selection of INIT itself.
+
+On the earlier IPA SCHEDULE TRACE boot the 3,869 ms queue interval included 3,592 ms inside router dispatch. Six GLINK advertisements, seven RX_DONEs and nine intent-request ACKs preceded publication. ACK pending on 23 passes is an overlapping condition. These counts belong to that earlier boot. The current feature graph retains per-INIT selection, no-fit, control/data and blocked-write counters but omits the schedule trace's command and gate breakdown. Re-enabling the old complete timing observer would also assume registration preparation follows INIT commit. A host regression reproduced its invalid-time sentinel when registration preparation comes first.
+
+A fresh replay under ipa-init-writer-9608-offline-v1 published the registration reply before queueing the 140-byte INIT_DRIVER and withheld its matching completion. With available 4096-byte peer intents INIT published on its first writer pass. With 64-byte intents it stayed queued through a later fitting advertisement, then published after the grant ACK. Both runs validated the original QMI IDs and distinct intents. The INIT receipt could retire while registration was still outstanding. The replay isolates these transport conditions with simulated resources and a synthetic clock. It cannot identify which resource or control record dominated the hardware interval. The smaller reproducers for competing grants/credits and FIFO backpressure also passed. To distinguish selection from publication pressure in the current profile, compare INIT's actual first-selection timestamp, competing control/data counts, no-fit and target-blocked counts, and readiness gates during queue-to-publication alone. This later interval cannot explain the earlier first-client close.
+
+### INIT writer selection and peer buffer availability
+
+The cold-boot image labeled `IPA INIT WRITER FIT` has SHA-256 `519abe945d93bdde20ce080f35ec8f26f2e3cc9911dc73e3530a2c2939cc7524`. It observes the same writer policy as the preceding WRQ FIFO image. The window opens for the exact queued INIT publication ID and closes at publication. The matching GLINK completion supplies the retirement timestamp separately.
+
+All timestamps are hexadecimal microseconds from runtime start. `FFFFFFFF` in a timestamp field means the observation was absent. `FIRST WRITER US` is the first call to the FIFO writer while INIT was queued. `FIRST FIT US` records the first sampled publication pass with a fitting remote intent. `INIT SELECT US` timestamps the first writer attempt for INIT itself, including a write that returned WouldBlock. `INIT PUB US` records successful publication.
+
+Paired counters use the high and low 16 bits in label order, each capped at 65535. `FIT NOFIT` counts passes with and without a suitable intent. `CTRL DATA AHEAD` counts committed competing GLINK control records and DATA fragments. The three control pairs split commands 5/6, 7/8 and 14/other. The four DATA pairs split QRTR resume/control, remote storage/registry, other replies/TFTP and IPA/remaining DATA. Counts show traffic classes and totals across the window. The gate counts can overlap on a pass. `TURN BLOCKED` packs the one-shot priority result (bit 0 attempted, bit 1 committed) and the count of blocked writes for INIT. `TX FLAGS` bits 0 through 3 indicate an outstanding intent request, a same-flow predecessor, another blocked write and an uncertain write.
+
+The full-profile replay kept the registration reply outstanding in both runs. With a 4096-byte intent the 140-byte INIT published on pass one. Starting with 64-byte intents took seven passes, three without a fit. After the larger advertisement the trace saw a fit while INIT was still waiting for the grant ACK. Separate link tests covered committed credit and grant traffic and a blocked INIT write followed by retry. Handset timings and the mix of competing packets require the cold-boot panel.
+
+### IMG_9629 and INIT admission during the original client lifetime
+
+On the handset, all 123 sampled passes after INIT admission had a fitting peer intent. INIT first reached the writer 21.322 s after queueing and published 69.550 ms after selection. There were 38 intent advertisements, 36 receive completions, 36 grant acknowledgements, 2 credits, 1 registry fragment and 7 TFTP fragments ahead. The original client closed 3.280 s before INIT queued. IPA completed, WLAN remained UNINIT, and the WLAN read and WLFW counts were zero.
+
+The producer has a separate scheduling boundary. A successful cold registration handoff consumes the early IPA turn, and the runtime skips its ordinary IPA step for that pass. In the earlier IPA DISCOVERY AND WRQ boot registration publication preceded host processing of the close by 192.019 ms. On IMG_9608 the first outer service pass after endpoint readiness preceded host processing of the close by 996.018 ms. Those windows come from different boots. Neither measures time available on the modem.
+
+The IMG_9629 device-profile host replay compared four schedules with ordinary receive dispatch and the original 0x1f WRQ already processed. Baseline published registration before close and queued INIT afterward. Executing discovery, preparation and admission at service entry queued INIT before close but delayed registration publication until after close. Giving registration its normal publication first, then taking at most two ordinary owner steps, queued INIT before close and preserved the registration publication order. In all three schedules the ordinary GLINK writer published INIT after the close. When DEL_CLIENT was buffered behind registration from the outset, the router observed it during the handoff, and the guarded early steps were skipped. In each case the two distinct publication intents retired against the original QMI operations. The replay used a synthetic counter and staged arrivals. A conditional post-registration admission turn is a candidate for device testing; its real timing and effect on WLAN are still unknown.
+
+Replay and comparison output are under `.cache/sunfish-native-wifi/private/ipa-open-client-9629-replay-v1/`.
+
+### IPA INIT AFTER REG cold-boot test
+
+This opt-in runtime takes a local INIT turn at the end of the checked router dispatch that published the tracked registration reply. It checks the original server-check WRQ's exact match, port 0x1f and cumulative client-close count after receive processing. It consumes the opportunity once. With an eligible IPA core it tries ordinary preparation, then tries admission only if the client actually prepared INIT_DRIVER. Regular writer arbitration and per-socket receipts govern publication and retirement.
+
+The panel compares REG PUB US, INIT QUEUE US, INIT PUB US and FIRST CLOSE US on the same runtime clock. POST REG TURN is 0 while awaiting publication, 1 for an absent or different original client, 2 for an already observed close, 3 if INIT was ineligible or already started, 4 if the turn deferred to the ordinary scheduler, and 5 if the turn queued INIT. FIRST OACK US and FIRST DATA US track the original write. On hardware, an earlier queue timestamp alone cannot establish publication before close, client DATA or WLAN progress.
+
+The dedicated regression runs the real router and owner with the original client open, its close already buffered, and a different original peer. It also holds registration dispatch behind another pending notification, then tests 64-byte intents and a later fitting advertisement and ACK. The eligible case queues after exact registration publication and before the observed close. Replies retain separate intents and retire on their own completions. The diagnostic boot image SHA-256 is `b3bdcb44dc700605f76e0fc1992eb72a7d4d968a2dbc465fac00f94ee169d5d6`.
+
+### IMG_9630 and the registration publication dispatch
+
+On this boot REG PUB preceded FIRST CLOSE by 192.020 ms, yet POST REG TURN was 2. The dispatch return check had already observed the close. Ordinary INIT admission followed CLOSE by 3.278064 s and INIT publication by 24.656918 s relative to CLOSE. IPA completed, the first OACK and DATA timestamps were absent, WLAN remained UNINIT, and no WLAN firmware reads or WLFW servers appeared. The close timestamp is when the host processed the record.
+
+In an isolated host copy of the image sources, the four arrival schedules in ipa-reg-close-9630-offline-v1 were each replayed three ways. The control kept the current dispatch order. The second schedule returned to the existing admission hook immediately after the exact registration write. The third returned early only when a fresh, validated RX sample showed zero FIFO bytes and zero retained startup records. All three sampled at the same point for comparison. All twelve combinations preserved QMI identity, separate intents and matching retirements.
+
+Two different modem schedules reproduced the observed publication-before-close, admission-skipped ordering. When the simulated peer placed the exact 72-byte 0x1f DEL_CLIENT in RX at registration commit, the cached cursor still showed zero; a fresh sample saw 72 bytes. An unconditional early return admitted INIT ahead of the waiting close. The conditional return let the owner process the close first. When the peer supplied the close at the next RX poll, the sample at commit was empty. Only in that case did the conditional early return move admission ahead of the observed close compared with the control. The ordinary writer still published INIT after the close in every schedule tested. The replay uses synthetic arrival points and clock ticks and provides no handset latency estimate. A fresh empty sample cannot predict what the peer sends next.
+
+IMG_9603 already identified a buffered 0x1f DEL_CLIENT at a backing advertisement on another build. The missing measurement for IMG_9630 is the visibility of the matched close at registration publication on the same boot. If another image is prepared, use publication-time cursor evidence paired with the subsequently decoded original close and record queue and wire publication separately.
+
+### Port 0x1f close at IPA registration publication
+
+The `IPA REG CLOSE FIFO` diagnostic uses the validated RX cursors immediately before and after the GLINK TX-head store that publishes the registration reply. It takes one additional validated sample after the reply commits. These samples share a host RX tail. The normal receiver counts FIFO bytes it successfully consumes from that tail and identifies the final record when the original node 0, port 0x1f server-check WRQ receives its first validated DEL_CLIENT. Offsets include GLINK headers, padding, and intervening records.
+
+Read `VIS AT REG HEAD` as follows.
+
+| Value | Meaning |
+|---|---|
+| 0 | The trace armed and has no matched FIFO record yet. |
+| 1 | The complete close was already visible in the pre-store sample. |
+| 2 | The complete close was still absent in the post-store sample. |
+| 3 | The close became fully visible between the bracketing samples. Its order relative to the store is unresolved. |
+| 4 | The runtime had already processed the original client's close before tracing this publication. |
+| FFFFFFFF | The measurement is unavailable. |
+
+`CLOSE END` is the exclusive end offset of the matched record. `AT FRESH SAMPLE` compares that offset to `RX FRESH BYTES`. The replay covers a close before registration, arrivals on each side of and within the store bracket, an incomplete record, unrelated same-size client closes, and a fault in the extra cursor sample after TX commit. The bounded INIT admission rule is the one from the preceding image. The temporary boot image SHA-256 is `96f5be4db32fd7bb12e7e5bf3ea28175bc29987b873a3cc8414891f5c42710ac`. The on-device outcome is pending.
+
+### IMG_9633 and INIT on an empty RX FIFO
+
+On IMG_9633, the RX FIFO contained zero bytes at both samples around the IPA registration TX-head store and at the fresh sample. The next 72 bytes belonged to the original port 0x1f DEL_CLIENT. The host processed it 203.722 ms after registration publication. The previous admission hook saw the closed client on its return from dispatch. INIT queued 3.280082 s after the close and published 24.673538 s after the close.
+
+The temporary `IPA INIT EMPTY RX` profile ends the writer iteration at exact registration publication if the original server-check peer is still open, the fresh and current validated RX snapshots are empty, and no retained startup record or ready deferred receive needs service. On return to the live owner, the existing bounded IPA preparation and queueing path runs once. The normal continuation polls RX and uses the ordinary writer. A partial close suppresses the early turn. `POST REG TURN` value 5 means queued, 2 means client already closed, and 6 means no qualifying empty-RX turn for this open client.
+
+Offline, the previous profile missed admission when the simulated modem supplied the close on the first cursor snapshot after the empty registration sample. With the new profile INIT queued before the host decoded that close, and the ordinary writer published no INIT before the close in that schedule. With a fitting intent and one ordinary dispatch before the close arrived, the wire capture contained INIT_DRIVER addressed to the modem and its publication preceded the close. Small remote intents still require a fitting advertisement and its grant. The on-device check is the ordering of INIT QUEUE US, INIT PUB US and FIRST CLOSE US on one settled panel.
+
+### IMG_9634 and the INIT writer before port 0x1f closed
+
+The early handoff returned 5. INIT queued 81.034 ms after registration publication and 319.304 ms before the host processed the original close. It published 24.822437 s after queueing. Measured from registration publication, INIT went out at +24.903471 s on IMG_9634 and +24.877260 s on IMG_9633. Moving queue admission forward by 3.402770 s on that clock moved wire publication by only 26.211 ms, later. These two boots establish the shift in measured intervals, not the identities of concurrent packets.
+
+IMG_9630 captured the earlier after-registration profile's writer counters. All 123 passes had a fitting remote intent, and INIT's selected write succeeded in 69.512 ms. Before selection, the writer committed 110 GLINK controls (38 advertisements, 36 RX_DONEs, 36 grant ACKs) and ten data records (two credits, one registry, seven TFTP). A grant ACK was pending on 110 passes and credit was ready on 68. These conditions overlap. On that boot the close preceded admission, so its counts cannot describe the 319 ms window on IMG_9634.
+
+The current-profile host replay exercised four orderings with the original write already open and the registration reply outstanding. With a fitting intent and a clear continuation, INIT published on pass one before close. With the same queue state and the close at the next RX poll, there were zero pre-close writer passes. With a 52-byte peer grant request followed by the close, the one pre-close pass committed control with the grant gate active; INIT published later. With 64-byte intents there were two pre-close passes and neither had a fit for the 140-byte INIT. A distinct link replay verified grant advertisement before ACK, credit before INIT, and fallback when an INIT write would block. Replay ticks do not represent handset microseconds.
+
+The temporary IPA INIT OPEN WRITER panel retains the IMG_9634 scheduling policy. QUEUE STATE bits 0 through 7 indicate a fitting intent, target ready with transport checks, pending grant ACK, ready QRTR credit, outbound intent request awaiting resolution, older same-flow data, pending backing advertisement, and the original 0x1f write open. Target readiness alone does not decide priority. OPEN PASSES, OPEN NOFIT, OPEN CTRL DATA and OPEN GATES freeze when the validated original DEL_CLIENT is decoded. A zero pass count differs from FFFFFFFF, which means there was no matching snapshot. OPEN GATES is the union of actual writer-pass conditions. Bits 0 through 7 correspond to pending ACK, protected first-WRQ RX_DONE, TFTP priority, other priority data, ready credit, target unready, priority already used and INIT selected for a priority attempt. The remaining writer counters span the full queue-to-publication interval. Paired counters use the high and low 16 bits in label order. The frozen candidate's SHA-256 is 1334f239bafae1265bae5f71d8a15d73229585ca57f7da844cd01b48389ec968.
+
+### IPA INIT before the pending grant advertisement
+
+IMG_9635 showed queue state `0xC7`, a fitting and ready INIT, a pending grant with its backing advertisement, and the original port 0x1f open. The single pre-close writer pass committed a control record. The panel did not identify that record's opcode.
+
+The offline comparison introduced the grant before registration publication and kept the registration reply outstanding. With one writer turn available, the previous schedule wrote the backing advertisement, followed on later turns by the positive ACK and INIT. The opt-in schedule wrote the 140-byte INIT first, then the same backing advertisement and its ACK. A second replay through the IRQ dispatcher and FIFO injected the exact port 0x1f close during the first record write in both schedules. Only the candidate published INIT before the host processed that close. The simulated peer cannot establish when the modem reads or acts on INIT.
+
+The candidate borrows the first ordinary pass for that exact queued INIT while the original client is still open and the pending grant has the same unadvertised backing intent. Tests covered a blocked write, uncertain publication, a preexisting close, a newly ready QRTR credit, a previously advertised grant, and matching INIT and registration completions independently. The cold-boot panel is `IPA INIT BEFORE AD`. Compare `INIT PUB US` and `FIRST CLOSE US`, then read the WLAN and WLFW counters. Frozen temporary image SHA-256 is `562d1a70430256bd3ec4b14024587b6e05e0da5ff457c6bb64546971b7cc6e9e`.
+
+### IMG_9636 and the first TFTP write after INIT
+
+On IMG_9636, registration publication was 0x015EFC29 µs, INIT publication was 0x016417C9 µs, and the host processed the original port 0x1f close at 0x0166A964 µs. INIT published 334.752 ms after registration and 168.347 ms before close. Queue state 0xC7 includes the already open original write. The first client produced no recorded DATA. IPA completed, the queried state was UNINIT, and the WLAN firmware RRQ and WLFW counts were zero. This panel did not timestamp INIT retirement, the original OACK, or the original OACK's consumption.
+
+In the working qrtr-header reference, the candidate INIT was a 140-byte send to the announced modem IPA service on intent 16. Its GLINK TX tracepoint preceded the first WRQ by 40.100 ms, and its matching RX_DONE preceded the WRQ by 10 µs. The QMI ID on that packet was unavailable. The original Linux TFTP peer was 0x1e. Socket metadata confirms a 73-byte WRQ, 39-byte OACK, 9-byte DATA packet and 4-byte final ACK. The peer then closed. Two more reads reached QRTR at +73 µs and +86 µs after close. The service logs identify the ruleset and modem_efs paths. The modem's IPA 0x35 request followed the close by 9.993 ms. The first wlanmdsp.mbn request at the service socket was at 250.191195008 s. The WLFW service announcement followed at 250.368165 s. See qrtr-header-reference-prepared-v1/run/logs/{glink-events,tftp-metadata,tftp-paths}.txt. The Linux ordering changed before the first WRQ and again at the outcome of the write. The modem's internal reason remains unknown.
+
+The offline IRQ and FIFO replay in img9636-post-init-comparison-v1 used the current first-OACK exception and the 0xC7 writer turn. Injecting the close at the INIT write gave a grant-pending OACK close mask (0x04), and the queued original OACK never published. Leaving the client open allowed INIT, the backing advertisement, its positive ACK and the exact original OACK in sequence, with the matching IPA completions still outstanding. Both cases used a simulated peer. Neither injected client DATA. These cases distinguish possible outcomes without assigning either to IMG_9636.
+
+The POST INIT FIRST WRQ panel brings the existing observations onto one clock. FIRST PEER identifies the original writer. FIRST OACK US records its full OACK publication, OACK TAIL US records observed peer FIFO consumption, and OACK DONE US records the matching GLINK completion. BACKING AD US and GRANT ACK US are scoped to the tracked first-OACK grant follow-up. A missing follow-up timestamp does not exclude an ordinary grant elsewhere. READ KIND MASK is cumulative across observed service reads. COMPLETED PEER identifies the writer that completed and may differ from FIRST PEER.
+
+### IMG_9637 and the pending grant after INIT
+
+The original port 0x1f OACK was queued 1,086.488 ms before the host processed DEL_CLIENT. INIT published 168.376 ms before that close. The tracked grant follow-up showed no advertisement or ACK timestamp and outcome 0. CLOSE BLOCK was 0x04. The host saw no OACK publication or first-client DATA. Port 0x52 completed a separate write. WLAN firmware RRQ and WLFW server counts remained zero.
+
+The host replay in img9637-pending-grant-replay-v1 used the POST INIT FIRST WRQ feature set. It injected the original client's complete 72-byte close into the simulated RX FIFO at selected TX doorbells, after verifying that the TX head covered the record. With the close at INIT, the follow-up never started and the close mask was 0x04. With the close at the backing advertisement, the follow-up recorded that advertisement and yielded with 72 unread bytes, also giving 0x04 at close. With the close at the positive ACK, both grant records were tracked and the follow-up yielded with 72 unread bytes and close mask zero. None of these three schedules published the OACK. With the close at the OACK doorbell or after OACK publication, the committed wire sequence was INIT, advertisement, positive ACK, and one OACK from the original transfer port to 0x1f. Neither IPA completion was injected. These schedules verify host ordering. The settled panel does not timestamp the first visibility of the close after INIT, so it cannot establish whether the handset had an earlier RX-empty window.
+
+### INIT close visibility on the original port 0x1f transfer
+
+The INIT CLOSE VISIBILITY image takes one fresh validated FIFO sample immediately after INIT publication. SAMPLE START US and SAMPLE END US bracket that observation. FRESH RX BYTES is the unread byte count. When the original client's exact DEL_CLIENT is subsequently accepted and consumed, CLOSE IN SAMPLE reports whether the complete record was already within the sampled head. LAST ABSENT US and CLOSE VIS US bound its arrival using the retained validated RX-head history (32 spans). These are host observations. FIRST CLOSE US marks later processing. FFFFFFFF denotes unavailable evidence.
+
+The offline full-path replay observed zero unread bytes for a later close, 64 bytes for a partial close, and 72 bytes for a full close. An unrelated 72-byte close yielded CLOSE IN SAMPLE = 0, while the original client's complete close yielded 1. A failed post-INIT cursor validation propagated the fault and left the sample unavailable.
+
+### IMG_9638 and the post-advertisement yield
+
+Relative to INIT publication, the fresh validated sample began at +3 µs and ended at +11.566 ms with zero bytes. The exact port 0x1f close was last absent at +91.959 ms, first visible at +127.206 ms with zero bytes ahead, and processed at +180.233 ms. The backing advertisement at +115.634 ms falls inside the visibility bracket. FOLLOW RESULT 2 is the receive-priority exit; the tracked grant ACK and original OACK had no publication timestamps. The panel does not expose which individual grant check yielded or identify all bytes present at that check. The earlier IMG_9603 separately decoded one matching close at a similar yield.
+
+The host replay in .cache/sunfish-native-wifi/private/img9638-post-advertisement-replay-v1 uses the INIT CLOSE VISIBILITY feature profile, actual owner and writer, and a simulated modem. It counts committed TX-head advances. With the close at the advertisement doorbell or during grant-ACK readback, the follow-up yielded with a complete matching 72-byte close and a positive grant still pending at close. With the close at the ACK doorbell or during OACK readback, the ACK committed and the OACK did not. Keeping the FIFO empty through OACK publication allowed exactly one original-port OACK after the advertisement and positive ACK, before the peer close. No completion or DATA was injected. These schedules establish the ordering boundary. The 11.572 ms from advertisement to first observed close on hardware is not a measured open-client budget. An earlier opportunity would need to be found between the post-INIT sample and advertisement while retaining each fresh receive check.
+
+### IMG_9638 post-INIT grant-start replay
+
+The handset measured 104.068 ms from the end of the fresh empty sample to completion of the advertisement's publication path. The panel has no per-operation durations. On the host, the baseline returned to the owner loop, validated the firmware-peer close fence (one cursor snapshot), polled an empty RX FIFO (one), entered the ordinary writer, and performed three cursor snapshots through advertisement TX-head commitment. Write readback, barriers, the subsequent validation and doorbell are part of publication. No other packet committed in this replay interval.
+
+An offline-only variant gave the exact pending backing advertisement a single checked turn immediately after INIT and its fresh empty sample. The regular arbiter still had to select that intent. The path gated on the original open peer, no deferred-ready receive work or startup backlog, the grant as sole blocker, and fresh validated checks before publication. The grant ACK and original OACK retained separate checked writes. A paired replay exposed the same complete original close on each of the first 32 subsequent cursor snapshots. On the open path the advertisement, positive ACK and OACK committed after snapshot numbers 5/9/13 on baseline and 3/7/11 in the trial. Four baseline close schedules (6–9) reproduced the photographed outcome 2, grant pending at close and no OACK. Starting earlier delivered the grant ACK in two of those schedules and the OACK in none. The OACK gained two later schedules (12–13). These are simulated cursor-read boundaries, not hardware milliseconds or an estimate of modem time. The ordering check used the actual TX-head commit relative to close injection because the software publication timestamp can follow the commit. No Pixel run or image was needed for this comparison. Reproduction and results are in .cache/sunfish-native-wifi/private/img9638-post-init-grant-start-v1.
+
+### IMG_9638 grant eligibility before INIT
+
+On the handset the first WRQ preceded INIT publication by 1,207.991 ms. IMG_9638 did not timestamp grant ingestion. The earlier IMG_9635 queue state 0xC7 independently shows a grant and its backing advertisement pending when INIT queued on that boot.
+
+In the current-profile simulated IRQ/FIFO path the original WRQ was accepted at cursor sample 13, its OACK was queued by 24, and the 52-byte GLINK intent request reserved a backing receive slot at 59. The fixture injects that request during the write of the registration request's RX_DONE. The exact OACK blocker mask at reservation was 0x06 (registration reply not yet in flight and grant ACK pending). The registration TX head advanced at 64. The first post-publication check qualified the backing advertisement at 66, before INIT's baseline TX head at 78. The positive grant ACK needs the backing advertisement to commit. The TFTP OACK needs both the grant and the matching registration-publication condition under this profile.
+
+Paired 46 close schedules per variant using a common anchor at registration TX-head publication. Compared committed TX heads with insertion of the original 72-byte close. Four baseline schedules reproduced the IMG_9638 ordering and close mask. INIT beat the close in 4/4 and OACK in 0/4. Giving the exact grant a checked turn at registration publication put the ACK and OACK before close in 4/4, and INIT in 0/4. Advancing the advertisement alone gave ACK in 4/4, OACK in 3/4, and INIT in 0/4. After advertisement the normal arbiter protects its positive ACK turn. No simulated modem DATA was supplied. These results identify an earlier OACK opportunity and the cost to INIT in the matched schedules. Cursor counts do not estimate hardware time. The handset runtime and boot image were unchanged. The replay and comparison are in .cache/sunfish-native-wifi/private/img9638-first-grant-eligibility-v1.

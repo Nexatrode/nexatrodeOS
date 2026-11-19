@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Replace the kernel in a sunfish Android boot-v2 image for *temporary* boot.
 
-The source image supplies its original ramdisk, DTB, addresses and cmdline.
+The source supplies its DTB, addresses, cmdline and, by default, ramdisk.
 No AVB footer is copied: the output is intended only for ``fastboot boot`` on
 this unlocked development phone, never for flashing a partition.
 """
+from __future__ import annotations
 
 import argparse
 import hashlib
@@ -49,12 +50,51 @@ def components(image: bytes) -> tuple[bytearray, dict[str, bytes], int]:
     return bytearray(image[:page]), parts, page
 
 
-def pack(reference: bytes, kernel: bytes) -> bytes:
+def pack(
+    reference: bytes,
+    kernel: bytes,
+    ramdisk: bytes | None = None,
+    append_cmdline: str | bytes | None = None,
+) -> bytes:
     header, parts, page = components(reference)
     if not kernel:
         raise ValueError("empty replacement kernel")
+    if append_cmdline is not None:
+        if isinstance(append_cmdline, str):
+            try:
+                addition = append_cmdline.encode("ascii")
+            except UnicodeEncodeError as error:
+                raise ValueError("appended kernel command line must be ASCII") from error
+        else:
+            addition = bytes(append_cmdline)
+        if not addition or b"\0" in addition:
+            raise ValueError("appended kernel command line must be nonempty and NUL-free")
+
+        base_field = bytes(header[64:576])
+        extra_field = bytes(header[608:1632])
+        if b"\0" not in base_field or b"\0" not in extra_field:
+            raise ValueError("source kernel command line is not NUL-terminated")
+        base = base_field.split(b"\0", 1)[0]
+        extra = extra_field.split(b"\0", 1)[0]
+        existing = base + extra
+        separator = (
+            b" " if existing and not existing.endswith((b" ", b"\t"))
+            and not addition.startswith((b" ", b"\t")) else b""
+        )
+        extra += separator + addition
+        if len(extra) >= len(extra_field):
+            raise ValueError("appended kernel command line exceeds extra_cmdline capacity")
+        if len(base) + len(extra) >= len(base_field) + len(extra_field):
+            raise ValueError("appended kernel command line exceeds total v2 capacity")
+        header[608:1632] = extra + b"\0" * (len(extra_field) - len(extra))
+
     parts["kernel"] = kernel
     struct.pack_into("<I", header, 8, len(kernel))
+    if ramdisk is not None:
+        if not ramdisk:
+            raise ValueError("replacement ramdisk must be nonempty")
+        parts["ramdisk"] = ramdisk
+        struct.pack_into("<I", header, 16, len(ramdisk))
     sha = hashlib.sha1()
     for name in ("kernel", "ramdisk", "second", "recovery_dtbo", "dtb"):
         data = parts[name]
@@ -73,12 +113,21 @@ def main() -> None:
     parser.add_argument("reference", type=Path)
     parser.add_argument("kernel", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--append-cmdline", help="append one ASCII argument string to the kernel cmdline")
+    parser.add_argument("--ramdisk", type=Path,
+                        help="optional minimal ramdisk for native payloads that do not use Android")
     args = parser.parse_args()
-    output = pack(args.reference.read_bytes(), args.kernel.read_bytes())
+    ramdisk = args.ramdisk.read_bytes() if args.ramdisk is not None else None
+    output = pack(
+        args.reference.read_bytes(), args.kernel.read_bytes(), ramdisk,
+        append_cmdline=args.append_cmdline,
+    )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(output)
     _, parts, _ = components(output)
     assert parts["kernel"] == args.kernel.read_bytes()
+    if ramdisk is not None:
+        assert parts["ramdisk"] == ramdisk
     print(f"wrote {args.output} ({len(output)} bytes; temporary boot only)")
 
 

@@ -25,9 +25,106 @@ case "$mode" in
     mpss-smem) feature="sunfish-native-startup-mpss-smem"; profile="native-startup-mpss-smem" ;;
     mpss-preauth) feature="sunfish-native-startup-mpss-preauth"; profile="native-startup-mpss-preauth" ;;
     mpss-auth) feature="sunfish-native-startup-mpss-auth"; profile="native-startup-mpss-auth" ;;
+    mpss-runtime) feature="sunfish-native-startup-mpss-runtime"; profile="native-startup-mpss-runtime" ;;
+    mpss-runtime-gate-diagnostic) feature="sunfish-native-startup-mpss-runtime-gate-diagnostic"; profile="native-startup-mpss-runtime" ;;
+    mpss-runtime-prescm-diagnostic) feature="sunfish-native-startup-mpss-runtime-prescm-diagnostic"; profile="native-startup-mpss-runtime" ;;
+    mpss-runtime-share-diagnostic) feature="sunfish-native-startup-mpss-runtime-share-diagnostic"; profile="native-startup-mpss-runtime" ;;
+    mpss-runtime-share-trace) feature="sunfish-native-startup-mpss-runtime-share-trace"; profile="native-startup-mpss-runtime" ;;
     mpss-source-diagnostic) feature="sunfish-native-startup-mpss-auth"; profile="native-startup-mpss-auth-source-diagnostic-v6"; system_profile="native-startup-mpss-auth" ;;
-    *) printf 'Expected preflight, hardware-config, dma-domain, local-memory, buffers, resources, irq, shared, uc, firmware, gsi, command, transfer, tables, receive-memory, receive, rmtfs, mpss-smem/mpss-preauth, mpss-auth or mpss-source-diagnostic\n' >&2; exit 2 ;;
+    *) printf 'Expected preflight, hardware-config, dma-domain, local-memory, buffers, resources, irq, shared, uc, firmware, gsi, command, transfer, tables, receive-memory, receive, rmtfs, mpss-smem/mpss-preauth, mpss-auth, mpss-runtime, mpss-runtime-gate-diagnostic, mpss-runtime-prescm-diagnostic or mpss-source-diagnostic\n' >&2; exit 2 ;;
 esac
+qrtr_flow_experiment=false
+if [ "${SUNFISH_NATIVE_QRTR_FLOW_EXPERIMENT:-0}" = 1 ]; then
+    if [ "$mode" != mpss-runtime ]; then
+        printf 'QRTR flow experiment requires mpss-runtime mode\n' >&2
+        exit 2
+    fi
+    qrtr_flow_experiment=true
+    feature="$feature,sunfish-qrtr-rmtfs-flow-experiment"
+fi
+qrtr_deferred_requests=false
+if [ "${SUNFISH_NATIVE_QRTR_DEFERRED_REQUESTS:-0}" = 1 ]; then
+    if [ "$mode" != mpss-runtime ] || [ "$qrtr_flow_experiment" != true ]; then
+        printf 'Deferred QRTR requests require mpss-runtime and the QRTR flow experiment\n' >&2
+        exit 2
+    fi
+    qrtr_deferred_requests=true
+    feature="$feature,sunfish-qrtr-deferred-requests"
+fi
+ipa_postmodem_reference=false
+if [ "${SUNFISH_NATIVE_IPA_POSTMODEM_REFERENCE:-0}" = 1 ]; then
+    if [ "$mode" != mpss-runtime ] || [ "$qrtr_deferred_requests" != true ]; then
+        printf 'Post-modem IPA reference experiment requires mpss-runtime and deferred QRTR requests\n' >&2
+        exit 2
+    fi
+    ipa_postmodem_reference=true
+    feature="$feature,sunfish-ipa-postmodem-reference-experiment"
+fi
+ipa_qrtr_flow_experiment=false
+if [ "${SUNFISH_NATIVE_IPA_QRTR_FLOW_EXPERIMENT:-0}" = 1 ]; then
+    if [ "$mode" != mpss-runtime ] || [ "$qrtr_deferred_requests" != true ]; then
+        printf 'IPA QRTR flow experiment requires mpss-runtime and deferred QRTR requests\n' >&2
+        exit 2
+    fi
+    ipa_qrtr_flow_experiment=true
+    feature="$feature,sunfish-qrtr-ipa-flow-experiment"
+fi
+servreg_qrtr_flow_experiment=false
+if [ "${SUNFISH_NATIVE_SERVREG_QRTR_FLOW_EXPERIMENT:-0}" = 1 ]; then
+    if [ "$mode" != mpss-runtime ] || [ "$qrtr_deferred_requests" != true ]; then
+        printf 'SERVREG QRTR flow experiment requires mpss-runtime and deferred QRTR requests\n' >&2
+        exit 2
+    fi
+    servreg_qrtr_flow_experiment=true
+    feature="$feature,sunfish-qrtr-servreg-flow-experiment"
+fi
+ipa_ignore_config_reference=false
+if [ "${SUNFISH_NATIVE_IPA_IGNORE_CONFIG_REFERENCE:-0}" = 1 ]; then
+    if [ "$mode" != mpss-runtime ] || [ "$servreg_qrtr_flow_experiment" != true ]; then
+        printf 'IPA config reference behavior requires mpss-runtime and SERVREG flow experiment\n' >&2
+        exit 2
+    fi
+    ipa_ignore_config_reference=true
+    feature="$feature,sunfish-ipa-ignore-config-reference"
+fi
+ipa_ignore_unhandled_reference=false
+if [ "${SUNFISH_NATIVE_IPA_IGNORE_UNHANDLED_REFERENCE:-0}" = 1 ]; then
+    if [ "$mode" != mpss-runtime ] || [ "$ipa_ignore_config_reference" != true ]; then
+        printf 'Unhandled IPA reference behavior requires mpss-runtime and IPA config reference behavior\n' >&2
+        exit 2
+    fi
+    ipa_ignore_unhandled_reference=true
+    feature="$feature,sunfish-ipa-ignore-unhandled-reference"
+fi
+ipa_ignore_init_response_reference=false
+if [ "${SUNFISH_NATIVE_IPA_IGNORE_INIT_RESPONSE_REFERENCE:-0}" = 1 ]; then
+    if [ "$mode" != mpss-runtime ] || [ "$ipa_ignore_unhandled_reference" != true ]; then
+        printf 'IPA init response reference behavior requires mpss-runtime and unhandled IPA reference behavior\n' >&2
+        exit 2
+    fi
+    ipa_ignore_init_response_reference=true
+    feature="$feature,sunfish-ipa-ignore-init-response-reference"
+fi
+tftp_observer=false
+if [ "${SUNFISH_NATIVE_TFTP_OBSERVER:-0}" = 1 ]; then
+    if [ "$mode" != mpss-runtime ] || [ "$ipa_ignore_init_response_reference" != true ]; then
+        printf 'TFTP observer requires mpss-runtime and the IPA init response reference mode\n' >&2
+        exit 2
+    fi
+    tftp_observer=true
+    feature="$feature,sunfish-native-tftp-observer"
+fi
+tftp_server_check=false
+if [ "${SUNFISH_NATIVE_TFTP_SERVER_CHECK:-0}" = 1 ]; then
+    if [ "$mode" != mpss-runtime ] || [ "$ipa_ignore_init_response_reference" != true ] || [ "$tftp_observer" = true ]; then
+        printf 'TFTP server-check requires mpss-runtime and IPA reference mode, without the observer\n' >&2
+        exit 2
+    fi
+    tftp_server_check=true
+    feature="$feature,sunfish-native-tftp-server-check"
+fi
+runtime_mode=false
+if [ "$mode" = mpss-runtime ] || [ "$mode" = mpss-runtime-gate-diagnostic ] || [ "$mode" = mpss-runtime-prescm-diagnostic ] || [ "$mode" = mpss-runtime-share-diagnostic ] || [ "$mode" = mpss-runtime-share-trace ]; then runtime_mode=true; fi
 system_profile="${system_profile:-$profile}"
 source_diagnostic=false
 if [ "$mode" = mpss-source-diagnostic ] || [ "${SUNFISH_SOURCE_GUARD_DIAGNOSTIC:-0}" = 1 ]; then source_diagnostic=true; fi
@@ -36,7 +133,7 @@ if [ "${SUNFISH_SOURCE_GUARD_DIAGNOSTIC:-0}" = 1 ] && [ "$mode" != mpss-source-d
     exit 2
 fi
 mpss_stage=false
-if [ "$mode" = mpss-smem ] || [ "$mode" = mpss-preauth ] || [ "$mode" = mpss-auth ] || [ "$mode" = mpss-source-diagnostic ]; then mpss_stage=true; fi
+if [ "$mode" = mpss-smem ] || [ "$mode" = mpss-preauth ] || [ "$mode" = mpss-auth ] || [ "$runtime_mode" = true ] || [ "$mode" = mpss-source-diagnostic ]; then mpss_stage=true; fi
 firmware_stage=false
 gsi_stage=false
 if [ "$mode" = gsi ] || [ "$mode" = command ] || [ "$mode" = transfer ] || [ "$mode" = tables ] || [ "$mode" = receive-memory ] || [ "$mode" = receive ] || [ "$mode" = rmtfs ] || [ "$mpss_stage" = true ]; then gsi_stage=true; fi
@@ -44,6 +141,9 @@ if [ "$mode" = firmware ] || [ "$gsi_stage" = true ]; then firmware_stage=true; 
 checks_mode="$mode"
 if [ "$mode" = shared ] || [ "$mode" = uc ] || [ "$firmware_stage" = true ]; then checks_mode=irq; fi
 out="${SUNFISH_NATIVE_OUTPUT_DIR:-$root_dir/.cache/sunfish-native-wifi/private/$profile}"
+if [ "$mode" = mpss-runtime-prescm-diagnostic ]; then
+    out="${SUNFISH_NATIVE_OUTPUT_DIR:-$root_dir/.cache/sunfish-native-wifi/private/native-startup-mpss-runtime-prescm-diagnostic}"
+fi
 if [ "$mode" = mpss-source-diagnostic ]; then
     for marker in manifest.json attempt.json precompile-inputs.json cargo-build.log fastboot.img; do
         if [ -e "$out/$marker" ]; then
@@ -67,10 +167,37 @@ reference="${SUNFISH_REFERENCE_BOOT:-$HOME/Backups/pixel-sunfish-20261006/live-s
 export PATH="/opt/homebrew/opt/llvm/bin:/opt/homebrew/bin:$PATH"
 mkdir -p "$out"
 cd "$root_dir"
-if [ "$mode" = mpss-auth ] || [ "$mode" = mpss-source-diagnostic ]; then
+python3 - "$out/build-profile.json" "$mode" "$feature" "$profile" "$system_profile" "$qrtr_flow_experiment" "$qrtr_deferred_requests" "$ipa_postmodem_reference" "$ipa_qrtr_flow_experiment" "$servreg_qrtr_flow_experiment" "$ipa_ignore_config_reference" "$ipa_ignore_unhandled_reference" "$ipa_ignore_init_response_reference" "$tftp_observer" "$tftp_server_check" <<'PY'
+import json,sys
+from pathlib import Path
+out,mode,feature,profile,system_profile,qrtr_flow_experiment,qrtr_deferred_requests,ipa_postmodem_reference,ipa_qrtr_flow_experiment,servreg_qrtr_flow_experiment,ipa_ignore_config_reference,ipa_ignore_unhandled_reference,ipa_ignore_init_response_reference,tftp_observer,tftp_server_check=sys.argv[1:]
+Path(out).write_text(json.dumps({
+    'mode':mode,
+    'feature':feature,
+    'profile':profile,
+    'system_profile':system_profile,
+    'gate_diagnostic':mode=='mpss-runtime-gate-diagnostic',
+    'prescm_diagnostic':mode=='mpss-runtime-prescm-diagnostic',
+    'qrtr_flow_experiment':qrtr_flow_experiment=='true',
+    'qrtr_deferred_requests':qrtr_deferred_requests=='true',
+    'ipa_postmodem_reference':ipa_postmodem_reference=='true',
+    'ipa_qrtr_flow_experiment':ipa_qrtr_flow_experiment=='true',
+    'servreg_qrtr_flow_experiment':servreg_qrtr_flow_experiment=='true',
+    'ipa_ignore_config_reference':ipa_ignore_config_reference=='true',
+    'ipa_ignore_unhandled_reference':ipa_ignore_unhandled_reference=='true',
+    'ipa_ignore_init_response_reference':ipa_ignore_init_response_reference=='true',
+    'tftp_observer':tftp_observer=='true',
+    'tftp_server_check':tftp_server_check=='true',
+    'loader_source_guard':('labeled-pass-through' if mode in ('mpss-runtime','mpss-runtime-gate-diagnostic','mpss-runtime-prescm-diagnostic') else 'native-startup-entry'),
+    'device_actions':[],
+},indent=2)+'\n')
+PY
+if [ "$mode" = mpss-auth ] || [ "$runtime_mode" = true ] || [ "$mode" = mpss-source-diagnostic ]; then
     if [ "$source_diagnostic" = true ]; then
         export SUNFISH_SOURCE_GUARD_DIAGNOSTIC=1
         python3 "$port_dir/prepare-image-loader-sdk.py" --out-dir "$out" --checkpoints --native-source-diagnostic > "$out/loader-sdk-build.log" 2>&1
+    elif [ "$runtime_mode" = true ]; then
+        python3 "$port_dir/prepare-image-loader-sdk.py" --out-dir "$out" --checkpoints --native-source-report-guard > "$out/loader-sdk-build.log" 2>&1
     else
         python3 "$port_dir/prepare-image-loader-sdk.py" --out-dir "$out" --checkpoints --native-startup-entry > "$out/loader-sdk-build.log" 2>&1
     fi
@@ -99,6 +226,10 @@ shutil.copyfile(p,sys.argv[2])
 print('Verified exact private IPA input; no device operation.')
 PY
     export SUNFISH_IPA_FIRMWARE_PATH="$out/private-ipa_fws.mbn"
+fi
+skip_tests=false
+if { [ "$mode" = mpss-runtime-prescm-diagnostic ] || [ "$mode" = mpss-runtime-share-diagnostic ] || [ "$mode" = mpss-runtime-share-trace ]; } && [ "${SUNFISH_SKIP_NATIVE_TESTS:-0}" = 1 ]; then skip_tests=true; fi
+if [ "$skip_tests" = false ] && [ "$firmware_stage" = true ]; then
     if [ "$gsi_stage" = true ]; then
         python3 "$port_dir/test-native-ipa-linux-gsi.py" > "$out/gsi-tests.log"
     fi
@@ -147,7 +278,7 @@ PY
     rustc --edition 2024 -D warnings --test tests/sunfish_scm_linux_power_test.rs -o "$out/scm-test"
     "$out/scm-test" --quiet > "$out/scm-tests.log"
 fi
-if [ "$mode" = shared ] || [ "$mode" = uc ] || [ "$firmware_stage" = true ]; then
+if [ "$skip_tests" = false ] && { [ "$mode" = shared ] || [ "$mode" = uc ] || [ "$firmware_stage" = true ]; }; then
     if [ "$mode" = uc ]; then
         python3 "$port_dir/audit-native-ipa-uc-source.py" --output "$out/linux-source-audit.json"
     fi
@@ -159,30 +290,60 @@ if [ "$mode" = shared ] || [ "$mode" = uc ] || [ "$firmware_stage" = true ]; the
     fi
     rustc --edition 2024 -D warnings --test tests/sunfish_ipa_shared_memory_test.rs -o "$out/shared-test"
     "$out/shared-test" --quiet > "$out/shared-tests.log"
-else
+elif [ "$skip_tests" = false ]; then
     python3 "$port_dir/audit-native-ipa-linux-source.py" --output "$out/linux-source-audit.json"
 fi
-if [ "$mode" = rmtfs ] || [ "$mpss_stage" = true ]; then
+if [ "$skip_tests" = false ] && { [ "$mode" = rmtfs ] || [ "$mpss_stage" = true ]; }; then
     python3 "$port_dir/test-native-linux-rmtfs-server.py" > "$out/rmtfs-server-tests.log"
     python3 "$port_dir/audit-native-linux-rmtfs-source.py" --output "$out/rmtfs-source-audit.json"
 fi
-if [ "$mpss_stage" = true ]; then
+if [ "$skip_tests" = false ] && [ "$mpss_stage" = true ]; then
     python3 "$port_dir/test-native-mpss-linux-smem.py" > "$out/mpss-smem-tests.log"
     python3 "$port_dir/test-native-mpss-smem-entry.py" > "$out/mpss-smem-entry-tests.log"
     python3 "$port_dir/audit-native-mpss-smem-source.py" --output "$out/mpss-smem-source-audit.json"
 fi
-if [ "$mode" = mpss-preauth ] || [ "$mode" = mpss-auth ] || [ "$mode" = mpss-source-diagnostic ]; then
+if [ "$skip_tests" = false ] && { [ "$mode" = mpss-preauth ] || [ "$mode" = mpss-auth ] || [ "$runtime_mode" = true ] || [ "$mode" = mpss-source-diagnostic ]; }; then
     python3 "$port_dir/test-native-mpss-linux-power.py" > "$out/mpss-power-tests.log"
     python3 "$port_dir/test-native-mpss-linux-smp2p.py" > "$out/mpss-smp2p-tests.log"
     python3 "$port_dir/test-native-mpss-preauth-entry.py" > "$out/mpss-preauth-entry-tests.log"
     python3 "$port_dir/audit-native-mpss-preauth-source.py" --output "$out/mpss-preauth-source-audit.json"
 fi
-if [ "$mode" = mpss-auth ] || [ "$mode" = mpss-source-diagnostic ]; then
+if [ "$skip_tests" = false ] && { [ "$mode" = mpss-auth ] || [ "$runtime_mode" = true ] || [ "$mode" = mpss-source-diagnostic ]; }; then
     python3 "$port_dir/test-native-mpss-linux-boot.py" > "$out/mpss-boot-tests.log"
     python3 "$port_dir/test-native-mpss-auth-root.py" > "$out/mpss-auth-root-tests.log"
     python3 "$port_dir/audit-native-mpss-auth-source.py" --output "$out/mpss-auth-source-audit.json"
 fi
+if [ "$skip_tests" = false ] && [ "$runtime_mode" = true ]; then
+    rustc --edition=2024 -D warnings --test tests/pixel_mpss_runtime_diagnostic_test.rs -o "$out/runtime-diagnostic-test"
+    "$out/runtime-diagnostic-test" --quiet > "$out/runtime-diagnostic-tests.log"
+    python3 "$port_dir/test-native-mpss-runtime-services.py" > "$out/mpss-runtime-service-tests.log"
+    python3 "$port_dir/test-native-mpss-runtime-irq.py" > "$out/mpss-runtime-irq-tests.log"
+    python3 "$port_dir/test-native-mpss-runtime-source.py" > "$out/mpss-runtime-source-tests.log"
+    python3 "$port_dir/audit-native-mpss-runtime-source.py" --workspace "$root_dir" --output "$out/runtime-source-audit.json"
+    if [ "$qrtr_flow_experiment" = true ]; then
+        python3 "$port_dir/test-native-qrtr-flow.py" > "$out/qrtr-flow-tests.log"
+    fi
+    if [ "$qrtr_deferred_requests" = true ]; then
+        python3 "$port_dir/test-native-qrtr-deferred.py" > "$out/qrtr-deferred-tests.log"
+    fi
+    if [ "$ipa_qrtr_flow_experiment" = true ]; then
+        python3 "$port_dir/test-native-ipa-qrtr-flow.py" > "$out/ipa-qrtr-flow-tests.log"
+    fi
+    if [ "$servreg_qrtr_flow_experiment" = true ]; then
+        python3 "$port_dir/test-native-servreg-qrtr-flow.py" > "$out/servreg-qrtr-flow-tests.log"
+    fi
+    if [ "$ipa_ignore_config_reference" = true ]; then
+        python3 "$port_dir/test-native-ipa-ignore-config.py" > "$out/ipa-ignore-config-tests.log"
+    fi
+    if [ "$ipa_ignore_unhandled_reference" = true ]; then
+        python3 "$port_dir/test-native-ipa-ignore-config.py" --unhandled > "$out/ipa-ignore-unhandled-tests.log"
+    fi
+    if [ "$ipa_ignore_init_response_reference" = true ]; then
+        python3 "$port_dir/test-native-ipa-ignore-config.py" --unhandled --init-response > "$out/ipa-ignore-init-response-tests.log"
+    fi
+fi
 python3 "$port_dir/verify-native-boot-inputs.py" --inputs "$inputs"
+if [ "$skip_tests" = false ]; then
 rustc --edition 2024 -D warnings --test tests/sunfish_ipa_linux_power_test.rs -o "$out/power-test"
 "$out/power-test" --quiet > "$out/power-tests.log"
 rustc --edition 2024 -D warnings --test tests/sunfish_ipa_linux_config_test.rs -o "$out/config-test"
@@ -207,6 +368,7 @@ if [ "$checks_mode" = irq ]; then
     rustc --edition 2024 -D warnings --test tests/sunfish_ipa_linux_irq_test.rs -o "$out/irq-test"
     "$out/irq-test" --quiet > "$out/irq-tests.log"
 fi
+fi
 export SEL4_INCLUDE_DIRS="$sdk/board/sunfish/debug/include"
 export CARGO_TARGET_DIR="$root_dir/.cache/sunfish-native-wifi/private/preflight-target"
 export SUNFISH_PRIVATE_BOOT_INPUTS_RS_PATH="$inputs/private_boot_inputs.rs"
@@ -222,7 +384,14 @@ fi
 cp "$CARGO_TARGET_DIR/aarch64-sel4-microkit-pixel4k/release/rust_sunfish_native_startup_preflight.elf" "$out/native_startup_preflight.elf"
 "$sdk/bin/microkit" "$port_dir/$system_profile.system" --search-path "$out" --board sunfish --config debug \
     -o "$out/loader.img" -r "$out/report.txt" --capdl-json "$out/capdl.json"
-if [ "$mode" = mpss-auth ] || [ "$mode" = mpss-source-diagnostic ]; then
+if [ "$runtime_mode" = true ]; then
+    observer_audit_arg=""
+    if [ "$tftp_observer" = true ]; then observer_audit_arg="--tftp-observer"; fi
+    if [ "$tftp_server_check" = true ]; then observer_audit_arg="--tftp-server-check"; fi
+    python3 "$port_dir/validate-native-mpss-runtime.py" --system "$port_dir/$system_profile.system" --capdl "$out/capdl.json" --report "$out/report.txt" \
+        --dt "$root_dir/.cache/pixel-sunfish/live-runtime.dtb" \
+        --dt "$root_dir/.cache/microkit-src-2.3.1-sunfish/build/sunfish/debug/sel4/build/kernel.dtb" --output "$out/capability-audit.json" $observer_audit_arg
+elif [ "$mode" = mpss-auth ] || [ "$mode" = mpss-source-diagnostic ]; then
     python3 "$port_dir/validate-native-mpss-auth.py" --system "$port_dir/$system_profile.system" --capdl "$out/capdl.json" --report "$out/report.txt" \
         --dt "$root_dir/.cache/pixel-sunfish/live-runtime.dtb" \
         --dt "$root_dir/.cache/microkit-src-2.3.1-sunfish/build/sunfish/debug/sel4/build/kernel.dtb" --output "$out/capability-audit.json"
@@ -278,7 +447,7 @@ fi
 python3 "$port_dir/wrap-microkit-image.py" "$out/loader.img" "$out/native-startup-preflight.Image"
 lz4 -z -f -q "$out/native-startup-preflight.Image" "$out/native-startup-preflight.Image.lz4"
 python3 "$port_dir/repack-boot-v2.py" "$reference" "$out/native-startup-preflight.Image.lz4" "$out/fastboot.img"
-if [ "$mode" = mpss-auth ] || [ "$mode" = mpss-source-diagnostic ]; then
+if [ "$mode" = mpss-auth ] || [ "$runtime_mode" = true ] || [ "$mode" = mpss-source-diagnostic ]; then
     python3 "$port_dir/validate-native-mpss-auth-boot.py" --output-dir "$out" --reference "$reference"
 fi
 shasum -a 256 "$out/fastboot.img" > "$out/fastboot.img.sha256"

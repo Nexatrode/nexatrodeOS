@@ -59,7 +59,7 @@ def task_manifest_path(stage_modem_image=False,authenticate_modem=False,observe_
     return Path(__file__).with_name('loader-task-regions-smp2p.json' if handshake_modem_status else ('loader-task-regions-ready.json' if observe_modem_ready else ('loader-task-regions-auth.json' if authenticate_modem else ('loader-task-regions-staging.json' if stage_modem_image else 'loader-task-regions.json'))))
 
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
-def native_startup_entry(text, diagnostic_only=False):
+def native_startup_entry(text, diagnostic_only=False, report_guard=False):
     """Reject unobserved ABL placement before the large-image memmove.
 
     The pack-time DT audit proves the complete 96 MiB source/destination
@@ -68,15 +68,50 @@ def native_startup_entry(text, diagnostic_only=False):
     """
     anchor='    /* May not have been loaded in the right location.'
     assert text.count(anchor)==1 and '.Lnative_source_ok' not in text
-    if diagnostic_only:
+    if diagnostic_only or report_guard:
+        if report_guard:
+            source_select = f'''    ldr x1, ={hex(RUNTIME_SOURCE)}
+    cmp x0, x1
+    b.eq .Lnative_source_runtime_ok
+    ldr x1, =0x80081000
+    cmp x0, x1
+    b.ne .Lnative_source_address_fail
+    mov x21, #1
+    b .Lnative_source_runtime_checks
+.Lnative_source_runtime_ok:
+    mov x21, #0
+.Lnative_source_runtime_checks:
+'''
+            source_range_check = '''    cbz x21, .Lnative_source_ok
+    add x4, x0, x3
+    ldr x1, =0x85700000
+    cmp x4, x1
+    b.hi .Lnative_source_reservation_fail
+    b .Lnative_source_ok
+'''
+            reservation_failure = '''.Lnative_source_reservation_fail:
+    mov x1, x4
+    adr x0, .Lnative_source_reservation_text
+    bl loader_checkpoint_hex
+    b .Lnative_source_diagnostic_stop
+'''
+            failure_exit = '    b .Lnative_source_diagnostic_stop\n'
+            reservation_text = '.Lnative_source_reservation_text:\n    .asciz "SOURCE RANGE END"\n'
+        else:
+            source_select = f'''    ldr x1, ={hex(RUNTIME_SOURCE)}
+    cmp x0, x1
+    b.ne .Lnative_source_address_fail
+'''
+            source_range_check = ''
+            reservation_failure = ''
+            failure_exit = ''
+            reservation_text = ''
         guard=f'''    msr daifset, #0xf
     adr x0, _start
     ldr x1, =LINK_ADDRESS
     cmp x0, x1
     b.eq .Lnative_source_link_ok
-    ldr x1, ={hex(RUNTIME_SOURCE)}
-    cmp x0, x1
-    b.ne .Lnative_source_address_fail
+{source_select}
     adrp x2, _bss_end
     add x2, x2, #:lo12:_bss_end
     sub x3, x2, x0
@@ -89,6 +124,7 @@ def native_startup_entry(text, diagnostic_only=False):
     ldr x1, =0x6000000
     cmp x3, x1
     b.hi .Lnative_source_extent_fail
+{source_range_check}
     b .Lnative_source_ok
 .Lnative_source_link_ok:
     adrp x2, _bss_end
@@ -105,7 +141,12 @@ def native_startup_entry(text, diagnostic_only=False):
     adr x0, .Lnative_source_extent_text
     mov x1, x20
     bl loader_checkpoint_hex
-    b .Lnative_source_diagnostic_stop
+'''
+        if diagnostic_only:
+            guard += '    b .Lnative_source_diagnostic_stop\n'
+        elif report_guard:
+            guard += '    b .Lnative_source_continue\n'
+        guard += f'''
 .Lnative_source_address_fail:
     mov x1, x0
     adr x0, .Lnative_source_address_text
@@ -125,6 +166,7 @@ def native_startup_entry(text, diagnostic_only=False):
     mov x1, x3
     adr x0, .Lnative_source_extent_text
     bl loader_checkpoint_hex
+{failure_exit}{reservation_failure}
 .Lnative_source_diagnostic_stop:
     b .Lnative_source_diagnostic_stop
 .Lnative_source_address_text:
@@ -135,8 +177,10 @@ def native_startup_entry(text, diagnostic_only=False):
     .asciz "SOURCE SIZE OVERFLOW"
 .Lnative_source_extent_text:
     .asciz "SOURCE EXTENT"
-    .balign 8
+{reservation_text}    .balign 8
 '''
+        if report_guard:
+            guard += '.Lnative_source_continue:\n'
     else:
         guard=f'''    msr daifset, #0xf
     adr x0, _start
@@ -161,7 +205,7 @@ def native_startup_entry(text, diagnostic_only=False):
 .Lnative_source_ok:
 '''
     text=text.replace(anchor,guard+anchor)
-    if diagnostic_only:
+    if diagnostic_only or report_guard:
         text+='''
 '''
     else:
@@ -324,6 +368,7 @@ def main():
     p.add_argument('--checkpoints',action='store_true')
     p.add_argument('--native-startup-entry',action='store_true',help='Closed large native image with runtime ABL-source guard; no legacy task-copy overlay')
     p.add_argument('--native-source-diagnostic',action='store_true',help='Show the source guard check and stop before relocation on every path')
+    p.add_argument('--native-source-report-guard',action='store_true',help='Show labeled source-guard failures; continue to relocation only when all checks pass')
     p.add_argument('--copy-progress',action='store_true')
     p.add_argument('--copy-inputs',action='store_true')
     p.add_argument('--relocation-progress',action='store_true')
@@ -356,9 +401,13 @@ def main():
     holds.add_argument('--hold-after-relocation',action='store_true')
     holds.add_argument('--hold-before-relocation',action='store_true')
     holds.add_argument('--hold-after-copy',action='store_true');args=p.parse_args()
-    if (args.native_startup_entry or args.native_source_diagnostic) and (not args.checkpoints or any(
+    guard_modes = (args.native_startup_entry, args.native_source_diagnostic,
+                   args.native_source_report_guard)
+    if sum(guard_modes) > 1:
+        p.error('select only one native source-guard mode')
+    if any(guard_modes) and (not args.checkpoints or any(
         value for key,value in vars(args).items()
-        if isinstance(value,bool) and key not in ['native_startup_entry','native_source_diagnostic','checkpoints'])):
+        if isinstance(value,bool) and key not in ['native_startup_entry','native_source_diagnostic','native_source_report_guard','checkpoints'])):
         p.error('native source guard requires --checkpoints and excludes diagnostic/legacy task overlays')
     if (args.hold_after_relocation or args.hold_before_relocation or args.hold_after_copy) and not args.checkpoints:
         p.error('a loader hold requires --checkpoints')
@@ -434,8 +483,12 @@ def main():
         shutil.copy2(Path(__file__).with_name('loader-boot-checkpoints.h'),variant_source/'src/loader-boot-checkpoints.h')
         crt=variant_source/'src/aarch64/crt0.S'
         entry=entry_checkpoints(crt.read_text(),args.hold_after_relocation,args.hold_before_relocation,args.hold_after_copy,args.copy_progress,args.copy_inputs,args.relocation_progress,args.task_images)
-        if args.native_startup_entry or args.native_source_diagnostic:
-            entry=native_startup_entry(entry,args.native_source_diagnostic)
+        if any(guard_modes):
+            entry=native_startup_entry(
+                entry,
+                diagnostic_only=args.native_source_diagnostic,
+                report_guard=args.native_source_report_guard,
+            )
         crt.write_text(entry)
         c=variant_source/'src/loader.c';text=c.read_text()
         text='#include "loader-boot-checkpoints.h"\n'+text
@@ -490,9 +543,10 @@ def main():
             'relocated_loader_sha256':sha(relocated),'base_sdk_unchanged':True,
             'kernel_initialiser_monitor_unchanged':True,
             'visible_checkpoint_overlay':args.checkpoints,
-            'native_startup_entry_guard':args.native_startup_entry or args.native_source_diagnostic,
+            'native_startup_entry_guard':any(guard_modes),
             'native_source_diagnostic':args.native_source_diagnostic,
-            'native_startup_max_relocation_bytes':0x6000000 if args.native_startup_entry or args.native_source_diagnostic else None,
+            'native_source_report_guard':args.native_source_report_guard,
+            'native_startup_max_relocation_bytes':0x6000000 if any(guard_modes) else None,
             'hold_after_relocation':args.hold_after_relocation,
             'hold_before_relocation':args.hold_before_relocation,
             'hold_after_copy':args.hold_after_copy,
@@ -530,7 +584,7 @@ def main():
             'psci_version_query_skipped':args.task_images,
             'expected_runtime_source':hex(RUNTIME_SOURCE),
             'source_image_base':hex(RUNTIME_SOURCE-4096),
-            'entry_interrupt_masked':args.native_startup_entry or args.native_source_diagnostic or args.hold_before_relocation or args.hold_after_copy or args.relocation_progress,
+            'entry_interrupt_masked':any(guard_modes) or args.hold_before_relocation or args.hold_after_copy or args.relocation_progress,
             'all_objects_rebuilt_from_private_board_source':True,
             'board_uart_source_sha256':sha(board_source/'src/uart.c'),
             'scope':'Only the isolated image build uses this loader. Full relocated payload range must pass DT/target exclusion checks before temporary boot.'}

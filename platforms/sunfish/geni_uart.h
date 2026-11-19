@@ -14,14 +14,14 @@
 #define SUNFISH_GENI_UART_SPI 355u
 
 #define SE_GENI_STATUS 0x40u
+#define SE_UART_TX_TRANS_LEN 0x270u
 #define SE_GENI_M_CMD0 0x600u
+#define SE_GENI_M_IRQ_STATUS 0x610u
+#define SE_GENI_M_IRQ_CLEAR 0x618u
 #define SE_GENI_TX_FIFOn 0x700u
 #define SE_GENI_TX_FIFO_STATUS 0x800u
 
-/* TX_FIFO_STATUS: word count in bits [27:0]. */
-#define TX_FIFO_WC_MASK 0x0fffffffu
-
-/* Conservative depth guess until HW_PARAM is read on device. */
-#define SUNFISH_GENI_TX_WATERMARK 8u
+#define SUNFISH_UART_START_TX_CMD (1u << 27)
+#define SUNFISH_M_CMD_DONE (1u << 0)
 
 #endif

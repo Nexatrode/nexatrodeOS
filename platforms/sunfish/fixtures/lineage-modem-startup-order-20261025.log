@@ -1,0 +1,29 @@
+# Filtered from .cache/pixel-sunfish/modem-image-boot-check/lineage-return-diagnostics/current-dmesg.txt
+# LineageOS boot after returning from a temporary test image; rooted dmesg, no firmware payload.
+[   31.744946] init: Could not start service 'vendor.mdm_helper' as part of class 'core': Cannot find '/vendor/bin/mdm_helper': No such file or directory
+[   31.759915] init: starting service 'vendor.per_mgr'...
+[   31.796051] init: ... started service 'vendor.per_mgr' has pid 1313
+[   31.816388] init: starting service 'vendor.qrtr-ns'...
+[   31.837094] init: ... started service 'vendor.qrtr-ns' has pid 1317
+[   31.910640] init: starting service 'tftp_server'...
+[   31.952705] init: ... started service 'tftp_server' has pid 1338
+[   31.952875] init: starting service 'modem_svc'...
+[   31.955262] init: ... started service 'modem_svc' has pid 1340
+[   31.957868] init: starting service 'pd_mapper'...
+[   31.959964] init: ... started service 'pd_mapper' has pid 1342
+[   32.016019] init: starting service 'vendor.tftp_server'...
+[   32.018810] init: ... started service 'vendor.tftp_server' has pid 1349
+[   35.296075] init: processing action (init.svc.vendor.per_mgr=running) from (/vendor/etc/init/hw/init.sm7150.rc:475)
+[   35.308132] init: starting service 'per_proxy'...
+[   35.328879] init: ... started service 'per_proxy' has pid 1495
+[   35.348460] init: starting service 'vendor.ssr_setup'...
+[   35.353878] subsys-restart: __subsystem_get(): Changing subsys fw_name to modem
+[   35.426036] ueventd: firmware: loading 'modem.mdt' for '/devices/platform/soc/4080000.qcom,mss/firmware/modem.mdt'
+[   35.437317] ueventd: found /vendor/firmware_mnt/image/modem.mdt for /devices/platform/soc/4080000.qcom,mss/firmware/modem.mdt
+[   35.458003] subsys-pil-tz 4080000.qcom,mss: modem: loading from 0x000000008b000000 to 0x0000000094800000
+[   36.090385] subsys-pil-tz 4080000.qcom,mss: modem: Brought out of reset
+[   36.128899] subsys-pil-tz 4080000.qcom,mss: modem: Power/Clock ready interrupt received
+[   37.817874] service-notifier: root_service_service_ind_cb: Indication received from msm/modem/wlan_pd, state: 0x1fffffff, trans-id: 1
+[   37.830381] icnss_qmi: QMI Server Connected: state: 0x980
+[   37.834427] service-notifier: send_ind_ack: Indication ACKed for transid 1, service msm/modem/wlan_pd, instance 180!
+[   46.107887] [kworke][1134284612][02:18:52.187123] wlan: [1324:I:WMA] wma_wait_for_ready_event: 6853: FW ready event received

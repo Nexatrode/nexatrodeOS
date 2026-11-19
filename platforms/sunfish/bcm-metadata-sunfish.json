@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "target": "sunfish",
+  "metadata_source": {
+    "observed_date": "2026-10-17",
+    "source": "User photo D2520B77-631F-4EC9-9468-8CDECCEBEA63_4_5005_c.jpeg",
+    "probe_artifact_sha256": "5f2be13ad6d445aae22588b41659d13d2ad9b2188a800f435760dbc4291950b1",
+    "result": "METADATA PASS",
+    "stable_bounded_cmd_db_copy": true,
+    "rsc_mapping": false,
+    "votes_sent": false,
+    "modem_started": false,
+    "scope": "All six command-DB records decoded from a stable bounded copy. ACV width zero is now observed explicitly. This establishes metadata, not prior per-DRV votes, QoS state, a complete bus provider, or authority for bus writes."
+  },
+  "resources": {
+    "MC0": {
+      "address": "0x50000",
+      "unit_size": 1770000,
+      "width": 16,
+      "clock_domain": 0,
+      "auxiliary_version": "0x1000",
+      "reserved": 0
+    },
+    "CE0": {
+      "address": "0x500a0",
+      "unit_size": 6802,
+      "width": 8,
+      "clock_domain": 6,
+      "auxiliary_version": "0x1000",
+      "reserved": 0
+    },
+    "SN11": {
+      "address": "0x5006c",
+      "unit_size": 530000,
+      "width": 16,
+      "clock_domain": 3,
+      "auxiliary_version": "0x1000",
+      "reserved": 0
+    },
+    "SN0": {
+      "address": "0x50078",
+      "unit_size": 530000,
+      "width": 16,
+      "clock_domain": 3,
+      "auxiliary_version": "0x1000",
+      "reserved": 0
+    },
+    "SH0": {
+      "address": "0x5003c",
+      "unit_size": 2090000,
+      "width": 32,
+      "clock_domain": 1,
+      "auxiliary_version": "0x1000",
+      "reserved": 0
+    },
+    "ACV": {
+      "address": "0x5000c",
+      "unit_size": 1,
+      "width": 0,
+      "clock_domain": 11,
+      "auxiliary_version": "0x1000",
+      "reserved": 0
+    }
+  }
+}

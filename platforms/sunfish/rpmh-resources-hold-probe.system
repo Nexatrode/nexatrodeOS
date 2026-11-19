@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<system>
+    <memory_region name="apps_rsc" size="0x1000" page_size="0x1000"
+                   phys_addr="0x18220000" />
+    <memory_region name="splash" size="0x1600000" page_size="0x200000"
+                   phys_addr="0x9c000000" />
+    <protection_domain name="rpmh_resources_hold_probe" priority="99" stack_size="0x10000">
+        <program_image path="rpmh_resources_hold_probe.elf" />
+        <map mr="apps_rsc" vaddr="0x40000000" perms="rw" cached="false"
+             setvar_vaddr="apps_rsc" />
+        <map mr="splash" vaddr="0x42000000" perms="rw" cached="false"
+             setvar_vaddr="splash_fb" />
+    </protection_domain>
+</system>

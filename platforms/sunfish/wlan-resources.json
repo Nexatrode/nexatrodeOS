@@ -1,0 +1,2430 @@
+{
+  "schema_version": 1,
+  "platform": "pixel4a-sunfish",
+  "intent": "Inventory-only. This file grants no device, SMMU, SCM, regulator, or DMA authority.",
+  "icnss": {
+    "path": "/soc/qcom,icnss@18800000",
+    "compatible": "qcom,icnss",
+    "reg_names": [
+      "membase",
+      "smmu_iova_base",
+      "smmu_iova_ipa"
+    ],
+    "reg_cells": [
+      "0x18800000",
+      "0x800000",
+      "0xa0000000",
+      "0x10000000",
+      "0xb0000000",
+      "0x10000"
+    ],
+    "iommus_cells": [
+      "0x30",
+      "0x240",
+      "0x1"
+    ],
+    "sid_mask_semantics": {
+      "mask_cell": "0x1",
+      "matched_stream_ids": [
+        "0x240",
+        "0x241"
+      ],
+      "policy": "Both stream IDs must be exclusively owned and routed through the same restricted domain before WLAN DMA is allowed."
+    },
+    "s1_bypass_property": true,
+    "wlfw_control_transport": {
+      "intent": "Read-only Linux reference. The current Microkit image has no modem-IPC/QRTR/GLINK owner and grants no access to this transport.",
+      "service": {
+        "protocol": "QMI over QRTR (AF_QIPCRTR)",
+        "service_id": "0x45",
+        "version": "0x01",
+        "instance": 0,
+        "instance_id_constant": "WLFW_SERVICE_INS_ID_V01",
+        "lookup": "ICNSS registers a QRTR service lookup; on server arrival it connects to the discovered node and port.",
+        "qrtr_control_payload": {
+          "lookup_command": 10,
+          "new_server_command": 4,
+          "payload_bytes": 20,
+          "version_instance_encoding": "version | (instance << 8)",
+          "source": "Matched LineageOS drivers/soc/qcom/qmi_interface.c and include/uapi/linux/qrtr.h."
+        },
+        "qrtr_wire_header": {
+          "versions": {
+            "1": {
+              "header_bytes": 32
+            },
+            "3": {
+              "header_bytes": 16,
+              "has_optional_header_length": true
+            }
+          },
+          "payload_length_alignment_bytes": 4,
+          "v2_control_port_wire_value": "0xfffe",
+          "v2_control_port_normalized_value": "0xfffffffe",
+          "source": "Matched LineageOS net/qrtr/qrtr.c at kernel commit 28f9290ae067d3e7857126eb6312720dbe9c7c80."
+        }
+      },
+      "msa_info_message": {
+        "message_id": "0x002d",
+        "request_max_tlv_bytes": 18,
+        "request_tlvs": [
+          {
+            "type": "0x01",
+            "field": "msa_addr",
+            "wire_type": "u64 little-endian"
+          },
+          {
+            "type": "0x02",
+            "field": "size",
+            "wire_type": "u32 little-endian"
+          }
+        ],
+        "response_max_tlv_bytes": 37,
+        "response_tlvs": [
+          {
+            "type": "0x02",
+            "field": "qmi_response_type",
+            "wire_type": "u16 result, u16 error"
+          },
+          {
+            "type": "0x03",
+            "field": "mem_region_info",
+            "wire_type": "u8 count followed by up to 2 records: u64 address, u32 size, u8 secure_flag"
+          }
+        ],
+        "source": "Matched LineageOS wlan_firmware_service_v01.h/.c at kernel commit 28f9290ae067d3e7857126eb6312720dbe9c7c80."
+      },
+      "startup_messages": {
+        "source": "Matched ICNSS call sites and generated WLFW schema at kernel commit 28f9290ae067d3e7857126eb6312720dbe9c7c80.",
+        "indication_registration": {
+          "message_id": "0x0020",
+          "request_max_tlv_bytes": 50,
+          "icnss_default_tlvs": [
+            {
+              "type": "0x10",
+              "field": "fw_ready_enable",
+              "wire_type": "u8",
+              "value": 1
+            },
+            {
+              "type": "0x13",
+              "field": "msa_ready_enable",
+              "wire_type": "u8",
+              "value": 1
+            },
+            {
+              "type": "0x14",
+              "field": "pin_connect_result_enable",
+              "wire_type": "u8",
+              "value": 1
+            },
+            {
+              "type": "0x15",
+              "field": "client_id",
+              "wire_type": "u32 little-endian",
+              "value": "0x4b4e454c"
+            }
+          ],
+          "optional_quirk_tlv": {
+            "type": "0x19",
+            "field": "rejuvenate_enable",
+            "wire_type": "u32 little-endian",
+            "value": 1
+          },
+          "response_optional_tlv": {
+            "type": "0x10",
+            "field": "fw_status",
+            "wire_type": "u64 little-endian"
+          }
+        },
+        "msa_ready": {
+          "message_id": "0x002e",
+          "request_max_tlv_bytes": 0,
+          "response_max_tlv_bytes": 7
+        },
+        "capability": {
+          "message_id": "0x0024",
+          "request_max_tlv_bytes": 0,
+          "response_max_tlv_bytes": 207,
+          "response_optional_tlvs": [
+            {
+              "type": "0x10",
+              "field": "chip_info",
+              "wire_type": "u32 chip_id, u32 chip_family"
+            },
+            {
+              "type": "0x11",
+              "field": "board_info",
+              "wire_type": "u32 board_id"
+            },
+            {
+              "type": "0x12",
+              "field": "soc_info",
+              "wire_type": "u32 soc_id"
+            },
+            {
+              "type": "0x13",
+              "field": "fw_version_info",
+              "wire_type": "u32 version, u8 string length, up to 32 ASCII timestamp bytes"
+            },
+            {
+              "type": "0x14",
+              "field": "fw_build_id",
+              "wire_type": "u8 string length, up to 128 ASCII bytes"
+            },
+            {
+              "type": "0x15",
+              "field": "num_macs",
+              "wire_type": "u8"
+            }
+          ]
+        }
+      },
+      "glink_edge": {
+        "device_tree_path": "/soc/qcom,glink/modem",
+        "transport": "smem",
+        "edge_label": "modem",
+        "glink_label": "mpss",
+        "channel": "IPCRTR",
+        "remote_pid": 1,
+        "doorbell_mailbox": "apcs_glb channel 12",
+        "gic_spi": 449,
+        "sel4_gic_irq_intid": 481,
+        "runtime_observation": "The running Lineage kernel exposed active glink-native-modem interrupts during the read-only inspection. This verifies the Linux endpoint exists, not that it is safe for Microkit to claim."
+      },
+      "shared_smem": {
+        "device_tree_path": "/reserved-memory/smem@86000000",
+        "base": "0x86000000",
+        "size": "0x200000",
+        "no_map": true,
+        "atoll_source_dts_default_base": "0x80900000",
+        "runtime_fdt_is_authoritative": true,
+        "glink_item_ids": {
+          "descriptor": 478,
+          "tx_fifo": 479,
+          "rx_fifo": 480
+        },
+        "descriptor_bytes": 32,
+        "descriptor_word_layout": [
+          "word0 TX tail (remote consumer-owned)",
+          "word1 TX head (local producer-owned by Linux backend)",
+          "word2 RX tail (local consumer-owned by Linux backend)",
+          "word3 RX head (remote producer-owned)",
+          "words4_to7 unused by matched qcom_glink_smem backend"
+        ],
+        "linux_tx_fifo_allocation_bytes": 16384,
+        "fifo_item_directions": {
+          "479": "AP TX FIFO; Linux allocates/reuses 16 KiB",
+          "480": "AP RX FIFO; acquired from remote SMEM"
+        },
+        "descriptor_semantics": "The 32-byte descriptor contains shared head/tail indices for both directions; Linux mutates the indices while the remote modem may concurrently access them.",
+        "linux_initialization_side_effects": "Even if SMEM items already exist, the Linux backend sets the RX tail and TX head indices to zero before starting GLINK. A Microkit implementation must not copy this reset behavior without a verified remote-side reset/coexistence contract.",
+        "linux_lifecycle_reference": "Matched qcom glink_probe registers the modem SMEM edge after SUBSYS_AFTER_POWERUP and unregisters it after SUBSYS_AFTER_SHUTDOWN; qcom_glink_native_probe then resets AP-owned indices and sends VERSION. VERSION/ACK negotiates protocol features only and does not prove empty FIFOs or authorize resetting shared indices.",
+        "smem_directory_lookup": "Matched qcom_smem_get resolves an item through the validated global TOC or host-private partition allocator; item addresses are not fixed offsets from the reservation base. It takes TCSR hardware spinlock 3 during metadata lookup. Atoll DTS marks SMEM no-map and binds the lock through syscon 0x01f40000.",
+        "tcsr_hwspinlock": {
+          "block_base": "0x01f40000",
+          "lock_id": 3,
+          "register_stride": "0x1000",
+          "register_address": "0x01f43000",
+          "apps_owner_id": 1,
+          "operations": "Write Apps owner ID 1 and read back to acquire; write zero to release. The matched driver retries with a timeout.",
+          "source": "Matched LineageOS drivers/hwspinlock/qcom_hwspinlock.c and Atoll DTS."
+        },
+        "read_only_probe_requirements": "Before any native item lookup, define safe mapping/cache attributes and compatible hwspinlock access, and bounds-check SMEM header, partition table, and allocation metadata against the 2 MiB reservation. Lock acquisition/release coordinates metadata but does not quiesce GLINK FIFOs or establish permission to inspect live indices.",
+        "offline_smem_parser": "platforms/sunfish/smem_model.py resolves synthetic v12 host-private uncached entries with bounded checks; tests/sunfish_smem_model_test.py supplies fabricated fixtures only. No device read or mapping is implemented.",
+        "prepared_directory_probe": "smem-directory-probe.system maps this live-FDT reservation read-only and maps only TCSR lock 3 read/write for acquire/release. It validates directory metadata and reports offsets/sizes for GLINK items 478-480 plus SMP2P modem/AP items 435/428 without dereferencing any item payload. The expanded temporary boot found none of those five items in host 0:1.",
+        "microkit_lifecycle_gap": "No modem SSR coordinator or modem reset/ready service is implemented for Microkit. Keep transport disabled until a boot-time peer-state and exclusive-ownership contract exists.",
+        "microkit_policy": "Keep this range unavailable to ordinary PDs. Do not allocate/reinitialize SMEM items, change indices, ring the mailbox, or consume modem IRQs without an explicit boot-time coexistence contract and a single trusted transport broker."
+      },
+      "glink_protocol": {
+        "initial_handshake": "GLINK version/features exchange, then named channel open/open-ack for IPCRTR, followed by receive-intent negotiation and data messages.",
+        "command_ids": {
+          "VERSION": 0,
+          "VERSION_ACK": 1,
+          "OPEN": 2,
+          "CLOSE": 3,
+          "OPEN_ACK": 4,
+          "INTENT": 5,
+          "RX_DONE": 6,
+          "RX_INTENT_REQ": 7,
+          "RX_INTENT_REQ_ACK": 8,
+          "TX_DATA": 9,
+          "CLOSE_ACK": 11,
+          "TX_DATA_CONT": 12,
+          "READ_NOTIF": 13,
+          "RX_DONE_W_REUSE": 14,
+          "SIGNALS": 15
+        },
+        "wire_details": {
+          "header_bytes": 8,
+          "fifo_alignment_bytes": 8,
+          "open_name_includes_nul": true,
+          "intent_entry_bytes": 8,
+          "data_header_bytes_after_glink_header": 8,
+          "linux_max_tx_chunk_bytes": 8192,
+          "offline_codec": "platforms/sunfish/wlfw_protocol_model.py parses synthetic bounded records and ring snapshots only; it does not inspect or mutate live SMEM FIFO indices or ring the mailbox."
+        },
+        "ipcrtr_intents": [
+          [
+            "0x800",
+            5
+          ],
+          [
+            "0x2000",
+            3
+          ],
+          [
+            "0x4400",
+            2
+          ]
+        ],
+        "source": "Matched LineageOS drivers/rpmsg/qcom_glink_native.c and Atoll IPCRTR child configuration."
+      },
+      "implementation_gate": "Before native QMI, define ownership/coexistence for modem GLINK, SMEM, mailbox, and IRQ. The current offline QRTR/QMI codec and state-machine harness uses synthetic fixtures only and does not map or mutate device SMEM."
+    },
+    "interrupts_cells": [
+      "0x0",
+      "0x19e",
+      "0x0",
+      "0x0",
+      "0x19f",
+      "0x0",
+      "0x0",
+      "0x1a0",
+      "0x0",
+      "0x0",
+      "0x1a1",
+      "0x0",
+      "0x0",
+      "0x1a2",
+      "0x0",
+      "0x0",
+      "0x1a3",
+      "0x0",
+      "0x0",
+      "0x1a4",
+      "0x0",
+      "0x0",
+      "0x1a5",
+      "0x0",
+      "0x0",
+      "0x1a6",
+      "0x0",
+      "0x0",
+      "0x1a7",
+      "0x0",
+      "0x0",
+      "0x1a8",
+      "0x0",
+      "0x0",
+      "0x1a9",
+      "0x0"
+    ],
+    "interrupt_semantics": "Twelve raw PDC-parented interrupt tuples, CE0-CE11. Decode through the inherited controller hierarchy as specified below; do not infer Linux virtual IRQ numbers from these cells.",
+    "interrupt_irq_decode": {
+      "source": "Lineage kernel drivers/irqchip/qcom/pdc.c delegates PDC translation to its GIC parent; drivers/irqchip/qcom/pdc-sdmmagpie.c contains no PDC pin mapping for these resulting INTIDs. GIC DT SPI number n maps to hardware INTID n+32, which is the seL4 GIC IRQ number.",
+      "gic_spi_numbers": [
+        "0x19e",
+        "0x19f",
+        "0x1a0",
+        "0x1a1",
+        "0x1a2",
+        "0x1a3",
+        "0x1a4",
+        "0x1a5",
+        "0x1a6",
+        "0x1a7",
+        "0x1a8",
+        "0x1a9"
+      ],
+      "sel4_gic_irq_intids": [
+        "0x1be",
+        "0x1bf",
+        "0x1c0",
+        "0x1c1",
+        "0x1c2",
+        "0x1c3",
+        "0x1c4",
+        "0x1c5",
+        "0x1c6",
+        "0x1c7",
+        "0x1c8",
+        "0x1c9"
+      ],
+      "sel4_max_irq": 511,
+      "microkit_grant_policy": "Decoded IRQs are reserved for the future trusted WLAN domain only. No IRQ capability or WLAN domain exists in the current image. SMP2P crash notifications must be mediated by a separate trusted broker."
+    },
+    "smp2p": {
+      "path": "/soc/qcom,icnss@18800000/qcom,smp2p_map_wlan_1_in",
+      "interrupt_names": [
+        "qcom,smp2p-force-fatal-error",
+        "qcom,smp2p-early-crash-ind"
+      ],
+      "interrupt_specifier_tails": [
+        [
+          "0x0",
+          "0x0"
+        ],
+        [
+          "0x1",
+          "0x0"
+        ]
+      ],
+      "controller_phandle_is_opaque": true,
+      "parent_controller": "/soc/qcom,smp2p-modem",
+      "entry_path": "/soc/qcom,smp2p-modem/qcom,smp2p-wlan-1-in",
+      "parent_smem_ids": [
+        435,
+        428
+      ],
+      "parent_interrupt_cells": [
+        "0x0",
+        "0x1c3",
+        "0x1"
+      ],
+      "parent_gic_spi_number": "0x1c3",
+      "parent_sel4_gic_irq_intid": "0x1e3",
+      "local_pid": 0,
+      "remote_pid": 1,
+      "entry_name": "wlan",
+      "child_lines": [
+        0,
+        1
+      ],
+      "semantics": "The two child specifiers are SMP2P entry bit numbers, not hardware IRQs. Linux routes the modem SMP2P parent doorbell (GIC SPI 451, seL4 INTID 483) through shared memory, then fans WLAN entry bit changes out as nested IRQs.",
+      "microkit_policy": "Do not grant the shared modem SMP2P parent IRQ or its shared-memory transport directly to WLAN. A future trusted modem-IPC/SMP2P broker must own and validate the shared-memory entry and deliver only narrow WLAN notifications. Until that broker exists, treat crash indications as unavailable; firmware-start policy must remain fail-closed."
+    },
+    "msa": {
+      "referenced_size_cells": [
+        "0x100000"
+      ],
+      "fixed_region_reg_cells": [
+        "0x0",
+        "0x98d00000",
+        "0x0",
+        "0x200000"
+      ],
+      "fixed_region_no_map": true,
+      "observed_wlfw_segments": [
+        {
+          "base": "0x98d00000",
+          "size": "0x4000",
+          "secure_flag": 1
+        },
+        {
+          "base": "0x98d04000",
+          "size": "0x1fc000",
+          "secure_flag": 0
+        }
+      ],
+      "ownership_policy": "Keep the full fixed pool outside ordinary allocations. Do not transfer any segment until QMI bounds, SCM ABI, VMIDs, cache behavior, and rollback are independently verified."
+    },
+    "power": {
+      "optional_supplies": [
+        "vdd-cx-mx-supply",
+        "vdd-1.8-xo-supply",
+        "vdd-1.3-rfa-supply",
+        "vdd-3.3-ch0-supply",
+        "vdd-3.3-ch1-supply"
+      ],
+      "vdd_cx_mx_config_cells": [
+        "0x9c400",
+        "0x9c400"
+      ],
+      "source_dts_vdd_3_3_ch0_config_cells": [
+        "0x2dc6c0",
+        "0x327b40"
+      ],
+      "source_dts_vdd_3_3_ch1_config_cells": [
+        "0x2dc6c0",
+        "0x327b40"
+      ],
+      "captured_dtb_vdd_3_3_ch0_config_present": false,
+      "captured_dtb_vdd_3_3_ch1_config_present": false,
+      "lineage_source_commit": "28f9290ae067d3e7857126eb6312720dbe9c7c80",
+      "lineage_driver_source": "drivers/soc/qcom/icnss.c",
+      "lineage_device_tree_source": "arch/arm64/boot/dts/qcom/atoll.dtsi",
+      "running_driver_source_match": "unverified",
+      "running_driver_source_evidence": {
+        "lineage_observation": ".cache/pixel-sunfish/lineage-modem-baseline-20261020T193451Z/identity.txt",
+        "observed_kernel_release": "4.14.357-openela-g28f9290ae067",
+        "reported_source_base": "28f9290ae067d3e7857126eb6312720dbe9c7c80",
+        "pinned_icnss_source_sha256": "ac6847c9aa6efa1495a03a879b1594169c6d616d9f38fa3921515943e2f9ab60",
+        "audit_copy_icnss_source_sha256": "ac6847c9aa6efa1495a03a879b1594169c6d616d9f38fa3921515943e2f9ab60",
+        "exact_running_binary_and_configuration_match": false,
+        "interpretation": "The running kernel release has the pinned source commit prefix, and the pinned ICNSS source matches a separate local Android 13 audit copy byte-for-byte. This does not prove the exact ICNSS source or configuration compiled into the running kernel, so production power-profile minting remains disabled."
+      },
+      "optional_clock": "cxo_ref_clk_pin",
+      "clock_names_present": false,
+      "lineage_power_on_sequence": [
+        {
+          "rail": "vdd-cx-mx",
+          "min_microvolts": 640000,
+          "max_microvolts": 640000,
+          "source_default_microvolts": 752000
+        },
+        {
+          "rail": "vdd-1.8-xo",
+          "min_microvolts": 1800000,
+          "max_microvolts": 1800000
+        },
+        {
+          "rail": "vdd-1.3-rfa",
+          "min_microvolts": 1304000,
+          "max_microvolts": 1304000
+        },
+        {
+          "rail": "vdd-3.3-ch1",
+          "min_microvolts": 3312000,
+          "max_microvolts": 3312000,
+          "source_default_microvolts": 3312000
+        },
+        {
+          "rail": "vdd-3.3-ch0",
+          "min_microvolts": 3312000,
+          "max_microvolts": 3312000,
+          "source_default_microvolts": 3312000
+        }
+      ],
+      "voltage_request_semantics": "ICNSS calls regulator_set_voltage(min,max). At pinned commit 28f9290ae067d3e7857126eb6312720dbe9c7c80, atoll.dtsi declares 3.000-3.312 V ranges, but both captured DTBs omit these config properties; that commit's icnss.c therefore retains 3.312 V min/max defaults for these DTBs. The RPMh VRM rounds min_uv up to whole mV and checks it against max_uv. The running driver identity is unverified, so these are source-derived requests, not measured output voltages.",
+      "lineage_clock_enable_after_rails": "cxo_ref_clk_pin (optional, no clock-names in captured DT)",
+      "regulator_provider": "All five supplies resolve to qcom,rpmh-vrm-regulator nodes using the apps_rsc mailbox; the WLAN driver does not program PMIC registers directly.",
+      "rpmh_resources": {
+        "vdd-cx-mx": "ldoa9",
+        "vdd-1.8-xo": "ldoc1",
+        "vdd-1.3-rfa": "ldoc2",
+        "vdd-3.3-ch0": "ldoc10",
+        "vdd-3.3-ch1": "ldoc11"
+      },
+      "rpmh_supply_consumers": [
+        {
+          "resource": "ldoa9",
+          "node": "/soc/qcom,icnss@18800000",
+          "property": "vdd-cx-mx-supply"
+        },
+        {
+          "resource": "ldoc1",
+          "node": "/soc/bt_wcn3990",
+          "property": "qca,bt-vdd-xtal-supply"
+        },
+        {
+          "resource": "ldoc1",
+          "node": "/soc/qcom,icnss@18800000",
+          "property": "vdd-1.8-xo-supply"
+        },
+        {
+          "resource": "ldoc2",
+          "node": "/soc/bt_wcn3990",
+          "property": "qca,bt-vdd-core-supply"
+        },
+        {
+          "resource": "ldoc2",
+          "node": "/soc/qcom,icnss@18800000",
+          "property": "vdd-1.3-rfa-supply"
+        },
+        {
+          "resource": "ldoc10",
+          "node": "/soc/bt_wcn3990",
+          "property": "qca,bt-vdd-pa-supply"
+        },
+        {
+          "resource": "ldoc10",
+          "node": "/soc/qcom,icnss@18800000",
+          "property": "vdd-3.3-ch0-supply"
+        },
+        {
+          "resource": "ldoc11",
+          "node": "/soc/qcom,icnss@18800000",
+          "property": "vdd-3.3-ch1-supply"
+        }
+      ],
+      "rpmh_supply_inventory_scope": "Exact direct -supply references to the five ICNSS RPMh resources in the captured runtime and kernel DTBs. The live regulator-class capture below has on-state user counts matching these direct DT clients and loses one user per ICNSS rail with Wi-Fi disabled. This cross-check does not expose client identities, direct RPMh API users outside the regulator framework, other regulator devices aggregated into the same resource, or the complete Apps RSC cache.",
+      "lineage_runtime_regulator_delta_capture": {
+        "date": "2026-10-25",
+        "device": "sunfish",
+        "kernel_release": "4.14.357-openela-g28f9290ae067",
+        "adb_shell_uid": 0,
+        "sample_method": "Read state, microvolts, and num_users from /sys/class/regulator while Wi-Fi is enabled, disabled, then restored. No direct PMIC or RPMh writes were issued by the capture.",
+        "wifi_transition": {
+          "off_sample_delay_seconds": 5,
+          "restored_connected": true,
+          "restored_wlan0_carrier": 1,
+          "restored_wlan0_operstate": "up"
+        },
+        "debugfs_regulator_summary_available": false,
+        "readings": [
+          {
+            "resource": "ldoa9",
+            "supply": "vdd-cx-mx",
+            "regulator_name": "pm6150_l9",
+            "wifi_on": {"state": "enabled", "microvolts": 640000, "num_users": 1},
+            "wifi_off": {"state": "disabled", "microvolts": 624000, "num_users": 0},
+            "restored": {"state": "enabled", "microvolts": 640000, "num_users": 1}
+          },
+          {
+            "resource": "ldoc1",
+            "supply": "vdd-1.8-xo",
+            "regulator_name": "pm6150l_l1",
+            "wifi_on": {"state": "enabled", "microvolts": 1800000, "num_users": 2},
+            "wifi_off": {"state": "enabled", "microvolts": 1700000, "num_users": 1},
+            "restored": {"state": "enabled", "microvolts": 1800000, "num_users": 2}
+          },
+          {
+            "resource": "ldoc2",
+            "supply": "vdd-1.3-rfa",
+            "regulator_name": "pm6150l_l2",
+            "wifi_on": {"state": "enabled", "microvolts": 1304000, "num_users": 2},
+            "wifi_off": {"state": "enabled", "microvolts": 1245000, "num_users": 1},
+            "restored": {"state": "enabled", "microvolts": 1304000, "num_users": 2}
+          },
+          {
+            "resource": "ldoc10",
+            "supply": "vdd-3.3-ch0",
+            "regulator_name": "pm6150l_l10",
+            "wifi_on": {"state": "enabled", "microvolts": 3312000, "num_users": 2},
+            "wifi_off": {"state": "enabled", "microvolts": 3200000, "num_users": 1},
+            "restored": {"state": "enabled", "microvolts": 3312000, "num_users": 2}
+          },
+          {
+            "resource": "ldoc11",
+            "supply": "vdd-3.3-ch1",
+            "regulator_name": "pm6150l_l11",
+            "wifi_on": {"state": "enabled", "microvolts": 3312000, "num_users": 1},
+            "wifi_off": {"state": "disabled", "microvolts": 2950000, "num_users": 0},
+            "restored": {"state": "enabled", "microvolts": 3312000, "num_users": 1}
+          }
+        ],
+        "semantics_and_limits": "microvolts is the regulator framework value, not a direct electrical measurement; num_users is an aggregate count and does not identify consumers. The transition supports a WLAN-correlated one-user delta on each ICNSS rail, but does not enumerate other non-DT RPMh clients or establish a complete per-client vote ledger. /sys/kernel/debug and regulator_summary were unavailable."
+      },
+      "lineage_runtime_bluetooth_status_capture": {
+        "sampled_at_local": "2026-10-25 01:00:00 -0700",
+        "device": "sunfish",
+        "kernel_release": "4.14.357-openela-g28f9290ae067",
+        "adb_shell_uid": 0,
+        "wifi_setting": 1,
+        "wlan0_up": true,
+        "bluetooth_setting": 1,
+        "framework_enabled": true,
+        "framework_state": "ON",
+        "rfkill_name": "bt_power",
+        "rfkill_type": "bluetooth",
+        "rfkill_state": 0,
+        "rfkill_soft_blocked": true,
+        "rfkill_hard_blocked": false,
+        "hci0_present": false,
+        "semantics_and_limits": "The Android framework reports ON while bt_power rfkill is soft-blocked, and no hci0 sysfs device is present. This read was not simultaneous with the regulator delta. It cannot attribute retained regulator users to Bluetooth or establish active Bluetooth hardware use."
+      },
+      "rpmh_resource_regulator_devices": [
+        {
+          "resource": "ldoa9",
+          "node": "/soc/rpmh-regulator-ldoa9"
+        },
+        {
+          "resource": "ldoc1",
+          "node": "/soc/rpmh-regulator-ldoc1"
+        },
+        {
+          "resource": "ldoc2",
+          "node": "/soc/rpmh-regulator-ldoc2"
+        },
+        {
+          "resource": "ldoc10",
+          "node": "/soc/rpmh-regulator-ldoc10"
+        },
+        {
+          "resource": "ldoc11",
+          "node": "/soc/rpmh-regulator-ldoc11"
+        }
+      ],
+      "rpmh_shared_resource_regulator_devices": [
+        {
+          "resource": "ldoc1",
+          "node": "/soc/rpmh-regulator-ldoc1"
+        },
+        {
+          "resource": "ldoc2",
+          "node": "/soc/rpmh-regulator-ldoc2"
+        },
+        {
+          "resource": "ldoc10",
+          "node": "/soc/rpmh-regulator-ldoc10"
+        }
+      ],
+      "rpmh_dynamic_client_profiles": [
+        {
+          "resource": "ldoc1",
+          "client": "WCN3990 Bluetooth",
+          "node": "/soc/bt_wcn3990",
+          "supply_property": "qca,bt-vdd-xtal-supply",
+          "voltage_property": "qca,bt-vdd-xtal-voltage-level",
+          "current_property": "qca,bt-vdd-xtal-current-level",
+          "min_microvolts": 1700000,
+          "max_microvolts": 1900000,
+          "load_microamps": 1
+        },
+        {
+          "resource": "ldoc2",
+          "client": "WCN3990 Bluetooth",
+          "node": "/soc/bt_wcn3990",
+          "supply_property": "qca,bt-vdd-core-supply",
+          "voltage_property": "qca,bt-vdd-core-voltage-level",
+          "current_property": "qca,bt-vdd-core-current-level",
+          "min_microvolts": 1245000,
+          "max_microvolts": 1350000,
+          "load_microamps": 1
+        },
+        {
+          "resource": "ldoc10",
+          "client": "WCN3990 Bluetooth",
+          "node": "/soc/bt_wcn3990",
+          "supply_property": "qca,bt-vdd-pa-supply",
+          "voltage_property": "qca,bt-vdd-pa-voltage-level",
+          "current_property": "qca,bt-vdd-pa-current-level",
+          "min_microvolts": 3200000,
+          "max_microvolts": 3400000,
+          "load_microamps": 1
+        }
+      ],
+      "rpmh_dynamic_client_source": {
+        "source_commit": "28f9290ae067d3e7857126eb6312720dbe9c7c80",
+        "source_path": "drivers/bluetooth/bluetooth-power.c",
+        "source_sha256": "eee8e57070761eb2888bf746f844504ffdc8e98bd4c6149c16b32f32a3ffbeca",
+        "enable_order": "set voltage range, set load, then enable each configured regulator",
+        "disable_order": "disable each regulator, then request minimum voltage 0 and load 0",
+        "mode_selection": "the regulator core sums all consumer loads before selecting the highest supported mode whose threshold is at most the total load; the BT 0/1 uA request alone does not determine the final mode",
+        "scope": "Configured Bluetooth requests only; DT does not establish runtime enable state, and the running driver identity is unverified."
+      },
+      "rpmh_vote_semantics": {
+        "source_commit": "28f9290ae067d3e7857126eb6312720dbe9c7c80",
+        "source_path": "drivers/regulator/rpmh-regulator.c",
+        "source_sha256": "d8045626d0b0fd9ff52c1c7a66774353394eb97007d7756f167dacf394601eb4",
+        "mode_threshold_source": {
+          "source_commit": "28f9290ae067d3e7857126eb6312720dbe9c7c80",
+          "source_path": "arch/arm64/boot/dts/qcom/sdmmagpie-regulator.dtsi",
+          "source_sha256": "a041e089a2cd28f7b58a8b0be98e1889ecf4a54b8c16d404b9569be16f110958",
+          "resource_thresholds_microamps": {
+            "ldoa9": [
+              0,
+              1
+            ],
+            "ldoc1": [
+              0,
+              10000
+            ],
+            "ldoc2": [
+              0,
+              10000
+            ],
+            "ldoc10": [
+              0,
+              10000
+            ],
+            "ldoc11": [
+              0,
+              1
+            ]
+          },
+          "scope": "Sunfish SDM Magpie board regulator definition; generic Atoll regulator defaults are not the active board thresholds."
+        },
+        "load_recalculation_source": {
+          "source_path": "drivers/regulator/core.c",
+          "source_sha256": "50e39e9fb99802b127ba529e712c2d413d3637158c914825b564067734a52e54",
+          "drms_load_sum": "regulator core sums every consumer uA_load plus regulator system_load",
+          "enable_behavior": "_regulator_enable calls drms_uA_update before enabling, even if the consumer never called regulator_set_load"
+        },
+        "load_mode_assumptions": {
+          "icnss_load_source_path": "drivers/soc/qcom/icnss.c",
+          "icnss_load_source_sha256": "ac6847c9aa6efa1495a03a879b1594169c6d616d9f38fa3921515943e2f9ab60",
+          "icnss_load_microamps_by_resource": {
+            "ldoa9": 0,
+            "ldoc1": 0,
+            "ldoc2": 0,
+            "ldoc10": 0,
+            "ldoc11": 0
+          },
+          "bluetooth_load_microamps_by_resource": {
+            "ldoc1": 1,
+            "ldoc2": 1,
+            "ldoc10": 1
+          },
+          "system_load_property": "regulator-system-load",
+          "system_load_source_path": "drivers/regulator/of_regulator.c",
+          "system_load_source_sha256": "04c6cb4347fc32d9bea6f38b53f972b545ecf45bfd09b6ca57850586afd32ed0",
+          "system_load_property_present_on_icnss_regulators": false,
+          "expected_mode_code": 4,
+          "expected_mode_name": "RPMH_REGULATOR_MODE_LPM",
+          "scope": "Source-derived request reduction for the five ICNSS regulator devices; this is not a live Apps RSC vote/cache readback or authority to publish votes."
+        },
+        "aggregation": "The regulator core first combines each regulator device's consumer requests and sums loads for mode selection; for each shared RPMh resource, the provider then max-aggregates valid registers across regulator devices associated with that exact resource, separately for active and sleep sets.",
+        "active_ack": "Upward active requests wait for ACK; a voltage request may also wait when its new maximum is below the previously requested voltage.",
+        "native_write_gate": "A trusted service must arbitrate all requesters and preserve their contributions; MMIO readback is not a per-client vote ledger."
+      },
+      "rpmh_controller": {
+        "path": "/soc/mailbox@18220000",
+        "compatible": "qcom,tcs-drv",
+        "reg_cells": [
+          "0x18220000",
+          "0x100",
+          "0x18220d00",
+          "0x3000"
+        ],
+        "interrupt_cells": [
+          "0x0",
+          "0x5",
+          "0x0"
+        ],
+        "driver_id": "0x2",
+        "tcs_config_cells": [
+          "0x2",
+          "0x2",
+          "0x0",
+          "0x3",
+          "0x1",
+          "0x3",
+          "0x3",
+          "0x1"
+        ],
+        "microkit_policy": "Shared Apps RSC/mailbox. It services global RPMh votes; never grant its registers or mailbox channel directly to WLAN. A trusted RPMh broker must preserve all existing clients and mediate rail votes."
+      },
+      "native_power_failure_policy": "Treat the Linux sequence as observation only. Native power service must track each successful enable, unwind in reverse order, surface rollback failures, and keep firmware disabled on ambiguous rail/clock state.",
+      "policy": "No regulator, clock, PMIC, or generic SMC capability is granted to WLAN. A future narrow platform power service must own sequencing and rollback."
+    }
+  },
+  "wlan_smmu_actlr_policy": {
+    "intent": "Pinned source audit only. It grants no SMMU read/write, context-bank, SID-route, DMA, firmware, or modem authority.",
+    "source_commit": "28f9290ae067d3e7857126eb6312720dbe9c7c80",
+    "sources": {
+      "icnss_driver": {
+        "path": "drivers/soc/qcom/icnss.c",
+        "sha256": "ac6847c9aa6efa1495a03a879b1594169c6d616d9f38fa3921515943e2f9ab60"
+      },
+      "sunfish_smmu_dts": {
+        "path": "arch/arm64/boot/dts/qcom/msm-arm-smmu-sdmmagpie.dtsi",
+        "sha256": "53902d14b374b1e2aed3bbc5e19df97be8a6bec8d9bae502c20a1dcf9705696d"
+      },
+      "arm_smmu_driver": {
+        "path": "drivers/iommu/arm-smmu.c",
+        "sha256": "54c3ce1434c1e9e048f222ba80cd3b81a726f76a29c13769ef48cee27c7d06bc"
+      }
+    },
+    "route": {
+      "stream_id": "0x240",
+      "stream_mask": "0x1",
+      "matched_stream_ids": [
+        "0x240",
+        "0x241"
+      ]
+    },
+    "route_source_comparison": {
+      "runtime_capture": {
+        "source": ".cache/pixel-sunfish/runtime-dt-20261024.dtb, captured from /sys/firmware/fdt",
+        "node": "/soc/qcom,icnss@18800000",
+        "iommus_cells_without_phandle": [
+          "0x240",
+          "0x1"
+        ]
+      },
+      "upstream_sunfish_dts": {
+        "repository": "https://github.com/sm7150-mainline/linux.git",
+        "commit": "fd78d17954a86ea6ceb0c535e618ea129e09f8dd",
+        "path": "arch/arm64/boot/dts/qcom/sm7150.dtsi",
+        "sha256": "59495b0881906bb6a4708dc4b7006f8addb6714cacfe61e602e1fb18d61fab58",
+        "node": "wifi: wifi@18800000",
+        "compatible": "qcom,wcn3990-wifi",
+        "iommus_cells_without_phandle": [
+          "0x240",
+          "0x1"
+        ],
+        "target_dts_enables_node": true
+      },
+      "lineage_generic_sm6150_dts": {
+        "repository": "https://github.com/LineageOS/android_kernel_google_msm-4.14.git",
+        "commit": "28f9290ae067d3e7857126eb6312720dbe9c7c80",
+        "path": "arch/arm64/boot/dts/qcom/sm6150.dtsi",
+        "sha256": "6700ec8456ba8e51848210018dccf46fdb7aa9d0605179d608911d7bf2bbf9bd",
+        "node": "icnss: qcom,icnss@18800000",
+        "compatible": "qcom,icnss",
+        "iommus_cells_without_phandle": [
+          "0x1640",
+          "0x1"
+        ],
+        "s1_bypass_property": true,
+        "scope_note": "Generic SM6150 DTS; not the Sunfish DVT overlay base"
+      },
+      "lineage_sunfish_base_dts": {
+        "repository": "https://github.com/LineageOS/android_kernel_google_msm-4.14.git",
+        "commit": "28f9290ae067d3e7857126eb6312720dbe9c7c80",
+        "base_dtb": "qcom-base/sdmmagpie.dtb",
+        "dts_path": "arch/arm64/boot/dts/qcom/sdmmagpie.dts",
+        "dts_sha256": "6ab514c91f776198fe7de3a2203496685becc3490280d05aa102afec496d0839",
+        "dtsi_path": "arch/arm64/boot/dts/qcom/sdmmagpie.dtsi",
+        "dtsi_sha256": "e0b37d7cdc137503fef1f36dd6119039175c5c780bca9aaef267bb00f55fcbbb",
+        "node": "icnss: qcom,icnss@18800000",
+        "compatible": "qcom,icnss",
+        "iommus_cells_without_phandle": [
+          "0x240",
+          "0x1"
+        ],
+        "s1_bypass_property": true
+      },
+      "lineage_sunfish_overlay": {
+        "google_makefile_path": "arch/arm64/boot/dts/google/Makefile",
+        "google_makefile_sha256": "144ba7ea7917ed4c0b480a75999389f47a61d631d8428dda621e6094cb18a2cc",
+        "overlay_target": "sm7150-sunfish-dvt1.0-overlay.dtbo",
+        "base_dtb": "qcom-base/sdmmagpie.dtb",
+        "overlay_path": "arch/arm64/boot/dts/google/sm7150-sunfish-dvt1.0-overlay.dts",
+        "overlay_sha256": "d404388141f38728b279bf23d0c1ea280285df7323278e15f8ceeda112ca8c02",
+        "overlay_direct_icnss_or_iommus_override": false
+      },
+      "lineage_runtime_observation": {
+        "capture_date": "2026-10-24",
+        "device_tree_model": "Google Inc. MSM sm7150 Sunfish DVT1.0",
+        "build_fingerprint": "google/sunfish/sunfish:13/TQ3A.230805.001.S1/10786265:user/release-keys",
+        "kernel_release": "4.14.357-openela-g28f9290ae067",
+        "live_fdt_path": ".cache/pixel-sunfish/live-lineage-fdt-20261024.dtb",
+        "live_fdt_sha256": "d5e8c8e44e46cb77ebcbf99da47cbcfcc92f26831444f474bc8e887952282f1d",
+        "icnss_iommus_cells_be": [
+          "0x30",
+          "0x240",
+          "0x1"
+        ],
+        "apps_smmu_of_node": "/sys/firmware/devicetree/base/soc/apps-smmu@0x15000000",
+        "apps_smmu_fdt_node": "/soc/apps-smmu@0x15000000",
+        "icnss_driver": "icnss",
+        "icnss_iommu_group": "7",
+        "iommu_group_devices": [
+          "18800000.qcom,icnss"
+        ],
+        "wifi_enabled_and_connected": true,
+        "scope": "Confirms the live Linux DT binding and device-group attachment only. The separately recorded diagnostic route capture provides post-attach S2CR/CB state; neither record delegates SMMU control to seL4."
+      },
+      "resolution": "The apparent SID mismatch came from comparing the generic sm6150.dtsi with Sunfish. Lineage's Google Sunfish DVT1.0 overlay is based on qcom-base/sdmmagpie.dtb; sdmmagpie.dts includes sdmmagpie.dtsi, whose ICNSS node declares 0x240/0x1. The DVT overlay does not override ICNSS/iommus, and the live Android FDT confirms phandle 0x30 with SID/mask 0x240/0x1. The generic sm6150.dtsi value 0x1640/0x1 is not the Sunfish overlay base. The live IOMMU group confirms Linux attachment, not the S2CR/CB state or seL4 authority. A separate 2026-10-09 diagnostic-kernel readback records the post-attach ICNSS route at slot 13/CB6 and IPA WLAN SID 0x521 at slot 9/CB38; that Linux runtime state is distinct from the earlier ABL handoff and does not establish seL4 authority.",
+      "lineage_runtime_route_capture": {
+        "capture_date": "2026-10-09",
+        "device_state": "Temporary fastboot boot of a diagnostic LineageOS kernel; no partition was flashed.",
+        "kernel_release": "4.14.357-openela-g28f9290ae067",
+        "kernel_source_commit": "28f9290ae067d3e7857126eb6312720dbe9c7c80",
+        "diagnostic_patch_path": "patches/lineage-sunfish-smmu-route-audit.patch",
+        "diagnostic_patch_sha256": "7efdc523e9aeda205de864b7c9696ee8d3a0843f73a554905b1c808b213b26ed",
+        "readback_path": "platforms/sunfish/fixtures/lineage-smmu-runtime-route-readback.log",
+        "readback_sha256": "8ac23109a69251005219912cd927911e33a1e740f1e35e64f1a0e262bf2a3626",
+        "capture_method": "The diagnostic patch reads SMR, S2CR, CBAR, and SCTLR after the matched Linux attach path programs its normal route. It adds no SMMU writes; ordinary Linux route setup remains active.",
+        "routes": [
+          {
+            "name": "icnss_wlan",
+            "sid": "0x240",
+            "mask": "0x1",
+            "device": "18800000.qcom,icnss",
+            "slot": 13,
+            "stage": 0,
+            "s2cr_type": 0,
+            "context_bank": 6,
+            "smr": "0x80010240",
+            "s2cr": "0x00000306",
+            "cbar": "0x0001f300",
+            "sctlr": "0x00c000e6"
+          },
+          {
+            "name": "usb_initial",
+            "sid": "0x540",
+            "mask": "0x0",
+            "device": "a600000.ssusb",
+            "slot": 3,
+            "stage": 0,
+            "s2cr_type": 0,
+            "context_bank": 1,
+            "smr": "0x80000540",
+            "s2cr": "0x00000301",
+            "cbar": "0x0001f300",
+            "sctlr": "0x00c000e6"
+          },
+          {
+            "name": "display",
+            "sid": "0x800",
+            "mask": "0x440",
+            "device": "ae00000.qcom,mdss_mdp",
+            "slot": 5,
+            "stage": 0,
+            "s2cr_type": 0,
+            "context_bank": 3,
+            "smr": "0x84400800",
+            "s2cr": "0x00000303",
+            "cbar": "0x0001f300",
+            "sctlr": "0x00c000e6"
+          },
+          {
+            "name": "usb_final",
+            "sid": "0x540",
+            "mask": "0x0",
+            "device": "a600000.ssusb",
+            "slot": 3,
+            "stage": 0,
+            "s2cr_type": 0,
+            "context_bank": 23,
+            "smr": "0x80000540",
+            "s2cr": "0x00000317",
+            "cbar": "0x0001f300",
+            "sctlr": "0x00c000e6"
+          },
+          {
+            "name": "ipa_ap",
+            "sid": "0x520",
+            "mask": "0x0",
+            "device": "soc:ipa_smmu_ap",
+            "slot": 8,
+            "stage": 0,
+            "s2cr_type": 0,
+            "context_bank": 37,
+            "smr": "0x80000520",
+            "s2cr": "0x00000325",
+            "cbar": "0x0001f300",
+            "sctlr": "0x00c000e6"
+          },
+          {
+            "name": "ipa_wlan",
+            "sid": "0x521",
+            "mask": "0x0",
+            "device": "soc:ipa_smmu_wlan",
+            "slot": 9,
+            "stage": 0,
+            "s2cr_type": 0,
+            "context_bank": 38,
+            "smr": "0x80000521",
+            "s2cr": "0x00000326",
+            "cbar": "0x0001f300",
+            "sctlr": "0x00c000e6"
+          },
+          {
+            "name": "ipa_uc",
+            "sid": "0x522",
+            "mask": "0x0",
+            "device": "soc:ipa_smmu_uc",
+            "slot": 10,
+            "stage": 0,
+            "s2cr_type": 0,
+            "context_bank": 39,
+            "smr": "0x80000522",
+            "s2cr": "0x00000327",
+            "cbar": "0x0001f300",
+            "sctlr": "0x00c000e6"
+          }
+        ],
+        "usb_context_history": [
+          1,
+          23
+        ],
+        "scope": "Post-attach LineageOS Linux route state only. It is distinct from the earlier ABL snapshot, where these candidate routes were absent. Linux dynamically programmed these routes; this capture does not establish state inherited by a Fastboot-booted seL4 image, authority to reproduce them, or ownership of a translated DMA context."
+      }
+    },
+    "linux_route_programming": {
+      "context_before_route": true,
+      "icnss_s1_bypass_s2cr_type": "S2CR_TYPE_TRANS",
+      "route_register_write_order": [
+        "S2CR",
+        "SMR"
+      ],
+      "route_slot_and_cb_source": "Linux allocates a software stream-match slot and context bank, then writes that CB index into S2CR before making SMR valid",
+      "bootloader_route_import": {
+        "init_reads": [
+          "SMR",
+          "S2CR"
+        ],
+        "imports_only": "valid SMR entries whose S2CR type is TRANS",
+        "reserves_existing_context_bank": true,
+        "device_tree_overlap_requirement": "Exactly one device-tree device must overlap stream IDs already used by the bootloader",
+        "scope_caveat": "Pinned Linux HLOS handoff implementation only. It is not a stable API or an seL4 delegation contract. The separately captured post-attach runtime routes were dynamically programmed by Linux and are not the ABL handoff state."
+      },
+      "scope_caveat": "Pinned Sunfish Linux HLOS behavior only. It does not prove that a Fastboot-booted seL4 image receives the same Apps-SMMU MMIO mapping, EL access, clocks/power, secure permissions, or exclusive route/context-bank ownership."
+    },
+    "apps_smmu_actlr_entries": [
+      [
+        "0x800",
+        "0x7ff",
+        "0x103"
+      ],
+      [
+        "0x1000",
+        "0x3ff",
+        "0x103"
+      ],
+      [
+        "0x1460",
+        "0x1f",
+        "0x303"
+      ]
+    ],
+    "matching_actlr_entries": [],
+    "source_derived_behavior": {
+      "context_bank_software_storage": "devm_kcalloc allocates zeroed arm_smmu_cb storage at driver initialization",
+      "no_table_match_behavior": "qsmmuv500_init_cb returns without assigning cb->actlr when the device group has no matching qcom,actlr entry",
+      "qsmmuv500_has_device_reset_hook": false,
+      "context_destroy_clears_actlr": false,
+      "context_bank_write": "arm_smmu_write_context_bank writes the stored cb->actlr to CB_ACTLR",
+      "fresh_context_actlr": "0x00000000",
+      "fresh_context_actlr_scope": "Only a newly zero-allocated software context-bank record with no matching qcom,actlr entry; Linux writes that stored zero during non-dynamic context setup",
+      "apps_smmu_skip_init": true,
+      "live_context_actlr": "unknown",
+      "zero_is_safe_runtime_default": false,
+      "scope_caveat": "Zero describes fresh zeroed software storage only. The pinned path does not clear the stored ACTLR on context-bank destruction or reset it on reuse; qcom,skip-init also prevents inferring a global hardware reset. The ICNSS Linux route is S1 bypass. None of these facts establishes the phone's current translated-context ACTLR or a value safe for seL4 to install.",
+      "microkit_policy": "The source-derived fresh unmatched WLAN ACTLR is zero, but use it only for a separately proven fresh exclusive context. Live hardware and reused-context values remain unknown. Keep SMMU programming disabled until SMMU power/ownership, a complete live route snapshot, exclusive context/slot, owned tables/data, hardware readback, and fault-handler contract are validated."
+    }
+  },
+  "sel4_smmu_support": {
+    "intent": "Pinned seL4/Microkit source and generated-config audit only. It grants no SMMU, MMIO, SID-route, context-bank, DMA, power, or firmware authority.",
+    "sel4": {
+      "repository": "https://github.com/seL4/seL4.git",
+      "commit": "6e7c3b733d296cfd88d5fbf635c96e447a882374",
+      "arm_smmu_config": {
+        "path": "src/arch/arm/config.cmake",
+        "sha256": "b73b88d39831ee4b397bd6fd694776e21ed70ef0c805a5aea7fada36e6e9e311",
+        "option_dependency": "KernelPlatformTx2"
+      },
+      "smmu_v2_driver": {
+        "path": "src/drivers/smmu/smmuv2.c",
+        "sha256": "4572fdfeff97e8bbc9a1180e7a14b03c2a727b5b6e53f3c2200e9dccbdf4ebcf",
+        "boot_initializer": "plat_smmu_init calls smmu_config_prob, smmu_mapping_init, then smmu_dev_reset",
+        "reset_effect": "Sets every stream route to context-bank type with default CB index 0, invalidates every stream-match entry, disables all context banks, clears their fault state, clears ACTLR.CPRE on each bank, invalidates SMMU TLBs, then enables the SMMU",
+        "mapping_assumptions": "The mapping code says it was tested only on TX2, assumes a static kernel virtual mapping for SMMU register windows, and maps each context bank into that fixed window."
+      },
+      "hardware_header": {
+        "path": "include/drivers/smmu/smmuv2.h",
+        "sha256": "d6480228f4061586a9fd0b713a7bd4e79f7c532476e10cb1c42ff747c41ea34b",
+        "fixed_controller_base": "0x12000000"
+      },
+      "api_manual": {
+        "path": "manual/parts/io.tex",
+        "sha256": "4eb73c3760a78b61ff086d434976add44da188e041522a98ae62344b461e59f8",
+        "documents_arm_smmu_v2_capability_api": true
+      },
+      "caveats": {
+        "path": "CAVEATS.md",
+        "sha256": "b494cb920245b8cd36771f56334f20a6cb7d28a9d7cf9fbeb0f6fc164ec30012",
+        "verified_aarch64_configurations_enable_smmu": false
+      }
+    },
+    "sunfish_port": {
+      "config_path": "platforms/sunfish/sel4-config.cmake",
+      "config_sha256": "9676f9c25539b8b9215978b0511a985c71b37be97405fddeeeaa94046c02ebcc",
+      "setting": "KernelArmSMMU OFF",
+      "generated_config_path": ".cache/microkit-src-2.3.1-sunfish/release/microkit-sdk-2.3.1-sunfish/board/sunfish/debug/include/kernel/gen_config.json",
+      "generated_arm_smmu": false,
+      "apps_smmu_runtime_base": "0x15000000",
+      "reason": "The generic option is TX2-only, hardcodes base 0x12000000, uses TX2-only static mapping assumptions, and its boot initializer rewrites all stream routes, invalidates stream-match entries, disables all context banks and changes global SMMU state; a non-clobbering Sunfish handoff is not implemented."
+    },
+    "microkit": {
+      "repository": "https://github.com/seL4/microkit.git",
+      "commit": "ec86afdcd662b5976d11d4994acf1b11a2979882",
+      "iommu_parser": {
+        "path": "tool/microkit/src/sdf/iommu.rs",
+        "sha256": "aec70b219701c0edb649b143e02b32ff86fdb191deeb62c7cd8edb30a3246bd2",
+        "aarch64_sdf_iommu_supported": false
+      },
+      "kernel_config_detection": {
+        "path": "tool/microkit/src/sel4.rs",
+        "sha256": "b26b08980470208f6ef2dd5cd4d65339e61eb89c2d91fdac5e5b38e07cbdc648",
+        "aarch64_iommu_flag": false
+      },
+      "aarch64_rejection_test": {
+        "path": "tool/microkit/tests/test.rs",
+        "sha256": "b129d9ebc54f0973b7504d3a253c447db106caa03191c117945629e470870148",
+        "test_name": "test_iommu_unsupported_on_aarch64"
+      },
+      "cspace_cap_mapping": {
+        "path": "tool/microkit/src/sdf/cspace.rs",
+        "sha256": "d8dbb9798cf2cd519347b223c5da05b1c0bc1650610a9ab2ed60a56fbb34df01",
+        "supported_mapping_elements": [
+          "cap_tcb",
+          "cap_sc",
+          "cap_vspace"
+        ],
+        "smmu_control_cap_mapping": false
+      },
+      "capdl_smmu_support": {
+        "path": "tool/microkit/src/capdl/memory.rs",
+        "sha256": "b8f0e54307485ef44a8bcea78104b99486cd9ac7b279d9c82cbcaa9f9a4e01fc",
+        "source_comment": "In future supporting SMMU can be done by matching on the IommuDeviceIdentifier or creating a new function."
+      },
+      "raw_mmio_mapping_check": {
+        "source_sdf": "platforms/sunfish/smmu-read-probe.system",
+        "source_sdf_sha256": "9504d9e84662e56492483f46938f3a1e9f6dc477632abb5d797f10fa2dea29a6",
+        "mapping": {
+          "physical_base": "0x15000000",
+          "size": "0x100000",
+          "page_size": "0x1000",
+          "cached": false
+        },
+        "scratch_build": {
+          "date": "2026-10-25",
+          "change": "Temporary SDF copy changed only the apps_smmu map permission from r to rw; the linked probe source remains read-only.",
+          "microkit_sdk": "2.3.1-sunfish",
+          "capdl_root_objects": 313,
+          "smmu_frame_count": 256,
+          "smmu_frame_rights": ["read", "write"],
+          "hardware_image_booted": false,
+          "smmu_write_performed": false
+        },
+        "scope": "Proves the Microkit/CapDL build can grant an AArch64 protection domain writable CPU mappings of this physical MMIO aperture through ordinary frame mappings. It is not an AArch64 SMMU IO-address-space API, does not test whether hardware accepts EL1 writes, and proves no exclusive hardware ownership, safe route selection, or DMA authority."
+      }
+    },
+    "resolution": "A generic seL4 Arm SMMUv2 capability API exists, but it is not enabled or platform-supported by this Sunfish build. The generic code hardcodes the TX2 base and mapping assumptions, rewrites all routes and context-bank state during init, published verified AArch64 configurations exclude SMMU, and Microkit 2.3.1 does not model AArch64 SMMU address spaces or CSpace delegation of SMMU control caps. A scratch Microkit/CapDL build confirms a different candidate path: a protection domain can receive writable CPU mappings of the Apps-SMMU MMIO aperture as ordinary frames. The new Rust snapshot module reads every implemented SMR/S2CR pair, derives route overlap and inactive-slot candidates, and retains the selected slot preimage. The executor requires this preimage, checks both live slot registers before the first write, and stays retryable on a pre-write mismatch; this code is not connected to a hardware writer and does not prove the capture remains fresh under exclusive ownership. None of this shows that hardware accepts EL1 writes, that seL4 owns the route table, or that any route can be changed safely. Keep the production executor closed until a Sunfish-specific owner gate proves access, a fresh complete route snapshot, live compare-before-write through the actual MMIO adapter, non-clobbering single-route programming, and fault containment."
+  },
+  "ipa": {
+    "intent": "Source-backed IPA v4.2 inventory only. This record grants no IPA MMIO, IRQ, PAS, SMMU, DMA, or firmware authority.",
+    "lineage_source": {
+      "commit": "28f9290ae067d3e7857126eb6312720dbe9c7c80",
+      "hardware_dts": "arch/arm64/boot/dts/qcom/atoll.dtsi",
+      "sunfish_smmu_dts": "arch/arm64/boot/dts/qcom/sdmmagpie.dtsi",
+      "sunfish_memory_dts": "arch/arm64/boot/dts/google/sm7150-sunfish-memory.dtsi"
+    },
+    "hardware": {
+      "path": "/soc/qcom,ipa@1e00000",
+      "compatible": "qcom,ipa",
+      "reg_names": [
+        "ipa-base",
+        "gsi-base"
+      ],
+      "reg_cells": [
+        "0x1e00000",
+        "0x34000",
+        "0x1e04000",
+        "0x2c000"
+      ],
+      "interrupt_names": [
+        "ipa-irq",
+        "gsi-irq"
+      ],
+      "interrupt_cells": [
+        "0x0",
+        "0x137",
+        "0x0",
+        "0x0",
+        "0x1b0",
+        "0x0"
+      ],
+      "sel4_gic_irq_intids": [
+        "0x157",
+        "0x1d0"
+      ],
+      "hardware_version": "0x10",
+      "hardware_mode": "0x0",
+      "execution_environment": "0x0",
+      "arm_smmu_enabled": true
+    },
+    "smmu_contexts": [
+      {
+        "name": "ap",
+        "path": "/soc/ipa_smmu_ap",
+        "compatible": "qcom,ipa-smmu-ap-cb",
+        "stream_id": "0x520",
+        "stream_mask": "0x0",
+        "stage1_bypass": true,
+        "iova_mapping_cells": [
+          "0x20000000",
+          "0x40000000"
+        ],
+        "additional_mapping_cells": [
+          "0x146a8000",
+          "0x146a8000",
+          "0x2000"
+        ]
+      },
+      {
+        "name": "wlan",
+        "path": "/soc/ipa_smmu_wlan",
+        "compatible": "qcom,ipa-smmu-wlan-cb",
+        "stream_id": "0x521",
+        "stream_mask": "0x0",
+        "stage1_bypass": true,
+        "additional_mapping_cells": [
+          "0x1e60000",
+          "0x1e60000",
+          "0x80000"
+        ]
+      },
+      {
+        "name": "uc",
+        "path": "/soc/ipa_smmu_uc",
+        "compatible": "qcom,ipa-smmu-uc-cb",
+        "stream_id": "0x522",
+        "stream_mask": "0x0",
+        "stage1_bypass": true,
+        "iova_mapping_cells": [
+          "0x40400000",
+          "0x1fc00000"
+        ]
+      }
+    ],
+    "firmware": {
+      "pas_node": "/soc/qcom,ipa_fws",
+      "compatible": "qcom,pil-tz-generic",
+      "pas_id": "0xf",
+      "firmware_name": "ipa_fws",
+      "ipa_region": {
+        "device_tree_path": "/reserved-memory/ips_fw_region@97700000",
+        "reg_cells": [
+          "0x0",
+          "0x98f80000",
+          "0x0",
+          "0x10000"
+        ],
+        "no_map": true
+      },
+      "gsi_region": {
+        "device_tree_path": "/reserved-memory/ipa_gsi_region@97710000",
+        "reg_cells": [
+          "0x0",
+          "0x98f90000",
+          "0x0",
+          "0x5000"
+        ],
+        "no_map": true
+      },
+      "note": "These are the IPA/GSI controller firmware regions, separate from WLAN firmware and WLAN MSA.",
+      "pil_force_shutdown": true
+    },
+    "saved_smmu_readback": {
+      "date": "2026-10-21",
+      "target_stream_ids": [
+        "0x520",
+        "0x521",
+        "0x522"
+      ],
+      "observation": "The targeted screen showed no matching route for each of these SIDs.",
+      "limit": "This is a targeted ABL snapshot, not a complete route table or proof of free stream-match slots/context banks."
+    },
+    "native_owner": {
+      "system": "platforms/sunfish/modem-owner.system",
+      "ipa_registers_mapped": false,
+      "ipa_interrupts_bound": false,
+      "ipa_pas_memory_mapped": false,
+      "ipa_smmu_contexts_owned": false,
+      "status": "No native IPA runtime or isolated translated contexts are integrated."
+    }
+  },
+  "dynamic_reserved_memory": {
+    "policy": "These are Linux reserved-memory allocation requests without fixed physical addresses. The current Microkit system starts none of their Linux consumers and creates no corresponding DMA service. The seL4 hardware generator only subtracts fixed reg+no-map ranges, so these entries are not proof of reserved physical extents. They are explicitly classified as inactive Linux allocations; a future consumer must define an owned physical extent and allocator exclusion before it is enabled.",
+    "nodes": {
+      "adsp_region": {
+        "compatible": "shared-dma-pool",
+        "reusable": true,
+        "size": "0xc00000",
+        "alignment": "0x400000",
+        "alloc_ranges": [
+          "0x0",
+          "0x0",
+          "0x0",
+          "0xffffffff"
+        ],
+        "native_consumer": "inactive"
+      },
+      "cdsp_region": {
+        "compatible": "shared-dma-pool",
+        "reusable": true,
+        "size": "0x400000",
+        "alignment": "0x400000",
+        "alloc_ranges": [
+          "0x0",
+          "0x0",
+          "0x0",
+          "0xffffffff"
+        ],
+        "native_consumer": "inactive"
+      },
+      "qseecom_ta_region": {
+        "compatible": "shared-dma-pool",
+        "reusable": true,
+        "size": "0x1000000",
+        "alignment": "0x400000",
+        "alloc_ranges": [
+          "0x0",
+          "0x0",
+          "0x0",
+          "0xffffffff"
+        ],
+        "native_consumer": "inactive"
+      },
+      "sp_region": {
+        "compatible": "shared-dma-pool",
+        "reusable": true,
+        "size": "0x800000",
+        "alignment": "0x400000",
+        "alloc_ranges": [
+          "0x0",
+          "0x0",
+          "0x0",
+          "0xffffffff"
+        ],
+        "native_consumer": "inactive"
+      },
+      "secure_display_region": {
+        "compatible": "shared-dma-pool",
+        "reusable": true,
+        "size": "0x8c00000",
+        "alignment": "0x400000",
+        "alloc_ranges": [
+          "0x0",
+          "0x0",
+          "0x0",
+          "0xffffffff"
+        ],
+        "native_consumer": "inactive"
+      },
+      "mem_dump_region": {
+        "compatible": "shared-dma-pool",
+        "reusable": true,
+        "size": "0x2400000",
+        "alignment": null,
+        "alloc_ranges": null,
+        "native_consumer": "inactive"
+      },
+      "linux,cma": {
+        "compatible": "shared-dma-pool",
+        "reusable": true,
+        "size": "0x2000000",
+        "alignment": "0x400000",
+        "alloc_ranges": [
+          "0x0",
+          "0x0",
+          "0x0",
+          "0xffffffff"
+        ],
+        "native_consumer": "inactive"
+      }
+    }
+  },
+  "modem_firmware_observation": {
+    "intent": "Read-only inventory from the running Pixel 4a LineageOS firmware mount; this is not permission or authority to start/reset the modem.",
+    "source": "Pixel 4a sunfish, /vendor/firmware_mnt/image, read-only mount, LineageOS boot; MDT/segment/service-manifest hashes and sizes read in place over temporary rooted ADB on 2026-10-11, then ADB returned to unrooted shell.",
+    "vendor_build_fingerprint": "google/sunfish/sunfish:13/TQ3A.230805.001.S1/10786265:user/release-keys",
+    "provenance_caveat": "The vendor fingerprint is recorded for context but does not prove the modem partition revision. LineageOS fstab mounts a slot-selected modem partition separately at /vendor/firmware_mnt.",
+    "modem_version_info": {
+      "path": "/vendor/firmware_mnt/verinfo/ver_info.txt",
+      "read_method": "Rooted ADB cat of this text file only; no firmware blobs were read or copied for this step, then ADB was returned to unrooted shell mode.",
+      "version": "1.0",
+      "modem_image_build_id": "MPSS.AT.4.4.c3-00112-SM7150_GENP_PACK-1",
+      "metabuild_id": "SM7150.LA.3.1.c9.1-00003-STD.PROD-1",
+      "timestamp": "2023-05-05 16:10:05",
+      "provenance_caveat": "Runtime version metadata is an observed label, not a cryptographic attestation of the modem partition or of the inventoried firmware bytes."
+    },
+    "firmware_release_match": {
+      "status": "unverified",
+      "reason": "No immutable vendor release artifact has been compared against the modem MDT and segment inventory. Runtime labels and locally computed hashes identify observed data but do not authenticate it."
+    },
+    "mdt": {
+      "path": "/vendor/firmware_mnt/image/modem.mdt",
+      "size_bytes": 9100,
+      "sha256": "43a1414628153c109f06fe70385946c1c530a4ee08840b40f62649c9fa589870",
+      "elf_class": 32,
+      "endianness": "little",
+      "machine": 164,
+      "program_header_count": 31,
+      "pt_load_count": 29,
+      "all_pt_load_segments_relocatable": true,
+      "linked_address_extent": [
+        "0x8b000000",
+        "0x94800000"
+      ],
+      "linked_address_extent_bytes": "0x09800000",
+      "linux_pil_load_log_extent": [
+        "0x8b000000",
+        "0x94800000"
+      ],
+      "dtbo_selection": {
+        "slot": "A",
+        "index": 0,
+        "source": ".cache/pixel-sunfish/dtbo-a/0.dts",
+        "fragments": {
+          "modem": 42,
+          "video": 43,
+          "cdsp": 44,
+          "adsp": 45,
+          "wlan_msa": 46
+        }
+      },
+      "live_runtime_fdt_capture": {
+        "source": "/sys/firmware/fdt on Pixel 4a sunfish, LineageOS boot, read-only ADB, 2026-10-10",
+        "sha256": "e371f54727a89c9c76abdc5fe4c23d93f6e24925770d4519fe705cfa7f35bd35"
+      },
+      "merged_runtime_dt_pil_modem_mem": {
+        "base": "0x8b000000",
+        "size": "0x09800000",
+        "end_exclusive": "0x94800000"
+      },
+      "runtime_pil_reservations": {
+        "modem": {
+          "device_tree_path": "/reserved-memory/modem_region@8b000000",
+          "reg_cells": [
+            "0x0",
+            "0x8b000000",
+            "0x0",
+            "0x09800000"
+          ],
+          "no_map": true
+        },
+        "video": {
+          "device_tree_path": "/reserved-memory/pil_video_region@93400000",
+          "reg_cells": [
+            "0x0",
+            "0x94800000",
+            "0x0",
+            "0x00500000"
+          ],
+          "no_map": true
+        },
+        "cdsp": {
+          "device_tree_path": "/reserved-memory/cdsp_regions@93900000",
+          "reg_cells": [
+            "0x0",
+            "0x94d00000",
+            "0x0",
+            "0x01e00000"
+          ],
+          "no_map": true
+        },
+        "adsp": {
+          "device_tree_path": "/reserved-memory/pil_adsp_region@95700000",
+          "reg_cells": [
+            "0x0",
+            "0x96b00000",
+            "0x0",
+            "0x02200000"
+          ],
+          "no_map": true
+        },
+        "wlan_msa": {
+          "device_tree_path": "/reserved-memory/wlan_msa_region@97500000",
+          "reg_cells": [
+            "0x0",
+            "0x98d00000",
+            "0x0",
+            "0x00200000"
+          ],
+          "no_map": true
+        }
+      },
+      "merged_runtime_dt_adjacent_pil_regions": {
+        "video": {
+          "base": "0x94800000",
+          "size": "0x00500000",
+          "end_exclusive": "0x94d00000"
+        },
+        "cdsp": {
+          "base": "0x94d00000",
+          "size": "0x01e00000",
+          "end_exclusive": "0x96b00000"
+        },
+        "adsp": {
+          "base": "0x96b00000",
+          "size": "0x02200000",
+          "end_exclusive": "0x98d00000"
+        }
+      },
+      "extent_reconciliation": "Resolved: a fresh read of /sys/firmware/fdt gives pil_modem_mem [0x8b000000,0x94800000), exactly matching the Linux PIL log. The video, CDSP, and ADSP fixed pools follow contiguously without overlap. The prior cached live-a.dts represented an older pre-overlay map and is stale for this comparison.",
+      "allocator": "Matched drivers/base/dma-removed.c attaches removed_dma_ops and a bitmap allocator for the device memory-region; the allocator returns physical addresses within that reserved pool.",
+      "policy": "MDT p_paddr values are linked addresses for relocatable segments, not by themselves the final destination. No blob was copied or loaded."
+    },
+    "shards": "/vendor/firmware_mnt/image/modem.b00 through modem.b30; individual data was hashed in place and not copied.",
+    "segment_inventory_sha256": "49ca069c9a6b762d3fc3491fe3498bbeb713deb1ddc32d8e873c4472f56c159a",
+    "segment_inventory_digest_format": "SHA-256 of UTF-8 lines `name size_bytes sha256\\n`, in ascending segment-name order; this identifies the observed inventory and is not a vendor signature or authentication proof.",
+    "segment_hash_inventory": [
+      {
+        "name": "modem.b00",
+        "size_bytes": 1044,
+        "sha256": "e10b1fd830738f9c04e4c321fdb478f0b420d365173fec37b8a2dfa23a11b340"
+      },
+      {
+        "name": "modem.b01",
+        "size_bytes": 8056,
+        "sha256": "87471e0f3905b3adde44e17760913e19940b1d786d38d24425582267825b74ac"
+      },
+      {
+        "name": "modem.b02",
+        "size_bytes": 8312,
+        "sha256": "a33747eeda167af92f1004ce683470909e57aa2fd426cf7cc188bd1e5a8829f5"
+      },
+      {
+        "name": "modem.b03",
+        "size_bytes": 8480,
+        "sha256": "824ff031de3bc78bee18614463b5fa1accb12faec6be87c54add705a3dff175b"
+      },
+      {
+        "name": "modem.b04",
+        "size_bytes": 239016,
+        "sha256": "d79fcebe4213ff1dc8ba891f1638d9783b34632aa0069017954a5ec871010cb3"
+      },
+      {
+        "name": "modem.b05",
+        "size_bytes": 286912,
+        "sha256": "ecc21aaed2b126244d3e07325cca5f3534b6ab8bb7488789ea5c8cf350964f94"
+      },
+      {
+        "name": "modem.b06",
+        "size_bytes": 52512,
+        "sha256": "8b604c556525a930ef4345cbff6b1b44ae5dcd65ff68a125451fc44a98d11e74"
+      },
+      {
+        "name": "modem.b07",
+        "size_bytes": 126440,
+        "sha256": "a97ee1b5a97e4764dc4ea755cabbf82f2d2ea8bdf0c3192bb1beae6df2a0cbc5"
+      },
+      {
+        "name": "modem.b08",
+        "size_bytes": 118868,
+        "sha256": "2569ddcee98a1c290f6e4fa8078ea6685fde795fbd3e9b34ecdac736c89af7e0"
+      },
+      {
+        "name": "modem.b09",
+        "size_bytes": 2596044,
+        "sha256": "78b63a1e379898d83b8efee4a8f80e5a22075bc79f26f192f7b58d270a7f2741"
+      },
+      {
+        "name": "modem.b10",
+        "size_bytes": 1363968,
+        "sha256": "df4fd5d3cddad8ef1a283a4e9516bd4e4377e8bd658042f6ac8dbffa73fd7cdf"
+      },
+      {
+        "name": "modem.b11",
+        "size_bytes": 2205648,
+        "sha256": "6320f9da6670012139c5ddd35e90cfb9da8e9c541d401adb25494a9231275d71"
+      },
+      {
+        "name": "modem.b12",
+        "size_bytes": 311296,
+        "sha256": "213125de8e10cf37450b86a455e909efc67575fe2ab0e8b5eefd9274bc7a4f54"
+      },
+      {
+        "name": "modem.b13",
+        "size_bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "modem.b14",
+        "size_bytes": 4160,
+        "sha256": "b7de02dad947996e55b72749abf9a096d96e824ad109f9cc0d77d801a175b4ba"
+      },
+      {
+        "name": "modem.b15",
+        "size_bytes": 3262656,
+        "sha256": "7a01f940ed945dba75a36865bf161b9c853fa8e151fc3568c73f1cd16b9527c5"
+      },
+      {
+        "name": "modem.b16",
+        "size_bytes": 7732817,
+        "sha256": "5eb8a4825bbc7e0774cd734c93f85dcb5e9d546dd4f496a8b999a9349caf5603"
+      },
+      {
+        "name": "modem.b17",
+        "size_bytes": 18748048,
+        "sha256": "23502139d02efb3d636ce71fcef7ca42f5da1f76e538e2d46921c4c8a01ce6c5"
+      },
+      {
+        "name": "modem.b18",
+        "size_bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "modem.b19",
+        "size_bytes": 74432,
+        "sha256": "51c935c132aeb5163817935d46567395714cecea986ca26b6b2e4a480a385d92"
+      },
+      {
+        "name": "modem.b20",
+        "size_bytes": 28319808,
+        "sha256": "4f9e140b2e580b13e7771cced4a5f19193d42a36a57a2ef7d4ee9ae2b18a7f8c"
+      },
+      {
+        "name": "modem.b21",
+        "size_bytes": 686864,
+        "sha256": "fcb2b4af8dabcfe23f08b12b0736a76441e71864dae157226c42627044fee38c"
+      },
+      {
+        "name": "modem.b22",
+        "size_bytes": 98304,
+        "sha256": "e56944963391058fdaf4dad46a24f012cbfec7a0f80156d5ccd6f7cbbf4c1a73"
+      },
+      {
+        "name": "modem.b23",
+        "size_bytes": 45,
+        "sha256": "3d8af2cf3f7151be6e0985e91b660d516c7aaba8ef1a083fb9c45304f61b12f9"
+      },
+      {
+        "name": "modem.b24",
+        "size_bytes": 1572864,
+        "sha256": "14aeccc53effe18e490faa1920df0d71bee027afeef0e2b3be4555978c86f979"
+      },
+      {
+        "name": "modem.b25",
+        "size_bytes": 1028,
+        "sha256": "a3809662aa4f6685cfff0f9005fa110aa6ed683164f745795cb58f168ff85e58"
+      },
+      {
+        "name": "modem.b26",
+        "size_bytes": 497316,
+        "sha256": "511e968ef9dad63f190eb452c5d7a21a27d472168086a49550468426a226ff1e"
+      },
+      {
+        "name": "modem.b27",
+        "size_bytes": 73092,
+        "sha256": "8366aa5db43123190309fb34f47917dd43b02aa218b02a441cb4db3e8874bdb0"
+      },
+      {
+        "name": "modem.b28",
+        "size_bytes": 4904,
+        "sha256": "287c8250236c180c17a472a1464d247d2fa74a917c510dedc57bf1a03ccfca84"
+      },
+      {
+        "name": "modem.b29",
+        "size_bytes": 128,
+        "sha256": "ccaf64831171509962106c6d920c45968539d8a3253cc507f5bf6025d6fa9812"
+      },
+      {
+        "name": "modem.b30",
+        "size_bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ],
+    "service_manifests": {
+      "modem_root_pd": {
+        "path": "/vendor/firmware_mnt/image/modemr.jsn",
+        "size_bytes": 562,
+        "sha256": "d9fb1cfc1804923699b971d0e04d858103ec71ff528d9fd151e4725e0f354eb7"
+      },
+      "modem_wlan_pd": {
+        "path": "/vendor/firmware/modemuw.jsn",
+        "size_bytes": 713,
+        "sha256": "e75d94b61df3e86c5b3f7a976d93f726cb85f2b897a8ea80a0924b9bb9c1a3bf"
+      }
+    },
+    "metadata_staging_experiment": {
+      "observed_date": "2026-10-17",
+      "method": "Rooted read-only ADB cat of modem.mdt only, then adb unroot verified UID2000",
+      "local_ignored_cache": ".cache/pixel-sunfish/pas-metadata-prepare/modem.mdt",
+      "bytes": 9100,
+      "sha256": "43a1414628153c109f06fe70385946c1c530a4ee08840b40f62649c9fa589870",
+      "matches_previous_inventory": true,
+      "segment_files_copied": false,
+      "secure_loader_called": false,
+      "scope": "Owned phone local metadata staging only; no firmware authentication, compatible immutable release verification, executable segment loading, or modem start."
+    },
+    "single_data_segment_copy": {
+      "date": "2026-10-17",
+      "source_path": "/vendor/firmware_mnt/image/modem.b23",
+      "local_path": ".cache/pixel-sunfish/modem-data-prepare/modem.b23",
+      "bytes": 45,
+      "sha256": "3d8af2cf3f7151be6e0985e91b660d516c7aaba8ef1a083fb9c45304f61b12f9",
+      "segment_index": 23,
+      "physical": "0x93200000",
+      "flags": "0x08000004",
+      "memory_bytes": 45,
+      "method": "Read-only adb root exec-out cat, no phone writes; adb unroot afterward, UID2000 verified",
+      "prior_in_place_inventory_matches": true,
+      "other_segment_contents_copied": false,
+      "purpose": "Local bounded non-executable native data copy experiment after successful INIT/MEM_SETUP gates",
+      "source_files_modified": false,
+      "redistributed": false,
+      "executed_by_copy": false
+    },
+    "segment14_local_copy": {
+      "date": "2026-10-17",
+      "source_path": "/vendor/firmware_mnt/image/modem.b14",
+      "local_path": ".cache/pixel-sunfish/modem-segment-prepare/modem.b14",
+      "size_bytes": 4160,
+      "sha256": "b7de02dad947996e55b72749abf9a096d96e824ad109f9cc0d77d801a175b4ba",
+      "prior_in_place_inventory_matches": true,
+      "method": "Read-only adb root exec-out cat; adb unroot afterward, UID2000 verified",
+      "phone_source_modified": false,
+      "redistributed": false,
+      "purpose": "Local non-executable data/BSS staging experiment; no auth/reset/DMA"
+    },
+    "full_loadable_segment_local_copy": {
+      "date": "2026-10-17",
+      "method": "Read-only adb root exec-out tar; MDT reread identical, all29 loadable segment files match prior in-place hash inventory",
+      "segments": 29,
+      "file_bytes": 68393962,
+      "source_files_modified": false,
+      "redistributed": false,
+      "segments_inventory": [
+        {
+          "name": "modem.b02",
+          "size_bytes": 8312,
+          "sha256": "a33747eeda167af92f1004ce683470909e57aa2fd426cf7cc188bd1e5a8829f5"
+        },
+        {
+          "name": "modem.b03",
+          "size_bytes": 8480,
+          "sha256": "824ff031de3bc78bee18614463b5fa1accb12faec6be87c54add705a3dff175b"
+        },
+        {
+          "name": "modem.b04",
+          "size_bytes": 239016,
+          "sha256": "d79fcebe4213ff1dc8ba891f1638d9783b34632aa0069017954a5ec871010cb3"
+        },
+        {
+          "name": "modem.b05",
+          "size_bytes": 286912,
+          "sha256": "ecc21aaed2b126244d3e07325cca5f3534b6ab8bb7488789ea5c8cf350964f94"
+        },
+        {
+          "name": "modem.b06",
+          "size_bytes": 52512,
+          "sha256": "8b604c556525a930ef4345cbff6b1b44ae5dcd65ff68a125451fc44a98d11e74"
+        },
+        {
+          "name": "modem.b07",
+          "size_bytes": 126440,
+          "sha256": "a97ee1b5a97e4764dc4ea755cabbf82f2d2ea8bdf0c3192bb1beae6df2a0cbc5"
+        },
+        {
+          "name": "modem.b08",
+          "size_bytes": 118868,
+          "sha256": "2569ddcee98a1c290f6e4fa8078ea6685fde795fbd3e9b34ecdac736c89af7e0"
+        },
+        {
+          "name": "modem.b09",
+          "size_bytes": 2596044,
+          "sha256": "78b63a1e379898d83b8efee4a8f80e5a22075bc79f26f192f7b58d270a7f2741"
+        },
+        {
+          "name": "modem.b10",
+          "size_bytes": 1363968,
+          "sha256": "df4fd5d3cddad8ef1a283a4e9516bd4e4377e8bd658042f6ac8dbffa73fd7cdf"
+        },
+        {
+          "name": "modem.b11",
+          "size_bytes": 2205648,
+          "sha256": "6320f9da6670012139c5ddd35e90cfb9da8e9c541d401adb25494a9231275d71"
+        },
+        {
+          "name": "modem.b12",
+          "size_bytes": 311296,
+          "sha256": "213125de8e10cf37450b86a455e909efc67575fe2ab0e8b5eefd9274bc7a4f54"
+        },
+        {
+          "name": "modem.b13",
+          "size_bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "name": "modem.b14",
+          "size_bytes": 4160,
+          "sha256": "b7de02dad947996e55b72749abf9a096d96e824ad109f9cc0d77d801a175b4ba"
+        },
+        {
+          "name": "modem.b15",
+          "size_bytes": 3262656,
+          "sha256": "7a01f940ed945dba75a36865bf161b9c853fa8e151fc3568c73f1cd16b9527c5"
+        },
+        {
+          "name": "modem.b16",
+          "size_bytes": 7732817,
+          "sha256": "5eb8a4825bbc7e0774cd734c93f85dcb5e9d546dd4f496a8b999a9349caf5603"
+        },
+        {
+          "name": "modem.b17",
+          "size_bytes": 18748048,
+          "sha256": "23502139d02efb3d636ce71fcef7ca42f5da1f76e538e2d46921c4c8a01ce6c5"
+        },
+        {
+          "name": "modem.b18",
+          "size_bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "name": "modem.b19",
+          "size_bytes": 74432,
+          "sha256": "51c935c132aeb5163817935d46567395714cecea986ca26b6b2e4a480a385d92"
+        },
+        {
+          "name": "modem.b20",
+          "size_bytes": 28319808,
+          "sha256": "4f9e140b2e580b13e7771cced4a5f19193d42a36a57a2ef7d4ee9ae2b18a7f8c"
+        },
+        {
+          "name": "modem.b21",
+          "size_bytes": 686864,
+          "sha256": "fcb2b4af8dabcfe23f08b12b0736a76441e71864dae157226c42627044fee38c"
+        },
+        {
+          "name": "modem.b22",
+          "size_bytes": 98304,
+          "sha256": "e56944963391058fdaf4dad46a24f012cbfec7a0f80156d5ccd6f7cbbf4c1a73"
+        },
+        {
+          "name": "modem.b23",
+          "size_bytes": 45,
+          "sha256": "3d8af2cf3f7151be6e0985e91b660d516c7aaba8ef1a083fb9c45304f61b12f9"
+        },
+        {
+          "name": "modem.b24",
+          "size_bytes": 1572864,
+          "sha256": "14aeccc53effe18e490faa1920df0d71bee027afeef0e2b3be4555978c86f979"
+        },
+        {
+          "name": "modem.b25",
+          "size_bytes": 1028,
+          "sha256": "a3809662aa4f6685cfff0f9005fa110aa6ed683164f745795cb58f168ff85e58"
+        },
+        {
+          "name": "modem.b26",
+          "size_bytes": 497316,
+          "sha256": "511e968ef9dad63f190eb452c5d7a21a27d472168086a49550468426a226ff1e"
+        },
+        {
+          "name": "modem.b27",
+          "size_bytes": 73092,
+          "sha256": "8366aa5db43123190309fb34f47917dd43b02aa218b02a441cb4db3e8874bdb0"
+        },
+        {
+          "name": "modem.b28",
+          "size_bytes": 4904,
+          "sha256": "287c8250236c180c17a472a1464d247d2fa74a917c510dedc57bf1a03ccfca84"
+        },
+        {
+          "name": "modem.b29",
+          "size_bytes": 128,
+          "sha256": "ccaf64831171509962106c6d920c45968539d8a3253cc507f5bf6025d6fa9812"
+        },
+        {
+          "name": "modem.b30",
+          "size_bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      ],
+      "local_directory": ".cache/pixel-sunfish/modem-image-prepare",
+      "metadata_reread_identical": true,
+      "adb_unroot_after_copy": true,
+      "post_copy_uid": 2000,
+      "purpose": "Private whole-image staging experiment, no authentication/reset/firmware execution"
+    }
+  },
+  "wlan_firmware_observation": {
+    "intent": "Read-only identity inventory from the running Pixel 4a LineageOS firmware tree; no WLAN firmware was copied or started.",
+    "source": "Pixel 4a sunfish, LineageOS build google/sunfish/sunfish:13/TQ3A.230805.001.S1/10786265:user/release-keys, slot _a; root-enabled ADB stat and SHA-256 in place on 2026-10-11, then ADB returned to shell UID 2000.",
+    "provenance_caveat": "Device-local hashes identify observed files. wlanmdsp.mbn and bdwlan-sunfish.bin have exact byte matches in pinned public community repositories, but these are rehosts rather than authenticated Google release artifacts and their repositories do not declare a license. Google publishes a checksum-verified S1 vendor package, but its individual blobs were not extracted or compared; its displayed license does not establish permission for NexatrodeOS. The EVT1.0 board-data variant has no source match yet. No match proves runtime selection or safe Microkit use.",
+    "runtime_reported": {
+      "source": "Android dumpsys wifi Chipset information, read-only over ADB shell on 2026-10-11.",
+      "firmware_version": "3.2.2.9.558.0",
+      "hardware_version": "0x40090000",
+      "driver_version": "5.2.03.9H",
+      "matched_source_version_constant": "5.2.03.9H",
+      "matched_source_path": "drivers/staging/qcacld-3.0/core/mac/inc/qwlan_version.h",
+      "matched_source_commit": "28f9290ae067d3e7857126eb6312720dbe9c7c80",
+      "caveat": "Reported by the working Android driver; this does not attest firmware-file hashes or identify which board-data variant was selected."
+    },
+    "lineage_runtime_identity": {
+      "source": "Filtered kernel log from Pixel 4a Sunfish LineageOS, captured 2026-10-23.",
+      "kernel": "4.14.357-openela-g28f9290ae067",
+      "firmware_build": "3226822e",
+      "host_software_version": "5.2.03.9H",
+      "firmware_version": "3.2.2.9.558.0",
+      "hardware_version": "0x40090000",
+      "qdf_board_id": 0,
+      "qdf_board_version": [
+        18,
+        0,
+        0,
+        0,
+        0
+      ],
+      "qcacld_board_version": 18,
+      "reference_design_id": 0,
+      "customer_id": 0,
+      "project_id": 0,
+      "board_data_revision": 0,
+      "evidence_path": ".cache/pixel-sunfish/lineage-wlan-runtime-identity-20261023.txt",
+      "evidence_sha256": "26774873194e14fa3cf47ce6f5c80b0e5eee8d5d7b2e1e5ca6c71a1272f02203",
+      "scope": "Stock downstream QDF/QCACLD identity only; these are not ath10k SNOC QMI chip/board IDs and cannot select or validate upstream board-2.bin. No firmware payload was read or retained."
+    },
+    "files": [
+      {
+        "path": "/vendor/firmware/wlanmdsp.mbn",
+        "size_bytes": 3751004,
+        "sha256": "a2ee6c86b82b42140e39964900cb9cc10ca263085a7125002fdb9c448df94f2e",
+        "role": "WLAN modem-side firmware image",
+        "source_match": {
+          "status": "exact_sha256_match",
+          "repository": "https://github.com/sm7150-mainline/firmware-google-sunfish",
+          "commit": "fe63598e1bd9884bd68ba89e4670dae4d70b1e3e",
+          "path": "lib/firmware/qcom/sm7150/google/sunfish/wlanmdsp.mbn",
+          "source_sha256": "a2ee6c86b82b42140e39964900cb9cc10ca263085a7125002fdb9c448df94f2e",
+          "method": "Fetched the pinned public raw blob and streamed it directly to SHA-256; no blob was saved locally.",
+          "source_class": "community_firmware_rehost",
+          "identity_scope": "byte_identity_only",
+          "license_status": "not_declared_in_repository"
+        }
+      },
+      {
+        "path": "/vendor/firmware/bdwlan-sunfish.bin",
+        "size_bytes": 26328,
+        "sha256": "b5aba8c34db97f25a8d8e9f9361b5b5365e74b58e0f4addc7b922bfe7226b188",
+        "role": "Sunfish board data",
+        "source_match": {
+          "status": "exact_sha256_match",
+          "repository": "https://github.com/sm7150-mainline/firmware-qcom-sm7150-ath10k",
+          "commit": "792c716c85c06861c4d17bce5ec21fba7f0f7de6",
+          "path": "bdwlan-sunfish.bin",
+          "source_sha256": "b5aba8c34db97f25a8d8e9f9361b5b5365e74b58e0f4addc7b922bfe7226b188",
+          "method": "Fetched the pinned public raw blob and streamed it directly to SHA-256; no blob was saved locally.",
+          "source_class": "community_firmware_rehost",
+          "identity_scope": "byte_identity_only",
+          "license_status": "not_declared_in_repository"
+        }
+      },
+      {
+        "path": "/vendor/firmware/bdwlan-sunfish-EVT1.0.bin",
+        "size_bytes": 26328,
+        "sha256": "bdaa753ecc58931f3072c461b3a0ec4a8e08ec1d40530dc50fa8efdf4b458926",
+        "role": "Sunfish EVT1.0 board data variant"
+      },
+      {
+        "path": "/vendor/firmware/wlan/qca_cld/WCNSS_qcom_cfg.ini",
+        "size_bytes": 14079,
+        "sha256": "60953ffde121e5349e4ea83dc6a7da135cdd9229da3bcb6303cd70654a9e5603",
+        "role": "QCACLD driver configuration",
+        "source_match": {
+          "status": "exact_sha256_match",
+          "repository": "https://github.com/LineageOS/android_device_google_sunfish",
+          "commit": "52074bf3c0b66efcba89f557e605535feb29aaab",
+          "path": "WCNSS_qcom_cfg.ini",
+          "source_sha256": "60953ffde121e5349e4ea83dc6a7da135cdd9229da3bcb6303cd70654a9e5603",
+          "method": "Fetched the pinned public text file and piped it directly to SHA-256; it was not saved to the workspace.",
+          "source_class": "public_device_tree_source",
+          "identity_scope": "byte_identity_only",
+          "license_status": "not_applicable_text_configuration"
+        }
+      }
+    ],
+    "official_package_reference": {
+      "vendor": "Google",
+      "device": "Pixel 4a (sunfish)",
+      "build": "TQ3A.230805.001.S1",
+      "download_url": "https://dl.google.com/dl/android/aosp/google_devices-sunfish-tq3a.230805.001.s1-2a7bf157.tgz",
+      "published_archive_sha256": "f82c4214524f0d1f85e9ad7b2a23ddaed0b402cabc5b01533a61dcd1adb7d80f",
+      "observed_archive_sha256": "f82c4214524f0d1f85e9ad7b2a23ddaed0b402cabc5b01533a61dcd1adb7d80f",
+      "comparison": "Complete archive streamed to SHA-256; archive payload was not extracted and individual firmware blobs were not compared.",
+      "license_observation": "The checksum-matched archive contains extract-google_devices-sunfish.sh, which displays the Google Developer Software License. Sections 2(a) and 3(b) limit the grant to non-commercial use on the named Authorized Android Enabled Device and prohibit use outside that Limited Purpose, including incorporation or compilation into software/devices made by the recipient or its agents. The observed handset WLAN files were not individually compared with this archive, so exact license applicability and permission for NexatrodeOS remain unverified.",
+      "license_review": {
+        "archive_sha256": "f82c4214524f0d1f85e9ad7b2a23ddaed0b402cabc5b01533a61dcd1adb7d80f",
+        "reviewed_member": "extract-google_devices-sunfish.sh",
+        "sections_reviewed": [
+          "1(c)",
+          "2(a)",
+          "3(b)"
+        ],
+        "handset_wlan_payloads_compared": false,
+        "nexatrodeos_permission": "not_established",
+        "summary": "Section 2(a) grants limited non-commercial internal object-code use on the named device. Section 3(b) restricts use to that Limited Purpose and prohibits incorporating or compiling the package Software into software or devices made by the recipient or an agent. No conclusion is made about whether the separately observed handset files are covered without a payload comparison or whether the license permits this seL4 use."
+      },
+      "source_page": "https://developers.google.com/android/drivers",
+      "use_permission": "unverified",
+      "policy": "Do not extract, redistribute, or load Google package-sourced WLAN blobs into NexatrodeOS without written authorization. The observed handset files and community rehosts remain license-unverified; byte identity alone does not establish permission."
+    },
+    "community_linux_reference": {
+      "status": "third_party_report_not_reproduced_here",
+      "project": "https://github.com/miromraz/mobian-pixel4a-port",
+      "project_commit": "789679f25f859bd741d690fe221d1cc68a23444e",
+      "readme_path": "README.md",
+      "reported_wifi_band_support": [
+        "2.4 GHz",
+        "5 GHz"
+      ],
+      "reported_result": "Pixel 4a Sunfish mainline Linux port reports working Wi-Fi on 2.4 GHz and 5 GHz.",
+      "kernel_repository": "https://github.com/miromraz/linux",
+      "kernel_branch": "sunfish-venus-v7.2",
+      "kernel_commit": "2267e248204e7e051e0f7355298949a6440de579",
+      "runtime_order_evidence": {
+        "path": "work/wcn/sbin/wcn-wifi-bringup.sh",
+        "sha256": "9dd5fc8ae9302c3275b23ccef23112ee2627239b133802a3583c467aeeccc8b2",
+        "steps": [
+          "Find the modem/MPSS remoteproc and require it to reach running.",
+          "Wait until QRTR advertises the ATH10k WLAN firmware (WLFW) service.",
+          "Load ath10k_snoc once, only after WLFW is present.",
+          "Require both an IEEE 802.11 phy and a wl* network interface."
+        ],
+        "source_comment": "Probing ath10k_snoc before WLFW appears can cause host-capability rejection (90).",
+        "scope": "Third-party Linux startup evidence; not an seL4 provider implementation or native-device test."
+      },
+      "firmware_sources_from_project_readme": [
+        {
+          "path": "lib/firmware/qcom/sm7150/google/sunfish/wlanmdsp.mbn",
+          "repository": "https://github.com/sm7150-mainline/firmware-google-sunfish",
+          "commit": "fe63598e1bd9884bd68ba89e4670dae4d70b1e3e",
+          "size_bytes": 3751004,
+          "sha256": "a2ee6c86b82b42140e39964900cb9cc10ca263085a7125002fdb9c448df94f2e",
+          "device_identity": "Exact SHA-256 match to /vendor/firmware/wlanmdsp.mbn above.",
+          "license_status": "not_declared_in_repository"
+        },
+        {
+          "path": "board-2.bin",
+          "repository": "https://github.com/sm7150-mainline/firmware-qcom-sm7150-ath10k",
+          "commit": "792c716c85c06861c4d17bce5ec21fba7f0f7de6",
+          "size_bytes": 317016,
+          "md5": "6eba0886998f86730742d87e7eb94b9f",
+          "sha256": "051607c79e6f26c68076bcdada3a77b762aadcc368ce89eee38c2531893bbc63",
+          "reported_variant": "google_sunfish",
+          "license_status": "not_declared_in_repository"
+        },
+        {
+          "path": "ath10k/WCN3990/hw1.0/firmware-5.bin",
+          "repository": "https://gitlab.com/kernel-firmware/linux-firmware",
+          "commit": "afabaf773c4c2e2c841429933a6a084a5af4d14d",
+          "size_bytes": 60,
+          "sha256": "fef6539e0127579536bc977be57a90d018b83f2931fedc3a8870fbe38d6c4127",
+          "role": "ath10k API-5 feature metadata, not executable WLAN firmware",
+          "license_status": "WHENCE marks the WCN3990 bundle redistributable under LICENSE.QualcommAtheros_ath10k; retain the notice and keep bytes unmodified."
+        }
+      ],
+      "scope": "The third-party project reports a working Sunfish mainline Wi-Fi path with this source combination. This is Linux compatibility evidence, not evidence for this project's loader or native seL4 path. Firmware bytes were streamed for hashes only and were not retained. The community board-data and vendor wlanmdsp repositories declare no binary license; this entry grants no staging, redistribution, firmware-loading, or radio-test authority."
+    },
+    "upstream_ath10k_candidate": {
+      "status": "reference_candidate_not_device_verified",
+      "driver": "Linux ath10k SNOC for WCN3990 family",
+      "pinned_linux_source": {
+        "repository": "https://github.com/torvalds/linux",
+        "commit": "d6d3455d8751854e0d1820f14184682e23ac4475",
+        "path": "drivers/net/wireless/ath/ath10k/snoc.c",
+        "source_note": "The driver sets the WCN3990 hardware family and a 35-bit DMA mask; this is Linux driver code, not a Microkit component."
+      },
+      "sunfish_device_tree_evidence": {
+        "source": "docs/pixel-p0-assets/sm7150.dtsi and sm7150-google-sunfish.dts",
+        "compatible": "qcom,wcn3990-wifi",
+        "mmio_base": "0x18800000",
+        "mmio_size": "0x800000",
+        "reserved_msa_base": "0x98d00000",
+        "reserved_msa_size": "0x200000",
+        "driver_msa_allocation_size": "0x100000",
+        "smmu_sid": "0x240",
+        "smmu_mask": "0x1",
+        "calibration_variant": "google_sunfish",
+        "pinned_sm7150_mainline": {
+          "repository": "https://github.com/sm7150-mainline/linux",
+          "commit": "fd78d17954a86ea6ceb0c535e618ea129e09f8dd",
+          "sunfish_dts": "arch/arm64/boot/dts/qcom/sm7150-google-sunfish.dts",
+          "soc_dtsi": "arch/arm64/boot/dts/qcom/sm7150.dtsi",
+          "configuration": "WLAN node enabled with google_sunfish calibration variant",
+          "device_runtime_verified": false
+        },
+        "runtime_binding": "qcom,icnss with QCACLD module; no ath10k runtime test performed"
+      },
+      "linux_firmware_candidate": {
+        "repository": "https://gitlab.com/kernel-firmware/linux-firmware",
+        "commit": "afabaf773c4c2e2c841429933a6a084a5af4d14d",
+        "directory": "ath10k/WCN3990/hw1.0",
+        "files": [
+          "board-2.bin",
+          "firmware-5.bin",
+          "wlanmdsp.mbn"
+        ],
+        "wlanmdsp_path": "ath10k/WCN3990/hw1.0/wlanmdsp.mbn",
+        "wlanmdsp_sha256": "92e1501254e6de78c0f2e2cf091507d488b608d07e53acd14813a82744823ec2",
+        "candidate_file_integrity": [
+          {
+            "path": "ath10k/WCN3990/hw1.0/board-2.bin",
+            "size_bytes": 893528,
+            "sha256": "c49d2f1894de6edc0ab0c8c9a17ca0328703747c49b6e9428f1de501c2c02c1d"
+          },
+          {
+            "path": "ath10k/WCN3990/hw1.0/firmware-5.bin",
+            "size_bytes": 60,
+            "sha256": "fef6539e0127579536bc977be57a90d018b83f2931fedc3a8870fbe38d6c4127",
+            "git_mode": "100644",
+            "git_blob_id": "69b4cae2d5e9fc340fbc43f3f120dd0698d907af"
+          },
+          {
+            "path": "ath10k/WCN3990/hw1.0/wlanmdsp.mbn",
+            "size_bytes": 3725044,
+            "sha256": "92e1501254e6de78c0f2e2cf091507d488b608d07e53acd14813a82744823ec2"
+          },
+          {
+            "path": "ath10k/WCN3990/hw1.0/notice.txt_wlanmdsp",
+            "size_bytes": 27005,
+            "sha256": "d7a42cb726d992c427fc130b60b076c5536297aafceecdb053b1b5de17f7d5fa"
+          }
+        ],
+        "firmware5_artifact_kind": "ath10k_fw_feature_flags",
+        "firmware5_is_firmware_payload": false,
+        "firmware5_features": [
+          "wowlan",
+          "mgmt-tx-by-ref",
+          "non-bmi"
+        ],
+        "firmware5_non_bmi_effect": "The ath10k driver skips host BMI firmware download and expects the WLAN firmware to be started out of band before it receives firmware-ready.",
+        "observed_wlanmdsp_sha256": "a2ee6c86b82b42140e39964900cb9cc10ca263085a7125002fdb9c448df94f2e",
+        "observed_wlanmdsp_match": false,
+        "whence_version": "WLAN.HL.2.0-01387-QCAHLSWMTPLZ-1",
+        "wlanmdsp_platform_scope": "Upstream commit a0142c57045701b7557c3060af5c4246c420e4d8 moved this base WCN3990 image under qcom/sdm845 and states it can be used only on SDM845 and close relatives; this does not establish compatibility with Sunfish/SM7150.",
+        "wlanmdsp_platform_scope_source": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/srini/linux-firmware/+/a0142c57045701b7557c3060af5c4246c420e4d8",
+        "license_file": "LICENSES/LICENSE.QualcommAtheros_ath10k",
+        "license_summary": "Binary redistribution without modification and use solely with a Qualcomm Atheros chipset; no reverse engineering.",
+        "license_review": "Pinned WHENCE assigns this license to the WCN3990 base bundle. Preserve its copyright/disclaimer notice when redistributing; keep every binary unmodified and do not reverse engineer.",
+        "binary_review": "All four raw files were streamed to SHA-256 and counted; no file was saved, decoded, or reverse engineered.",
+        "test_readiness_note": "NO-GO for a Sunfish hardware test with this bundle. The 60-byte firmware-5.bin is ath10k feature metadata, not an executable image; NON_BMI requires out-of-band WLAN firmware startup, and the pinned ath10k path provides no such Sunfish launch. The wlanmdsp hash differs from the phone-observed file, and upstream documents this base image as SDM845-specific. Reconsider only when a source-backed SM7150/Sunfish firmware match, board-data match, out-of-band WLFW launch, isolation setup, and applicable license scope are established; do not boot this candidate to discover compatibility.",
+        "sunfish_reference_test_decision": "no_go_generic_bundle_platform_scope_hash_and_loader_do_not_match",
+        "current_linux_firmware_snapshot": {
+          "repository": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/ath/linux-firmware",
+          "commit": "95c414d44c8e60880be787822d5020a010044a49",
+          "whence_path": "WHENCE",
+          "sunfish_compatibility": "unverified",
+          "generic_wcn3990": {
+            "directory": "ath10k/WCN3990/hw1.0",
+            "version": "WLAN.HL.2.0-01387-QCAHLSWMTPLZ-1",
+            "platform_scope": "Upstream history describes this base image as SDM845 and close relatives; it does not establish Sunfish/SM7150 compatibility.",
+            "license_file": "LICENSES/LICENSE.QualcommAtheros_ath10k",
+            "license_sha256": "337a55102138d7baa143ee4a4c6c91693e0113fece35d380b2a12109e8c23b3f",
+            "files": [
+              {
+                "path": "ath10k/WCN3990/hw1.0/board-2.bin",
+                "size_bytes": 670116,
+                "sha256": "c03d801cba1233914d777644e368ea942f36064e805ba6102514dedb47e53c76"
+              },
+              {
+                "path": "ath10k/WCN3990/hw1.0/firmware-5.bin",
+                "size_bytes": 60,
+                "sha256": "fef6539e0127579536bc977be57a90d018b83f2931fedc3a8870fbe38d6c4127"
+              },
+              {
+                "path": "ath10k/WCN3990/hw1.0/wlanmdsp.mbn",
+                "size_bytes": 3725044,
+                "sha256": "92e1501254e6de78c0f2e2cf091507d488b608d07e53acd14813a82744823ec2"
+              },
+              {
+                "path": "ath10k/WCN3990/hw1.0/notice.txt_wlanmdsp",
+                "size_bytes": 27005,
+                "sha256": "d7a42cb726d992c427fc130b60b076c5536297aafceecdb053b1b5de17f7d5fa"
+              }
+            ]
+          },
+          "qcm2290": {
+            "directory": "ath10k/WCN3990/hw1.0/qcm2290",
+            "version": "WLAN.HL.3.3.7.c2-00931-QCAHLSWMTPLZ-1",
+            "board_data": "Shares the parent WCN3990 board-2.bin; WHENCE lists no QCM2290-specific board file.",
+            "license_file": "LICENSE.qcom",
+            "license_sha256": "be904cd28cb292b80cdb6cf412ab0d9159d431671e987ad433c1f62e0988a9bc",
+            "notice_file": "qcom/NOTICE.txt",
+            "notice_sha256": "fa43e1b9a13b341a07adca9dbe73d0f9072d7966fdfe811c01f0dd2872d7309a",
+            "files": [
+              {
+                "path": "ath10k/WCN3990/hw1.0/qcm2290/firmware-5.bin",
+                "size_bytes": 60,
+                "sha256": "80daf4f3a89e6ea8222e45387bb362c854fcd30c02e9da59ca723b39b269cdd2"
+              },
+              {
+                "path": "ath10k/WCN3990/hw1.0/qcm2290/wlanmdsp.mbn",
+                "size_bytes": 3828228,
+                "sha256": "4a0f4d8a5d7cdc094a5b0b907f4b9906657b76070993fed4d8cc4ccf5776b515"
+              }
+            ]
+          },
+          "qrb4210_symlinks": {
+            "firmware-5.bin": "ath10k/WCN3990/hw1.0/qcm2290/firmware-5.bin",
+            "wlanmdsp.mbn": "ath10k/WCN3990/hw1.0/qcm2290/wlanmdsp.mbn"
+          },
+          "pinned_driver_path_selection": {
+            "source_commit": "fd78d17954a86ea6ceb0c535e618ea129e09f8dd",
+            "snoc_source": "drivers/net/wireless/ath/ath10k/snoc.c",
+            "core_source": "drivers/net/wireless/ath/ath10k/core.c",
+            "base_directory": "ath10k/WCN3990/hw1.0",
+            "selector_property": "firmware-name",
+            "current_sunfish_property_present": false,
+            "lookup_order": [
+              "<base>/<firmware-name>/<file>",
+              "<base>/<file>"
+            ],
+            "qcm2290_test_overlay_value": "qcm2290",
+            "selector_backport_required": false,
+            "parent_board_file_required": "ath10k/WCN3990/hw1.0/board-2.bin",
+            "out_of_band_wlanmdsp_launch_provided": false
+          },
+          "reference_test_gate": "Do not stage or boot either set until exact Sunfish target identity, matching board data, the out-of-band wlanmdsp loader and WLFW path, MSA ownership, SMMU isolation, and applicable license scope are source-verified."
+        },
+        "latest_upstream_snapshot": {
+          "repository": "https://gitlab.com/kernel-firmware/linux-firmware",
+          "branch": "main",
+          "commit": "a6bd225f33b3d6bdf31a9b654a3ce51ea04d69e2",
+          "audit_date": "2026-10-27",
+          "whence_path": "WHENCE",
+          "head_verification": "git ls-remote refs/heads/main resolved to this commit on 2026-10-27; current WHENCE and all listed generic, Shikra, and QCM2290 candidate payload hashes were checked at this commit. Candidate bytes were streamed only for size and SHA-256 and not saved or decoded.",
+          "sunfish_compatibility": "unverified",
+          "relevant_candidate_commit": "f64d7db7d2646e1c7744963d540524f523ae0443",
+          "latest_shikra_update_commit": "72f3b81c89fbc52677b9dbbfa92cde0ae00a36e2",
+          "generic_wcn3990_version": "WLAN.HL.2.0-01387-QCAHLSWMTPLZ-1",
+          "qcm2290_version": "WLAN.HL.3.3.7.c2-00931-QCAHLSWMTPLZ-1",
+          "qcm2290": {
+            "directory": "ath10k/WCN3990/hw1.0/qcm2290",
+            "version": "WLAN.HL.3.3.7.c2-00931-QCAHLSWMTPLZ-1",
+            "whence_license_reference": "LICENSE.qcom and NOTICE.qcom",
+            "license_file": "LICENSES/LICENSE.qcom",
+            "license_sha256": "be904cd28cb292b80cdb6cf412ab0d9159d431671e987ad433c1f62e0988a9bc",
+            "notice_file": "LICENSES/NOTICE.qcom",
+            "notice_sha256": "fa43e1b9a13b341a07adca9dbe73d0f9072d7966fdfe811c01f0dd2872d7309a",
+            "license_scope_summary": "The agreement permits install/use and binary redistribution subject to its terms: binaries only, operation only with platforms incorporating Qualcomm Technologies chipsets, include the agreement text with redistribution, preserve notices, and no reverse engineering/disassembly/decompilation. It grants no patent rights and bars applying third-party license terms to the materials.",
+            "license_review_status": "source_audited; agreement acceptance, patent implications, and compatibility with NexatrodeOS redistribution require separate review",
+            "board_data": "Shares the parent WCN3990 board-2.bin; WHENCE lists no QCM2290-specific board file.",
+            "files": [
+              {
+                "path": "ath10k/WCN3990/hw1.0/qcm2290/firmware-5.bin",
+                "size_bytes": 60,
+                "sha256": "80daf4f3a89e6ea8222e45387bb362c854fcd30c02e9da59ca723b39b269cdd2"
+              },
+              {
+                "path": "ath10k/WCN3990/hw1.0/qcm2290/wlanmdsp.mbn",
+                "size_bytes": 3828228,
+                "sha256": "4a0f4d8a5d7cdc094a5b0b907f4b9906657b76070993fed4d8cc4ccf5776b515"
+              }
+            ],
+            "status": "Separate QCM2290-specific candidate; not a Sunfish match."
+          },
+          "shikra": {
+            "directory": "ath10k/WCN3990/hw1.0/shikra",
+            "version": "WLAN.HL.3.3.7.c5-00226-QCAHLSWMTPL-1",
+            "update_note": "Upstream says this firmware update addresses stability issues; it remains a Shikra-specific candidate.",
+            "whence_license": "LICENSES/LICENSE.QualcommAtheros_ath10k",
+            "license_sha256": "337a55102138d7baa143ee4a4c6c91693e0113fece35d380b2a12109e8c23b3f",
+            "license_scope_summary": "Binary use and redistribution without modification for use solely with a Qualcomm Atheros chipset; retain notice; no reverse engineering.",
+            "board_data": "WHENCE lists no shikra-specific board-2.bin; ath10k would use the parent WCN3990 board file, whose Sunfish match is unverified.",
+            "parent_board_file": {
+              "path": "ath10k/WCN3990/hw1.0/board-2.bin",
+              "size_bytes": 893528,
+              "sha256": "c49d2f1894de6edc0ab0c8c9a17ca0328703747c49b6e9428f1de501c2c02c1d"
+            },
+            "files": [
+              {
+                "path": "ath10k/WCN3990/hw1.0/shikra/firmware-5.bin",
+                "size_bytes": 60,
+                "sha256": "7f35f16380124ceff31a4c3064fb6f66b366ccd76b517b271a53e4c9029fe41b"
+              },
+              {
+                "path": "ath10k/WCN3990/hw1.0/shikra/wlanmdsp.mbn",
+                "size_bytes": 3808072,
+                "sha256": "ea1787533f969c084c24292defdcc88d75d71955bea7e12ffee2b5fb16248350"
+              },
+              {
+                "path": "ath10k/WCN3990/hw1.0/shikra/notice.txt_wlanmdsp",
+                "size_bytes": 27574,
+                "sha256": "e9a920d4b55f62ac8a66fe7693aa74f461a75f330847f9b51f37a2565adb85d3"
+              }
+            ],
+            "out_of_band_loader_source": "Commit 837ae0e5beccc2f1e974afba56c22c3cf981fc4e states Shikra loads this WLAN image through tqftpserv from the DSP firmware directory; no equivalent Sunfish loader path is verified.",
+            "status": "Separate platform-specific candidate; not a Sunfish match."
+          },
+      "binary_audit_method": "At current main HEAD a6bd225f33b3d6bdf31a9b654a3ce51ea04d69e2 on 2026-10-27, generic, QCM2290, and Shikra candidate files were streamed in memory to compute size and SHA-256; no firmware or notice payload was saved or decoded.",
+          "license_path_note": "At this main snapshot WHENCE refers to LICENSE.qcom and NOTICE.qcom by name; the files are stored at LICENSES/LICENSE.qcom and LICENSES/NOTICE.qcom. The earlier 95c414d snapshot used LICENSE.qcom and qcom/NOTICE.txt.",
+          "reference_test_gate": "Do not stage or boot the generic, QCM2290, or Shikra set until Sunfish target identity, matching board data, the target's out-of-band wlanmdsp loader and WLFW path, MSA ownership, SMMU isolation, and applicable license scope are source-verified."
+        }
+      },
+      "current_main_board_selector_audit": {
+        "repository": "https://gitlab.com/kernel-firmware/linux-firmware",
+        "source_commit": "a6bd225f33b3d6bdf31a9b654a3ce51ea04d69e2",
+        "audit_date": "2026-10-27",
+        "path": "ath10k/WCN3990/hw1.0/board-2.bin",
+        "size_bytes": 893528,
+        "sha256": "c49d2f1894de6edc0ab0c8c9a17ca0328703747c49b6e9428f1de501c2c02c1d",
+        "selector_scan": "Raw board-2.bin byte scan for the exact ASCII strings google_sunfish and sunfish; neither string is present. The printable NUL-delimited bus=snoc selector records contain other Google variants but no Sunfish selector.",
+        "google_sunfish_selector_present": false,
+        "sunfish_selector_present": false,
+        "sunfish_hardware_test_decision": "no_go_no_sunfish_board_selector"
+      },
+      "policy": "Do not substitute this firmware set or change the device binding without a separate Linux reference test, compatibility evidence, and license review."
+    }
+  },
+  "enablement_gate": "WLAN firmware remains disabled. The observed ICNSS and IPA stream contexts use stage-1 bypass in the Linux configuration; the shared Apps SMMU must not be reused until a dedicated translated context and a negative DMA-fault test are demonstrated. The upstream Linux-firmware candidate has a Qualcomm Atheros binary license with use restricted to those chipsets and requires unmodified bytes plus license notice; its Sunfish compatibility is unproven. Google phone-specific firmware-use rights for NexatrodeOS remain unverified; do not package or load those proprietary blobs without explicit permission.",
+  "smmu_handoff_snapshot": {
+    "intent": "Read-only ABL handoff observation. This does not reserve a stream-match slot or context bank and grants no SMMU authority.",
+    "source": "Pixel photo/readback IMG_8967.heic, 2026-10-24; SHA-256 06df2e4816ba0d8bcb8cbbca1ac2a43626a43aa3b50eaf5b76f31c98805b67b2",
+    "stream_id_width_bits": 15,
+    "id0_register_value": "0x4C017E4E",
+    "mapping_group_count": 78,
+    "mapping_group_count_decode": "ID0.NUMSMRG is the direct group count in pinned LineageOS kernel drivers/iommu/arm-smmu.c at 28f9290ae067d3e7857126eb6312720dbe9c7c80; valid slots are 0 through 77.",
+    "context_bank_count": 61,
+    "stage2_only_context_bank_count": 0,
+    "page_size_bytes": 4096,
+    "candidate_wlan_match": {
+      "id": "0x240",
+      "mask": "0x001",
+      "matched_ids": [
+        "0x240",
+        "0x241"
+      ]
+    },
+    "observed_valid_routes": [
+      {
+        "slot": 0,
+        "id": "0x0340",
+        "mask": "0x000f",
+        "s2cr_type": 0,
+        "context_bank": 0
+      },
+      {
+        "slot": 1,
+        "id": "0x02a0",
+        "mask": "0x000f",
+        "s2cr_type": 0,
+        "context_bank": 0
+      },
+      {
+        "slot": 2,
+        "id": "0x02c0",
+        "mask": "0x000f",
+        "s2cr_type": 0,
+        "context_bank": 0
+      },
+      {
+        "slot": 3,
+        "id": "0x0540",
+        "mask": "0x0000",
+        "s2cr_type": 0,
+        "context_bank": 1
+      },
+      {
+        "slot": 4,
+        "id": "0x0300",
+        "mask": "0x000f",
+        "s2cr_type": 0,
+        "context_bank": 2
+      },
+      {
+        "slot": 5,
+        "id": "0x0800",
+        "mask": "0x0440",
+        "s2cr_type": 0,
+        "context_bank": 3
+      }
+    ],
+    "all_context_banks_nonzero": true,
+    "translation_enabled_context_banks": 0,
+    "latest_targeted_readback_2026_10_21": {
+      "source": "platforms/sunfish/smmu-read-probe.c; Pixel photo/readback 2026-10-21",
+        "scope": "Targeted SIDs only; this is supplemental evidence and does not replace the complete 2026-10-24 stream-match table snapshot above.",
+      "global_register_0": {
+        "offset": "0x000",
+        "value": "0x002A0406",
+        "display_label_in_probe": "SMMU SCR0",
+        "bank_identity": "not confirmed; secure SCR0 versus non-secure CR0 depends on the access security state",
+        "decoded_common_fields": {
+          "CLIENTPD_bit0": 0,
+          "GFRE_bit1": 1,
+          "GFIE_bit2": 1,
+          "USFCFG_bit10": 1,
+          "MTCFG_bit20": 0,
+          "SMCFCFG_bit21": 1
+        }
+      },
+      "target_sids": {
+        "0x240": "no matching route displayed",
+        "0x241": "no matching route displayed",
+        "0x520": "no matching route displayed",
+        "0x521": "no matching route displayed",
+        "0x522": "no matching route displayed",
+        "0x300": "one matching TRANS route to CB 2; CB 2 SCTLR.M is off"
+      },
+      "context_bank_2_user_transcription": {
+        "cbar": "0x0001F000",
+        "sctlr": "0x000000E0",
+        "ttbr0": "0x0000000000000000",
+        "tcr": "0x00000000"
+      },
+      "policy": "The newer targeted screen shows no route for the five WLAN SIDs checked, but does not show enough of the full match table to prove a free stream-match slot or context bank. Do not configure WLAN DMA from this readback."
+    },
+    "policy": "The 2026-10-24 full table candidate WLAN match does not collide with its six observed patterns. The 2026-10-21 targeted readback is supplemental and no resource is assumed free. The ABL readbacks grant no authority to EL1; establish platform-specific QHEE/VMIDMT/XPU and SMMU delegation under an explicit secure-firmware handoff before changing any route."
+  }
+}

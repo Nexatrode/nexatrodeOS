@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+mount -t devtmpfs devtmpfs /dev
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t tmpfs tmpfs /run
+mkdir -p /run/sunfish-comparison
+echo 'SUNFISH COMPARISON STAGE0: RAM userspace; reference radio services held'
+exec /lib/systemd/systemd --unit=sunfish-comparison.target

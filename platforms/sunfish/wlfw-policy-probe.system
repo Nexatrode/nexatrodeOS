@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<system>
+    <memory_region name="wlfw_shared" size="0x1000" page_size="0x1000" />
+    <!-- Reuse only the bootloader-reserved splash allocation for test output. -->
+    <memory_region name="splash" size="0x1600000" page_size="0x200000"
+                   phys_addr="0x9c000000" />
+
+    <protection_domain name="wlfw_broker_probe" priority="100"
+                       budget="200000" period="200000">
+        <program_image path="wlfw-broker-probe.elf" />
+        <map mr="wlfw_shared" vaddr="0x40000000" perms="rw" cached="false"
+             setvar_vaddr="shared_vaddr" />
+    </protection_domain>
+    <protection_domain name="wlfw_policy_probe" priority="99" budget="200000" period="200000">
+        <program_image path="wlfw-policy-probe.elf" />
+        <map mr="wlfw_shared" vaddr="0x40000000" perms="r" cached="false"
+             setvar_vaddr="shared_vaddr" />
+        <map mr="splash" vaddr="0x50000000" perms="rw" cached="false"
+             setvar_vaddr="splash_vaddr" />
+    </protection_domain>
+
+    <channel>
+        <end pd="wlfw_broker_probe" id="0" />
+        <end pd="wlfw_policy_probe" id="0" pp="true" />
+    </channel>
+</system>

@@ -5,8 +5,10 @@ No device access. A later runner must consume the attempt before fastboot boot;
 this tool refuses to overwrite a frozen or consumed experiment directory.
 """
 from pathlib import Path
-import argparse,datetime,hashlib,json,os,shlex,shutil,subprocess
+import argparse,datetime,hashlib,json,os,shlex,shutil,subprocess,sys
 ROOT=Path(__file__).resolve().parents[2]
+sys.path.insert(0,str(ROOT/'platforms/sunfish'))
+from proof_source_compat import source_matches_compatible
 def identity(p):return {'bytes':p.stat().st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()}
 def read(p):return json.loads(p.read_text())
 def write(p,r):p.write_text(json.dumps(r,indent=2)+'\n')
@@ -33,8 +35,14 @@ def main():
         source_audit=layout.get('source_guard_diagnostic_audit')
         if not profile.get('native_source_diagnostic') or not source_audit or not source_audit.get('all_paths_stop_before_relocation'):
             raise ValueError('missing source-diagnostic loader proof')
-    elif profile.get('native_source_diagnostic') or layout.get('source_guard_diagnostic_audit') is not None:
-        raise ValueError('auth image cannot use the source-diagnostic loader')
+    else:
+        source_audit=layout.get('source_guard_diagnostic_audit')
+        if (profile.get('native_source_diagnostic')
+                or not profile.get('native_source_report_guard')
+                or not source_audit
+                or not source_audit.get('all_failure_paths_stop_before_relocation')
+                or not source_audit.get('pass_path_reaches_relocation')):
+            raise ValueError('auth image requires the report-only guard with a passing relocation path')
     for record in [capability,layout]:
         for name,expected in record['input_sha256'].items():
             if identity(Path(name))['sha256']!=expected:raise ValueError('stale image audit: '+name)
@@ -56,7 +64,7 @@ def main():
             for rel,h in field.items():
                 p=ROOT/rel
                 if p.is_file():
-                    if identity(p)['sha256']!=h:
+                    if not source_matches_compatible(rel,h):
                         if not rel.startswith('docs/'):raise ValueError('stale proof '+name+': '+rel)
                         saved=path.parent/'source'/rel
                         if not saved.is_file()or identity(saved)['sha256']!=h:raise ValueError('missing original proof-bound document '+name+': '+rel)
@@ -72,13 +80,13 @@ def main():
                 if p.is_file()and p.suffix in ['.c','.txt','.log','.bin','.json']:shutil.copyfile(p,dest/p.name)
     if len(read(private/proof_paths['entry'])['cases'])!=16:raise ValueError('missing entry cases')
     root_proof=read(private/proof_paths['auth-root'])
-    if root_proof['root_groups']!=7 or len(root_proof['mutations_rejected'])!=8:raise ValueError('missing auth root behavioral groups')
+    if root_proof['root_groups']!=10 or len(root_proof['mutations_rejected'])!=8:raise ValueError('missing auth root behavioral groups')
     if read(private/proof_paths['auth-boot'])['handoff_groups']!=10:raise ValueError('missing retained auth/quarantine groups')
     for field in maps(audit):
         for rel,h in field.items():
             p=ROOT/rel
             if p.is_file():
-                if identity(p)['sha256']!=h:raise ValueError('stale source audit: '+rel)
+                if not source_matches_compatible(rel,h):raise ValueError('stale source audit: '+rel)
                 sources.add(p)
     proof_sources=set(sources)
     target=ROOT/'.cache/sunfish-native-wifi/private/preflight-target/aarch64-sel4-microkit-pixel4k/release'
@@ -121,6 +129,7 @@ def main():
     sources.update(ROOT/'platforms/sunfish'/p for p in [
         'wrap-microkit-image.py','repack-boot-v2.py','audit-capdl-memory.py',
         'prepare-image-loader-sdk.py','snapshot-native-mpss-auth-inputs.py',
+        'build-native-mpss-auth-report-guard.py','proof_source_compat.py',
         'run-native-mpss-auth.py','test-native-mpss-auth-runner.py',
         'test-native-source-guard-diagnostic.py'])
     source_hashes={}

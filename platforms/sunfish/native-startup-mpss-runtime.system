@@ -1,0 +1,158 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Retained IPA/RMTFS/power plus PAS4, delivered Q6 ready, and bounded GLINK/QRTR discovery. -->
+<!-- Reserved target belongs to MPSS after AUTH submission; no CPU access thereafter. -->
+<!-- No GLINK/WLAN start or partition flash. Requires the cold boot contract. -->
+<system>
+    <!-- These fixed display reservations lack no-map in the Android DT.
+         Allocate their remaining pages without granting any PD a capability. -->
+    <memory_region name="reserved_display_tail" size="0x200000" page_size="0x200000" phys_addr="0x9d600000" />
+    <!-- Selected Linux also reserves this XBL window; Android's seL4 DT
+         exposes it as RAM. Keep it unavailable to the PD and without a map. -->
+    <memory_region name="reserved_reference_xbl" size="0x100000" phys_addr="0x85d00000" />
+    <memory_region name="mpss_pas_metadata" size="0x3000" />
+    <memory_region name="mpss_target" size="0x09800000" page_size="0x200000" phys_addr="0x8b000000" />
+    <memory_region name="mpss_aop_msgram" size="0x1000" phys_addr="0x0c300000" />
+    <memory_region name="mpss_apcs" size="0x1000" phys_addr="0x17c00000" />
+    <memory_region name="apps_rsc" size="0x1000" phys_addr="0x18220000" />
+    <memory_region name="apps_rsc_tail" size="0x2000" phys_addr="0x18221000" />
+    <memory_region name="cmd_db_dictionary" size="0x1000" phys_addr="0x0c3f0000" />
+    <memory_region name="cmd_db_snapshot" size="0x2000" phys_addr="0x85f20000" />
+    <memory_region name="ipa_regs" size="0x1000" phys_addr="0x01e40000" />
+    <memory_region name="ipa_regs_tail" size="0x2000" phys_addr="0x01e41000" />
+    <memory_region name="gsi_regs" size="0xc000" phys_addr="0x01e04000" />
+    <memory_region name="efs_shadow1" size="0x200000" />
+    <memory_region name="efs_shadow2" size="0x200000" />
+    <memory_region name="efs_shadow3" size="0x200000" />
+    <memory_region name="efs_shadow4" size="0x20000" />
+    <memory_region name="splash" size="0x1600000" page_size="0x200000" phys_addr="0x9c000000" />
+    <memory_region name="smmu_gr0" size="0x1000" phys_addr="0x15000000" />
+    <memory_region name="smmu_gr1" size="0x1000" phys_addr="0x15001000" />
+    <memory_region name="smmu_context" size="0x1000" phys_addr="0x15084000" />
+    <memory_region name="smmu_cb_low" size="0x4000" phys_addr="0x15080000" />
+    <memory_region name="smmu_cb_high" size="0x38000" phys_addr="0x15085000" />
+    <memory_region name="smmu_root" size="0x1000" />
+    <memory_region name="smmu_l2" size="0x1000" />
+    <memory_region name="smmu_l3" size="0x1000" />
+    <memory_region name="smmu_upper" size="0x1000" />
+    <memory_region name="smmu_data" size="0x20000" />
+    <memory_region name="ipa_shared" size="0x2000" phys_addr="0x01e47000" />
+    <memory_region name="native_rmtfs" phys_addr="0xfde01000" size="0x200000" />
+    <memory_region name="rmtfs_scm" size="0x1000" />
+    <protection_domain name="native_startup_preflight" priority="99" stack_size="0x200000" smc="true">
+        <program_image path="native_startup_preflight.elf" />
+        <map mr="mpss_aop_msgram" vaddr="0x77400000" perms="rw" cached="false" setvar_vaddr="mpss_aop_msgram" />
+        <map mr="mpss_apcs" vaddr="0x77402000" perms="rw" cached="false" setvar_vaddr="mpss_apcs" />
+        <setvar symbol="mpss_aop_msgram_paddr" region_paddr="mpss_aop_msgram" />
+        <setvar symbol="mpss_apcs_paddr" region_paddr="mpss_apcs" />
+        <map mr="apps_rsc" vaddr="0x40000000" perms="rw" cached="false" setvar_vaddr="apps_rsc" />
+        <map mr="apps_rsc_tail" vaddr="0x40001000" perms="r" cached="false" />
+        <map mr="cmd_db_dictionary" vaddr="0x41000000" perms="r" cached="false" setvar_vaddr="cmd_db_dictionary" />
+        <map mr="cmd_db_snapshot" vaddr="0x41001000" perms="r" cached="false" setvar_vaddr="cmd_db_snapshot" />
+        <map mr="ipa_regs" vaddr="0x44000000" perms="rw" cached="false" setvar_vaddr="ipa_regs" />
+        <map mr="ipa_regs_tail" vaddr="0x44001000" perms="r" cached="false" />
+        <map mr="gsi_regs" vaddr="0x44100000" perms="r" cached="false" setvar_vaddr="gsi_regs" />
+        <map mr="efs_shadow1" vaddr="0x74001000" perms="rw" cached="true" setvar_vaddr="efs_shadow1" />
+        <map mr="efs_shadow2" vaddr="0x74203000" perms="rw" cached="true" setvar_vaddr="efs_shadow2" />
+        <map mr="efs_shadow3" vaddr="0x74405000" perms="rw" cached="true" setvar_vaddr="efs_shadow3" />
+        <map mr="efs_shadow4" vaddr="0x74607000" perms="rw" cached="true" setvar_vaddr="efs_shadow4" />
+        <map mr="splash" vaddr="0x42000000" perms="rw" cached="false" setvar_vaddr="splash_fb" />
+        <map mr="smmu_gr0" vaddr="0x70000000" perms="rw" cached="false" setvar_vaddr="smmu_gr0" />
+        <map mr="smmu_gr1" vaddr="0x70001000" perms="rw" cached="false" setvar_vaddr="smmu_gr1" />
+        <map mr="smmu_context" vaddr="0x70002000" perms="rw" cached="false" setvar_vaddr="smmu_context" />
+        <map mr="smmu_cb_low" vaddr="0x73000000" perms="r" cached="false" setvar_vaddr="smmu_cb_low" />
+        <map mr="smmu_cb_high" vaddr="0x73010000" perms="r" cached="false" setvar_vaddr="smmu_cb_high" />
+        <setvar symbol="smmu_cb_low_paddr" region_paddr="smmu_cb_low" />
+        <setvar symbol="smmu_cb_high_paddr" region_paddr="smmu_cb_high" />
+        <setvar symbol="smmu_gr0_paddr" region_paddr="smmu_gr0" />
+        <setvar symbol="smmu_gr1_paddr" region_paddr="smmu_gr1" />
+        <setvar symbol="smmu_context_paddr" region_paddr="smmu_context" />
+        <map mr="smmu_root" vaddr="0x71001000" perms="rw" cached="false" setvar_vaddr="smmu_root" />
+        <map mr="smmu_l2" vaddr="0x71003000" perms="rw" cached="false" setvar_vaddr="smmu_l2" />
+        <map mr="smmu_l3" vaddr="0x71005000" perms="rw" cached="false" setvar_vaddr="smmu_l3" />
+        <map mr="smmu_upper" vaddr="0x71007000" perms="rw" cached="false" setvar_vaddr="smmu_upper" />
+        <map mr="smmu_data" vaddr="0x72001000" perms="rw" cached="false" setvar_vaddr="smmu_data" />
+        <setvar symbol="smmu_root_paddr" region_paddr="smmu_root" />
+        <setvar symbol="smmu_l2_paddr" region_paddr="smmu_l2" />
+        <setvar symbol="smmu_l3_paddr" region_paddr="smmu_l3" />
+        <setvar symbol="smmu_upper_paddr" region_paddr="smmu_upper" />
+        <setvar symbol="smmu_data_paddr" region_paddr="smmu_data" />
+        <irq irq="132" id="0" trigger="level" />
+        <irq irq="97" id="1" trigger="level" />
+        <map mr="ipa_shared" vaddr="0x44200000" perms="rw" cached="false" setvar_vaddr="ipa_shared" />
+        <map mr="ipa_irq_regs" vaddr="0x44003000" perms="rw" cached="false" />
+        <map mr="ipa_regs_high" vaddr="0x44004000" perms="r" cached="false" />
+        <irq irq="343" id="2" trigger="edge" />
+        <map mr="smmu_l2_peer" vaddr="0x71009000" perms="rw" cached="false" setvar_vaddr="smmu_l2_peer" />
+        <setvar symbol="smmu_l2_peer_paddr" region_paddr="smmu_l2_peer" />
+        <map mr="smmu_l3_peer" vaddr="0x7100b000" perms="rw" cached="false" setvar_vaddr="smmu_l3_peer" />
+        <setvar symbol="smmu_l3_peer_paddr" region_paddr="smmu_l3_peer" />
+        <map mr="smmu_l3_shared" vaddr="0x7100d000" perms="rw" cached="false" setvar_vaddr="smmu_l3_shared" />
+        <setvar symbol="smmu_l3_shared_paddr" region_paddr="smmu_l3_shared" />
+        <map mr="ipa_smem_before" vaddr="0x75000000" perms="r" cached="false" setvar_vaddr="ipa_smem_before" />
+        <setvar symbol="ipa_smem_before_paddr" region_paddr="ipa_smem_before" />
+        <map mr="ipa_smem_metadata" vaddr="0x7511d000" perms="rw" cached="false" setvar_vaddr="ipa_smem_metadata" />
+        <setvar symbol="ipa_smem_metadata_paddr" region_paddr="ipa_smem_metadata" />
+        <map mr="ipa_smem_after" vaddr="0x7511e000" perms="r" cached="false" />
+        <map mr="mpss_smem_payload" vaddr="0x7511f000" perms="rw" cached="false" setvar_vaddr="mpss_smem_payload" />
+        <setvar symbol="mpss_smem_payload_paddr" region_paddr="mpss_smem_payload" />
+        <map mr="mpss_smem_tail" vaddr="0x75124000" perms="r" cached="false" />
+        <map mr="ipa_smem_lock" vaddr="0x75300000" perms="rw" cached="false" setvar_vaddr="ipa_smem_lock" />
+        <setvar symbol="ipa_smem_lock_paddr" region_paddr="ipa_smem_lock" />
+        <map mr="ipa_imem" vaddr="0x75400000" perms="r" cached="false" setvar_vaddr="ipa_imem" />
+        <setvar symbol="ipa_imem_paddr" region_paddr="ipa_imem" />
+        <map mr="ipa_pas_metadata" vaddr="0x75601000" perms="rw" cached="false" setvar_vaddr="ipa_pas_metadata" />
+        <setvar symbol="ipa_pas_metadata_paddr" region_paddr="ipa_pas_metadata" />
+        <map mr="ipa_fw_target" vaddr="0x75800000" perms="rw" cached="false" setvar_vaddr="ipa_fw_target" />
+        <setvar symbol="ipa_fw_target_paddr" region_paddr="ipa_fw_target" />
+        <map mr="gsi_inter_ee" vaddr="0x4410c000" perms="rw" cached="false" />
+        <map mr="gsi_reserved_middle" vaddr="0x4410d000" perms="r" cached="false" />
+        <map mr="gsi_context_channel" vaddr="0x4411c000" perms="rw" cached="false" />
+        <map mr="gsi_context_event" vaddr="0x4411d000" perms="rw" cached="false" />
+        <map mr="gsi_doorbell" vaddr="0x4411e000" perms="rw" cached="false" />
+        <map mr="gsi_control" vaddr="0x4411f000" perms="rw" cached="false" />
+        <map mr="gsi_reserved_tail" vaddr="0x44120000" perms="r" cached="false" />
+        <irq irq="464" id="3" trigger="level" />
+        <irq irq="481" id="4" trigger="edge" />
+        <irq irq="483" id="5" trigger="edge" />
+        <irq irq="298" id="6" trigger="edge" />
+        <map mr="mpss_pas_metadata" vaddr="0x77501000" perms="rw" cached="false" setvar_vaddr="mpss_pas_metadata" />
+        <setvar symbol="mpss_pas_metadata_paddr" region_paddr="mpss_pas_metadata" />
+        <map mr="mpss_target" vaddr="0x88000000" perms="rw" cached="false" setvar_vaddr="mpss_target" />
+        <setvar symbol="mpss_target_paddr" region_paddr="mpss_target" />
+        <map mr="smmu_l3_receive" vaddr="0x7100f000" perms="rw" cached="false" setvar_vaddr="smmu_l3_receive" />
+        <setvar symbol="smmu_l3_receive_paddr" region_paddr="smmu_l3_receive" />
+        <map mr="ipa_receive_data" vaddr="0x76001000" perms="rw" cached="false" setvar_vaddr="ipa_receive_data" />
+        <setvar symbol="ipa_receive_data_paddr" region_paddr="ipa_receive_data" />
+        <map mr="native_rmtfs" vaddr="0x77001000" perms="rw" cached="false" setvar_vaddr="native_rmtfs" />
+        <setvar symbol="native_rmtfs_paddr" region_paddr="native_rmtfs" />
+        <map mr="rmtfs_scm" vaddr="0x77301000" perms="rw" cached="false" setvar_vaddr="rmtfs_scm" />
+        <setvar symbol="rmtfs_scm_paddr" region_paddr="rmtfs_scm" />
+    </protection_domain>
+    <memory_region name="ipa_irq_regs" phys_addr="0x01e43000" size="0x1000" />
+    <memory_region name="ipa_regs_high" phys_addr="0x01e44000" size="0x3000" />
+    <memory_region name="smmu_l2_peer" size="0x1000" />
+    <memory_region name="smmu_l3_peer" size="0x1000" />
+    <memory_region name="smmu_l3_shared" size="0x1000" />
+    <memory_region name="ipa_smem_before" size="0x11d000" phys_addr="0x86000000" />
+    <memory_region name="ipa_smem_metadata" size="0x1000" phys_addr="0x8611d000" />
+    <memory_region name="ipa_smem_after" size="0x1000" phys_addr="0x8611e000" />
+    <memory_region name="mpss_smem_payload" size="0x5000" phys_addr="0x8611f000" />
+    <memory_region name="mpss_smem_tail" size="0xdc000" phys_addr="0x86124000" />
+    <memory_region name="ipa_smem_lock" size="0x1000" phys_addr="0x1f43000" />
+    <memory_region name="ipa_imem" size="0x2000" phys_addr="0x146a8000" />
+    <memory_region name="ipa_pas_metadata" size="0x2000" />
+    <memory_region name="ipa_fw_target" size="0x10000" phys_addr="0x98f80000" />
+    <memory_region name="gsi_inter_ee" size="0x1000" phys_addr="0x1e10000" />
+    <memory_region name="gsi_reserved_middle" size="0xf000" phys_addr="0x1e11000" />
+    <memory_region name="gsi_context_channel" size="0x1000" phys_addr="0x1e20000" />
+    <memory_region name="gsi_context_event" size="0x1000" phys_addr="0x1e21000" />
+    <memory_region name="gsi_doorbell" size="0x1000" phys_addr="0x1e22000" />
+    <memory_region name="gsi_control" size="0x1000" phys_addr="0x1e23000" />
+    <memory_region name="gsi_reserved_tail" size="0xc000" phys_addr="0x1e24000" />
+    <memory_region name="smmu_l3_receive" size="0x1000" />
+    <memory_region name="ipa_receive_data" size="0x200000" />
+    <channel>
+        <end pd="native_startup_preflight" id="7" notify="true" pp="false" />
+        <end pd="native_startup_preflight" id="8" notify="false" pp="false" />
+    </channel>
+</system>

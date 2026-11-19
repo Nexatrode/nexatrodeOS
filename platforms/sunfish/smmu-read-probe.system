@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<system>
+    <memory_region name="apps_smmu" size="0x100000" page_size="0x1000"
+                   phys_addr="0x15000000" />
+    <memory_region name="splash" size="0x1600000" page_size="0x200000"
+                   phys_addr="0x9c000000" />
+    <protection_domain name="smmu_read_probe" priority="99" smc="false">
+        <program_image path="smmu-read-probe.elf" />
+        <map mr="apps_smmu" vaddr="0x40000000" perms="r" cached="false"
+             setvar_vaddr="apps_smmu_vaddr" />
+        <map mr="splash" vaddr="0x50000000" perms="rw" cached="false"
+             setvar_vaddr="splash_vaddr" />
+    </protection_domain>
+</system>

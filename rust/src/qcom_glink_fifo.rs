@@ -1,0 +1,3150 @@
+//! Native SMEM FIFO adapter for the bounded, already-negotiated IPCRTR session.
+//!
+//! Reference: LineageOS sunfish 28f9290ae067d3e7857126eb6312720dbe9c7c80,
+//! drivers/rpmsg/qcom_glink_smem.c and qcom_glink_native.c. Descriptor words:
+//! peer TX tail, AP TX head, AP RX tail, peer RX head, four reserved words.
+//! No allocation, FIFO initialization, channel negotiation, or IRQ registration.
+#![forbid(unsafe_code)]
+
+#[cfg(feature = "sunfish-linux-mpss-glink")]
+#[path = "sunfish_mpss_linux_transport.rs"]
+mod boot;
+#[cfg(feature = "sunfish-linux-ipa-qmi")]
+#[path = "sunfish_ipa_linux_qmi_fifo.rs"]
+mod linux_ipa_fifo;
+#[cfg(feature = "sunfish-linux-mpss-glink")]
+pub use boot::{BootDrive, BootIo, BootPhase, BootReport, BootTransport};
+
+use crate::qcom_glink_qmi::{
+    self as core, Event, Published, Reply, RequestHandle, Session, TftpHandle, WriteError,
+};
+use crate::qcom_modem_services::{Request, Service};
+use crate::qcom_msa::Reservation as MsaReservation;
+use crate::qcom_qmi_router::Context;
+
+pub const FIFO_BYTES: usize = 0x4000;
+pub const DESCRIPTOR_BYTES: usize = 32;
+pub const FULL_RESERVE: usize = 8;
+pub const TX_RESERVE: usize = 16;
+pub const MAX_RX_RECORD: usize = 16 + core::MAX_DATAGRAM_BYTES;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Fault;
+
+/// Values supplied by a trusted lifecycle/directory observer, never by a GLINK
+/// packet. Identity pins the mapped SMEM route and exact allocation identities.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Observation {
+    pub generation: u64,
+    pub identity: u64,
+    pub ready: bool,
+    pub fatal: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Barrier {
+    Acquire,
+    Release,
+    Complete,
+}
+
+/// IO must faithfully implement single-copy LE cursors, uncached/coherent FIFO
+/// accesses, device-scope ordering, and the fixed peer doorbell. Calls are
+/// serialized with all AP writers, IRQ handlers, mapping changes, and resets.
+/// A failing operation may have taken effect; errors are never retried here.
+pub trait Io {
+    /// Copy existing CPU-side counters only, with no hardware observation.
+    #[cfg(feature = "sunfish-wlan-elf-phase-io")]
+    fn elf_io_totals(&self) -> Option<[u64; 12]> { None }
+    /// Only return counters when the native profiler is enabled for this call.
+    #[cfg(feature = "sunfish-tftp-reserved-writer-io")]
+    fn reserved_io_totals(&self) -> Option<[u64; 12]> { None }
+    /// Optional trusted backend diagnostic for a terminal access failure.
+    /// It is observational only and cannot make a failed IO operation usable.
+    fn diagnostic(&self) -> u32 {
+        0
+    }
+    #[cfg(feature = "sunfish-native-startup-mpss-runtime")]
+    fn crash_evidence(&self) -> Option<crate::qcom_modem_crash::Evidence> { None }
+    fn observe(&mut self) -> Result<Observation, Fault>;
+    fn descriptor(&mut self, word: usize) -> Result<u32, Fault>;
+    /// Override for one coherent native descriptor observation.
+    fn descriptors(&mut self) -> Result<[u32; 8], Fault> {
+        let mut out = [0; 8];
+        for (n, v) in out.iter_mut().enumerate() {
+            *v = self.descriptor(n)?;
+        }
+        Ok(out)
+    }
+    /// Selected Linux discovers the peer FIFO lazily, using its actual size.
+    /// Legacy negotiated transports retain their established 16 KiB default.
+    fn rx_length(&mut self) -> Result<Option<usize>, Fault> {
+        Ok(Some(FIFO_BYTES))
+    }
+    /// One bounded read-only sample. Native implementations may put the local
+    /// length lookup and descriptor read inside one pair of domain checks.
+    /// This is not an atomic peer snapshot; Ring still validates cursor motion.
+    #[cfg(feature = "sunfish-glink-combined-cursor-sample")]
+    fn cursor_snapshot(&mut self) -> Result<(Option<usize>, [u32; 8]), Fault> {
+        let length = self.rx_length()?;
+        let words = self.descriptors()?;
+        Ok((length, words))
+    }
+    fn read_rx(&mut self, offset: usize, bytes: &mut [u8]) -> Result<(), Fault>;
+    fn read_tx(&mut self, offset: usize, bytes: &mut [u8]) -> Result<(), Fault>;
+    fn write_tx(&mut self, offset: usize, bytes: &[u8]) -> Result<(), Fault>;
+    fn store_tx_head(&mut self, value: u32) -> Result<(), Fault>;
+    fn store_rx_tail(&mut self, value: u32) -> Result<(), Fault>;
+    fn barrier(&mut self, kind: Barrier) -> Result<(), Fault>;
+    /// Adjacent barrier/status operations, in their original order. The native
+    /// implementation shares one domain pre/post pair, not cached authority.
+    #[cfg(feature = "sunfish-glink-barrier-observe-pair")]
+    fn barrier_observe(&mut self, kind: Barrier) -> Result<Observation, Fault> {
+        self.barrier(kind)?;
+        self.observe()
+    }
+    fn notify_peer(&mut self) -> Result<(), Fault>;
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Error {
+    Session(core::Error),
+    StaleGeneration,
+    Quarantined,
+    Access,
+    NotReady,
+    Fatal,
+    IdentityChanged,
+    CursorBounds,
+    OwnedCursorChanged,
+    PeerOverrun,
+    ReservedChanged,
+    UnsupportedCommand,
+    InvalidRecord,
+    ChangedRecord,
+    Readback,
+    WouldBlock,
+    SessionNotFresh,
+    ResetNotEmpty,
+    #[cfg(feature = "sunfish-linux-mpss-glink")]
+    Negotiation,
+    #[cfg(feature = "sunfish-linux-mpss-glink")]
+    Timeout,
+}
+impl From<Fault> for Error {
+    fn from(_: Fault) -> Self {
+        Self::Access
+    }
+}
+impl From<core::Error> for Error {
+    fn from(error: core::Error) -> Self {
+        Self::Session(error)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Receive {
+    Idle,
+    Pending {
+        available: usize,
+        needed: usize,
+    },
+    Session(Event),
+    ReadNotification,
+    #[cfg(feature = "sunfish-linux-mpss-glink")]
+    Control,
+}
+
+/// Read-only copy of the late OPEN that failed, or its invalid length header.
+#[cfg(feature = "sunfish-linux-mpss-glink")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OpenDiagnostic {
+    pub stage: u32,
+    pub channel: u32,
+    pub advertised_length: u32,
+    /// Bitmask of rejected length, id, name, duplicate and capacity checks.
+    pub reason: u32,
+    pub other_channels: u32,
+    pub remote_channel: u32,
+    pub name: [u8; 24],
+    pub name_len: usize,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Transmit {
+    Idle,
+    Session(Published),
+    AwaitingIntent,
+    Blocked { read_notification_sent: bool },
+}
+
+fn distance(from: u32, to: u32) -> usize {
+    (to as usize + FIFO_BYTES - from as usize) % FIFO_BYTES
+}
+fn advance(cursor: u32, size: usize) -> u32 {
+    ((cursor as usize + size) % FIFO_BYTES) as u32
+}
+fn ring_distance(from: u32, to: u32, length: usize) -> usize {
+    (to as usize + length - from as usize) % length
+}
+fn ring_advance(cursor: u32, bytes: usize, length: usize) -> u32 {
+    ((cursor as usize + bytes) % length) as u32
+}
+fn word(bytes: &[u8], at: usize) -> u32 {
+    u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
+}
+fn ready(observation: Observation, generation: u64) -> Result<(), Error> {
+    if observation.generation != generation {
+        return Err(Error::StaleGeneration);
+    }
+    if observation.fatal {
+        return Err(Error::Fatal);
+    }
+    if !observation.ready {
+        return Err(Error::NotReady);
+    }
+    Ok(())
+}
+fn descriptors(io: &mut impl Io, rx: Option<usize>) -> Result<[u32; 8], Error> {
+    validate_descriptors(io.descriptors()?, rx)
+}
+
+fn validate_descriptors(words: [u32; 8], rx: Option<usize>) -> Result<[u32; 8], Error> {
+    if words[..4].iter().any(|v| v % 8 != 0)
+        || words[..2].iter().any(|v| *v as usize >= FIFO_BYTES)
+        || rx.is_some_and(|length| {
+            length < 8
+                || length > u32::MAX as usize
+                || length % 8 != 0
+                || words[2..4].iter().any(|v| *v as usize >= length)
+        })
+        || (rx.is_none() && words[2..4] != [0, 0])
+    {
+        return Err(Error::CursorBounds);
+    }
+    Ok(words)
+}
+
+#[cfg(feature = "sunfish-wlan-first-server-check-tail")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ServerCheckTail {
+    #[default]
+    Untracked,
+    Pending(usize),
+    Consumed(Option<u64>),
+}
+
+/// Bounds for visibility of the first OACK's exact peer RX_DONE.
+#[cfg(feature = "sunfish-wlan-first-oack-rx-fifo")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ServerCheckRxDone {
+    pub last_absent: Option<u64>,
+    pub first_visible: Option<u64>,
+    pub visible_at_close: Option<bool>,
+    pub bytes_ahead: Option<u32>,
+}
+
+#[cfg(feature = "sunfish-wlan-first-oack-rx-fifo")]
+const RX_HEAD_HISTORY: usize = 32;
+
+#[cfg(feature = "sunfish-wlan-first-oack-rx-fifo")]
+#[derive(Clone, Copy)]
+struct RxHeadAdvance {
+    previous: u64,
+    head: u64,
+    tail: u64,
+    last_absent: Option<u64>,
+    first_visible: Option<u64>,
+}
+
+#[cfg(feature = "sunfish-tftp-oack-ahead-headers")]
+#[derive(Clone, Copy)]
+pub struct OackAheadHeader {
+    pub position: u64,
+    pub at: Option<u64>,
+    pub command: u16,
+    pub channel: u16,
+    pub parameter: u32,
+    pub bytes: u16,
+    pub qrtr: Option<[u32; 3]>,
+    pub qmi: Option<(u8, u16, u16)>,
+    pub del_client: Option<[u32; 2]>,
+    pub tftp: Option<(u16, u16)>,
+}
+
+#[cfg(feature = "sunfish-tftp-oack-ahead-headers")]
+pub struct OackAheadCapture {
+    headers: [Option<OackAheadHeader>; 16],
+    pub armed_at: Option<u64>,
+    pub initial_unread: u32,
+    pub completion_id: Option<u32>,
+    next: usize,
+    base: Option<u64>,
+    end: Option<u64>,
+}
+
+#[cfg(feature = "sunfish-tftp-oack-ahead-headers")]
+impl OackAheadCapture {
+    fn new(armed_at: Option<u64>, initial_unread: usize) -> Self {
+        Self { headers: [None; 16], armed_at,
+            initial_unread: u32::try_from(initial_unread).unwrap_or(u32::MAX),
+            completion_id: None, next: 0, base: None, end: None }
+    }
+
+    fn record(&mut self, position: u64, header: RegistrationHeader, raw: &[u8]) {
+        if self.end.is_some() { return; }
+        let tftp = header.qrtr.and_then(|[kind, source, destination]| {
+            let transfer = crate::qcom_tftp_server_check::is_transfer_port(source)
+                || crate::qcom_tftp_server_check::is_transfer_port(destination);
+            if kind != 1 || !transfer || header.command != 9
+                || raw.len() < 52 || word(raw, 8) < 36
+                || word(raw, 12) != 0 || word(raw, 36) < 4
+            {
+                return None;
+            }
+            let opcode = u16::from_be_bytes([raw[48], raw[49]]);
+            matches!(opcode, 3 | 4 | 5).then(||
+                (opcode, u16::from_be_bytes([raw[50], raw[51]])))
+        });
+        self.headers[self.next] = Some(OackAheadHeader {
+            position, at: header.at, command: header.command, channel: header.channel,
+            parameter: header.parameter, bytes: header.bytes, qrtr: header.qrtr,
+            qmi: header.qmi, del_client: header.del_client, tftp,
+        });
+        self.next = (self.next + 1) % self.headers.len();
+    }
+
+    fn finish(&mut self, window: &ServerCheckRxWindow, unread: usize, size: usize) {
+        let Some(start) = window.head.checked_sub(unread as u64) else { return };
+        let record_end = start.saturating_add(size as u64);
+        let span = window.advances.iter().flatten()
+            .find(|span| span.previous < record_end && record_end <= span.head);
+        self.base = span.map(|span| span.tail);
+        self.end = Some(start);
+    }
+
+    pub fn records(&self) -> impl Iterator<Item = OackAheadHeader> + '_ {
+        let base = self.base;
+        let end = self.end;
+        self.headers[self.next..].iter().chain(self.headers[..self.next].iter())
+            .flatten().copied().filter(move |header| {
+                base.zip(end).is_some_and(|(base, end)|
+                    header.position >= base && header.position < end)
+            })
+    }
+}
+
+/// Callback-scoped deltas; detail/domain totals are nested within broad totals.
+#[cfg(feature = "sunfish-tftp-reserved-writer-io")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ReservedWriterIoTrace {
+    pub totals: [u64; 12], pub profiled: u32, pub unavailable: u32, pub invalid: u32,
+}
+#[cfg(feature = "sunfish-tftp-reserved-writer-io")]
+impl ReservedWriterIoTrace {
+    fn record(&mut self, before: Option<[u64; 12]>, after: Option<[u64; 12]>, enabled: bool) {
+        let Some((before, after)) = before.zip(after).filter(|_| enabled) else {
+            self.unavailable = self.unavailable.saturating_add(1); return;
+        };
+        if (0..12).any(|i| before[i] == u64::MAX || after[i] == u64::MAX || after[i] < before[i]) {
+            self.invalid = self.invalid.saturating_add(1); return;
+        }
+        for i in 0..12 { self.totals[i] = self.totals[i].saturating_add(after[i] - before[i]); }
+        self.profiled = self.profiled.saturating_add(1);
+    }
+}
+
+#[cfg(all(test, feature = "sunfish-tftp-reserved-writer-io"))]
+#[test]
+fn reserved_writer_io_counts_only_enabled_callback_deltas() {
+    let mut trace = ReservedWriterIoTrace::default();
+    trace.record(Some([10; 12]), Some([13; 12]), true);
+    assert_eq!(trace.profiled, 1);
+    assert_eq!(trace.totals, [3; 12]);
+    trace.record(Some([13; 12]), Some([20; 12]), false);
+    trace.record(None, None, true);
+    assert_eq!(trace.profiled, 1);
+    assert_eq!(trace.unavailable, 2);
+    assert_eq!(trace.totals, [3; 12]);
+    trace.record(Some([20; 12]), Some([19; 12]), true);
+    assert_eq!(trace.invalid, 1);
+    assert_eq!(trace.totals, [3; 12]);
+}
+
+#[cfg(all(test, feature = "sunfish-tftp-oack-ahead-headers"))]
+#[test]
+fn reserved_oack_headers_retain_only_records_ahead_of_completion() {
+    let mut window = ServerCheckRxWindow::new(0, Some(100));
+    let mut capture = OackAheadCapture::new(None, 0);
+    window.sample(120, 120, Some(110), Some(120));
+    for (position, len, command) in [(0, 72, 9), (72, 32, 5), (104, 8, 6), (112, 8, 14)] {
+        let mut raw = vec![0u8; len];
+        raw[0] = command;
+        let header = RegistrationHeader::read(&raw, false, Some(130 + position));
+        capture.record(position, header, &raw);
+    }
+    capture.finish(&window, 8, 8);
+    window.finish(8, 8);
+    let records: Vec<_> = capture.records().collect();
+    assert_eq!(window.done.unwrap().bytes_ahead, Some(112));
+    assert_eq!(records.iter().map(|record| u32::from(record.bytes)).sum::<u32>(), 112);
+    assert_eq!(records.iter().map(|record| record.command).collect::<Vec<_>>(), [9, 5, 6]);
+    assert!(records.iter().all(|record| record.position < 112));
+}
+
+#[cfg(all(test, feature = "sunfish-tftp-oack-ahead-headers"))]
+#[test]
+fn reserved_oack_window_preserves_arm_and_existing_unread_boundary() {
+    let mut window = ServerCheckRxWindow::new(16, Some(200));
+    let mut capture = OackAheadCapture::new(Some(200), 16);
+    let mut raw = [0u8; 8];
+    raw[0] = 14;
+    capture.record(0, RegistrationHeader::read(&raw, false, Some(210)), &raw);
+    capture.record(8, RegistrationHeader::read(&raw, false, Some(220)), &raw);
+    capture.finish(&window, 8, 8);
+    window.finish(8, 8);
+    assert_eq!(capture.armed_at, Some(200));
+    assert_eq!(capture.initial_unread, 16);
+    assert_eq!(window.done.unwrap().first_visible, Some(200));
+    assert_eq!(window.done.unwrap().bytes_ahead, Some(8));
+    assert_eq!(capture.records().count(), 1);
+}
+
+#[cfg(all(test, feature = "sunfish-tftp-oack-ahead-headers"))]
+#[test]
+fn ahead_header_extracts_only_valid_complete_tftp_data_metadata() {
+    let mut raw = [0u8; 56];
+    for (offset, value) in [
+        (0, 0x0002_0009u32), (4, 0x4d), (8, 36), (12, 0),
+        (16, 1), (20, 1), (28, 0x49), (36, 4),
+        (40, 1), (44, crate::qcom_tftp_server_check::TRANSFER_PORT),
+    ] {
+        raw[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    raw[48..52].copy_from_slice(&[0, 3, 0, 7]);
+    let mut capture = OackAheadCapture::new(None, 0);
+    capture.record(0, RegistrationHeader::read(&raw, false, None), &raw);
+    assert_eq!(capture.headers[0].unwrap().tftp, Some((3, 7)));
+
+    raw[8..12].copy_from_slice(&33u32.to_le_bytes());
+    capture.record(56, RegistrationHeader::read(&raw, false, None), &raw);
+    assert_eq!(capture.headers[1].unwrap().tftp, None);
+
+    raw[8..12].copy_from_slice(&36u32.to_le_bytes());
+    raw[49] = 2;
+    capture.record(112, RegistrationHeader::read(&raw, false, None), &raw);
+    assert_eq!(capture.headers[2].unwrap().tftp, None);
+}
+
+#[cfg(feature = "sunfish-wlan-first-oack-rx-fifo")]
+struct ServerCheckRxWindow {
+    #[cfg(feature = "sunfish-tftp-first-oack-headers")]
+    headers: FirstOackHeaders,
+    head: u64,
+    last_sample_start: Option<u64>,
+    close_head: Option<u64>,
+    advances: [Option<RxHeadAdvance>; RX_HEAD_HISTORY],
+    next_advance: usize,
+    done: Option<ServerCheckRxDone>,
+}
+
+#[cfg(feature = "sunfish-wlan-first-oack-rx-fifo")]
+impl ServerCheckRxWindow {
+    fn new(unread: usize, observed: Option<u64>) -> Self {
+        let mut trace = Self {
+            head: 0, last_sample_start: None, close_head: None,
+            advances: [None; RX_HEAD_HISTORY], next_advance: 0, done: None,
+            #[cfg(feature = "sunfish-tftp-first-oack-headers")]
+            headers: FirstOackHeaders::default(),
+        };
+        trace.sample(unread, unread, None, observed);
+        trace
+    }
+
+    fn sample(&mut self, advanced: usize, unread: usize, start: Option<u64>, end: Option<u64>) {
+        if advanced != 0 {
+            let previous = self.head;
+            self.head = self.head.saturating_add(advanced as u64);
+            self.advances[self.next_advance] = Some(RxHeadAdvance {
+                previous, head: self.head, tail: self.head.saturating_sub(unread as u64),
+                last_absent: self.last_sample_start, first_visible: end,
+            });
+            self.next_advance = (self.next_advance + 1) % RX_HEAD_HISTORY;
+        }
+        self.last_sample_start = start;
+    }
+
+    fn finish(&mut self, unread: usize, size: usize) {
+        self.done = self.bounds(unread, size);
+    }
+
+    fn bounds(&self, unread: usize, size: usize) -> Option<ServerCheckRxDone> {
+        let record_start = self.head.checked_sub(unread as u64)?;
+        let record_end = record_start.saturating_add(size as u64);
+        let span = self.advances.iter().flatten()
+            .find(|span| span.previous < record_end && record_end <= span.head);
+        Some(ServerCheckRxDone {
+            last_absent: span.and_then(|span| span.last_absent),
+            first_visible: span.and_then(|span| span.first_visible),
+            visible_at_close: self.close_head.map(|head| head >= record_end),
+            bytes_ahead: span.and_then(|span| record_start.checked_sub(span.tail))
+                .and_then(|bytes| u32::try_from(bytes).ok()),
+        })
+    }
+}
+
+#[cfg(all(test, feature = "sunfish-wlan-first-oack-rx-fifo"))]
+#[test]
+fn rx_done_visible_in_same_sample_as_close_keeps_first_bound() {
+    let mut trace = ServerCheckRxWindow::new(0, Some(100));
+    trace.sample(0, 0, Some(110), Some(120));
+    trace.sample(80, 80, Some(130), Some(140));
+    trace.close_head = Some(trace.head);
+    // The host consumes the 72-byte close before processing the RX_DONE.
+    trace.sample(0, 8, Some(150), Some(160));
+    trace.finish(8, 8);
+    assert_eq!(trace.done, Some(ServerCheckRxDone {
+        last_absent: Some(110), first_visible: Some(140),
+        visible_at_close: Some(true), bytes_ahead: Some(72),
+    }));
+}
+
+#[cfg(all(test, feature = "sunfish-tftp-oack-fifo-outcome"))]
+#[test]
+fn reserved_oack_completion_visible_after_close_has_distinct_bounds() {
+    let mut window = ServerCheckRxWindow::new(0, Some(100));
+    window.sample(0, 0, Some(110), Some(120));
+    window.close_head = Some(window.head);
+    window.sample(8, 8, Some(130), Some(140));
+    window.finish(8, 8);
+    assert_eq!(window.done, Some(ServerCheckRxDone {
+        last_absent: Some(110),
+        first_visible: Some(140),
+        visible_at_close: Some(false),
+        bytes_ahead: Some(0),
+    }));
+}
+
+#[cfg(feature = "sunfish-ipa-registration-reply-headers")]
+#[derive(Clone, Copy)]
+pub struct RegistrationHeader {
+    pub at: Option<u64>,
+    pub tx: bool,
+    pub command: u16,
+    pub channel: u16,
+    pub parameter: u32,
+    pub bytes: u16,
+    pub qrtr: Option<[u32; 3]>,
+    pub qmi: Option<(u8, u16, u16)>,
+    pub del_client: Option<[u32; 2]>,
+    #[cfg(feature = "sunfish-ipa-grant-tftp-peer")]
+    pub tftp_request: Option<RegistrationTftpRequest>,
+}
+
+#[cfg(feature = "sunfish-ipa-grant-tftp-peer")]
+#[derive(Clone, Copy)]
+pub struct RegistrationTftpRequest {
+    peer: [u32; 2],
+    pub opcode: u8,
+    pub kind: u8,
+    pub bytes: u16,
+    #[cfg(feature = "sunfish-ipa-tftp-dispatch-trace")]
+    handle: Option<core::TftpHandle>,
+    #[cfg(feature = "sunfish-ipa-tftp-dispatch-trace")]
+    pub server_result: u8,
+    #[cfg(feature = "sunfish-ipa-tftp-dispatch-trace")]
+    pub occupied: u8,
+    #[cfg(feature = "sunfish-ipa-tftp-dispatch-trace")]
+    pub oack_queued: bool,
+    #[cfg(feature = "sunfish-ipa-tftp-original-trace")]
+    oack_progress: u8,
+    #[cfg(feature = "sunfish-ipa-tftp-queue-block")]
+    queue_block: core::TftpQueueBlock,
+    #[cfg(feature = "sunfish-ipa-tftp-slot-snapshot")]
+    full_queue: Option<TftpFullQueue>,
+    #[cfg(feature = "sunfish-ipa-tftp-original-trace")]
+    pub original: Option<OriginalTftpRequest>,
+}
+
+#[cfg(feature = "sunfish-ipa-tftp-original-trace")]
+#[derive(Clone, Copy)]
+pub struct OriginalTftpRequest {
+    handle: core::TftpHandle,
+    pub id: u32,
+    pub source: u8,
+    pub result: u8,
+    pub occupied: u8,
+    pub phases: u8,
+    #[cfg(feature = "sunfish-ipa-tftp-queue-block")]
+    pub queue_block: core::TftpQueueBlock,
+    #[cfg(feature = "sunfish-ipa-tftp-slot-snapshot")]
+    pub full_queue: Option<TftpFullQueue>,
+}
+
+#[cfg(feature = "sunfish-ipa-tftp-slot-snapshot")]
+#[derive(Clone, Copy)]
+pub struct TftpFullQueue {
+    pub at: Option<u64>,
+    pub slots: [core::TftpTxSlot; core::TX_SLOTS],
+    pub first_free_mask: u8,
+    pub first_free_at: Option<u64>,
+}
+
+#[cfg(feature = "sunfish-ipa-tftp-slot-snapshot")]
+impl TftpFullQueue {
+    fn record_release(&mut self, freed: u8, at: Option<u64>) {
+        if freed != 0 && self.first_free_mask == 0 {
+            self.first_free_mask = freed;
+            self.first_free_at = at;
+        }
+    }
+}
+
+#[cfg(all(test, feature = "sunfish-ipa-tftp-slot-snapshot"))]
+#[test]
+fn tftp_full_queue_latches_the_first_release() {
+    let slot = core::TftpTxSlot { kind: 6, opcode: 6, flags: 3, peer_port: 0x49, remote_intent: 0 };
+    let mut snapshot = TftpFullQueue {
+        at: Some(10), slots: [slot; core::TX_SLOTS], first_free_mask: 0, first_free_at: None,
+    };
+    snapshot.record_release(0, Some(11));
+    snapshot.record_release(0x20, Some(12));
+    snapshot.record_release(0x04, Some(13));
+    assert_eq!((snapshot.first_free_mask, snapshot.first_free_at), (0x20, Some(12)));
+    assert_eq!(snapshot.slots[5], slot);
+}
+
+
+// Called for a checked GLINK DATA chunk containing a QRTR v1 header.
+#[cfg(feature = "sunfish-ipa-registration-reply-headers")]
+fn del_client_endpoint(record: &[u8], packet: &[u8]) -> Option<[u32; 2]> {
+    if packet.len() == 52 && word(packet, 4) == 6 && word(record, 12) == 0
+        && word(packet, 20) == 20 && word(packet, 32) == 6
+    {
+        Some([word(packet, 36), word(packet, 40)])
+    } else {
+        None
+    }
+}
+
+#[cfg(feature = "sunfish-ipa-registration-reply-headers")]
+impl RegistrationHeader {
+    fn read(record: &[u8], tx: bool, at: Option<u64>) -> Self {
+        let command = u16::from_le_bytes([record[0], record[1]]);
+        let mut header = Self {
+            at, tx, command,
+            channel: u16::from_le_bytes([record[2], record[3]]),
+            parameter: word(record, 4),
+            bytes: record.len() as u16,
+            qrtr: None,
+            qmi: None,
+            del_client: None,
+            #[cfg(feature = "sunfish-ipa-grant-tftp-peer")]
+            tftp_request: None,
+        };
+        if command == 9 && record.len() >= 48 {
+            let chunk = word(record, 8) as usize;
+            if chunk >= 32 && let Some(packet) = record.get(16..16 + chunk)
+                && word(packet, 0) == 1
+            {
+                let kind = word(packet, 4);
+                header.qrtr = Some([kind, word(packet, 12), word(packet, 28)]);
+                header.del_client = del_client_endpoint(record, packet);
+                #[cfg(feature = "sunfish-ipa-grant-tftp-peer")]
+                if !tx && kind == 1 && word(record, 12) == 0
+                    && word(packet, 28) == crate::qcom_tftp_server_check::SERVICE_PORT
+                    && let Some(body) = packet[32..].get(..word(packet, 20) as usize)
+                    && let [0, opcode @ (1 | 2), rest @ ..] = body
+                    && let Some(end) = rest.iter().position(|byte| *byte == 0)
+                    && end != 0
+                {
+                    let path = &rest[..end];
+                    let kind = match path {
+                        b"/readwrite/server_check.txt" => 1,
+                        b"/readwrite/mcfg.tmp" => 2,
+                        b"/readwrite/ota_firewall/ruleset" => 3,
+                        b"/readwrite/modem_efs" => 4,
+                        value if value.ends_with(b"/wlanmdsp.mbn") => 5,
+                        _ => 6,
+                    };
+                    header.tftp_request = Some(RegistrationTftpRequest {
+                        peer: [word(packet, 8), word(packet, 12)],
+                        opcode: *opcode, kind, bytes: body.len() as u16,
+                        #[cfg(feature = "sunfish-ipa-tftp-dispatch-trace")]
+                        handle: None,
+                        #[cfg(feature = "sunfish-ipa-tftp-dispatch-trace")]
+                        server_result: u8::MAX,
+                        #[cfg(feature = "sunfish-ipa-tftp-dispatch-trace")]
+                        occupied: u8::MAX,
+                        #[cfg(feature = "sunfish-ipa-tftp-dispatch-trace")]
+                        oack_queued: false,
+                        #[cfg(feature = "sunfish-ipa-tftp-original-trace")]
+                        oack_progress: 0,
+                        #[cfg(feature = "sunfish-ipa-tftp-queue-block")]
+                        queue_block: core::TftpQueueBlock::default(),
+                        #[cfg(feature = "sunfish-ipa-tftp-slot-snapshot")]
+                        full_queue: None,
+                        #[cfg(feature = "sunfish-ipa-tftp-original-trace")]
+                        original: None,
+                    });
+                }
+                if kind == 1 && word(record, 12) == 0
+                    && let Some(body) = packet[32..].get(..word(packet, 20) as usize)
+                    && let Ok(message) = crate::qcom_qmi::Message::decode(body)
+                {
+                    header.qmi = Some((body[0], message.transaction, message.message_id));
+                }
+            }
+        }
+        header
+    }
+}
+
+#[cfg(all(test, feature = "sunfish-ipa-grant-tftp-peer"))]
+#[test]
+fn registration_close_uses_only_the_matching_tftp_peer_request() {
+    let mut record = [0; 128];
+    let body = b"\0\x01/readonly/firmware/image/wlanmdsp.mbn\0octet\0";
+    for (offset, value) in [
+        (0, 0x0002_0009u32), (4, 0x4c), (8, (32 + body.len()) as u32),
+        (16, 1), (20, 1), (24, 0), (28, 0x49), (36, body.len() as u32),
+        (40, 1), (44, crate::qcom_tftp_server_check::SERVICE_PORT),
+    ] {
+        record[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    record[48..48 + body.len()].copy_from_slice(body);
+    let mut request = RegistrationHeader::read(&record, false, None);
+    let mut trace = RegistrationReplyFifo::default();
+    trace.correlate_tftp_close(&mut request);
+    let mut close = RegistrationHeader {
+        del_client: Some([1, 0x49]), tftp_request: None, ..request
+    };
+    trace.correlate_tftp_close(&mut close);
+    assert!(close.tftp_request.is_none());
+    close.del_client = Some([0, 0x49]);
+    trace.correlate_tftp_close(&mut close);
+    let matched = close.tftp_request.take().unwrap();
+    assert_eq!((matched.opcode, matched.kind, matched.bytes), (1, 5, body.len() as u16));
+    trace.correlate_tftp_close(&mut close);
+    assert!(close.tftp_request.is_none());
+}
+
+#[cfg(all(test, feature = "sunfish-ipa-registration-reply-headers"))]
+#[test]
+fn del_client_header_keeps_named_endpoint_separate_from_control_ports() {
+    let mut record = [0; 72];
+    for (offset, value) in [
+        (0, 0x0002_0009u32), (4, 0x4f), (8, 52), (16, 1), (20, 6),
+        (28, 0xfffffffe), (36, 20), (40, 1), (44, 0xfffffffe),
+        (48, 6), (52, 0), (56, 0x49),
+    ] {
+        record[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    let header = RegistrationHeader::read(&record, false, None);
+    assert_eq!(header.qrtr, Some([6, 0xfffffffe, 0xfffffffe]));
+    assert_eq!(header.del_client, Some([0, 0x49]));
+    assert_eq!(header.qmi, None);
+    record[12] = 4;
+    assert_eq!(RegistrationHeader::read(&record, false, None).del_client, None);
+    record[12] = 0;
+    record[48] = 5;
+    assert_eq!(RegistrationHeader::read(&record, false, None).del_client, None);
+}
+
+#[cfg(all(test, feature = "sunfish-ipa-registration-reply-headers"))]
+#[test]
+fn registration_header_capture_decodes_data_and_preserves_both_ends() {
+    let mut record = [0; 64];
+    for (offset, value) in [
+        (0, 0x0001_0009u32), (4, 42), (8, 48), (16, 1), (20, 1),
+        (28, 0x4002), (36, 14), (44, 0x1f),
+    ] {
+        record[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    record[48..62].copy_from_slice(&[2, 1, 0, 0x20, 0, 7, 0, 2, 4, 0, 0, 0, 0, 0]);
+    let header = RegistrationHeader::read(&record, true, Some(123));
+    assert_eq!((header.command, header.channel, header.parameter), (9, 1, 42));
+    assert_eq!(header.qrtr, Some([1, 0x4002, 0x1f]));
+    assert_eq!(header.qmi, Some((2, 1, 0x20)));
+
+    record[12] = 8;
+    assert_eq!(RegistrationHeader::read(&record, true, None).qmi, None);
+    let mut trace = RegistrationReplyFifo::default();
+    for at in 0..25 {
+        trace.push_header(RegistrationHeader { at: Some(at), ..header });
+    }
+    assert_eq!(trace.dropped, 6);
+    let retained = trace.headers.map(|entry| entry.unwrap().at.unwrap());
+    assert_eq!(retained, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 16, 17, 18, 19, 20, 21, 22, 23, 24]);
+}
+
+#[cfg(feature = "sunfish-ipa-registration-reply-path")]
+#[derive(Clone, Copy, Default)]
+pub struct RegistrationReplyFifo {
+    remaining: usize,
+    pub peer_tail_at: Option<u64>,
+    #[cfg(feature = "sunfish-ipa-reply-fifo-visibility")]
+    pub completion_visibility: Option<ServerCheckRxDone>,
+    pub last_empty_at: Option<u64>,
+    pub max_unread: usize,
+    pub polls: u32,
+    pub max_poll_gap: u64,
+    last_poll_at: Option<u64>,
+    pub(crate) finished: bool,
+    #[cfg(feature = "sunfish-ipa-registration-reply-headers")]
+    pub headers: [Option<RegistrationHeader>; 19],
+    #[cfg(feature = "sunfish-ipa-registration-reply-headers")]
+    pub completion: Option<RegistrationHeader>,
+    #[cfg(feature = "sunfish-ipa-registration-reply-headers")]
+    pub dropped: u32,
+    #[cfg(feature = "sunfish-ipa-grant-tftp-peer")]
+    tftp_requests: [Option<RegistrationTftpRequest>; 16],
+}
+
+#[cfg(feature = "sunfish-ipa-registration-reply-headers")]
+impl RegistrationReplyFifo {
+    #[cfg(feature = "sunfish-ipa-grant-tftp-peer")]
+    fn correlate_tftp_close(&mut self, header: &mut RegistrationHeader) {
+        if let Some(request) = header.tftp_request {
+            self.tftp_requests.rotate_left(1);
+            self.tftp_requests[15] = Some(request);
+        }
+        if let Some(peer) = header.del_client {
+            for request in self.tftp_requests.iter_mut().rev() {
+                if request.is_some_and(|request| request.peer == peer) {
+                    header.tftp_request = header.tftp_request.or(request.take());
+                }
+            }
+        }
+    }
+
+    fn push_header(&mut self, header: RegistrationHeader) {
+        if let Some(slot) = self.headers.iter_mut().find(|entry| entry.is_none()) {
+            *slot = Some(header);
+        } else {
+            // Keep the opening reply and nine subsequent records, then
+            // retain the nine most recent records in chronological order.
+            let recent = &mut self.headers[10..];
+            recent.rotate_left(1);
+            recent[8] = Some(header);
+            self.dropped = self.dropped.saturating_add(1);
+        }
+    }
+}
+
+#[cfg(feature = "sunfish-tftp-first-oack-headers")]
+#[derive(Clone, Copy, Default)]
+pub struct FirstOackHeaders {
+    pub recent: [Option<RegistrationHeader>; 12],
+    pub completion: Option<RegistrationHeader>,
+    pub omitted: u32,
+}
+
+#[cfg(feature = "sunfish-tftp-first-oack-headers")]
+impl FirstOackHeaders {
+    fn record(&mut self, header: RegistrationHeader, matching: bool) {
+        if self.completion.is_some() {
+            return;
+        }
+        if matching {
+            self.completion = Some(header);
+        } else if let Some(slot) = self.recent.iter_mut().find(|slot| slot.is_none()) {
+            *slot = Some(header);
+        } else {
+            self.recent.rotate_left(1);
+            self.recent[11] = Some(header);
+            self.omitted = self.omitted.saturating_add(1);
+        }
+    }
+}
+
+#[cfg(all(test, feature = "sunfish-tftp-first-oack-headers"))]
+#[test]
+fn first_oack_header_window_wraps_and_freezes_only_on_matching_completion() {
+    let mut trace = FirstOackHeaders::default();
+    for id in 0..16u32 {
+        let mut record = [6, 0, 2, 0, 0, 0, 0, 0];
+        record[4..].copy_from_slice(&id.to_le_bytes());
+        trace.record(RegistrationHeader::read(&record, false, None), false);
+    }
+    let completion = RegistrationHeader::read(&[14, 0, 2, 0, 42, 0, 0, 0], false, None);
+    trace.record(completion, true);
+    trace.record(completion, false);
+    assert_eq!(trace.omitted, 4);
+    assert_eq!(trace.recent.map(|entry| entry.unwrap().parameter),
+        [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    assert_eq!(trace.completion.unwrap().parameter, 42);
+}
+
+#[cfg(feature = "sunfish-tftp-oack-peer-tail")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OackPeerTail {
+    pub pending_bytes: usize,
+    pub last_before: Option<u64>,
+    pub first_crossed: Option<u64>,
+    pub at_close: Option<usize>,
+}
+
+#[cfg(feature = "sunfish-tftp-oack-peer-tail")]
+impl OackPeerTail {
+    fn new(pending_bytes: usize, at: Option<u64>) -> Self {
+        Self {
+            pending_bytes,
+            last_before: None,
+            first_crossed: at.filter(|_| pending_bytes == 0),
+            at_close: None,
+        }
+    }
+
+    fn observe(&mut self, consumed: usize, before: Option<u64>, after: Option<u64>) {
+        if self.pending_bytes == 0 { return; }
+        self.pending_bytes = self.pending_bytes.saturating_sub(consumed);
+        if self.pending_bytes == 0 { self.first_crossed = after; }
+        else { self.last_before = before; }
+    }
+
+    fn close(&mut self) {
+        if self.at_close.is_none() { self.at_close = Some(self.pending_bytes); }
+    }
+}
+
+#[cfg(all(test, feature = "sunfish-tftp-oack-peer-tail"))]
+#[test]
+fn oack_peer_tail_latches_close_and_crossing_independently() {
+    let mut trace = OackPeerTail::new(104, Some(10));
+    assert_eq!(trace.last_before, None);
+    trace.observe(16, Some(11), Some(12));
+    assert_eq!(trace.pending_bytes, 88);
+    assert_eq!(trace.last_before, Some(11));
+    trace.close();
+    trace.observe(120, Some(14), Some(15));
+    trace.close();
+    assert_eq!(trace.first_crossed, Some(15));
+    assert_eq!(trace.at_close, Some(88));
+
+    let mut already_read = OackPeerTail::new(0, Some(10));
+    already_read.close();
+    assert_eq!(already_read.first_crossed, Some(10));
+    assert_eq!(already_read.at_close, Some(0));
+}
+
+#[cfg(feature = "sunfish-ipa-init-close-visibility")]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct InitCloseFifo {
+    pub fresh_unread: Option<u32>,
+    pub sample_start: Option<u64>,
+    pub sample_end: Option<u64>,
+    fresh_head: Option<u64>,
+    close_end: Option<u64>,
+    pub bounds: Option<ServerCheckRxDone>,
+}
+
+#[cfg(feature = "sunfish-ipa-init-close-visibility")]
+impl InitCloseFifo {
+    pub fn visible_at_sample(&self) -> Option<bool> {
+        Some(self.close_end? <= self.fresh_head?)
+    }
+}
+
+#[cfg(feature = "sunfish-ipa-reg-close-fifo")]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RegistrationCloseFifo {
+    pub pre: Option<u32>,
+    pub post: Option<u32>,
+    pub fresh: Option<u32>,
+    pub fresh_start: Option<u64>,
+    pub fresh_end: Option<u64>,
+    pub consumed: u32,
+    pub end: Option<u32>,
+    pub record_bytes: Option<u32>,
+    already_closed: bool,
+}
+
+#[cfg(feature = "sunfish-ipa-reg-close-fifo")]
+impl RegistrationCloseFifo {
+    // Both head samples use the same host-owned RX tail. Compare the end of
+    // the exact, subsequently decoded record, including its GLINK padding.
+    pub fn status(&self) -> u32 {
+        if self.already_closed { return 4; }
+        let Some(end) = self.end else { return 0; };
+        match (self.pre, self.post) {
+            (Some(pre), Some(post)) if pre <= post => {
+                if end <= pre { 1 } else if end > post { 2 } else { 3 }
+            }
+            _ => u32::MAX,
+        }
+    }
+}
+
+struct Ring<I> {
+    io: I,
+    generation: u64,
+    identity: u64,
+    words: [u32; 8],
+    read_notification_end: Option<u32>,
+    record: [u8; MAX_RX_RECORD],
+    #[cfg(feature = "sunfish-ipa-init-close-visibility")]
+    init_close: InitCloseFifo,
+    #[cfg(feature = "sunfish-ipa-reg-close-fifo")]
+    reg_close: Option<RegistrationCloseFifo>,
+    #[cfg(feature = "sunfish-ipa-reg-close-fifo")]
+    reg_pre_unread: Option<u32>,
+    rx_bytes: Option<usize>,
+    #[cfg(feature = "sunfish-ipa-registration-reply-path")]
+    registration_reply: Option<RegistrationReplyFifo>,
+    #[cfg(feature = "sunfish-ipa-reply-fifo-visibility")]
+    registration_reply_rx: Option<ServerCheckRxWindow>,
+    #[cfg(feature = "sunfish-tftp-tail-observer")]
+    tftp_tail_remaining: Option<usize>,
+    #[cfg(feature = "sunfish-tftp-tail-observer")]
+    tftp_tail_seen: bool,
+    #[cfg(feature = "sunfish-wlan-first-server-check-tail")]
+    first_server_check_tail: ServerCheckTail,
+    #[cfg(feature = "sunfish-tftp-oack-peer-tail")]
+    oack_peer_tail: Option<OackPeerTail>,
+    #[cfg(feature = "sunfish-tftp-oack-close-fifo")]
+    oack_close_fifo: Option<ServerCheckRxWindow>,
+    #[cfg(feature = "sunfish-tftp-oack-fifo-outcome")]
+    reserved_oack_rx: Option<ServerCheckRxWindow>,
+    #[cfg(feature = "sunfish-tftp-oack-ahead-headers")]
+    reserved_oack_ahead: Option<OackAheadCapture>,
+    #[cfg(feature = "sunfish-tftp-reserved-writer-io")]
+    reserved_writer_io: ReservedWriterIoTrace,
+    #[cfg(feature = "sunfish-wlan-first-server-check-tail")]
+    first_server_check_clock: Option<fn() -> u64>,
+    #[cfg(feature = "sunfish-wlan-first-oack-rx-fifo")]
+    server_check_rx: Option<ServerCheckRxWindow>,
+    #[cfg(feature = "sunfish-ipa-registration-rx-visibility")]
+    registration_rx: Option<ServerCheckRxWindow>,
+    #[cfg(feature = "sunfish-ipa-wrq-ready-fifo")]
+    first_wrq_rx: Option<ServerCheckRxDone>,
+    #[cfg(feature = "sunfish-ipa-wrq-ready-fifo")]
+    track_first_wrq: bool,
+    #[cfg(feature = "sunfish-linux-mpss-glink")]
+    control: Option<boot::Runtime>,
+    #[cfg(feature = "sunfish-linux-mpss-glink")]
+    open_diagnostic: Option<OpenDiagnostic>,
+}
+
+impl<I: Io> Ring<I> {
+    fn observation(&mut self) -> Result<(), Error> {
+        let observation = self.io.observe()?;
+        self.validate_observation(observation)
+    }
+
+    fn validate_observation(&self, observation: Observation) -> Result<(), Error> {
+        ready(observation, self.generation)?;
+        if observation.identity != self.identity {
+            return Err(Error::IdentityChanged);
+        }
+        Ok(())
+    }
+
+    fn barrier_observation(&mut self, kind: Barrier) -> Result<(), Error> {
+        #[cfg(feature = "sunfish-glink-barrier-observe-pair")]
+        {
+            let observation = self.io.barrier_observe(kind)?;
+            self.validate_observation(observation)
+        }
+        #[cfg(not(feature = "sunfish-glink-barrier-observe-pair"))]
+        {
+            self.io.barrier(kind)?;
+            self.observation()
+        }
+    }
+
+    // Exactly the original barrier -> observation order at cursor/doorbell
+    // boundaries. The opt-in native override shares only the outer domain
+    // pre/post pair; both controller actions retain their own peer checks.
+    fn adjacent_barrier_observation(&mut self, kind: Barrier) -> Result<(), Error> {
+        #[cfg(feature = "sunfish-glink-adjacent-barrier-pairs")]
+        { self.barrier_observation(kind) }
+        #[cfg(not(feature = "sunfish-glink-adjacent-barrier-pairs"))]
+        {
+            self.io.barrier(kind)?;
+            self.observation()
+        }
+    }
+
+    #[cfg(feature = "sunfish-ipa-registration-reply-headers")]
+    fn capture_registration_rx(&mut self, size: usize, completion: bool, _event: &Receive) {
+        if let Some(trace) = self.registration_reply.as_mut().filter(|trace| !trace.finished) {
+            let header = RegistrationHeader::read(&self.record[..size], false,
+                self.first_server_check_clock.map(|clock| clock()));
+            #[cfg(feature = "sunfish-ipa-grant-tftp-peer")]
+            let header = {
+                let mut header = header;
+                #[cfg(feature = "sunfish-ipa-tftp-dispatch-trace")]
+                if let Some(request) = header.tftp_request.as_mut()
+                    && let Receive::Session(core::Event::TftpRequest(handle)) = _event
+                {
+                    request.handle = Some(*handle);
+                }
+                trace.correlate_tftp_close(&mut header);
+                header
+            };
+            if completion {
+                trace.completion = Some(header);
+            } else {
+                trace.push_header(header);
+            }
+        }
+    }
+
+    #[cfg(feature = "sunfish-tftp-first-oack-headers")]
+    fn capture_first_oack_rx(&mut self, size: usize, matching: bool) {
+        if let Some(trace) = self.server_check_rx.as_mut().filter(|trace| trace.done.is_none()) {
+            trace.headers.record(RegistrationHeader::read(&self.record[..size], false,
+                self.first_server_check_clock.map(|clock| clock())), matching);
+        }
+    }
+
+    fn sample(&mut self) -> Result<(), Error> {
+        #[cfg(feature = "sunfish-tftp-oack-peer-tail")]
+        let oack_sample_start = self.oack_peer_tail.as_ref().filter(|trace| trace.pending_bytes != 0)
+            .and(self.first_server_check_clock).map(|clock| clock());
+        #[cfg(feature = "sunfish-tftp-oack-close-fifo")]
+        let close_sample_start = self.oack_close_fifo.as_ref().filter(|trace| trace.done.is_none())
+            .and(self.first_server_check_clock).map(|clock| clock());
+        #[cfg(feature = "sunfish-tftp-oack-fifo-outcome")]
+        let reserved_sample_start = self.reserved_oack_rx.as_ref().filter(|trace| trace.done.is_none())
+            .and(self.first_server_check_clock).map(|clock| clock());
+        #[cfg(feature = "sunfish-ipa-reply-fifo-visibility")]
+        let registration_reply_start = self.registration_reply_rx.as_ref()
+            .and(self.first_server_check_clock).map(|clock| clock());
+        #[cfg(feature = "sunfish-wlan-first-oack-rx-fifo")]
+        let trace_sample = self.server_check_rx.as_ref().is_some_and(|trace| trace.done.is_none());
+        #[cfg(feature = "sunfish-wlan-first-oack-rx-fifo")]
+        let sample_start = if trace_sample { self.first_server_check_clock.map(|clock| clock()) } else { None };
+        #[cfg(feature = "sunfish-ipa-registration-rx-visibility")]
+        let track_registration = self.registration_rx.as_ref().is_some_and(|trace| trace.done.is_none());
+        #[cfg(feature = "sunfish-ipa-wrq-ready-fifo")]
+        let track_registration = track_registration || self.track_first_wrq;
+        // Keep the shared RX-head history alive until normal ingress identifies
+        // the first close of the original writer. Earlier snapshots stay frozen.
+        #[cfg(feature = "sunfish-ipa-init-close-visibility")]
+        let track_registration = track_registration
+            || (self.registration_rx.is_some() && self.init_close.close_end.is_none());
+        #[cfg(feature = "sunfish-ipa-registration-rx-visibility")]
+        let registration_start = track_registration.then_some(self.first_server_check_clock)
+            .flatten().map(|clock| clock());
+        self.observation()?;
+        #[cfg(feature = "sunfish-glink-combined-cursor-sample")]
+        let (rx, words) = self.io.cursor_snapshot()?;
+        #[cfg(not(feature = "sunfish-glink-combined-cursor-sample"))]
+        let rx = self.io.rx_length()?;
+        if self.rx_bytes.is_some() && rx != self.rx_bytes {
+            return Err(Error::IdentityChanged);
+        }
+        #[cfg(feature = "sunfish-glink-combined-cursor-sample")]
+        let new = validate_descriptors(words, rx)?;
+        #[cfg(not(feature = "sunfish-glink-combined-cursor-sample"))]
+        let new = descriptors(&mut self.io, rx)?;
+        if new[1] != self.words[1] || new[2] != self.words[2] {
+            return Err(Error::OwnedCursorChanged);
+        }
+        if new[4..] != self.words[4..] {
+            return Err(Error::ReservedChanged);
+        }
+        let consumed = distance(self.words[0], new[0]);
+        if consumed > distance(self.words[0], self.words[1])
+            || rx.is_some_and(|length| {
+                ring_distance(self.words[3], new[3], length)
+                    > length - FULL_RESERVE - ring_distance(self.words[2], self.words[3], length)
+            })
+        {
+            return Err(Error::PeerOverrun);
+        }
+        #[cfg(feature = "sunfish-wlan-first-oack-rx-fifo")]
+        let old_rx_head = self.words[3];
+        #[cfg(feature = "sunfish-tftp-tail-observer")]
+        if let Some(remaining) = self.tftp_tail_remaining {
+            if consumed >= remaining {
+                self.tftp_tail_seen = true;
+                self.tftp_tail_remaining = None;
+            } else {
+                self.tftp_tail_remaining = Some(remaining - consumed);
+            }
+        }
+        if self
+            .read_notification_end
+            .is_some_and(|end| distance(self.words[0], end) <= consumed)
+        {
+            self.read_notification_end = None;
+        }
+        self.words = new;
+        self.rx_bytes = rx;
+        self.barrier_observation(Barrier::Acquire)?;
+        #[cfg(feature = "sunfish-ipa-registration-reply-path")]
+        if let Some(trace) = self.registration_reply.as_mut().filter(|trace| !trace.finished) {
+            if trace.remaining != 0 {
+                trace.remaining = trace.remaining.saturating_sub(consumed);
+                if trace.remaining == 0 {
+                    trace.peer_tail_at = self.first_server_check_clock.map(|clock| clock());
+                }
+            }
+            if let Some(length) = rx {
+                let unread = ring_distance(new[2], new[3], length);
+                trace.max_unread = trace.max_unread.max(unread);
+                if unread == 0 {
+                    trace.last_empty_at = self.first_server_check_clock.map(|clock| clock());
+                }
+            }
+        }
+        #[cfg(feature = "sunfish-ipa-registration-rx-visibility")]
+        if let Some(start) = registration_start && let Some(length) = rx
+        {
+            let unread = ring_distance(new[2], new[3], length);
+            let end = self.first_server_check_clock.map(|clock| clock());
+            if let Some(trace) = self.registration_rx.as_mut() {
+                trace.sample(ring_distance(old_rx_head, new[3], length), unread, Some(start), end);
+            } else {
+                #[cfg(feature = "sunfish-ipa-wrq-ready-fifo")]
+                { self.registration_rx = Some(ServerCheckRxWindow::new(unread, end)); }
+            }
+        }
+        #[cfg(feature = "sunfish-wlan-first-oack-rx-fifo")]
+        if trace_sample && let Some(trace) = self.server_check_rx.as_mut()
+            && let Some(length) = rx
+        {
+            trace.sample(ring_distance(old_rx_head, new[3], length),
+                ring_distance(new[2], new[3], length), sample_start,
+                self.first_server_check_clock.map(|clock| clock()));
+        }
+        #[cfg(feature = "sunfish-ipa-reply-fifo-visibility")]
+        if let Some(start) = registration_reply_start
+            && let Some(length) = rx
+            && let Some(trace) = self.registration_reply_rx.as_mut()
+        {
+            trace.sample(ring_distance(old_rx_head, new[3], length),
+                ring_distance(new[2], new[3], length), Some(start),
+                self.first_server_check_clock.map(|clock| clock()));
+        }
+        #[cfg(feature = "sunfish-tftp-oack-close-fifo")]
+        if let Some(trace) = self.oack_close_fifo.as_mut().filter(|trace| trace.done.is_none())
+            && let Some(length) = rx
+        {
+            trace.sample(ring_distance(old_rx_head, new[3], length),
+                ring_distance(new[2], new[3], length), close_sample_start,
+                self.first_server_check_clock.map(|clock| clock()));
+        }
+        #[cfg(feature = "sunfish-tftp-oack-fifo-outcome")]
+        if let Some(trace) = self.reserved_oack_rx.as_mut().filter(|trace| trace.done.is_none())
+            && let Some(length) = rx
+        {
+            trace.sample(ring_distance(old_rx_head, new[3], length),
+                ring_distance(new[2], new[3], length), reserved_sample_start,
+                self.first_server_check_clock.map(|clock| clock()));
+        }
+        #[cfg(feature = "sunfish-tftp-oack-peer-tail")]
+        if let Some(trace) = self.oack_peer_tail.as_mut().filter(|trace| trace.pending_bytes != 0) {
+            trace.observe(consumed, oack_sample_start, self.first_server_check_clock.map(|clock| clock()));
+        }
+        #[cfg(feature = "sunfish-wlan-first-server-check-tail")]
+        if let ServerCheckTail::Pending(remaining) = self.first_server_check_tail {
+            self.first_server_check_tail = if consumed >= remaining {
+                ServerCheckTail::Consumed(self.first_server_check_clock.map(|clock| clock()))
+            } else {
+                ServerCheckTail::Pending(remaining - consumed)
+            };
+        }
+        Ok(())
+    }
+
+    fn read_rx_at(&mut self, relative: usize, out: &mut [u8]) -> Result<(), Error> {
+        let length = self.rx_bytes.ok_or(Error::NotReady)?;
+        let at = ring_advance(self.words[2], relative, length) as usize;
+        if out.len() > length {
+            return Err(Error::InvalidRecord);
+        }
+        let first = out.len().min(length - at);
+        self.io.read_rx(at, &mut out[..first])?;
+        if first != out.len() {
+            self.io.read_rx(0, &mut out[first..])?;
+        }
+        Ok(())
+    }
+
+    fn peek(&mut self) -> Result<Result<usize, Receive>, Error> {
+        self.sample()?;
+        let Some(length) = self.rx_bytes else {
+            return Ok(Err(Receive::Idle));
+        };
+        let available = ring_distance(self.words[2], self.words[3], length);
+        if available == 0 {
+            return Ok(Err(Receive::Idle));
+        }
+        let mut prefix = [0; 16];
+        self.read_rx_at(0, &mut prefix[..8])?;
+        let command = u16::from_le_bytes([prefix[0], prefix[1]]);
+        let size = match command {
+            #[cfg(feature = "sunfish-linux-mpss-glink")]
+            2 if self.control.is_some() => match boot::open_length(&prefix) {
+                Ok(size) => size,
+                Err(error) => {
+                    self.open_diagnostic = Some(self.control.as_ref().unwrap().channels.open_diagnostic(&prefix[..8], 1));
+                    return Err(error);
+                }
+            },
+            5 => {
+                let count = word(&prefix, 4) as usize;
+                if count == 0 || count > core::REMOTE_INTENTS {
+                    return Err(Error::InvalidRecord);
+                }
+                8 + count * 8
+            }
+            6 | 7 | 14 => 8,
+            #[cfg(feature = "sunfish-glink-intent-request-experiment")]
+            8 => 8,
+            13 if prefix[2..8] == [0; 6] => 8,
+            13 => return Err(Error::InvalidRecord),
+            9 | 12 => {
+                if available < 16 {
+                    return Ok(Err(Receive::Pending {
+                        available,
+                        needed: 16,
+                    }));
+                }
+                self.read_rx_at(8, &mut prefix[8..])?;
+                let chunk = word(&prefix, 8) as usize;
+                let remaining = word(&prefix, 12) as usize;
+                if chunk == 0
+                    || chunk > core::MAX_DATAGRAM_BYTES
+                    || remaining > core::MAX_DATAGRAM_BYTES
+                    || chunk + remaining > core::MAX_DATAGRAM_BYTES
+                {
+                    return Err(Error::InvalidRecord);
+                }
+                (16 + chunk + 7) & !7
+            }
+            _ => return Err(Error::UnsupportedCommand),
+        };
+        if available < size {
+            return Ok(Err(Receive::Pending {
+                available,
+                needed: size,
+            }));
+        }
+        // Copy a bounded record without borrowing shared memory into the core.
+        let at = self.words[2] as usize;
+        let first = size.min(length - at);
+        self.io.read_rx(at, &mut self.record[..first])?;
+        if first != size {
+            self.io.read_rx(0, &mut self.record[first..size])?;
+        }
+        let prefix_size = if matches!(command, 9 | 12) { 16 } else { 8 };
+        if self.record[..prefix_size] != prefix[..prefix_size] {
+            return Err(Error::ChangedRecord);
+        }
+        self.io.barrier(Barrier::Acquire)?;
+        let mut check = [0; 256];
+        for offset in (0..size).step_by(check.len()) {
+            let count = (size - offset).min(check.len());
+            self.read_rx_at(offset, &mut check[..count])?;
+            if self.record[offset..offset + count] != check[..count] {
+                return Err(Error::ChangedRecord);
+            }
+        }
+        self.sample()?;
+        Ok(Ok(size))
+    }
+
+    fn consume(&mut self, size: usize, notification: bool) -> Result<(), Error> {
+        self.sample()?;
+        self.adjacent_barrier_observation(Barrier::Release)?;
+        let next = ring_advance(self.words[2], size, self.rx_bytes.ok_or(Error::NotReady)?);
+        self.io.store_rx_tail(next)?;
+        self.words[2] = next;
+        self.io.barrier(Barrier::Complete)?;
+        self.sample()?;
+        if notification {
+            self.notify()?;
+        }
+        Ok(())
+    }
+
+    fn notify(&mut self) -> Result<(), Error> {
+        self.adjacent_barrier_observation(Barrier::Complete)?;
+        self.io.notify_peer()?;
+        self.adjacent_barrier_observation(Barrier::Complete)
+    }
+
+    fn write(&mut self, record: &[u8], reserve: usize) -> Result<(), Error> {
+        self.write_checked(record, reserve, false).map(|_| ())
+    }
+
+    // False leaves AP TX head untouched. Bytes staged for readback are
+    // private to the writer until that head is published.
+    fn write_checked(&mut self, record: &[u8], reserve: usize, yield_to_rx: bool) -> Result<bool, Error> {
+        if record.is_empty() || record.len() % 8 != 0 || record.len() > core::MAX_TX_RECORD_BYTES {
+            return Err(Error::InvalidRecord);
+        }
+        self.sample()?;
+        if yield_to_rx && self.words[2] != self.words[3] { return Ok(false); }
+        let free = FIFO_BYTES - distance(self.words[0], self.words[1]);
+        if record.len() > free.saturating_sub(reserve) {
+            return Err(Error::WouldBlock);
+        }
+        let at = self.words[1] as usize;
+        let first = record.len().min(FIFO_BYTES - at);
+        self.io.write_tx(at, &record[..first])?;
+        if first != record.len() {
+            self.io.write_tx(0, &record[first..])?;
+        }
+        self.io.barrier(Barrier::Release)?;
+        let mut check = [0; core::MAX_TX_RECORD_BYTES];
+        self.io.read_tx(at, &mut check[..first])?;
+        if first != record.len() {
+            self.io.read_tx(0, &mut check[first..record.len()])?;
+        }
+        if record != &check[..record.len()] {
+            return Err(Error::Readback);
+        }
+        self.sample()?;
+        if yield_to_rx && self.words[2] != self.words[3] { return Ok(false); }
+        self.barrier_observation(Barrier::Release)?;
+        let next = advance(self.words[1], record.len());
+        #[cfg(feature = "sunfish-ipa-reg-close-fifo")]
+        { self.reg_pre_unread = self.rx_bytes.map(|length| ring_distance(self.words[2], self.words[3], length) as u32); }
+        self.io.store_tx_head(next)?;
+        self.words[1] = next;
+        self.io.barrier(Barrier::Complete)?;
+        self.sample()?;
+        self.notify()?;
+        #[cfg(feature = "sunfish-tftp-first-oack-headers")]
+        if let Some(trace) = self.server_check_rx.as_mut().filter(|trace| trace.done.is_none()) {
+            trace.headers.record(RegistrationHeader::read(record, true,
+                self.first_server_check_clock.map(|clock| clock())), false);
+        }
+        #[cfg(feature = "sunfish-ipa-registration-reply-headers")]
+        if let Some(trace) = self.registration_reply.as_mut().filter(|trace| !trace.finished) {
+            trace.push_header(RegistrationHeader::read(record, true,
+                self.first_server_check_clock.map(|clock| clock())));
+        }
+        Ok(true)
+    }
+
+    fn blocked_notice(&mut self) -> Result<bool, Error> {
+        if self.read_notification_end.is_some() {
+            return Ok(false);
+        }
+        match self.write(&[13, 0, 0, 0, 0, 0, 0, 0], FULL_RESERVE) {
+            Ok(()) => {
+                self.read_notification_end = Some(self.words[1]);
+                Ok(true)
+            }
+            Err(Error::WouldBlock) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+/// Owns the session and FIFO writer together. No mutable session/IO escape is
+/// provided. Peer simulation can use separately owned fake memory handles.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SessionFailureDiagnostic {
+    pub stage: u32,
+    pub command: u32,
+    pub parameter: u32,
+}
+#[cfg(feature = "sunfish-first-oack-grant-window")]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FirstGrantTrace {
+    pub trigger: u32,
+    pub advertisement_at: Option<u64>,
+    pub ack_at: Option<u64>,
+    pub outcome: u32,
+    pub unread_bytes: u32,
+    #[cfg(feature = "sunfish-first-oack-yield-rx")]
+    pub window: GrantRxWindow,
+}
+
+#[cfg(feature = "sunfish-first-oack-yield-rx")]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GrantRxWindow {
+    next_tail: u32,
+    pub remaining: u32,
+    pub records: u32,
+    pub commands: u32,
+    pub qrtr_types: u32,
+    pub first_close: Option<[u32; 2]>,
+    pub matched_close: bool,
+    pub partial: bool,
+    pub lost_cursor: bool,
+}
+
+#[cfg(feature = "sunfish-first-oack-yield-rx")]
+impl GrantRxWindow {
+    // Observe only records successfully consumed by the ordinary receiver.
+    // A frame completed by later arrivals cannot identify a complete close at yield.
+    fn consumed(&mut self, start: u32, end: u32, record: &[u8], peer: Option<[u32; 2]>) {
+        if self.remaining == 0 || self.lost_cursor { return; }
+        if start != self.next_tail {
+            self.lost_cursor = true;
+            return;
+        }
+        self.next_tail = end;
+        if record.len() > self.remaining as usize {
+            self.partial = true;
+            self.remaining = 0;
+            return;
+        }
+        self.remaining -= record.len() as u32;
+        self.records += 1;
+        let command = u16::from_le_bytes([record[0], record[1]]);
+        self.commands |= 1u32.checked_shl(command.into()).unwrap_or(0);
+        if command == 9 && record.len() >= 48 {
+            let chunk = word(record, 8) as usize;
+            if chunk >= 32 && let Some(packet) = record[16..].get(..chunk)
+                && word(packet, 0) == 1
+            {
+                self.qrtr_types |= 1u32.checked_shl(word(packet, 4)).unwrap_or(0);
+                if let Some(endpoint) = del_client_endpoint(record, packet) {
+                    self.first_close.get_or_insert(endpoint);
+                    self.matched_close |= peer == Some(endpoint);
+                }
+            }
+        }
+    }
+}
+
+pub struct Adapter<I> {
+    #[cfg(feature = "sunfish-first-oack-grant-window")]
+    first_grant: FirstGrantTrace,
+    ring: Ring<I>,
+    session: Session,
+    quarantined: bool,
+    session_failure: Option<SessionFailureDiagnostic>,
+}
+
+impl<I: Io> Adapter<I> {
+    #[cfg(feature = "sunfish-wlan-elf-phase-io")]
+    pub fn elf_io_totals(&self) -> Option<[u64; 12]> { self.ring.io.elf_io_totals() }
+
+    #[allow(dead_code)] // Consumed by the combined runtime when it is enabled.
+    pub fn with_io<T>(&mut self, action: impl FnOnce(&mut I) -> T) -> T {
+        action(&mut self.ring.io)
+    }
+
+    /// Attach to established 16 KiB rings without clearing bytes or cursors.
+    /// Caller must have completed GLINK channel negotiation in this generation.
+    pub fn attach(mut io: I, session: Session, generation: u64) -> Result<Self, Error> {
+        session.check(generation)?;
+        if !session.transport_is_pristine() {
+            return Err(Error::SessionNotFresh);
+        }
+        let observation = io.observe()?;
+        ready(observation, generation)?;
+        let rx_bytes = io.rx_length()?;
+        if rx_bytes.is_none() {
+            return Err(Error::NotReady);
+        }
+        let words = descriptors(&mut io, rx_bytes)?;
+        let mut this = Self {
+            #[cfg(feature = "sunfish-first-oack-grant-window")]
+            first_grant: FirstGrantTrace::default(),
+            ring: Ring {
+                io,
+                generation,
+                identity: observation.identity,
+                words,
+                read_notification_end: None,
+                record: [0; MAX_RX_RECORD],
+                #[cfg(feature = "sunfish-ipa-init-close-visibility")]
+                init_close: InitCloseFifo::default(),
+                #[cfg(feature = "sunfish-ipa-reg-close-fifo")]
+                reg_close: None,
+                #[cfg(feature = "sunfish-ipa-reg-close-fifo")]
+                reg_pre_unread: None,
+                rx_bytes,
+                #[cfg(feature = "sunfish-ipa-registration-reply-path")]
+                registration_reply: None,
+                #[cfg(feature = "sunfish-ipa-reply-fifo-visibility")]
+                registration_reply_rx: None,
+                #[cfg(feature = "sunfish-tftp-tail-observer")]
+                tftp_tail_remaining: None,
+                #[cfg(feature = "sunfish-tftp-tail-observer")]
+                tftp_tail_seen: false,
+                #[cfg(feature = "sunfish-wlan-first-server-check-tail")]
+                first_server_check_tail: ServerCheckTail::Untracked,
+                #[cfg(feature = "sunfish-tftp-oack-peer-tail")]
+                oack_peer_tail: None,
+                #[cfg(feature = "sunfish-tftp-oack-close-fifo")]
+                oack_close_fifo: None,
+                #[cfg(feature = "sunfish-tftp-oack-fifo-outcome")]
+                reserved_oack_rx: None,
+                #[cfg(feature = "sunfish-tftp-oack-ahead-headers")]
+                reserved_oack_ahead: None,
+                #[cfg(feature = "sunfish-tftp-reserved-writer-io")]
+                reserved_writer_io: ReservedWriterIoTrace::default(),
+                #[cfg(feature = "sunfish-wlan-first-server-check-tail")]
+                first_server_check_clock: None,
+                #[cfg(feature = "sunfish-wlan-first-oack-rx-fifo")]
+                server_check_rx: None,
+                #[cfg(feature = "sunfish-ipa-registration-rx-visibility")]
+                registration_rx: None,
+                #[cfg(feature = "sunfish-ipa-wrq-ready-fifo")]
+                first_wrq_rx: None,
+                #[cfg(feature = "sunfish-ipa-wrq-ready-fifo")]
+                track_first_wrq: false,
+                #[cfg(feature = "sunfish-linux-mpss-glink")]
+                control: None,
+                #[cfg(feature = "sunfish-linux-mpss-glink")]
+                open_diagnostic: None,
+            },
+            session,
+            quarantined: true,
+            session_failure: None,
+        };
+        this.ring.sample()?;
+        this.quarantined = false;
+        Ok(this)
+    }
+
+    fn check(&self, generation: u64) -> Result<(), Error> {
+        if generation != self.ring.generation {
+            return Err(Error::StaleGeneration);
+        }
+        if self.quarantined {
+            return Err(Error::Quarantined);
+        }
+        self.session.check(generation)?;
+        Ok(())
+    }
+
+    /// Fixed identity captured at attachment and rechecked by every live gate.
+    pub fn identity(&self) -> u64 {
+        self.ring.identity
+    }
+
+    /// Backend-specific failure detail for diagnostics; zero means unknown.
+    pub fn io_diagnostic(&self) -> u32 {
+        self.ring.io.diagnostic()
+    }
+    pub fn capacity_diagnostic(&self) -> Option<core::CapacityDiagnostic> {
+        self.session.capacity_diagnostic()
+    }
+    pub fn session_failure_diagnostic(&self) -> Option<SessionFailureDiagnostic> {
+        self.session_failure
+    }
+    #[cfg(feature = "sunfish-linux-ipa-qmi")]
+    pub fn linux_ipa_tx_diagnostic(&self) -> Option<core::LinuxIpaTxDiagnostic> {
+        self.session.linux_ipa_tx_diagnostic()
+    }
+    #[cfg(feature = "sunfish-linux-ipa-qmi")]
+    pub fn linux_ipa_receipt_pending(&self) -> Option<bool> {
+        self.session.linux_ipa_receipt_pending()
+    }
+    #[cfg(feature = "sunfish-linux-ipa-qmi")]
+    pub fn linux_ipa_receive_available(&self) -> u32 {
+        self.session.linux_ipa_receive_available()
+    }
+    #[cfg(feature = "sunfish-glink-intent-denial-snapshot")]
+    pub fn intent_denial_window(&self) -> Option<crate::qcom_glink_qmi::IntentDenialWindow> {
+        self.session.intent_denial_window()
+    }
+    #[cfg(feature = "sunfish-linux-ipa-qmi")]
+    pub fn intent_denial_diagnostic(&self) -> Option<crate::qcom_glink_qmi::IntentDenialDiagnostic> {
+        self.session.intent_denial_diagnostic()
+    }
+    #[cfg(feature = "sunfish-linux-ipa-qmi")]
+    pub fn receive_snapshot(&self) -> crate::qcom_glink_qmi::ReceiveSnapshot {
+        self.session.receive_snapshot()
+    }
+    #[cfg(feature = "sunfish-native-tftp-server-check")]
+    pub fn tftp_queue_snapshot(&self) -> crate::qcom_glink_qmi::TftpQueueSnapshot {
+        self.session.tftp_queue_snapshot()
+    }
+    #[cfg(feature = "sunfish-native-tftp-server-check")]
+    pub fn tftp_tx_progress(&self) -> [u32; 3] { self.session.tftp_tx_progress() }
+    #[cfg(feature = "sunfish-wlan-registry-ack-trace")]
+    pub fn set_registry_ack_clock(&mut self, clock: fn() -> u64) {
+        self.session.set_registry_ack_clock(clock);
+        #[cfg(feature = "sunfish-wlan-first-server-check-tail")]
+        { self.ring.first_server_check_clock = Some(clock); }
+    }
+    #[cfg(feature = "sunfish-wlan-intent-ack-turn")]
+    pub fn intent_ack_summary(&self) -> (u32, Option<u64>) {
+        self.session.intent_ack_summary()
+    }
+    #[cfg(feature = "sunfish-wlan-elf-queue-trace")]
+    pub fn registry_queue_pressure(&self, handle: &core::RequestHandle) -> Option<core::RegistryQueuePressure> {
+        self.session.registry_queue_pressure(handle)
+    }
+    #[cfg(feature = "sunfish-tftp-endpoint-observer")]
+    pub fn tftp_endpoint_trace(&self) -> Option<core::TftpEndpointTrace> { self.session.tftp_endpoint_trace() }
+    #[cfg(feature = "sunfish-tftp-final-ack-observer")]
+    pub fn tftp_final_ack_trace(&self) -> Option<core::TftpFinalAckTrace> { self.session.tftp_final_ack_trace() }
+    #[cfg(feature = "sunfish-tftp-oack-repeat-turn")]
+    pub(crate) fn coalesce_followed_wrq(&self, handle: &core::TftpHandle) -> bool {
+        self.session.coalesce_followed_wrq(handle)
+    }
+
+    #[cfg(feature = "sunfish-tftp-oack-close-fifo")]
+    pub(crate) fn oack_close_fifo(&self) -> Option<ServerCheckRxDone> {
+        self.ring.oack_close_fifo.as_ref().and_then(|trace| trace.done)
+    }
+
+    #[cfg(feature = "sunfish-tftp-oack-ahead-headers")]
+    pub(crate) fn reserved_oack_ahead(&self) -> Option<&OackAheadCapture> {
+        self.ring.reserved_oack_ahead.as_ref()
+    }
+    #[cfg(feature = "sunfish-tftp-reserved-writer-io")]
+    pub(crate) fn reserved_writer_io(&self) -> ReservedWriterIoTrace { self.ring.reserved_writer_io }
+
+    #[cfg(feature = "sunfish-tftp-oack-fifo-outcome")]
+    pub(crate) fn reserved_oack_rx(&self) -> Option<ServerCheckRxDone> {
+        self.ring.reserved_oack_rx.as_ref().and_then(|trace| trace.done)
+    }
+
+    #[cfg(feature = "sunfish-tftp-oack-peer-tail")]
+    pub(crate) fn oack_peer_tail(&self) -> Option<OackPeerTail> {
+        self.ring.oack_peer_tail
+    }
+
+    #[cfg(feature = "sunfish-tftp-oack-slot-follow")]
+    pub(crate) fn oack_slot_follow(&self) -> Option<core::OackSlotFollow> {
+        self.session.oack_slot_follow()
+    }
+
+    #[cfg(feature = "sunfish-tftp-oack-resources")]
+    pub(crate) fn oack_resources(&self, transfer_port: u32) -> Option<&core::OackResources> {
+        self.session.oack_resources(transfer_port)
+    }
+
+    #[cfg(feature = "sunfish-tftp-server-inventory")]
+    pub(crate) fn server_check_inventory(&self) -> &[Option<core::ServerCheckOackTrace>] {
+        self.session.server_check_inventory()
+    }
+
+    #[cfg(feature = "sunfish-tftp-oack-resources")]
+    pub(crate) fn server_check_49(&self) -> Option<core::ServerCheckOackTrace> {
+        self.session.server_check_49()
+    }
+
+    #[cfg(feature = "sunfish-first-oack-after-ipa-publish")]
+    pub(crate) fn first_oack_eligibility(&self) -> core::FirstOackEligibility {
+        self.session.first_oack_eligibility()
+    }
+
+    #[cfg(feature = "sunfish-wlan-tftp-oack-compare")]
+    pub(crate) fn server_check_oacks(&self) -> [Option<core::ServerCheckOackTrace>; 2] {
+        self.session.server_check_oacks()
+    }
+    #[cfg(feature = "sunfish-wlan-first-wrq-window")]
+    pub(crate) fn first_wrq_window(&self) -> core::FirstWrqWindow {
+        self.session.first_wrq_window()
+    }
+    #[cfg(feature = "sunfish-tftp-mcfg-trace")]
+    pub fn mcfg_trace(&self) -> (Option<core::TftpEndpointTrace>, Option<core::McfgDataTrace>) {
+        self.session.mcfg_trace()
+    }
+    #[cfg(feature = "sunfish-tftp-mcfg-trace")]
+    pub(crate) fn observe_mcfg_oack(&mut self, route: core::TftpReplyRoute) {
+        self.session.observe_mcfg_oack(route);
+    }
+    #[cfg(feature = "sunfish-tftp-missing-temp-replies")]
+    pub fn tftp_missing_reply_trace(&self) -> Option<core::TftpEndpointTrace> { self.session.tftp_missing_reply_trace() }
+    #[cfg(feature = "sunfish-tftp-missing-temp-replies")]
+    pub(crate) fn observe_tftp_missing_reply(&mut self, route: core::TftpReplyRoute) { self.session.observe_tftp_missing_reply(route); }
+
+    #[cfg(feature = "sunfish-tftp-final-ack-observer")]
+    pub(crate) fn observe_tftp_final_ack(&mut self, route: core::TftpReplyRoute, ack: &[u8]) {
+        self.session.observe_tftp_final_ack(route, ack);
+    }
+
+    #[cfg(feature = "sunfish-wlan-elf-server-check-trace")]
+    pub(crate) fn observe_elf_server_check_coalesced(&mut self, handle: &core::TftpHandle) {
+        self.session.observe_elf_server_check_coalesced(handle);
+    }
+
+    #[cfg(feature = "sunfish-wlan-elf-server-check-timing")]
+    pub(crate) fn observe_elf_server_check_dispatch_start(&mut self, handle: &core::TftpHandle) {
+        self.session.observe_elf_server_check_dispatch_start(handle);
+    }
+
+    #[cfg(feature = "sunfish-wlan-elf-server-check-trace")]
+    pub(crate) fn observe_elf_server_check_dispatch(
+        &mut self,
+        handle: &core::TftpHandle,
+        route: core::TftpReplyRoute,
+        server_check_wrq: bool,
+        dispatch: Result<crate::qcom_tftp_server_check::Reply, crate::qcom_tftp_server_check::Error>,
+        response: &[u8],
+    ) {
+        self.session.observe_elf_server_check_dispatch(handle, route, server_check_wrq, dispatch, response);
+    }
+
+    #[cfg(feature = "sunfish-wlan-first-server-check-repeat")]
+    pub(crate) fn queue_traced_tftp_response(
+        &mut self,
+        generation: u64,
+        handle: &core::TftpHandle,
+        route: core::TftpReplyRoute,
+        packet: &[u8],
+    ) -> Result<(), Error> {
+        self.gate(generation)?;
+        let result = self.session.queue_traced_tftp_response(generation, handle, route, packet,
+            #[cfg(feature = "sunfish-wlan-first-server-check-retry")]
+            matches!(self.ring.first_server_check_tail, ServerCheckTail::Consumed(_)),
+        );
+        #[cfg(feature = "sunfish-ipa-tftp-queue-block")]
+        if result.is_err() {
+            let block = self.session.tftp_queue_block();
+            if block.check != 0 {
+                #[cfg(feature = "sunfish-ipa-tftp-slot-snapshot")]
+                let full = (block.check == 2).then(|| TftpFullQueue {
+                    at: self.ring.first_server_check_clock.map(|clock| clock()),
+                    slots: self.session.tftp_tx_slots(),
+                    first_free_mask: 0,
+                    first_free_at: None,
+                });
+                if let Some(request) = self.registration_tftp_request_mut(*handle) {
+                    request.queue_block = block;
+                    #[cfg(feature = "sunfish-ipa-tftp-slot-snapshot")]
+                    { request.full_queue = request.full_queue.or(full); }
+                }
+                self.update_registration_tftp_originals(*handle, |original| {
+                    original.queue_block = block;
+                    #[cfg(feature = "sunfish-ipa-tftp-slot-snapshot")]
+                    { original.full_queue = original.full_queue.or(full); }
+                });
+            }
+        }
+        Ok(result?)
+    }
+
+    #[cfg(feature = "sunfish-wlan-first-server-check-retry")]
+    pub(crate) fn cancel_closed_tftp_retry(&mut self, handle: &core::TftpHandle) -> bool {
+        self.session.cancel_closed_tftp_retry(handle)
+    }
+
+    #[cfg(feature = "sunfish-wlan-first-server-check-retry-trace")]
+    pub(crate) fn observe_retry_turn(&mut self) {
+        self.session.observe_retry_turn();
+    }
+
+    #[cfg(feature = "sunfish-wlan-first-server-check-retry-trace")]
+    pub(crate) fn observe_retry_poll_end(&mut self) {
+        self.session.observe_retry_poll_end();
+    }
+
+    #[cfg(feature = "sunfish-glink-tftp-fairness-experiment")]
+    pub fn tftp_schedule_trace(&self) -> core::TftpScheduleTrace { self.session.tftp_schedule_trace() }
+    #[cfg(feature = "sunfish-glink-intent-request-experiment")]
+    pub fn outbound_intent_diagnostic(&self) -> (u32, u32) {
+        self.session.outbound_intent_diagnostic()
+    }
+    #[cfg(feature = "sunfish-glink-intent-request-experiment")]
+    pub fn outbound_intent_attempt_diagnostic(&self) -> (u32, u32) {
+        self.session.outbound_intent_attempt_diagnostic()
+    }
+    #[cfg(feature = "sunfish-glink-intent-request-experiment")]
+    pub fn intent_gate_diagnostic(&self) -> (u32, u32, u32) {
+        self.session.intent_gate_diagnostic()
+    }
+    #[cfg(feature = "sunfish-glink-intent-request-experiment")]
+    pub fn intent_gate_combinations(&self) -> (u32, u32) {
+        self.session.intent_gate_combinations()
+    }
+    #[cfg(feature = "sunfish-glink-intent-request-experiment")]
+    pub fn intent_gate_queue_snapshot(&self) -> (u32, u32, u32) {
+        self.session.intent_gate_queue_snapshot()
+    }
+    #[cfg(feature = "sunfish-linux-ipa-qmi")]
+    pub fn routing_diagnostic(&self) -> Option<crate::qcom_glink_qmi::RoutingDiagnostic> {
+        self.session.routing_diagnostic()
+    }
+    #[cfg(feature = "sunfish-linux-mpss-glink")]
+    pub fn open_diagnostic(&self) -> Option<OpenDiagnostic> {
+        self.ring.open_diagnostic
+    }
+    #[cfg(feature = "sunfish-native-startup-mpss-runtime")]
+    pub fn crash_evidence(&self) -> Option<crate::qcom_modem_crash::Evidence> {
+        self.ring.io.crash_evidence()
+    }
+
+    fn gate(&mut self, generation: u64) -> Result<(), Error> {
+        self.check(generation)?;
+        self.quarantined = true; // Remains set on IO failure or unwinding IO.
+        self.ring.sample()?;
+        self.quarantined = false;
+        Ok(())
+    }
+
+    pub fn register(&mut self, generation: u64, service: Service, port: u32) -> Result<(), Error> {
+        self.gate(generation)?;
+        self.session.register(generation, service, port)?;
+        Ok(())
+    }
+    pub fn start_control(&mut self, generation: u64) -> Result<(), Error> {
+        self.gate(generation)?;
+        self.session.start_control(generation)?;
+        Ok(())
+    }
+    pub fn enable_wlfw_client(&mut self, generation: u64, local_port: u32) -> Result<(), Error> {
+        self.gate(generation)?;
+        self.session.enable_wlfw_client(generation, local_port)?;
+        Ok(())
+    }
+    /// Reserve WLFW while holding indication registration behind the live
+    /// ICNSS power-sequencer permit.
+    pub fn enable_wlfw_client_power_gated(
+        &mut self,
+        generation: u64,
+        local_port: u32,
+    ) -> Result<(), Error> {
+        self.gate(generation)?;
+        self.session
+            .enable_wlfw_client_power_gated(generation, local_port)?;
+        Ok(())
+    }
+    pub fn authorize_wlfw_power(
+        &mut self,
+        generation: u64,
+        permit: crate::qcom_wlan_power::PowerReadyPermit,
+    ) -> Result<(), Error> {
+        self.gate(generation)?;
+        self.session.authorize_wlfw_power(generation, permit)?;
+        Ok(())
+    }
+    /// Reserve the one-shot IPA client endpoint. This does not send QMI or
+    /// initialize the AP-side IPA provider.
+    pub fn enable_ipa_client(&mut self, generation: u64, local_port: u32) -> Result<(), Error> {
+        self.gate(generation)?;
+        self.session.enable_ipa_client(generation, local_port)?;
+        Ok(())
+    }
+    pub fn enable_servreg_notif_client(
+        &mut self,
+        generation: u64,
+        local_port: u32,
+    ) -> Result<(), Error> {
+        self.gate(generation)?;
+        self.session
+            .enable_servreg_notif_client(generation, local_port)?;
+        Ok(())
+    }
+    pub fn servreg_notif_state(&self) -> Option<crate::qcom_servreg_notif_client::State> {
+        self.session.servreg_notif_state()
+    }
+    pub fn servreg_notif_outcome(&self) -> Option<crate::qcom_servreg_notif_client::Outcome> {
+        self.session.servreg_notif_outcome()
+    }
+    pub fn ipa_state(&self) -> Option<crate::qcom_ipa_client::State> {
+        self.session.ipa_state()
+    }
+    pub fn ipa_outcome(&self) -> Option<crate::qcom_ipa_client::ResponseOutcome> {
+        self.session.ipa_outcome()
+    }
+    /// Revalidate the live transport and queue one source-profiled IPA
+    /// request. The caller must supply runtime fields from a trusted provider.
+    pub fn begin_ipa_init_modem_driver(
+        &mut self,
+        generation: u64,
+        fields: &crate::qcom_ipa::InitRequestFields,
+    ) -> Result<(), Error> {
+        self.gate(generation)?;
+        self.session
+            .begin_ipa_init_modem_driver(generation, fields)?;
+        Ok(())
+    }
+    pub fn begin_servreg_notif_query(&mut self, generation: u64) -> Result<(), Error> {
+        self.gate(generation)?;
+        self.session.begin_servreg_notif_query(generation)?;
+        Ok(())
+    }
+    pub fn begin_servreg_notif_listener(&mut self, generation: u64) -> Result<(), Error> {
+        self.gate(generation)?;
+        self.session.begin_servreg_notif_listener(generation)?;
+        Ok(())
+    }
+    pub fn begin_servreg_notif_restart_pd(&mut self, generation: u64) -> Result<(), Error> {
+        self.gate(generation)?;
+        self.session.begin_servreg_notif_restart_pd(generation)?;
+        Ok(())
+    }
+    pub fn wlfw_state(&self) -> Option<crate::qcom_wlfw_client::State> {
+        self.session.wlfw_state()
+    }
+    pub fn wlfw_outcome(&self) -> Option<crate::qcom_wlfw_client::RegistrationOutcome> {
+        self.session.wlfw_outcome()
+    }
+    pub fn wlfw_msa_info_outcome(&self) -> Option<crate::qcom_wlfw_client::MsaInfoOutcome> {
+        self.session.wlfw_msa_info_outcome()
+    }
+    pub fn wlfw_capability_summary(&self) -> Option<crate::qcom_wlfw_client::CapabilitySummary> {
+        self.session.wlfw_capability_summary()
+    }
+    pub fn wlfw_dynamic_feature_mask_done(&self) -> bool {
+        self.session.wlfw_dynamic_feature_mask_done()
+    }
+    pub fn wlfw_last_indication(&self) -> Option<crate::qcom_wlfw_client::IndicationOutcome> {
+        self.session.wlfw_last_indication()
+    }
+    pub fn wlfw_firmware_ready_seen(&self) -> bool {
+        self.session.wlfw_firmware_ready_seen()
+    }
+    pub fn begin_wlfw_msa_info(
+        &mut self,
+        generation: u64,
+        reservation: MsaReservation,
+    ) -> Result<(), Error> {
+        if reservation.generation() != generation {
+            return Err(Error::StaleGeneration);
+        }
+        if reservation.identity() != self.ring.identity {
+            return Err(Error::IdentityChanged);
+        }
+        self.gate(generation)?;
+        self.session.begin_wlfw_msa_info(generation, reservation)?;
+        Ok(())
+    }
+    pub fn begin_wlfw_msa_ready(
+        &mut self,
+        generation: u64,
+        permit: &mut crate::qcom_msa::MsaReadyPermit,
+    ) -> Result<(), Error> {
+        if permit.generation() != generation {
+            return Err(Error::StaleGeneration);
+        }
+        if permit.identity() != self.ring.identity {
+            return Err(Error::IdentityChanged);
+        }
+        self.gate(generation)?;
+        self.session.begin_wlfw_msa_ready(generation, permit)?;
+        Ok(())
+    }
+    pub fn begin_wlfw_capability_request(&mut self, generation: u64) -> Result<(), Error> {
+        self.gate(generation)?;
+        self.session.begin_wlfw_capability_request(generation)?;
+        Ok(())
+    }
+    pub fn complete_wlfw_dynamic_feature_mask_timeout(
+        &mut self,
+        generation: u64,
+    ) -> Result<(), Error> {
+        self.gate(generation)?;
+        self.session
+            .complete_wlfw_dynamic_feature_mask_timeout(generation)?;
+        Ok(())
+    }
+    pub fn begin_wlfw_bdf_download(
+        &mut self,
+        generation: u64,
+        image: &crate::qcom_wlfw_bdf::VerifiedBdfImage<'_>,
+    ) -> Result<(), Error> {
+        if image.generation() != generation {
+            return Err(Error::StaleGeneration);
+        }
+        if image.identity() != self.ring.identity {
+            return Err(Error::IdentityChanged);
+        }
+        self.gate(generation)?;
+        self.session.begin_wlfw_bdf_download(generation, image)?;
+        Ok(())
+    }
+    pub fn continue_wlfw_bdf_download(
+        &mut self,
+        generation: u64,
+        image: &crate::qcom_wlfw_bdf::VerifiedBdfImage<'_>,
+    ) -> Result<(), Error> {
+        if image.generation() != generation {
+            return Err(Error::StaleGeneration);
+        }
+        if image.identity() != self.ring.identity {
+            return Err(Error::IdentityChanged);
+        }
+        self.gate(generation)?;
+        self.session.continue_wlfw_bdf_download(generation, image)?;
+        Ok(())
+    }
+    pub fn begin_wlfw_empty_cal_report(&mut self, generation: u64) -> Result<(), Error> {
+        self.gate(generation)?;
+        self.session.begin_wlfw_empty_cal_report(generation)?;
+        Ok(())
+    }
+    pub fn set_service_available(
+        &mut self,
+        generation: u64,
+        service: Service,
+        ready: bool,
+    ) -> Result<(), Error> {
+        self.gate(generation)?;
+        self.session
+            .set_service_available(generation, service, ready)?;
+        Ok(())
+    }
+    pub fn prepare_service_available(
+        &mut self,
+        generation: u64,
+        service: Service,
+    ) -> Result<(), Error> {
+        self.gate(generation)?;
+        self.session
+            .prepare_service_available(generation, service)?;
+        Ok(())
+    }
+    pub fn prepare_tftp_observer(&mut self, generation: u64, local_port: u32) -> Result<(), Error> {
+        self.gate(generation)?;
+        self.session.prepare_tftp_observer(generation, local_port)?;
+        Ok(())
+    }
+    pub fn prepare_tftp_server(&mut self, generation: u64, local_port: u32) -> Result<(), Error> {
+        self.gate(generation)?;
+        self.session.prepare_tftp_server(generation, local_port)?;
+        Ok(())
+    }
+    pub fn tftp_server_prepared(&self, generation: u64, local_port: u32) -> bool {
+        self.session.tftp_server_prepared(generation, local_port)
+    }
+    pub fn control_status(&self) -> crate::qcom_qrtr_control::Status {
+        self.session.control_status()
+    }
+    pub fn last_completion_error(&self) -> Option<core::CompletionDiagnostic> {
+        self.session.last_completion_error()
+    }
+    pub fn last_credit_diagnostic(&self) -> Option<core::CreditDiagnostic> {
+        self.session.last_credit_diagnostic()
+    }
+    pub fn client_gone_diagnostic(&self) -> Option<core::ClientGoneDiagnostic> {
+        self.session.client_gone_diagnostic()
+    }
+    #[cfg(feature = "sunfish-qrtr-deferred-requests")]
+    pub fn deferred_close_diagnostic(&self) -> Option<core::DeferredCloseDiagnostic> {
+        self.session.deferred_close_diagnostic()
+    }
+    #[cfg(feature = "sunfish-tftp-close-handoff-prototype")]
+    pub(crate) fn commit_tftp_close(&mut self, generation: u64, peer: crate::qcom_qmi_router::Address) -> Result<crate::qcom_qrtr_control::Event, Error> {
+        if generation != self.ring.generation { return Err(Error::StaleGeneration); }
+        if self.quarantined { return Err(Error::Quarantined); }
+        self.quarantined = true;
+        self.ring.sample()?;
+        #[cfg(feature = "sunfish-ipa-tftp-slot-snapshot")]
+        let occupied_before = self.ring.registration_reply.as_ref()
+            .map_or(0, |_| self.session.tftp_tx_occupied());
+        let event = self.session.commit_tftp_close(generation, peer)?;
+        #[cfg(feature = "sunfish-ipa-tftp-slot-snapshot")]
+        self.observe_tftp_slot_release(occupied_before);
+        self.quarantined = false;
+        Ok(event)
+    }
+    #[cfg(all(test, feature = "sunfish-tftp-close-handoff-prototype"))]
+    pub(crate) fn test_fail_close_stage(&mut self, stage: u8) { self.session.test_fail_close_stage(stage); }
+    #[cfg(feature = "sunfish-tftp-deferred-close-experiment")]
+    pub fn set_tftp_owner_busy(&mut self, generation: u64, busy: bool) -> Result<(), Error> {
+        self.check(generation)?;
+        self.session.set_tftp_owner_busy(generation, busy).map_err(Into::into)
+    }
+    #[cfg(feature = "sunfish-tftp-peer-close-experiment")]
+    pub fn set_tftp_owner_peers(&mut self, generation: u64, peers: [Option<crate::qcom_qmi_router::Address>; core::TFTP_OWNER_PEER_SLOTS]) -> Result<(), Error> {
+        self.check(generation)?;
+        self.session.set_tftp_owner_peers(generation, peers).map_err(Into::into)
+    }
+    #[cfg(feature = "sunfish-tftp-close-owner-fence")]
+    pub fn set_tftp_firmware_peers(&mut self, generation: u64, peers: [Option<crate::qcom_qmi_router::Address>; core::TFTP_OWNER_PEER_SLOTS]) -> Result<(), Error> {
+        self.revalidate(generation)?;
+        self.session.set_tftp_firmware_peers(generation, peers).map_err(Into::into)
+    }
+    #[cfg(feature = "sunfish-tftp-wlan-close-handoff")]
+    pub(crate) fn commit_firmware_close(&mut self, generation: u64, peer: crate::qcom_qmi_router::Address) -> Result<(), Error> {
+        if generation != self.ring.generation { return Err(Error::StaleGeneration); }
+        if self.quarantined { return Err(Error::Quarantined); }
+        self.quarantined = true;
+        self.ring.sample()?;
+        self.session.commit_firmware_close(generation, peer)?;
+        self.quarantined = false;
+        Ok(())
+    }
+    pub fn retired_rmtfs_peer_count(&self) -> usize {
+        self.session.retired_rmtfs_peer_count()
+    }
+    pub fn remote_server(&self, index: usize) -> Option<crate::qcom_qrtr_control::Server> {
+        self.session.remote_server(index)
+    }
+    pub fn wlfw_endpoint(
+        &mut self,
+        generation: u64,
+    ) -> Result<Option<crate::qcom_qmi_router::Address>, Error> {
+        self.gate(generation)?;
+        Ok(self.session.wlfw_endpoint())
+    }
+    pub fn offer_receive(&mut self, generation: u64) -> Result<u32, Error> {
+        self.gate(generation)?;
+        Ok(self.session.offer_receive(generation)?)
+    }
+    pub fn request(
+        &mut self,
+        generation: u64,
+        handle: &RequestHandle,
+    ) -> Result<(Context, Request<'_>), Error> {
+        self.gate(generation)?;
+        Ok(self.session.request(handle)?)
+    }
+    pub fn request_qmi(
+        &mut self,
+        generation: u64,
+        handle: &RequestHandle,
+    ) -> Result<(Context, &[u8]), Error> {
+        self.gate(generation)?;
+        Ok(self.session.request_qmi(handle)?)
+    }
+    pub fn tftp_datagram(
+        &mut self,
+        generation: u64,
+        handle: &TftpHandle,
+    ) -> Result<(crate::qcom_glink_qmi::TftpReplyRoute, &[u8]), Error> {
+        self.gate(generation)?;
+        Ok(self.session.tftp_datagram(handle)?)
+    }
+    pub fn finish_tftp_request(
+        &mut self,
+        generation: u64,
+        handle: &TftpHandle,
+    ) -> Result<(), Error> {
+        self.gate(generation)?;
+        self.session.finish_tftp_request(handle)?;
+        Ok(())
+    }
+    pub fn queue_reply(
+        &mut self,
+        generation: u64,
+        handle: &RequestHandle,
+        reply: Reply<'_>,
+    ) -> Result<(), Error> {
+        self.gate(generation)?;
+        self.session.queue_reply(handle, reply)?;
+        Ok(())
+    }
+    pub fn queue_ipa_service_reply(
+        &mut self,
+        generation: u64,
+        handle: &RequestHandle,
+        response: &crate::qcom_ipa_service::PreparedResponse,
+    ) -> Result<(), Error> {
+        self.gate(generation)?;
+        self.session
+            .queue_ipa_service_reply(generation, handle, response)?;
+        Ok(())
+    }
+    pub fn take_ipa_service_response_completion(
+        &mut self,
+        generation: u64,
+    ) -> Result<Option<u64>, Error> {
+        self.gate(generation)?;
+        Ok(self
+            .session
+            .take_ipa_service_response_completion(generation)?)
+    }
+    pub fn queue_ipa_master_init_indication(
+        &mut self,
+        generation: u64,
+        indication: &crate::qcom_ipa_service::PreparedIndication,
+    ) -> Result<(), Error> {
+        self.gate(generation)?;
+        self.session
+            .queue_ipa_master_init_indication(generation, indication)?;
+        Ok(())
+    }
+    pub fn take_ipa_indication_completion(
+        &mut self,
+        generation: u64,
+    ) -> Result<Option<u64>, Error> {
+        self.gate(generation)?;
+        Ok(self.session.take_ipa_indication_completion(generation)?)
+    }
+    pub fn queue_tftp_response(
+        &mut self,
+        generation: u64,
+        route: crate::qcom_glink_qmi::TftpReplyRoute,
+        packet: &[u8],
+    ) -> Result<(), Error> {
+        self.gate(generation)?;
+        self.session
+            .queue_tftp_response(generation, route, packet)?;
+        Ok(())
+    }
+    pub fn in_flight(&self) -> usize {
+        self.session.in_flight()
+    }
+    #[cfg(feature = "sunfish-wlan-elf-exchange-trace")]
+    pub(crate) fn observe_elf_reply(&mut self, handle: &RequestHandle) {
+        self.session.observe_elf_reply(handle);
+    }
+
+    #[cfg(feature = "sunfish-wlan-elf-exchange-trace")]
+    pub(crate) fn elf_exchange(&self) -> Option<core::ElfExchangeTrace> {
+        self.session.elf_exchange()
+    }
+
+    #[cfg(feature = "sunfish-wlan-first-server-check-trace")]
+    pub(crate) fn first_server_check(&self) -> Option<core::ElfServerCheckTrace> {
+        self.session.first_server_check()
+    }
+
+    /// Read-only publication evidence; does not poll the transport.
+    #[cfg(feature = "sunfish-linux-rmtfs")]
+    pub fn reply_fully_published(&self, handle: &RequestHandle) -> bool {
+        self.session.reply_fully_published(handle)
+    }
+    pub fn configuration(&self) -> crate::qcom_glink_qmi::Config {
+        self.session.configuration()
+    }
+    pub fn endpoint(&self, service: Service) -> Option<crate::qcom_qmi_router::Endpoint> {
+        self.session.endpoint(service)
+    }
+
+    /// Read-only lifecycle/cursor check for the serialized IRQ owner.
+    pub fn revalidate(&mut self, generation: u64) -> Result<(), Error> {
+        self.gate(generation)
+    }
+
+    /// Latch a local lifecycle fault without publishing or releasing anything.
+    pub fn suspend(&mut self) {
+        self.quarantined = true;
+    }
+
+    /// At most one complete record per call. Partial records retain RX tail.
+    /// Rejected records halt this adapter with RX tail held, even if the core
+    /// already copied a final fragment. No queued RX_DONE can then be published.
+    pub fn poll_receive(&mut self, generation: u64) -> Result<Receive, Error> {
+        self.check(generation)?;
+        #[cfg(feature = "sunfish-ipa-registration-reply-path")]
+        if let Some(trace) = self.ring.registration_reply.as_mut().filter(|trace| !trace.finished) {
+            trace.polls = trace.polls.saturating_add(1);
+            if let Some(now) = self.ring.first_server_check_clock.map(|clock| clock()) {
+                if let Some(gap) = trace.last_poll_at.and_then(|last| now.checked_sub(last)) {
+                    trace.max_poll_gap = trace.max_poll_gap.max(gap);
+                }
+                trace.last_poll_at = Some(now);
+            }
+        }
+        self.quarantined = true;
+        #[cfg(feature = "sunfish-qrtr-deferred-requests")]
+        if self.session.deferred_ready() {
+            self.ring.sample()?;
+            match self.session.retry_deferred(generation) {
+                Ok(Some(event)) => { self.quarantined = false; return Ok(Receive::Session(event)); },
+                Ok(None) => {},
+                Err(error) => {
+                    self.session_failure = Some(SessionFailureDiagnostic { stage: 1, command: u32::MAX, parameter: u32::MAX });
+                    return Err(error.into());
+                },
+            }
+        }
+        #[cfg(feature = "sunfish-linux-mpss-glink")]
+        if let Some(first) = self.ring.control.as_ref().and_then(|c| c.early[0]) {
+            self.ring.sample()?;
+            let event = match self.session.ingest(generation, &first.bytes[..first.len]) {
+                Ok(event) => event,
+                Err(error) => {
+                    self.session_failure = Some(SessionFailureDiagnostic { stage: 2,
+                        command: u32::from(u16::from_le_bytes([first.bytes[0], first.bytes[1]])),
+                        parameter: u32::from_le_bytes(first.bytes[4..8].try_into().unwrap()) });
+                    if error == core::Error::NoCapacity { self.session.record_capacity(1, Some(&first.bytes[..first.len])); }
+                    return Err(error.into());
+                }
+            };
+            let queue = &mut self.ring.control.as_mut().unwrap().early;
+            queue.rotate_left(1);
+            queue[7] = None;
+            self.quarantined = false;
+            return Ok(Receive::Session(event));
+        }
+        let size = match self.ring.peek()? {
+            Ok(size) => size,
+            Err(state) => {
+                self.quarantined = false;
+                return Ok(state);
+            }
+        };
+        #[cfg(feature = "sunfish-tftp-oack-ahead-headers")]
+        if let (Some(length), Some(window), Some(capture)) =
+            (self.ring.rx_bytes, self.ring.reserved_oack_rx.as_ref(), self.ring.reserved_oack_ahead.as_mut())
+            && window.done.is_none()
+        {
+            let unread = ring_distance(self.ring.words[2], self.ring.words[3], length);
+            if let Some(position) = window.head.checked_sub(unread as u64) {
+                let header = RegistrationHeader::read(&self.ring.record[..size], false,
+                    self.ring.first_server_check_clock.map(|clock| clock()));
+                capture.record(position, header, &self.ring.record[..size]);
+            }
+        }
+        #[cfg(feature = "sunfish-linux-mpss-glink")]
+        if self.ring.record[0] == 2 && self.ring.control.is_some() {
+            let channels = &mut self.ring.control.as_mut().unwrap().channels;
+            if let Err(error) = channels.open(&self.ring.record[..size], true) {
+                self.ring.open_diagnostic = Some(channels.open_diagnostic(&self.ring.record[..size], 2));
+                return Err(error);
+            }
+            #[cfg(feature = "sunfish-ipa-registration-reply-headers")]
+            self.ring.capture_registration_rx(size, false, &Receive::Control);
+            #[cfg(feature = "sunfish-tftp-first-oack-headers")]
+            self.ring.capture_first_oack_rx(size, false);
+            self.consume_received(size, false)?;
+            self.quarantined = false;
+            return Ok(Receive::Control);
+        }
+        #[cfg(feature = "sunfish-tftp-oack-fifo-outcome")]
+        let reserved_before = self.session.reserved_oack().map(|(oack, trace)| (oack, trace))
+            .filter(|(oack, _)| oack.peer.port == 0x49 && oack.published_at.is_some());
+        let notification = self.ring.record[0] == 13;
+        #[cfg(feature = "sunfish-wlan-first-oack-rx-fifo")]
+        let before = self.ring.server_check_rx.as_ref()
+            .filter(|trace| trace.done.is_none())
+            .and_then(|_| self.session.first_server_check());
+        #[cfg(feature = "sunfish-ipa-registration-rx-visibility")]
+        let awaiting_registration = self.session.ipa_registration_trace().is_none();
+        #[cfg(feature = "sunfish-ipa-tftp-original-trace")]
+        let completing_oack = (size == 8 && matches!(self.ring.record[0], 6 | 14))
+            .then(|| self.session.published_oack_request(word(&self.ring.record, 4))).flatten();
+        #[cfg(feature = "sunfish-ipa-tftp-slot-snapshot")]
+        let occupied_before = self.ring.registration_reply.as_ref()
+            .map_or(0, |_| self.session.tftp_tx_occupied());
+        #[cfg(feature = "sunfish-ipa-reg-close-fifo")]
+        let awaiting_close = self.ring.reg_close.as_ref().is_some_and(|t| !t.already_closed && t.end.is_none())
+            && self.session.original_1f_close_count() == Some(0);
+        #[cfg(feature = "sunfish-ipa-init-close-visibility")]
+        let first_1f_open = self.ring.init_close.close_end.is_none()
+            && self.session.original_1f_close_count() == Some(0);
+        let event = if notification {
+            Receive::ReadNotification
+        } else {
+            match self.session.ingest(generation, &self.ring.record[..size]) {
+                Ok(event) => Receive::Session(event),
+                Err(error) => {
+                    self.session_failure = Some(SessionFailureDiagnostic { stage: 3,
+                        command: u32::from(u16::from_le_bytes([self.ring.record[0], self.ring.record[1]])),
+                        parameter: u32::from_le_bytes(self.ring.record[4..8].try_into().unwrap()) });
+                    if error == core::Error::NoCapacity { self.session.record_capacity(1, Some(&self.ring.record[..size])); }
+                    return Err(error.into());
+                }
+            }
+        };
+        #[cfg(feature = "sunfish-ipa-tftp-slot-snapshot")]
+        self.observe_tftp_slot_release(occupied_before);
+        #[cfg(feature = "sunfish-ipa-tftp-original-trace")]
+        if let Some(handle) = completing_oack
+            && matches!(event, Receive::Session(core::Event::TransmitDone))
+        {
+            self.observe_registration_tftp_oack_progress(handle, 4);
+        }
+        #[cfg(feature = "sunfish-tftp-first-oack-headers")]
+        self.ring.capture_first_oack_rx(size, before.is_some_and(|trace| trace.oack.phase == 3)
+            && self.session.first_server_check().is_some_and(|trace| trace.oack.phase == 4));
+        #[cfg(feature = "sunfish-ipa-registration-rx-visibility")]
+        if awaiting_registration && let Some(length) = self.ring.rx_bytes {
+            let matched = self.session.ipa_registration_trace().is_some();
+            let unread = ring_distance(self.ring.words[2], self.ring.words[3], length);
+            if self.ring.registration_rx.is_none()
+                && (matched || matches!(event, Receive::Session(Event::TftpRequest(_))))
+            {
+                // Start with the validated head at the first TFTP request.
+                // This includes records already queued behind that request.
+                self.ring.registration_rx = Some(ServerCheckRxWindow::new(
+                    unread, self.ring.first_server_check_clock.map(|clock| clock())));
+            }
+            if matched && let Some(trace) = self.ring.registration_rx.as_mut() {
+                // The session latched the validated registration while the
+                // RX tail still pointed at the record being ingested.
+                trace.finish(unread, size);
+            }
+        }
+        #[cfg(feature = "sunfish-ipa-wrq-ready-fifo")]
+        if self.ring.track_first_wrq && let Some(first) = self.session.original_server_check() {
+            self.ring.track_first_wrq = false;
+            if let Receive::Session(Event::TftpRequest(handle)) = event
+                && first == (handle, true)
+                && matches!(self.ring.record[0], 9 | 12) && word(&self.ring.record, 12) == 0
+                && let Some(length) = self.ring.rx_bytes
+                && let Some(window) = self.ring.registration_rx.as_ref()
+            {
+                // The normal decoder accepted this datagram. Locate the end
+                // of its final GLINK record before advancing the host RX tail.
+                let unread = ring_distance(self.ring.words[2], self.ring.words[3], length);
+                self.ring.first_wrq_rx = window.bounds(unread, size);
+            }
+        }
+        #[cfg(feature = "sunfish-wlan-first-oack-rx-fifo")]
+        if let Some(before) = before
+            && let Some(after) = self.session.first_server_check()
+            && let Some(trace) = self.ring.server_check_rx.as_mut()
+        {
+            if before.timing.closes == 0 && after.timing.closes != 0 {
+                trace.close_head = Some(trace.head);
+            }
+            if before.oack.phase == 3 && after.oack.phase == 4
+                && let Some(length) = self.ring.rx_bytes
+            {
+                let unread = ring_distance(self.ring.words[2], self.ring.words[3], length);
+                trace.finish(unread, size);
+            }
+        }
+        #[cfg(feature = "sunfish-ipa-registration-reply-headers")]
+        self.ring.capture_registration_rx(size,
+            self.session.ipa_registration_trace().is_some_and(|reg| reg.completed_at.is_some()), &event);
+        #[cfg(feature = "sunfish-ipa-registration-reply-path")]
+        if let Some(trace) = self.ring.registration_reply.as_mut().filter(|trace| !trace.finished)
+            && self.session.ipa_registration_trace().is_some_and(|reg| reg.completed_at.is_some())
+        {
+            #[cfg(feature = "sunfish-ipa-reply-fifo-visibility")]
+            if let Some(mut window) = self.ring.registration_reply_rx.take()
+                && let Some(length) = self.ring.rx_bytes
+            {
+                let unread = ring_distance(self.ring.words[2], self.ring.words[3], length);
+                window.finish(unread, size);
+                trace.completion_visibility = window.done;
+            }
+            // The peeked record is the matching completion. Stop before
+            // sampling the FIFO after advancing past it.
+            trace.finished = true;
+        }
+        #[cfg(feature = "sunfish-tftp-oack-fifo-outcome")]
+        if let Some((before, before_peer)) = reserved_before
+            && let Some((after, after_peer)) = self.session.reserved_oack()
+            && let Some(window) = self.ring.reserved_oack_rx.as_mut()
+        {
+            if before_peer.is_some_and(|peer| peer.first_close_at.is_none())
+                && after_peer.is_some_and(|peer| peer.first_close_at.is_some())
+            {
+                window.close_head = Some(window.head);
+            }
+            if before.done_at.is_none() && after.done_at.is_some()
+                && let Some(length) = self.ring.rx_bytes
+            {
+                let unread = ring_distance(self.ring.words[2], self.ring.words[3], length);
+                #[cfg(feature = "sunfish-tftp-oack-ahead-headers")]
+                if let Some(capture) = self.ring.reserved_oack_ahead.as_mut() {
+                    capture.completion_id = Some(word(&self.ring.record[..size], 4));
+                    capture.finish(window, unread, size);
+                }
+                window.finish(unread, size);
+            }
+        }
+        #[cfg(feature = "sunfish-tftp-oack-peer-tail")]
+        if self.session.server_check_49().is_some_and(|trace| trace.first_close_at.is_some())
+            && let Some(trace) = self.ring.oack_peer_tail.as_mut()
+        {
+            trace.close();
+        }
+        #[cfg(feature = "sunfish-tftp-oack-close-fifo")]
+        if self.session.server_check_49().is_some_and(|trace| trace.first_close_at.is_some())
+            && let Some(length) = self.ring.rx_bytes
+            && let Some(trace) = self.ring.oack_close_fifo.as_mut().filter(|trace| trace.done.is_none())
+        {
+            let unread = ring_distance(self.ring.words[2], self.ring.words[3], length);
+            trace.finish(unread, size);
+        }
+        // Only normal ingestion can bind this record to a FIFO offset. The
+        // session increments the original WRQ close count on validated DEL_CLIENT.
+        #[cfg(feature = "sunfish-ipa-init-close-visibility")]
+        let init_close_match = if first_1f_open && self.session.original_1f_close_count() == Some(1) {
+            self.ring.rx_bytes.zip(self.ring.registration_rx.as_ref()).and_then(|(length, history)| {
+                let unread = ring_distance(self.ring.words[2], self.ring.words[3], length);
+                let end = history.head.checked_sub(unread as u64)?.checked_add(size as u64)?;
+                Some((end, history.bounds(unread, size)?))
+            })
+        } else { None };
+        self.consume_received(size, notification)?;
+        #[cfg(feature = "sunfish-ipa-init-close-visibility")]
+        if let Some((end, bounds)) = init_close_match {
+            self.ring.init_close.close_end = Some(end);
+            self.ring.init_close.bounds = Some(bounds);
+        }
+        #[cfg(feature = "sunfish-ipa-reg-close-fifo")]
+        if awaiting_close && self.session.original_1f_close_count() == Some(1)
+            && let Some(trace) = self.ring.reg_close.as_mut()
+        {
+            trace.end = Some(trace.consumed);
+            trace.record_bytes = Some(size as u32);
+        }
+        self.quarantined = false;
+        Ok(event)
+    }
+
+    fn consume_received(&mut self, size: usize, notification: bool) -> Result<(), Error> {
+        #[cfg(feature = "sunfish-first-oack-yield-rx")]
+        let start = self.ring.words[2];
+        self.ring.consume(size, notification)?;
+        #[cfg(feature = "sunfish-ipa-reg-close-fifo")]
+        if let Some(trace) = self.ring.reg_close.as_mut().filter(|t| t.end.is_none() && !t.already_closed) {
+            trace.consumed = trace.consumed.saturating_add(size as u32);
+        }
+        #[cfg(feature = "sunfish-first-oack-yield-rx")]
+        if self.first_grant.window.remaining != 0 {
+            let peer = self.session.server_check_oacks()[0].map(|t| [t.peer.node, t.peer.port]);
+            self.first_grant.window.consumed(start, self.ring.words[2], &self.ring.record[..size], peer);
+        }
+        Ok(())
+    }
+
+    /// Publish one session record, or use the reserved eight bytes for a single
+    /// READ_NOTIF while blocked. A READ_NOTIF never commits the waiting session
+    /// record; successful retry publishes that record once after peer progress.
+    pub fn publish_next(&mut self, generation: u64) -> Result<Transmit, Error> {
+        self.publish_inner(generation, #[cfg(feature = "sunfish-tftp-oack-followup")] None)
+    }
+
+    #[cfg(feature = "sunfish-first-oack-grant-window")]
+    pub(crate) fn first_grant_trace(&self) -> FirstGrantTrace { self.first_grant }
+
+    /// The ordinary writer must commit the exact grant's advertisement or ACK.
+    /// Only its remaining positive ACK and original OACK may borrow turns.
+    #[cfg(feature = "sunfish-first-oack-grant-window")]
+    pub(crate) fn publish_first_grant_turn(&mut self, generation: u64) -> Result<(Transmit, u32), Error> {
+        use core::OackFollowup::{FirstGrantAck, FirstGrantReply};
+        let expected = if self.first_grant.trigger == 0 {
+            self.session.first_oack_grant_trigger()
+        } else { None };
+        let ordinary = self.publish_next(generation)?;
+        let Some(event) = expected else { return Ok((ordinary, 0)); };
+        if ordinary != Transmit::Session(event) { return Ok((ordinary, 0)); }
+        let clock = self.ring.first_server_check_clock;
+        let mut extra = 0;
+        if matches!(event, Published::ReceiveIntent(_)) {
+            self.first_grant.trigger = 5;
+            self.first_grant.advertisement_at = clock.map(|clock| clock());
+            let ack = self.publish_inner(generation, Some(FirstGrantAck))?;
+            if ack != Transmit::Session(Published::IntentRequestAck { granted: true }) {
+                self.first_grant_stop(ack);
+                return Ok((ordinary, 0));
+            }
+            extra += 1;
+        } else {
+            self.first_grant.trigger = 8;
+        }
+        self.first_grant.ack_at = clock.map(|clock| clock());
+        let reply = self.publish_inner(generation, Some(FirstGrantReply))?;
+        if matches!(reply, Transmit::Session(Published::Data { last_fragment: true, .. })) {
+            self.first_grant.outcome = 1;
+            extra += 1;
+        } else {
+            self.first_grant_stop(reply);
+        }
+        Ok((ordinary, extra))
+    }
+
+    #[cfg(feature = "sunfish-first-oack-grant-window")]
+    fn record_grant_yield(&mut self, bytes: u32) {
+        self.first_grant.unread_bytes = bytes;
+        #[cfg(feature = "sunfish-first-oack-yield-rx")]
+        {
+            self.first_grant.window.next_tail = self.ring.words[2];
+            self.first_grant.window.remaining = bytes;
+        }
+    }
+
+    #[cfg(feature = "sunfish-first-oack-grant-window")]
+    fn first_grant_stop(&mut self, result: Transmit) {
+        self.first_grant.outcome = match result {
+            _ if self.first_grant.unread_bytes != 0 || self.first_grant.outcome == 2 => 2,
+            Transmit::Blocked { .. } => 3,
+            _ => 4,
+        };
+    }
+
+    #[cfg(feature = "sunfish-tftp-oack-early-reserve")]
+    pub(crate) fn early_reserved_oack_pending(&self) -> bool {
+        self.session.early_reserved_oack_pending()
+    }
+
+    #[cfg(feature = "sunfish-tftp-oack-after-rxdone")]
+    pub(crate) fn take_oack_after_done(&mut self) -> bool {
+        self.session.take_oack_after_done()
+    }
+
+    #[cfg(feature = "sunfish-tftp-oack-credit-early")]
+    pub(crate) fn take_oack_credit_turn(&mut self) -> bool {
+        self.session.take_oack_credit_turn()
+    }
+
+    #[cfg(feature = "sunfish-tftp-oack-credit-retry")]
+    pub(crate) fn take_oack_credit_retry(&mut self) -> bool {
+        self.session.take_oack_credit_retry()
+    }
+
+    #[cfg(feature = "sunfish-tftp-oack-grant-followup")]
+    pub(crate) fn oack_followup_grant_pending(&self) -> bool {
+        self.session.oack_followup_grant_pending()
+    }
+
+    #[cfg(feature = "sunfish-tftp-oack-followup")]
+    pub(crate) fn publish_oack_followup(&mut self, generation: u64, stage: core::OackFollowup)
+        -> Result<Transmit, Error>
+    {
+        self.publish_inner(generation, Some(stage))
+    }
+
+    fn publish_inner(&mut self, generation: u64,
+        #[cfg(feature = "sunfish-tftp-oack-followup")] followup: Option<core::OackFollowup>,
+    ) -> Result<Transmit, Error> {
+        self.check(generation)?;
+        self.quarantined = true;
+        self.ring.sample()?;
+        #[cfg(feature = "sunfish-first-oack-grant-window")]
+        let first_grant = matches!(followup, Some(core::OackFollowup::FirstGrantAck | core::OackFollowup::FirstGrantReply));
+        #[cfg(not(feature = "sunfish-first-oack-grant-window"))]
+        let first_grant = false;
+        #[cfg(feature = "sunfish-first-oack-grant-window")]
+        if first_grant {
+            let (bytes, early) = self.tftp_rx_snapshot().ok_or(Error::NotReady)?;
+            if bytes != 0 || early != 0 {
+                self.record_grant_yield(bytes);
+                self.first_grant.outcome = 2;
+                self.quarantined = false;
+                return Ok(Transmit::Idle);
+            }
+        }
+        #[cfg(feature = "sunfish-tftp-tail-observer")]
+        let first_oack_before = self.session.tftp_endpoint_trace().map(|t| t.flags);
+        #[cfg(feature = "sunfish-wlan-first-server-check-tail")]
+        let first_server_check_queued = self.ring.first_server_check_tail == ServerCheckTail::Untracked
+            && self.session.first_server_check().is_some_and(|trace| trace.oack.phase == 2);
+        #[cfg(feature = "sunfish-ipa-registration-reply-path")]
+        let registration_pending = self.ring.registration_reply.is_none()
+            && self.session.ipa_registration_trace().is_some_and(|reg|
+                reg.queued_at.is_some() && reg.published_at.is_none());
+        #[cfg(feature = "sunfish-tftp-oack-peer-tail")]
+        let watch_oack = self.ring.oack_peer_tail.is_none()
+            && self.session.server_check_49().is_some_and(|trace| trace.oack_at.is_none());
+        #[cfg(feature = "sunfish-tftp-oack-early-reserve")]
+        if matches!(followup, Some(core::OackFollowup::EarlyReserve))
+            && self.ring.oack_close_fifo.is_none()
+            && let Some(length) = self.ring.rx_bytes
+        {
+            let unread = ring_distance(self.ring.words[2], self.ring.words[3], length);
+            self.ring.oack_close_fifo = Some(ServerCheckRxWindow::new(unread,
+                self.ring.first_server_check_clock.map(|clock| clock())));
+        }
+        let mut failure = None;
+        #[cfg(feature = "sunfish-ipa-registration-reply-headers")]
+        let mut opening_header = None;
+        #[cfg(feature = "sunfish-tftp-reserved-writer-io")]
+        let watch_reserved = self.session.reserved_oack().is_some_and(|(oack, peer)|
+            oack.peer.port == 0x49 && oack.published_at.is_none()
+                && peer.is_some_and(|p| p.first_close_at.is_none()));
+        #[cfg(feature = "sunfish-ipa-init-close-visibility")]
+        let init_pending = self.ring.init_close.fresh_unread.is_none()
+            && self.session.ipa_init_transport_trace().is_some_and(|t| t.published_at.is_none());
+        let mut receive_arrived = false;
+        let writer = |record: &[u8]| {
+            #[cfg(feature = "sunfish-tftp-reserved-writer-io")]
+            let before = watch_reserved.then(|| self.ring.io.reserved_io_totals()).flatten();
+            let result = self.ring.write_checked(record, TX_RESERVE, first_grant);
+            #[cfg(feature = "sunfish-tftp-reserved-writer-io")]
+            if watch_reserved {
+                let after = self.ring.io.reserved_io_totals();
+                self.ring.reserved_writer_io.record(before, after, true);
+            }
+            match result {
+                Ok(false) => {
+                    receive_arrived = true;
+                    Err(WriteError::WouldBlock)
+                }
+                Ok(true) => {
+                    #[cfg(feature = "sunfish-ipa-registration-reply-headers")]
+                    if registration_pending {
+                        opening_header = Some(RegistrationHeader::read(record, true,
+                            self.ring.first_server_check_clock.map(|clock| clock())));
+                    }
+                    Ok(())
+                },
+                Err(Error::WouldBlock) => Err(WriteError::WouldBlock),
+                Err(error) => {
+                    failure = Some(error);
+                    Err(WriteError::Uncertain)
+                }
+            }
+        };
+        #[cfg(feature = "sunfish-tftp-oack-followup")]
+        let result = match followup {
+            Some(stage) => self.session.publish_oack_followup(generation, stage, writer),
+            None => self.session.publish_next(generation, writer),
+        };
+        #[cfg(not(feature = "sunfish-tftp-oack-followup"))]
+        let result = self.session.publish_next(generation, writer);
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        #[cfg(feature = "sunfish-ipa-tftp-original-trace")]
+        if let Ok(Some(core::Published::Data { remote_intent, last_fragment: true })) = result
+            && let Some(handle) = self.session.published_oack_request(remote_intent)
+        {
+            self.observe_registration_tftp_oack_progress(handle, 2);
+        }
+        let result = match result {
+            Ok(Some(published)) => Transmit::Session(published),
+            Ok(None) => Transmit::Idle,
+            Err(core::Error::NoRemoteIntent) => Transmit::AwaitingIntent,
+            Err(core::Error::WouldBlock) if receive_arrived => {
+                #[cfg(feature = "sunfish-first-oack-grant-window")]
+                { self.record_grant_yield(self.tftp_rx_snapshot().ok_or(Error::NotReady)?.0); }
+                Transmit::Idle
+            }
+            Err(core::Error::WouldBlock) => Transmit::Blocked {
+                read_notification_sent: self.ring.blocked_notice()?,
+            },
+            Err(error) => {
+                self.session_failure = Some(SessionFailureDiagnostic { stage: 4, command: u32::MAX, parameter: u32::MAX });
+                if error == core::Error::NoCapacity { self.session.record_capacity(2, None); }
+                return Err(error.into());
+            }
+        };
+        #[cfg(feature = "sunfish-ipa-init-close-visibility")]
+        if init_pending && matches!(result, Transmit::Session(core::Published::Data { last_fragment: true, .. }))
+            && self.session.ipa_init_transport_trace().is_some_and(|t| t.published_at.is_some())
+        {
+            // Wire publication and the doorbell succeeded. Read a fresh,
+            // validated cursor pair before returning control to the scheduler.
+            let clock = self.ring.first_server_check_clock;
+            let start = clock.map(|now| now());
+            self.ring.sample()?;
+            self.ring.init_close.sample_start = start;
+            self.ring.init_close.sample_end = clock.map(|now| now());
+            self.ring.init_close.fresh_unread = self.ring.rx_bytes.map(|length|
+                ring_distance(self.ring.words[2], self.ring.words[3], length) as u32);
+            self.ring.init_close.fresh_head = self.ring.registration_rx.as_ref().map(|h| h.head);
+        }
+        #[cfg(feature = "sunfish-ipa-registration-reply-path")]
+        if registration_pending
+            && self.session.ipa_registration_trace().is_some_and(|reg| reg.published_at.is_some())
+        {
+            let remaining = distance(self.ring.words[0], self.ring.words[1]);
+            let now = self.ring.first_server_check_clock.map(|clock| clock());
+            let unread = self.ring.rx_bytes.map(|length|
+                ring_distance(self.ring.words[2], self.ring.words[3], length));
+            #[cfg(feature = "sunfish-ipa-reply-fifo-visibility")]
+            {
+                self.ring.registration_reply_rx = unread.map(|bytes| ServerCheckRxWindow::new(bytes, now));
+            }
+            self.ring.registration_reply = Some(RegistrationReplyFifo {
+                remaining,
+                peer_tail_at: now.filter(|_| remaining == 0),
+                last_empty_at: now.filter(|_| unread == Some(0)),
+                max_unread: unread.unwrap_or(0),
+                last_poll_at: now,
+                ..RegistrationReplyFifo::default()
+            });
+            #[cfg(feature = "sunfish-ipa-reg-close-fifo")]
+            {
+                // write_checked sampled on each side of the successful TX-head
+                // store. The host has not advanced the RX tail since either.
+                let clock = self.ring.first_server_check_clock;
+                let fresh_start = clock.map(|now| now());
+                self.ring.sample()?;
+                self.ring.reg_close = Some(RegistrationCloseFifo {
+                    pre: self.ring.reg_pre_unread,
+                    post: unread.map(|bytes| bytes as u32),
+                    fresh: self.ring.rx_bytes.map(|length| ring_distance(self.ring.words[2], self.ring.words[3], length) as u32),
+                    fresh_start,
+                    fresh_end: clock.map(|now| now()),
+                    already_closed: self.session.original_1f_close_count().unwrap_or(0) != 0,
+                    ..RegistrationCloseFifo::default()
+                });
+            }
+            #[cfg(feature = "sunfish-ipa-registration-reply-headers")]
+            if let (Some(trace), Some(header)) = (self.ring.registration_reply.as_mut(), opening_header) {
+                trace.push_header(header);
+            }
+        }
+        #[cfg(feature = "sunfish-tftp-oack-peer-tail")]
+        if watch_oack && self.session.server_check_49().is_some_and(|trace| trace.oack_at.is_some()) {
+            let remaining = distance(self.ring.words[0], self.ring.words[1]);
+            self.ring.oack_peer_tail = Some(OackPeerTail::new(remaining,
+                self.ring.first_server_check_clock.map(|clock| clock())));
+            #[cfg(feature = "sunfish-tftp-oack-fifo-outcome")]
+            if let Some(length) = self.ring.rx_bytes {
+                let unread = ring_distance(self.ring.words[2], self.ring.words[3], length);
+                self.ring.reserved_oack_rx = Some(ServerCheckRxWindow::new(
+                    unread, self.ring.first_server_check_clock.map(|clock| clock())));
+                #[cfg(feature = "sunfish-tftp-oack-ahead-headers")]
+                { self.ring.reserved_oack_ahead = Some(OackAheadCapture::new(
+                    self.ring.first_server_check_clock.map(|clock| clock()), unread)); }
+            }
+        }
+        // Arm after the exact repeat's RX_DONE and before the owner can
+        // attempt the advertisement, grant ACK and OACK follow-up.
+        #[cfg(feature = "sunfish-tftp-oack-close-fifo")]
+        if self.ring.oack_close_fifo.is_none()
+            && self.session.oack_slot_follow().is_some_and(|trace| trace.exact_repeat_done_at.is_some())
+            && self.session.server_check_49().is_some_and(|trace| trace.first_close_at.is_none())
+            && let Some(length) = self.ring.rx_bytes
+        {
+            let unread = ring_distance(self.ring.words[2], self.ring.words[3], length);
+            self.ring.oack_close_fifo = Some(ServerCheckRxWindow::new(unread,
+                self.ring.first_server_check_clock.map(|clock| clock())));
+        }
+        #[cfg(feature = "sunfish-tftp-tail-observer")]
+        if first_oack_before.is_some_and(|flags| flags & 4 == 0)
+            && self.session.tftp_endpoint_trace().is_some_and(|trace| trace.flags & 4 != 0) {
+            // The successful writer just published exactly one GLINK record.
+            // Its current head is the first OACK's final boundary. No new I/O.
+            let remaining = distance(self.ring.words[0], self.ring.words[1]);
+            if remaining == 0 { self.ring.tftp_tail_seen = true; }
+            else { self.ring.tftp_tail_remaining = Some(remaining); }
+        }
+        #[cfg(feature = "sunfish-wlan-first-server-check-tail")]
+        if first_server_check_queued && self.session.first_server_check().is_some_and(|trace| trace.oack.phase == 3) {
+            // The checked writer just published the final record of this OACK.
+            // Retain the distance to its head across subsequent cursor samples.
+            let remaining = distance(self.ring.words[0], self.ring.words[1]);
+            self.ring.first_server_check_tail = if remaining == 0 {
+                ServerCheckTail::Consumed(self.ring.first_server_check_clock.map(|clock| clock()))
+            } else {
+                ServerCheckTail::Pending(remaining)
+            };
+            #[cfg(feature = "sunfish-wlan-first-oack-rx-fifo")]
+            if let Some(length) = self.ring.rx_bytes {
+                let unread = ring_distance(self.ring.words[2], self.ring.words[3], length);
+                self.ring.server_check_rx = Some(ServerCheckRxWindow::new(
+                    unread, self.ring.first_server_check_clock.map(|clock| clock())));
+            }
+        }
+        self.quarantined = false;
+        Ok(result)
+    }
+
+    #[cfg(feature = "sunfish-ipa-tftp-dispatch-trace")]
+    pub(crate) fn observe_registration_tftp_dispatch(
+        &mut self, handle: core::TftpHandle, result: u8, occupied: u8,
+    ) {
+        if let Some(request) = self.registration_tftp_request_mut(handle) {
+            request.server_result = result;
+            request.occupied = occupied;
+        }
+        #[cfg(feature = "sunfish-ipa-tftp-original-trace")]
+        self.update_registration_tftp_originals(handle, |original| {
+            original.result = result;
+            original.occupied = occupied;
+        });
+    }
+
+    #[cfg(feature = "sunfish-ipa-tftp-dispatch-trace")]
+    pub(crate) fn observe_registration_tftp_oack_queued(&mut self, handle: core::TftpHandle) {
+        if let Some(request) = self.registration_tftp_request_mut(handle) {
+            request.oack_queued = true;
+        }
+        #[cfg(feature = "sunfish-ipa-tftp-original-trace")]
+        self.observe_registration_tftp_oack_progress(handle, 1);
+    }
+
+    #[cfg(feature = "sunfish-ipa-tftp-original-trace")]
+    pub(crate) fn observe_registration_tftp_duplicate(
+        &mut self, duplicate: core::TftpHandle, source: Option<(core::TftpHandle, u8)>,
+    ) {
+        let Some((handle, source)) = source else { return; };
+        let mut original = OriginalTftpRequest {
+            handle, id: handle.diagnostic_id(), source, result: u8::MAX, occupied: u8::MAX, phases: 0,
+            #[cfg(feature = "sunfish-ipa-tftp-queue-block")]
+            queue_block: core::TftpQueueBlock::default(),
+            #[cfg(feature = "sunfish-ipa-tftp-slot-snapshot")]
+            full_queue: None,
+        };
+        if let Some(request) = self.registration_tftp_request_mut(handle) {
+            original.result = request.server_result;
+            original.occupied = request.occupied;
+            original.phases = request.oack_progress;
+            #[cfg(feature = "sunfish-ipa-tftp-queue-block")]
+            { original.queue_block = request.queue_block; }
+            #[cfg(feature = "sunfish-ipa-tftp-slot-snapshot")]
+            { original.full_queue = request.full_queue; }
+        }
+        if let Some(request) = self.registration_tftp_request_mut(duplicate) {
+            request.original = Some(original);
+        }
+    }
+
+    #[cfg(feature = "sunfish-ipa-tftp-original-trace")]
+    fn observe_registration_tftp_oack_progress(&mut self, handle: core::TftpHandle, phase: u8) {
+        if let Some(request) = self.registration_tftp_request_mut(handle) {
+            request.oack_progress |= phase;
+        }
+        self.update_registration_tftp_originals(handle, |original| original.phases |= phase);
+    }
+
+    #[cfg(feature = "sunfish-ipa-tftp-slot-snapshot")]
+    fn observe_tftp_slot_release(&mut self, occupied_before: u8) {
+        if occupied_before == 0 { return; }
+        let freed = occupied_before & !self.session.tftp_tx_occupied();
+        if freed == 0 { return; }
+        let at = self.ring.first_server_check_clock.map(|clock| clock());
+        let Some(trace) = self.ring.registration_reply.as_mut() else { return; };
+        let record = |snapshot: &mut Option<TftpFullQueue>| {
+            if let Some(snapshot) = snapshot.as_mut() {
+                snapshot.record_release(freed, at);
+            }
+        };
+        for request in trace.tftp_requests.iter_mut().flatten()
+            .chain(trace.headers.iter_mut().flatten().filter_map(|header| header.tftp_request.as_mut()))
+        {
+            record(&mut request.full_queue);
+            if let Some(original) = request.original.as_mut() {
+                record(&mut original.full_queue);
+            }
+        }
+    }
+
+    #[cfg(feature = "sunfish-ipa-tftp-original-trace")]
+    fn update_registration_tftp_originals(
+        &mut self, handle: core::TftpHandle, update: impl Fn(&mut OriginalTftpRequest),
+    ) {
+        let Some(trace) = self.ring.registration_reply.as_mut().filter(|trace| !trace.finished) else { return; };
+        for request in trace.tftp_requests.iter_mut().flatten()
+            .chain(trace.headers.iter_mut().flatten().filter_map(|header| header.tftp_request.as_mut()))
+        {
+            if let Some(original) = request.original.as_mut().filter(|original| original.handle == handle) {
+                update(original);
+            }
+        }
+    }
+
+    #[cfg(feature = "sunfish-ipa-tftp-dispatch-trace")]
+    fn registration_tftp_request_mut(&mut self, handle: core::TftpHandle) -> Option<&mut RegistrationTftpRequest> {
+        self.ring.registration_reply.as_mut().filter(|trace| !trace.finished)?
+            .tftp_requests.iter_mut().rev().flatten().find(|request| request.handle == Some(handle))
+    }
+
+    #[cfg(feature = "sunfish-tftp-oack-reserve")]
+    pub(crate) fn reserved_oack(&self) -> Option<(core::ReservedOack, Option<core::ServerCheckOackTrace>)> {
+        self.session.reserved_oack()
+    }
+
+    #[cfg(feature = "sunfish-ipa-init-empty-rx")]
+    pub(crate) fn ready_for_init_at_registration(&self) -> bool {
+        self.ring.reg_close.as_ref().is_some_and(|trace| trace.fresh == Some(0))
+            && self.tftp_rx_snapshot() == Some((0, 0))
+            && !self.session.deferred_ready()
+            && self.session.original_1f_close_count() == Some(0)
+    }
+
+    #[cfg(feature = "sunfish-ipa-init-close-visibility")]
+    pub(crate) fn init_close_fifo(&self) -> InitCloseFifo { self.ring.init_close }
+
+    #[cfg(feature = "sunfish-ipa-reg-close-fifo")]
+    pub(crate) fn registration_close_fifo(&self) -> Option<RegistrationCloseFifo> { self.ring.reg_close }
+
+    #[cfg(feature = "sunfish-ipa-registration-reply-path")]
+    pub(crate) fn registration_reply_fifo(&self) -> Option<RegistrationReplyFifo> {
+        self.ring.registration_reply
+    }
+
+    /// Existing cursor samples observed the peer advance its TX tail through
+    /// the first OACK boundary. This is not application-level receipt.
+    #[cfg(feature = "sunfish-tftp-tail-observer")]
+    pub fn tftp_tail_seen(&self) -> bool { self.ring.tftp_tail_seen }
+
+    #[cfg(feature = "sunfish-wlan-first-server-check-tail")]
+    pub(crate) fn first_server_check_tail(&self) -> ServerCheckTail {
+        self.ring.first_server_check_tail
+    }
+
+    #[cfg(feature = "sunfish-tftp-first-oack-headers")]
+    pub(crate) fn first_oack_headers(&self) -> Option<FirstOackHeaders> {
+        self.ring.server_check_rx.as_ref().map(|trace| trace.headers)
+    }
+    #[cfg(feature = "sunfish-ipa-registration-rx-visibility")]
+    pub(crate) fn registration_rx_visibility(&self) -> Option<ServerCheckRxDone> {
+        self.ring.registration_rx.as_ref().and_then(|trace| trace.done)
+    }
+    #[cfg(feature = "sunfish-wlan-first-oack-rx-fifo")]
+    pub(crate) fn first_oack_rx_done(&self) -> Option<ServerCheckRxDone> {
+        self.ring.server_check_rx.as_ref().and_then(|trace| trace.done)
+    }
+
+    #[cfg(feature = "sunfish-ipa-wrq-ready-fifo")]
+    pub(crate) fn track_first_wrq(&mut self) {
+        self.ring.track_first_wrq = self.session.first_server_check().is_none();
+    }
+
+    #[cfg(feature = "sunfish-ipa-wrq-ready-fifo")]
+    pub(crate) fn ipa_wrq_timing(&self) -> (Option<u64>, Option<ServerCheckRxDone>) {
+        (self.session.ipa_endpoint_ready_at(), self.ring.first_wrq_rx)
+    }
+
+    /// Last validated RX cursor sample and any startup records still queued
+    /// in the adapter. No additional device or shared-memory reads.
+    #[cfg(feature = "sunfish-tftp-rx-backlog-observer")]
+    pub fn tftp_rx_snapshot(&self) -> Option<(u32, u32)> {
+        let length = self.ring.rx_bytes?;
+        let bytes = ring_distance(self.ring.words[2], self.ring.words[3], length);
+        #[cfg(feature = "sunfish-linux-mpss-glink")]
+        let early = self.ring.control.as_ref().map_or(0, |c| c.early.iter().flatten().count());
+        #[cfg(not(feature = "sunfish-linux-mpss-glink"))]
+        let early = 0;
+        Some((bytes as u32, early as u32))
+    }
+
+    /// Logical recovery ONLY after the native owner has stopped/drained the old
+    /// peer and serialized all reset/IRQ/writer activity. Requires a newer local
+    /// generation, unchanged mapping identity, and both rings empty. This does
+    /// not stop hardware, rewrite cursors, renegotiate, or revoke DMA/SCM access.
+    pub fn reset_after_transport_reset(&mut self, generation: u64) -> Result<(), Error> {
+        #[cfg(feature = "sunfish-linux-mpss-glink")]
+        if self.ring.control.is_some() {
+            self.quarantined = true;
+            return Err(Error::Negotiation);
+        }
+        if generation <= self.ring.generation {
+            return Err(Error::StaleGeneration);
+        }
+        self.quarantined = true;
+        let observation = self.ring.io.observe()?;
+        ready(observation, generation)?;
+        if observation.identity != self.ring.identity {
+            return Err(Error::IdentityChanged);
+        }
+        if self.ring.io.rx_length()? != self.ring.rx_bytes {
+            return Err(Error::IdentityChanged);
+        }
+        let words = descriptors(&mut self.ring.io, self.ring.rx_bytes)?;
+        if words[0] != words[1] || words[2] != words[3] {
+            return Err(Error::ResetNotEmpty);
+        }
+        self.ring.io.barrier(Barrier::Acquire)?;
+        let after = self.ring.io.observe()?;
+        ready(after, generation)?;
+        if after != observation || descriptors(&mut self.ring.io, self.ring.rx_bytes)? != words {
+            return Err(Error::IdentityChanged);
+        }
+        self.session.reset_after_transport_reset(generation)?;
+        #[cfg(feature = "sunfish-first-oack-grant-window")]
+        { self.first_grant = FirstGrantTrace::default(); }
+        self.ring.generation = generation;
+        self.ring.words = words;
+        self.ring.read_notification_end = None;
+        #[cfg(feature = "sunfish-tftp-tail-observer")]
+        {
+            self.ring.tftp_tail_remaining = None;
+            self.ring.tftp_tail_seen = false;
+        }
+        #[cfg(feature = "sunfish-wlan-first-server-check-tail")]
+        { self.ring.first_server_check_tail = ServerCheckTail::Untracked; }
+        #[cfg(feature = "sunfish-tftp-oack-peer-tail")]
+        { self.ring.oack_peer_tail = None; }
+        #[cfg(feature = "sunfish-tftp-oack-close-fifo")]
+        { self.ring.oack_close_fifo = None; }
+        #[cfg(feature = "sunfish-tftp-oack-fifo-outcome")]
+        { self.ring.reserved_oack_rx = None; }
+        #[cfg(feature = "sunfish-tftp-oack-ahead-headers")]
+        { self.ring.reserved_oack_ahead = None; }
+        #[cfg(feature = "sunfish-tftp-reserved-writer-io")]
+        { self.ring.reserved_writer_io = ReservedWriterIoTrace::default(); }
+        #[cfg(feature = "sunfish-wlan-first-oack-rx-fifo")]
+        { self.ring.server_check_rx = None; }
+        #[cfg(feature = "sunfish-ipa-registration-rx-visibility")]
+        { self.ring.registration_rx = None; }
+        #[cfg(feature = "sunfish-ipa-wrq-ready-fifo")]
+        { self.ring.first_wrq_rx = None; self.ring.track_first_wrq = false; }
+        #[cfg(feature = "sunfish-ipa-registration-reply-path")]
+        { self.ring.registration_reply = None; }
+        #[cfg(feature = "sunfish-ipa-reply-fifo-visibility")]
+        { self.ring.registration_reply_rx = None; }
+        #[cfg(feature = "sunfish-ipa-init-close-visibility")]
+        { self.ring.init_close = InitCloseFifo::default(); }
+        #[cfg(feature = "sunfish-ipa-reg-close-fifo")]
+        { self.ring.reg_close = None; self.ring.reg_pre_unread = None; }
+        self.ring.record.fill(0);
+        self.session_failure = None;
+        self.quarantined = false;
+        Ok(())
+    }
+}

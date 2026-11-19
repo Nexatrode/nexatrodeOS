@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Read-only GCC UFS status snapshot; no HCI, PHY, power, reset or DMA writes. -->
+<system>
+    <memory_region name="gcc_ufs_local" size="0x1000" page_size="0x1000"
+                   phys_addr="0x00177000" />
+    <memory_region name="gcc_ufs_aggregate" size="0x1000" page_size="0x1000"
+                   phys_addr="0x00182000" />
+    <memory_region name="gcc_ufs_mem_ref" size="0x1000" page_size="0x1000"
+                   phys_addr="0x0018c000" />
+    <memory_region name="splash" size="0x1600000" page_size="0x200000"
+                   phys_addr="0x9c000000" />
+    <protection_domain name="ufs_gcc_snapshot_probe" priority="99" stack_size="0x10000"
+                       smc="false">
+        <program_image path="ufs_gcc_snapshot_probe.elf" />
+        <map mr="gcc_ufs_local" vaddr="0x64000000" perms="r" cached="false"
+             setvar_vaddr="gcc_ufs_local" />
+        <map mr="gcc_ufs_aggregate" vaddr="0x64001000" perms="r" cached="false"
+             setvar_vaddr="gcc_ufs_aggregate" />
+        <map mr="gcc_ufs_mem_ref" vaddr="0x64002000" perms="r" cached="false"
+             setvar_vaddr="gcc_ufs_mem_ref" />
+        <map mr="splash" vaddr="0x42000000" perms="rw" cached="false"
+             setvar_vaddr="splash_fb" />
+    </protection_domain>
+</system>

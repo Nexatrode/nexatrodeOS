@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<system>
+    <memory_region name="cmd_db_dictionary" size="0x1000" page_size="0x1000"
+                   phys_addr="0x0c3f0000" />
+    <memory_region name="cmd_db_snapshot" size="0x2000" page_size="0x1000"
+                   phys_addr="0x85f20000" />
+    <memory_region name="apps_rsc" size="0x1000" page_size="0x1000"
+                   phys_addr="0x18220000" />
+    <memory_region name="apps_rsc_tail" size="0x2000" page_size="0x1000"
+                   phys_addr="0x18221000" />
+    <memory_region name="splash" size="0x1600000" page_size="0x200000"
+                   phys_addr="0x9c000000" />
+    <protection_domain name="ipa_path_bcm_probe" priority="99" stack_size="0x20000">
+        <program_image path="ipa_path_bcm_probe.elf" />
+        <map mr="cmd_db_dictionary" vaddr="0x40000000" perms="r" cached="false"
+             setvar_vaddr="cmd_db_dictionary" />
+        <map mr="cmd_db_snapshot" vaddr="0x40001000" perms="r" cached="false"
+             setvar_vaddr="cmd_db_snapshot" />
+        <map mr="apps_rsc" vaddr="0x40003000" perms="rw" cached="false"
+             setvar_vaddr="apps_rsc" />
+        <map mr="apps_rsc_tail" vaddr="0x40004000" perms="r" cached="false" />
+        <map mr="splash" vaddr="0x42000000" perms="rw" cached="false"
+             setvar_vaddr="splash_fb" />
+    </protection_domain>
+</system>

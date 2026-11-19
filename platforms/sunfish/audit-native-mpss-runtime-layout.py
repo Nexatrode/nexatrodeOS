@@ -90,7 +90,8 @@ def audit(context):
                 source_guard_base=hex(runtime_source), relocated_loader_base='0xc0000000',
                 reclaimed_kernel_boot_range=[hex(v) for v in reclaimed], reclaimed_frames=reused,
                 source_and_destination_envelope_bytes=0x6000000,
-                all_actual_frames_and_copy_targets_checked=True, all_three_dt_reservations_checked=True)
+                all_actual_frames_and_copy_targets_checked=True, all_three_dt_reservations_checked=True,
+                source_guard_mode=context['source_guard_mode'])
 
 
 def main():
@@ -105,12 +106,12 @@ def main():
             ROOT / '.cache/sunfish-mobian-comparison/artifacts/sm7150-google-sunfish.dtb']
     kernel = reference / 'sdk/board/sunfish/debug/elf/sel4.elf'
     paths = [out / 'loader.img', out / 'capdl.json', out / 'report.txt', out / 'native_startup_preflight.elf',
-             out / 'native-startup-mpss-runtime.system', out.parent / 'result.json',
+             out / 'native-startup-mpss-runtime.system', out / 'integration-result.json',
              reference / 'loader-sdk-profile.json', reference / 'loader-relocated-build/loader.elf',
              reference / 'loader-checkpoint-source/src/aarch64/crt0.S', kernel, Path(__file__).resolve(),
              HERE / 'validate-image-boot-layout.py', HERE / 'audit-capdl-memory.py', HERE / 'prepare-image-loader-sdk.py'] + dtbs
     hashes = {str(q): sha(q) for q in paths}
-    proof = json.loads((out.parent / 'result.json').read_text())
+    proof = json.loads((out / 'integration-result.json').read_text())
     require(proof['result'] == 'passed' and proof['root_elf_sha256'] == sha(out / 'native_startup_preflight.elf'),
             'actual compiled isolated root binding')
     profile = json.loads((reference / 'loader-sdk-profile.json').read_text())
@@ -121,8 +122,38 @@ def main():
             and profile['source_image_base'] == hex(sdk.RUNTIME_SOURCE - 0x1000)
             and profile['native_startup_max_relocation_bytes'] == 0x6000000, 'preserved compiled native loader contract')
     asm = (reference / 'loader-checkpoint-source/src/aarch64/crt0.S').read_text()
-    require(asm.index(f'ldr x1, ={hex(sdk.RUNTIME_SOURCE)}') < asm.index('    bl     relocate') and
-            '    b.ne .Lnative_source_fail' in asm and 'IMAGE SOURCE STOP' in asm, 'actual source guard precedes copy')
+    require(asm.index(f'ldr x1, ={hex(sdk.RUNTIME_SOURCE)}') < asm.index('    bl     relocate'),
+            'actual source guard precedes copy')
+    if profile.get('native_source_report_guard', False):
+        require('    b.ne .Lnative_source_address_fail' in asm
+                and '    b.hi .Lnative_source_prefix_fail' in asm
+                and '    b.cs .Lnative_source_overflow_fail' in asm
+                and '    b.hi .Lnative_source_extent_fail' in asm
+                and '    ldr x1, =0x80081000' in asm
+                and '    ldr x1, =0x85700000' in asm
+                and '    b.hi .Lnative_source_reservation_fail' in asm
+                and '.asciz "SOURCE RANGE END"' in asm
+                and '    b .Lnative_source_continue' in asm
+                and '.Lnative_source_continue:' in asm
+                and 'IMAGE SOURCE STOP' not in asm,
+                'labeled source failures stop and both source-range checks gate continuation')
+        source_guard_mode = 'labeled failures stop; pass continues to relocation'
+    elif profile.get('native_source_diagnostic', False):
+        require('    b.ne .Lnative_source_address_fail' in asm
+                and '    b.hi .Lnative_source_prefix_fail' in asm
+                and '    b.cs .Lnative_source_overflow_fail' in asm
+                and '    b.hi .Lnative_source_extent_fail' in asm
+                and '    b .Lnative_source_diagnostic_stop' in asm
+                and 'IMAGE SOURCE STOP' not in asm,
+                'standalone labeled source diagnostic stops before copy')
+        source_guard_mode = 'labeled source diagnostic stops before relocation'
+    else:
+        require('    b.ne .Lnative_source_fail' in asm
+                and '    b.cs .Lnative_source_fail' in asm
+                and '    b.hi .Lnative_source_fail' in asm
+                and 'IMAGE SOURCE STOP' in asm,
+                'actual source guard failure path')
+        source_guard_mode = 'collapsed source failure label'
     payload = (out / 'loader.img').read_bytes()
     segments = sdk.segments(reference / 'loader-relocated-build/loader.elf')
     require(len(segments) == 1, 'single retained loader segment')
@@ -143,7 +174,8 @@ def main():
     ram = [((cells[i] << 32) | cells[i+1], (cells[i+2] << 32) | cells[i+3]) for i in range(0, len(cells), 4)]
     context = dict(layout=layout, memory=memory, sdk=sdk, payload=payload, segment=segment, header=header, targets=targets,
                    kernel_entry=kernel_entry, reclaimed=reclaimed, ram=ram,
-                   reservations=[memory.read_regions(dt)[0] for dt in dtbs], frames=memory.read_pages(out / 'report.txt'))
+                   reservations=[memory.read_regions(dt)[0] for dt in dtbs], frames=memory.read_pages(out / 'report.txt'),
+                   source_guard_mode=source_guard_mode)
     result = audit(context)
     mutations = []
 
@@ -174,11 +206,14 @@ def main():
     for path, expected in hashes.items():
         require(sha(Path(path)) == expected, 'layout audit input changed')
     result.update(input_sha256=hashes, mutations_rejected=mutations,
-                  scope='Actual generated loader payload and CapDL allocation ranges only. Android boot-image packing and device execution remain future checks.',
-                  android_boot_image_packaged=False, required_auth_device_result_pending=True,
+                  scope='Actual runtime loader payload and CapDL allocation ranges only. The freezer separately verifies Android-v2 packaging; device execution is not proven.',
+                  android_v2_boot_image_packaging_audited=False,
+                  predecessor_auth_evidence_bound=proof.get('predecessor_auth_evidence_bound') is True,
                   physical_authentication_proven=False, physical_glink_ready_proven=False,
                   native_wifi_proven=False, ready_for_device_boot=False, device_actions=[])
-    (out / 'runtime-layout-audit.json').write_text(json.dumps(result, indent=2) + '\n')
+    if result['predecessor_auth_evidence_bound'] is not True:
+        raise ValueError('post-auth runtime layout requires the prior PAS4/Q6-ready evidence binding')
+    (out / 'runtime-loader-layout-audit.json').write_text(json.dumps(result, indent=2) + '\n')
     print('PASS: actual runtime loader/copy/frame ranges, ' + str(len(mutations)) + ' rejected mutations; no boot image or device action.')
 
 

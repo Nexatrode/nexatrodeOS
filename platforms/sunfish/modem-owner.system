@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<system>
+    <memory_region name="apps_rsc" size="0x1000" page_size="0x1000"
+                   phys_addr="0x18220000" />
+    <memory_region name="apps_rsc_tail" size="0x2000" page_size="0x1000"
+                   phys_addr="0x18221000" />
+    <memory_region name="aop_msgram" size="0x1000" page_size="0x1000"
+                   phys_addr="0x0c300000" />
+    <memory_region name="aop_doorbell" size="0x1000" page_size="0x1000"
+                   phys_addr="0x17c00000" />
+    <memory_region name="pas_metadata" size="0x5000" page_size="0x1000" />
+    <memory_region name="modem_image_pool" size="0x9800000" page_size="0x200000"
+                   phys_addr="0x8b000000" />
+    <!-- Keep the Lineage no-map WLAN MSA range out of seL4's untyped pool.
+         It is intentionally not mapped to the owner; SCM ownership remains gated. -->
+    <memory_region name="wlan_msa_pool" size="0x200000" page_size="0x1000"
+                   phys_addr="0x98d00000" />
+    <memory_region name="modem_gap_snapshot" size="0x200000" page_size="0x200000" />
+    <memory_region name="splash" size="0x1600000" page_size="0x200000"
+                   phys_addr="0x9c000000" />
+    <memory_region name="smem_snapshot_low" size="0x11d000" page_size="0x1000" phys_addr="0x86000000" />
+    <memory_region name="smem_ap_page" size="0x1000" page_size="0x1000" phys_addr="0x8611d000" />
+    <memory_region name="glink_prepare_tail" size="0x4000" page_size="0x1000" phys_addr="0x8611e000" />
+    <memory_region name="smem_snapshot_high" size="0xde000" page_size="0x1000" phys_addr="0x86122000" />
+    <memory_region name="tcsr_smem_lock" size="0x1000" page_size="0x1000" phys_addr="0x01f43000" />
+    <memory_region name="modem_storage_guard_low" size="0x1000" page_size="0x1000" phys_addr="0xa2000000" />
+    <memory_region name="modem_storage" size="0x200000" page_size="0x1000" phys_addr="0xa2001000" />
+    <memory_region name="modem_storage_guard_high" size="0x1000" page_size="0x1000" phys_addr="0xa2201000" />
+    <memory_region name="modem_heap_guard_low" size="0x1000" page_size="0x1000" phys_addr="0xa2400000" />
+    <memory_region name="modem_heap" size="0x500000" page_size="0x1000" phys_addr="0xa2401000" />
+    <memory_region name="modem_heap_guard_high" size="0x1000" page_size="0x1000" phys_addr="0xa2901000" />
+    <memory_region name="modem_scm_args_guard_low" size="0x1000" page_size="0x1000" phys_addr="0xa2a00000" />
+    <memory_region name="modem_scm_args" size="0x1000" page_size="0x1000" phys_addr="0xa2a01000" />
+    <memory_region name="modem_scm_args_guard_high" size="0x1000" page_size="0x1000" phys_addr="0xa2a02000" />
+    <protection_domain name="modem_image_probe" priority="99" stack_size="0x100000" smc="true">
+        <program_image path="modem_image_probe.elf" />
+        <map mr="smem_snapshot_low" vaddr="0x44000000" perms="r" cached="false" setvar_vaddr="modem_smem_status" />
+        <map mr="smem_ap_page" vaddr="0x4411d000" perms="rw" cached="false" setvar_vaddr="smp2p_ap_page" />
+        <map mr="glink_prepare_tail" vaddr="0x4411e000" perms="rw" cached="false" setvar_vaddr="glink_prepare_tail" />
+        <map mr="smem_snapshot_high" vaddr="0x44122000" perms="r" cached="false" />
+        <map mr="tcsr_smem_lock" vaddr="0x40006000" perms="rw" cached="false" setvar_vaddr="tcsr_smem_lock" />
+        <map mr="apps_rsc" vaddr="0x40000000" perms="rw" cached="false"
+             setvar_vaddr="apps_rsc" />
+        <map mr="apps_rsc_tail" vaddr="0x40001000" perms="r" cached="false" />
+        <map mr="aop_msgram" vaddr="0x40004000" perms="rw" cached="false"
+             setvar_vaddr="aop_msgram" />
+        <map mr="aop_doorbell" vaddr="0x40005000" perms="rw" cached="false"
+             setvar_vaddr="aop_doorbell" />
+        <map mr="pas_metadata" vaddr="0x40010000" perms="rw" cached="false"
+             setvar_vaddr="pas_metadata" />
+        <setvar symbol="pas_metadata_paddr" region_paddr="pas_metadata" />
+        <map mr="modem_image_pool" vaddr="0x50000000" perms="rw" cached="false"
+             setvar_vaddr="modem_image_pool" />
+        <map mr="modem_gap_snapshot" vaddr="0x60000000" perms="rw" cached="true"
+             setvar_vaddr="modem_gap_snapshot" />
+        <map mr="splash" vaddr="0x42000000" perms="rw" cached="false"
+             setvar_vaddr="splash_fb" />
+        <map mr="modem_storage" vaddr="0x61001000" perms="rw" cached="false" setvar_vaddr="modem_storage" />
+        <setvar symbol="modem_storage_paddr" region_paddr="modem_storage" />
+        <map mr="modem_heap" vaddr="0x62001000" perms="rw" cached="false" setvar_vaddr="modem_heap" />
+        <setvar symbol="modem_heap_paddr" region_paddr="modem_heap" />
+        <map mr="modem_scm_args" vaddr="0x63001000" perms="rw" cached="false" setvar_vaddr="modem_scm_args" />
+        <setvar symbol="modem_scm_args_paddr" region_paddr="modem_scm_args" />
+        <irq irq="481" id="0" trigger="edge" />
+        <irq irq="483" id="1" trigger="edge" />
+    </protection_domain>
+    <channel>
+        <end pd="modem_image_probe" id="2" notify="true" pp="false" />
+        <end pd="modem_image_probe" id="3" notify="false" pp="false" />
+    </channel>
+</system>

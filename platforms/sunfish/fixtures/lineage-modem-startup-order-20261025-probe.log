@@ -1,0 +1,18 @@
+# ANSI-stripped, filtered from .cache/pixel-sunfish/modem-image-probe/lineage-return-diagnostics/current-dmesg.txt
+# Independent LineageOS return boot after a temporary test image; rooted dmesg, no firmware payload.
+[   31.987938] init: Could not start service 'vendor.mdm_helper' as part of class 'core': Cannot find '/vendor/bin/mdm_helper': No such file or directory
+[   32.030371] init: ... started service 'vendor.per_mgr' has pid 1315
+[   32.147634] init: ... started service 'vendor.qrtr-ns' has pid 1325
+[   32.240799] init: ... started service 'tftp_server' has pid 1340
+[   32.305843] init: ... started service 'modem_svc' has pid 1345
+[   32.439020] init: ... started service 'pd_mapper' has pid 1349
+[   32.557780] init: ... started service 'vendor.tftp_server' has pid 1361
+[   35.888481] init: ... started service 'per_proxy' has pid 1546
+[   35.915304] subsys-restart: __subsystem_get(): Changing subsys fw_name to modem
+[   35.921387] ueventd: firmware: loading 'modem.mdt' for '/devices/platform/soc/4080000.qcom,mss/firmware/modem.mdt'
+[   35.922001] ueventd: found /vendor/firmware_mnt/image/modem.mdt for '/devices/platform/soc/4080000.qcom,mss/firmware/modem.mdt'
+[   36.513127] subsys-pil-tz 4080000.qcom,mss: modem: Brought out of reset
+[   36.551363] subsys-pil-tz 4080000.qcom,mss: modem: Power/Clock ready interrupt received
+[   38.984202] service-notifier: root_service_service_ind_cb: Indication received from msm/modem/wlan_pd, state: 0x1fffffff, trans-id: 1
+[   38.995400] icnss_qmi: QMI Server Connected: state: 0x980
+[   46.510299] [kworke][1141942410][02:02:49.575529] wlan: [6:I:WMA] wma_wait_for_ready_event: 6853: FW ready event received

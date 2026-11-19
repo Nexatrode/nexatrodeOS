@@ -1,0 +1,16 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<system>
+    <memory_region name="splash" size="0x1600000" page_size="0x200000" phys_addr="0x9c000000" />
+    <memory_region name="smem_before" size="0x11d000" page_size="0x1000" phys_addr="0x86000000" />
+    <memory_region name="smem_metadata" size="0x1000" page_size="0x1000" phys_addr="0x8611d000" />
+    <memory_region name="smem_after" size="0xe2000" page_size="0x1000" phys_addr="0x8611e000" />
+    <memory_region name="tcsr_smem_lock" size="0x1000" page_size="0x1000" phys_addr="0x01f43000" />
+    <protection_domain name="native_startup_preflight" priority="99" smc="false">
+        <program_image path="ipa-smem-allocate-v2.elf" />
+        <map mr="splash" vaddr="0x42000000" perms="rw" cached="false" setvar_vaddr="splash_vaddr" />
+        <map mr="smem_before" vaddr="0x40000000" perms="r" cached="false" setvar_vaddr="smem_vaddr" />
+        <map mr="smem_metadata" vaddr="0x4011d000" perms="rw" cached="false" setvar_vaddr="smem_metadata_vaddr" />
+        <map mr="smem_after" vaddr="0x4011e000" perms="r" cached="false" />
+        <map mr="tcsr_smem_lock" vaddr="0x41000000" perms="rw" cached="false" setvar_vaddr="tcsr_lock_vaddr" />
+    </protection_domain>
+</system>

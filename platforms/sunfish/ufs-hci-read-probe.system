@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<!-- One-shot UFSHCI reads only; no UFS command, IRQ, DMA, SMMU, SMC, power, or reset. -->
+<system>
+    <memory_region name="ufs_hci_mmio" size="0x3000" page_size="0x1000"
+                   phys_addr="0x01d84000" />
+    <memory_region name="splash" size="0x1600000" page_size="0x200000"
+                   phys_addr="0x9c000000" />
+    <protection_domain name="ufs_hci_read_probe" priority="99" stack_size="0x10000"
+                       smc="false">
+        <program_image path="ufs_hci_read_probe.elf" />
+        <map mr="ufs_hci_mmio" vaddr="0x64000000" perms="r" cached="false"
+             setvar_vaddr="ufs_hci_mmio" />
+        <map mr="splash" vaddr="0x42000000" perms="rw" cached="false"
+             setvar_vaddr="splash_fb" />
+    </protection_domain>
+</system>

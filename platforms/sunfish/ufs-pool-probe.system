@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<!-- Pool mapping check only: no device MMIO, IRQ, SMMU, SMC, modem, or WLAN. -->
+<system>
+    <memory_region name="splash" size="0x1600000" page_size="0x200000"
+                   phys_addr="0x9c000000" />
+    <memory_region name="ufs_dma_pool" size="0x1000000" page_size="0x1000" />
+    <protection_domain name="ufs_pool_probe" priority="99" stack_size="0x100000" smc="false">
+        <program_image path="ufs_pool_probe.elf" />
+        <map mr="splash" vaddr="0x42000000" perms="rw" cached="false"
+             setvar_vaddr="splash_fb" />
+        <map mr="ufs_dma_pool" vaddr="0x65000000" perms="rw" cached="false"
+             setvar_vaddr="ufs_dma_pool" />
+        <setvar symbol="ufs_dma_pool_paddr" region_paddr="ufs_dma_pool" />
+    </protection_domain>
+</system>

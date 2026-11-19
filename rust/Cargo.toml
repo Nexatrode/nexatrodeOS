@@ -4,11 +4,273 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mpss_smp2p_tests)', 'cfg(mpss_glink_tests)', 'cfg(mpss_glink_transport_tests)'] }
+
 [features]
+sunfish-firmware-metadata-probe = []
+sunfish-glink-receive-probe = ["sunfish-firmware-metadata-probe"]
+sunfish-glink-prepare-probe = ["sunfish-firmware-metadata-probe"]
+sunfish-glink-boot-probe = ["sunfish-firmware-metadata-probe"]
+sunfish-glink-version-probe = ["sunfish-firmware-metadata-probe"]
+sunfish-glink-pending-probe = ["sunfish-glink-version-probe"]
+sunfish-glink-open-probe = ["sunfish-glink-pending-probe"]
+sunfish-glink-open-plan-snapshot = ["sunfish-glink-open-probe"]
+sunfish-glink-channel-probe = ["sunfish-glink-open-probe"]
+sunfish-modem-owner = ["sunfish-glink-channel-probe"]
+sunfish-modem-servreg-state-probe = ["sunfish-modem-owner"]
+sunfish-modem-servreg-restart-probe = ["sunfish-modem-servreg-state-probe"]
+sunfish-modem-tftp-observer = ["sunfish-modem-servreg-state-probe"]
+sunfish-smmu-install-probe = []
+sunfish-smmu-ipa-install-probe = ["sunfish-smmu-install-probe"]
+sunfish-smmu-ipa-root-install-probe = ["sunfish-smmu-ipa-install-probe"]
+sunfish-smmu-ipa-shared-install-probe = ["sunfish-smmu-ipa-root-install-probe"]
+sunfish-native-wifi-private-inputs = []
+sunfish-native-startup-preflight = ["sunfish-native-wifi-private-inputs"]
+sunfish-native-startup-ipa-config = ["sunfish-native-startup-preflight"]
+sunfish-native-startup-ipa-domain = ["sunfish-native-startup-ipa-config", "sunfish-smmu-ipa-install-probe"]
+sunfish-native-startup-ipa-memory = ["sunfish-native-startup-ipa-domain"]
+sunfish-native-startup-ipa-buffers = ["sunfish-native-startup-ipa-memory"]
+sunfish-native-startup-ipa-resources = ["sunfish-native-startup-ipa-buffers"]
+sunfish-native-startup-ipa-irq = ["sunfish-native-startup-ipa-resources"]
+sunfish-native-startup-ipa-shared = ["sunfish-native-startup-ipa-irq", "sunfish-smmu-ipa-shared-install-probe"]
+sunfish-native-startup-ipa-uc = ["sunfish-native-startup-ipa-shared"]
+sunfish-native-startup-ipa-firmware = ["sunfish-native-startup-ipa-uc"]
+sunfish-native-startup-ipa-gsi = ["sunfish-native-startup-ipa-firmware"]
+sunfish-native-startup-ipa-command = ["sunfish-native-startup-ipa-gsi"]
+sunfish-native-startup-ipa-transfer = ["sunfish-native-startup-ipa-command"]
+sunfish-native-startup-ipa-tables = ["sunfish-native-startup-ipa-transfer"]
+sunfish-native-startup-ipa-receive-memory = ["sunfish-native-startup-ipa-tables"]
+sunfish-native-startup-ipa-receive = ["sunfish-native-startup-ipa-receive-memory"]
+sunfish-linux-ipa-qmi = []
+sunfish-qrtr-rmtfs-flow-experiment = []
+sunfish-qrtr-control-port-resume = ["sunfish-qrtr-rmtfs-flow-experiment"]
+sunfish-glink-intent-request-experiment = []
+sunfish-glink-tx-fairness-experiment = []
+sunfish-glink-credit-fairness-experiment = []
+sunfish-tftp-per-peer-reply-experiment = ["sunfish-native-tftp-server-check"]
+sunfish-tftp-extended-sessions-experiment = ["sunfish-native-tftp-server-check"]
+sunfish-tftp-first-rrq-observer = ["sunfish-native-tftp-server-check"]
+sunfish-tftp-deferred-close-experiment = ["sunfish-native-tftp-server-check", "sunfish-qrtr-deferred-requests"]
+sunfish-tftp-peer-close-experiment = ["sunfish-tftp-deferred-close-experiment"]
+sunfish-tftp-close-owner-fence = ["sunfish-tftp-peer-close-experiment"]
+sunfish-tftp-wlan-mux = ["sunfish-tftp-close-owner-fence", "sunfish-tftp-per-peer-reply-experiment"]
+sunfish-tftp-wlan-close-handoff = ["sunfish-tftp-wlan-mux", "sunfish-qrtr-rmtfs-flow-experiment"]
+sunfish-wlan-mux-startup-panel = ["sunfish-tftp-wlan-close-handoff", "sunfish-tftp-reserved-writer-io"]
+sunfish-wlan-mux-elf-phases = ["sunfish-wlan-mux-startup-panel"]
+sunfish-ipa-wrq-ready-fifo = ["sunfish-ipa-announcement-timeline", "sunfish-ipa-registration-rx-visibility", "sunfish-ipa-init-tx-trace"]
+sunfish-ipa-announcement-timeline = ["sunfish-wlan-read-sequence"]
+sunfish-wlan-read-sequence = ["sunfish-first-oack-yield-rx", "sunfish-wlan-elf-tftp-timeline"]
+sunfish-first-oack-yield-rx = ["sunfish-first-oack-grant-window", "sunfish-ipa-registration-reply-headers"]
+sunfish-first-oack-grant-window = ["sunfish-first-oack-after-ipa-publish", "sunfish-tftp-oack-grant-followup", "sunfish-tftp-rx-backlog-observer"]
+sunfish-first-oack-after-ipa-publish = ["sunfish-wlan-mux-elf-phases", "sunfish-ipa-reply-before-oack"]
+sunfish-tftp-close-handoff-prototype = ["sunfish-tftp-peer-close-experiment", "sunfish-tftp-per-peer-reply-experiment", "sunfish-qrtr-rmtfs-flow-experiment"]
+sunfish-tftp-endpoint-observer = ["sunfish-native-tftp-server-check"]
+sunfish-tftp-timing-observer = ["sunfish-tftp-endpoint-observer", "sunfish-linux-rmtfs", "sunfish-tftp-per-peer-reply-experiment"]
+sunfish-tftp-oack-phase-observer = ["sunfish-tftp-timing-observer"]
+sunfish-tftp-publish-io-observer = ["sunfish-tftp-oack-phase-observer"]
+sunfish-tftp-publish-op-observer = ["sunfish-tftp-publish-io-observer"]
+sunfish-tftp-barrier-domain-observer = ["sunfish-tftp-publish-op-observer", "sunfish-native-startup-mpss-runtime"]
+sunfish-smmu-root-unique-fast-check = []
+# Reuse only the immutable canonical expectation; still read every live word.
+sunfish-smmu-retained-table-expectation = []
+# Pre-auth target work only; changes guard/service spacing, not scalar barriers.
+sunfish-mpss-target-chunk-64k = []
+sunfish-tftp-peer-close-observer = ["sunfish-tftp-timing-observer"]
+sunfish-tftp-rx-yield-experiment = ["sunfish-native-tftp-server-check"]
+sunfish-tftp-early-service-experiment = ["sunfish-native-tftp-server-check"]
+sunfish-tftp-early-dispatch-experiment = ["sunfish-tftp-early-service-experiment"]
+sunfish-tftp-quiet-oack-experiment = ["sunfish-tftp-timing-observer"]
+sunfish-tftp-data-peer-observer = ["sunfish-tftp-timing-observer"]
+sunfish-tftp-tail-observer = ["sunfish-tftp-timing-observer"]
+sunfish-tftp-host-gap-observer = ["sunfish-tftp-tail-observer"]
+sunfish-tftp-rx-backlog-observer = ["sunfish-tftp-host-gap-observer"]
+sunfish-ipa-independent-response-experiment = ["sunfish-linux-ipa-qmi", "sunfish-linux-rmtfs"]
+sunfish-glink-tftp-fairness-experiment = ["sunfish-tftp-endpoint-observer", "sunfish-glink-credit-fairness-experiment"]
+sunfish-glink-tftp-control-fairness-experiment = ["sunfish-glink-tftp-fairness-experiment", "sunfish-glink-tx-fairness-experiment"]
+sunfish-qrtr-ipa-flow-experiment = ["sunfish-qrtr-rmtfs-flow-experiment", "sunfish-linux-ipa-qmi"]
+sunfish-qrtr-servreg-flow-experiment = ["sunfish-qrtr-rmtfs-flow-experiment"]
+sunfish-ipa-ignore-config-reference = ["sunfish-linux-ipa-qmi"]
+sunfish-ipa-ignore-unhandled-reference = ["sunfish-ipa-ignore-config-reference"]
+sunfish-ipa-ignore-init-response-reference = ["sunfish-ipa-ignore-unhandled-reference"]
+sunfish-qrtr-deferred-requests = ["sunfish-qrtr-rmtfs-flow-experiment"]
+sunfish-ipa-postmodem-reference-experiment = []
+sunfish-linux-rmtfs = ["sunfish-linux-ipa-qmi"]
+sunfish-linux-mpss-auth = ["sunfish-linux-rmtfs"]
+sunfish-linux-mpss-glink = ["sunfish-linux-mpss-auth"]
+sunfish-glink-aligned-fifo-reads = ["sunfish-linux-mpss-glink"]
+# Pair local FIFO-length lookup with the checked descriptor observation.
+sunfish-glink-combined-cursor-sample = ["sunfish-linux-mpss-glink"]
+# Pair an existing barrier with its immediately following status observation.
+sunfish-glink-barrier-observe-pair = ["sunfish-glink-combined-cursor-sample"]
+sunfish-glink-adjacent-barrier-pairs = ["sunfish-glink-barrier-observe-pair"]
+# Keep RAM-only transfer outcomes visible after timing overlays.
+sunfish-tftp-outcome-summary = ["sunfish-native-tftp-server-check"]
+sunfish-tftp-final-ack-observer = ["sunfish-tftp-outcome-summary", "sunfish-tftp-per-peer-reply-experiment", "sunfish-tftp-endpoint-observer"]
+sunfish-tftp-missing-temp-replies = ["sunfish-tftp-final-ack-observer"]
+sunfish-wlan-state-query = ["sunfish-tftp-missing-temp-replies"]
+sunfish-wlan-state-listener = ["sunfish-wlan-state-query"]
+sunfish-tftp-rejection-capture = ["sunfish-wlan-state-listener"]
+sunfish-tftp-mcfg-ram = ["sunfish-tftp-missing-temp-replies"]
+sunfish-tftp-mcfg-trace = ["sunfish-tftp-mcfg-ram", "sunfish-tftp-endpoint-observer", "sunfish-tftp-per-peer-reply-experiment", "sunfish-tftp-rejection-capture"]
+sunfish-wlan-startup-trace = ["sunfish-tftp-mcfg-trace", "sunfish-wlan-state-listener"]
+sunfish-servreg-linux-string-length = []
+sunfish-servreg-sm7150-topology = ["sunfish-servreg-linux-string-length"]
+sunfish-servreg-avs-audio = ["sunfish-servreg-sm7150-topology"]
+sunfish-wlan-elf-timing = ["sunfish-wlan-startup-trace", "sunfish-linux-rmtfs", "sunfish-servreg-linux-string-length"]
+sunfish-wlan-elf-queue-trace = ["sunfish-wlan-elf-timing"]
+sunfish-wlan-elf-publish-trace = ["sunfish-wlan-elf-queue-trace"]
+sunfish-wlan-registry-txn4-timing = ["sunfish-wlan-elf-publish-trace"]
+sunfish-wlan-registry-tx-turn = ["sunfish-wlan-registry-txn4-timing"]
+sunfish-wlan-elf-dispatch-timing = ["sunfish-wlan-registry-tx-turn"]
+sunfish-wlan-elf-registry-turns = ["sunfish-wlan-elf-dispatch-timing"]
+sunfish-wlan-tx4-pressure = ["sunfish-wlan-elf-registry-turns"]
+sunfish-wlan-registry-turn-gates = ["sunfish-wlan-tx4-pressure"]
+sunfish-wlan-registry-ack-trace = ["sunfish-wlan-registry-turn-gates"]
+sunfish-wlan-intent-ack-turn = ["sunfish-wlan-registry-ack-trace"]
+sunfish-wlan-locator-other-trace = ["sunfish-wlan-intent-ack-turn"]
+sunfish-wlan-elf-phase-display = ["sunfish-wlan-locator-other-trace"]
+sunfish-wlan-elf-registry-gap = ["sunfish-wlan-elf-phase-display"]
+sunfish-wlan-elf-gap-io = ["sunfish-wlan-elf-registry-gap", "sunfish-tftp-barrier-domain-observer"]
+sunfish-wlan-elf-phase-io = ["sunfish-wlan-elf-phase-display", "sunfish-tftp-barrier-domain-observer"]
+sunfish-wlan-elf-six-phase-display = ["sunfish-wlan-elf-phase-io"]
+sunfish-servreg-bounded-second-turn = ["sunfish-wlan-elf-six-phase-display"]
+sunfish-wlan-elf-blocker-timing = ["sunfish-servreg-bounded-second-turn"]
+sunfish-wlan-elf-completion-turn = ["sunfish-wlan-elf-blocker-timing", "sunfish-qrtr-servreg-flow-experiment"]
+sunfish-wlan-elf-exchange-trace = ["sunfish-wlan-elf-completion-turn", "sunfish-servreg-linux-string-length"]
+sunfish-wlan-elf-credit-trace = ["sunfish-wlan-elf-exchange-trace"]
+sunfish-wlan-elf-host-credit-trace = ["sunfish-wlan-elf-credit-trace"]
+sunfish-wlan-elf-server-check-trace = ["sunfish-wlan-elf-host-credit-trace", "sunfish-native-tftp-server-check", "sunfish-tftp-per-peer-reply-experiment"]
+sunfish-wlan-elf-server-check-timing = ["sunfish-wlan-elf-server-check-trace"]
+sunfish-wlan-elf-oack-queue-trace = ["sunfish-wlan-elf-server-check-timing"]
+sunfish-wlan-elf-oack-router-turn = ["sunfish-wlan-elf-oack-queue-trace", "sunfish-tftp-early-service-experiment"]
+sunfish-wlan-elf-oack-peer-trace = ["sunfish-wlan-elf-oack-router-turn"]
+sunfish-wlan-first-server-check-trace = ["sunfish-wlan-elf-oack-peer-trace"]
+sunfish-wlan-first-server-check-tail = ["sunfish-wlan-first-server-check-trace"]
+sunfish-wlan-first-server-check-repeat = ["sunfish-wlan-first-server-check-tail"]
+sunfish-wlan-first-server-check-retry = ["sunfish-wlan-first-server-check-repeat", "sunfish-qrtr-rmtfs-flow-experiment"]
+sunfish-wlan-first-server-check-retry-trace = ["sunfish-wlan-first-server-check-retry"]
+sunfish-wlan-first-server-check-early-turn = ["sunfish-wlan-first-server-check-retry-trace"]
+sunfish-wlan-tftp-progress-display = ["sunfish-wlan-first-server-check-early-turn", "sunfish-wlan-state-query"]
+sunfish-wlan-elf-tftp-timeline = ["sunfish-wlan-tftp-progress-display"]
+sunfish-wlan-tftp-oack-compare = ["sunfish-wlan-elf-tftp-timeline"]
+sunfish-wlan-first-wrq-rxdone-turn = ["sunfish-wlan-tftp-oack-compare"]
+sunfish-wlan-first-oack-rx-fifo = ["sunfish-wlan-first-wrq-rxdone-turn"]
+sunfish-wlan-first-wrq-reuse = ["sunfish-wlan-first-oack-rx-fifo"]
+sunfish-wlan-first-wrq-window = ["sunfish-wlan-first-wrq-reuse"]
+sunfish-ipa-registration-trace = ["sunfish-wlan-first-wrq-window", "sunfish-qrtr-ipa-flow-experiment"]
+sunfish-ipa-registration-early-turn = ["sunfish-ipa-registration-trace"]
+sunfish-ipa-registration-owner-trace = ["sunfish-ipa-registration-early-turn"]
+sunfish-ipa-init-continuation = ["sunfish-ipa-registration-owner-trace"]
+sunfish-ipa-init-tx-trace = ["sunfish-ipa-init-continuation"]
+sunfish-ipa-init-tx-turn = ["sunfish-ipa-init-tx-trace"]
+sunfish-ipa-init-writer-counts = ["sunfish-ipa-init-tx-turn"]
+sunfish-ipa-init-open-writer = ["sunfish-ipa-init-empty-rx"]
+sunfish-ipa-init-before-ad = ["sunfish-ipa-init-open-writer", "sunfish-glink-intent-request-experiment"]
+sunfish-ipa-post-init-wrq = ["sunfish-ipa-init-before-ad"]
+sunfish-ipa-init-close-visibility = ["sunfish-ipa-post-init-wrq"]
+sunfish-ipa-init-empty-rx = ["sunfish-ipa-reg-close-fifo"]
+sunfish-ipa-reg-close-fifo = ["sunfish-ipa-init-after-registration"]
+sunfish-ipa-init-after-registration = ["sunfish-ipa-init-writer-fit"]
+sunfish-ipa-init-writer-fit = ["sunfish-ipa-wrq-ready-fifo", "sunfish-ipa-init-writer-counts"]
+sunfish-ipa-schedule-trace = ["sunfish-ipa-init-writer-counts"]
+# Independent socket bookkeeping; native use requires the composed runtime profile.
+sunfish-ipa-independent-server-experiment = ["sunfish-linux-ipa-qmi", "sunfish-qrtr-ipa-flow-experiment", "sunfish-ipa-independent-response-experiment"]
+sunfish-ipa-independent-server-runtime = ["sunfish-ipa-independent-server-experiment", "sunfish-ipa-init-tx-turn"]
+sunfish-ipa-registration-tx-trace = ["sunfish-ipa-independent-server-runtime"]
+sunfish-ipa-registration-tx-turn = ["sunfish-ipa-registration-tx-trace"]
+sunfish-ipa-registration-rxdone-turn = ["sunfish-ipa-registration-tx-turn"]
+sunfish-ipa-before-first-oack = ["sunfish-ipa-registration-rxdone-turn", "sunfish-wlan-first-wrq-window"]
+sunfish-ipa-registration-prep-trace = ["sunfish-ipa-before-first-oack", "sunfish-ipa-registration-owner-trace"]
+sunfish-ipa-registration-cold-handoff = ["sunfish-ipa-registration-prep-trace"]
+sunfish-ipa-registration-between-grants = ["sunfish-ipa-registration-cold-handoff", "sunfish-wlan-intent-ack-turn"]
+sunfish-ipa-registration-reply-between-grants = ["sunfish-ipa-registration-between-grants"]
+sunfish-ipa-registration-rxdone-trace = ["sunfish-ipa-registration-reply-between-grants"]
+sunfish-ipa-registration-rxdone-before-grant = ["sunfish-ipa-registration-rxdone-trace"]
+sunfish-ipa-registration-reply-path = ["sunfish-ipa-registration-rxdone-before-grant"]
+sunfish-ipa-registration-reply-headers = ["sunfish-ipa-registration-reply-path"]
+sunfish-glink-retry-full-intent = ["sunfish-ipa-registration-reply-headers"]
+sunfish-glink-registry-early-release = ["sunfish-glink-retry-full-intent"]
+sunfish-glink-registry-second-host-entry = ["sunfish-glink-registry-early-release"]
+sunfish-glink-intent-denial-snapshot = ["sunfish-glink-registry-second-host-entry"]
+sunfish-glink-denial-rxdone-turn = ["sunfish-glink-intent-denial-snapshot"]
+sunfish-tftp-first-oack-unheld = ["sunfish-glink-denial-rxdone-turn"]
+sunfish-ipa-registration-rx-visibility = ["sunfish-tftp-first-oack-unheld"]
+sunfish-ipa-registration-rx-first = ["sunfish-ipa-registration-rx-visibility"]
+sunfish-first-oack-owner-turn = ["sunfish-ipa-registration-rx-first", "sunfish-ipa-registration-cold-handoff"]
+sunfish-ipa-reply-before-oack = ["sunfish-first-oack-owner-turn"]
+sunfish-ipa-reply-before-grant = ["sunfish-ipa-reply-before-oack", "sunfish-wlan-intent-ack-turn", "sunfish-ipa-registration-tx-turn"]
+sunfish-ipa-reply-fifo-visibility = ["sunfish-ipa-reply-before-grant", "sunfish-ipa-registration-reply-path", "sunfish-wlan-first-server-check-tail", "sunfish-wlan-first-oack-rx-fifo"]
+sunfish-ipa-reply-grant-headers = ["sunfish-ipa-reply-fifo-visibility", "sunfish-ipa-registration-reply-headers"]
+sunfish-ipa-grant-tftp-peer = ["sunfish-ipa-reply-grant-headers", "sunfish-native-tftp-server-check"]
+sunfish-ipa-tftp-dispatch-trace = ["sunfish-ipa-grant-tftp-peer", "sunfish-tftp-per-peer-reply-experiment", "sunfish-wlan-first-server-check-repeat"]
+sunfish-ipa-tftp-original-trace = ["sunfish-ipa-tftp-dispatch-trace"]
+sunfish-ipa-tftp-queue-block = ["sunfish-ipa-tftp-original-trace"]
+sunfish-ipa-tftp-slot-snapshot = ["sunfish-ipa-tftp-queue-block"]
+sunfish-tftp-oack-reserve = ["sunfish-ipa-tftp-slot-snapshot"]
+sunfish-tftp-oack-resources = ["sunfish-tftp-oack-reserve"]
+sunfish-tftp-oack-prime-rx = ["sunfish-tftp-oack-resources"]
+sunfish-tftp-oack-slot-follow = ["sunfish-tftp-oack-prime-rx"]
+sunfish-tftp-oack-repeat-turn = ["sunfish-tftp-oack-slot-follow"]
+sunfish-tftp-oack-followup = ["sunfish-tftp-oack-repeat-turn"]
+sunfish-tftp-oack-followup-reason = ["sunfish-tftp-oack-followup"]
+sunfish-tftp-oack-ordinary-ad = ["sunfish-tftp-oack-followup-reason"]
+sunfish-tftp-oack-guard = ["sunfish-tftp-oack-ordinary-ad"]
+sunfish-tftp-oack-grant-followup = ["sunfish-tftp-oack-guard"]
+sunfish-tftp-oack-peer-tail = ["sunfish-tftp-oack-grant-followup"]
+sunfish-tftp-oack-close-fifo = ["sunfish-tftp-oack-peer-tail", "sunfish-wlan-first-oack-rx-fifo"]
+sunfish-tftp-oack-early-reserve = ["sunfish-tftp-oack-close-fifo"]
+sunfish-tftp-oack-credit-retry = ["sunfish-tftp-oack-early-reserve"]
+sunfish-tftp-oack-credit-early = ["sunfish-tftp-oack-credit-retry"]
+sunfish-tftp-server-inventory = ["sunfish-tftp-oack-credit-early"]
+sunfish-tftp-oack-after-rxdone = ["sunfish-tftp-server-inventory"]
+sunfish-tftp-after-done-trace = ["sunfish-tftp-oack-after-rxdone"]
+sunfish-tftp-after-done-grant-turn = ["sunfish-tftp-after-done-trace"]
+sunfish-tftp-oack-fifo-outcome = ["sunfish-tftp-after-done-grant-turn"]
+sunfish-tftp-oack-ahead-headers = ["sunfish-tftp-oack-fifo-outcome"]
+sunfish-tftp-reserved-writer-trace = ["sunfish-tftp-oack-ahead-headers", "sunfish-wlan-elf-oack-queue-trace"]
+sunfish-tftp-reserved-writer-io = ["sunfish-tftp-reserved-writer-trace", "sunfish-wlan-elf-phase-io"]
+sunfish-tftp-first-oack-headers = ["sunfish-tftp-first-oack-unheld"]
+sunfish-wlan-registry-second-reply = ["sunfish-qrtr-servreg-flow-experiment"]
+sunfish-native-startup-linux-rmtfs = ["sunfish-native-startup-ipa-receive", "sunfish-linux-rmtfs"]
+sunfish-native-startup-mpss-smem = ["sunfish-native-startup-linux-rmtfs"]
+sunfish-native-startup-mpss-smp2p = ["sunfish-native-startup-mpss-smem"]
+sunfish-native-startup-mpss-preauth = ["sunfish-native-startup-mpss-smp2p"]
+sunfish-native-startup-mpss-auth = ["sunfish-native-startup-mpss-preauth", "sunfish-linux-mpss-auth"]
+sunfish-native-startup-mpss-glink = ["sunfish-native-startup-mpss-smp2p", "sunfish-linux-mpss-glink"]
+sunfish-native-startup-mpss-runtime = ["sunfish-native-startup-mpss-auth", "sunfish-native-startup-mpss-glink"]
+sunfish-native-tftp-observer = ["sunfish-native-startup-mpss-runtime"]
+sunfish-native-tftp-server-check = ["sunfish-native-startup-mpss-runtime"]
+sunfish-native-startup-mpss-runtime-gate-diagnostic = ["sunfish-native-startup-mpss-runtime"]
+sunfish-native-startup-mpss-runtime-prescm-diagnostic = ["sunfish-native-startup-mpss-runtime"]
+sunfish-native-startup-mpss-runtime-share-diagnostic = ["sunfish-native-startup-mpss-runtime-prescm-diagnostic"]
+sunfish-native-startup-mpss-runtime-share-trace = ["sunfish-native-startup-mpss-runtime"]
+sunfish-glink-intents-probe = ["sunfish-glink-channel-probe"]
+sunfish-glink-rx-packet-probe = ["sunfish-glink-intents-probe"]
+sunfish-glink-done-probe = ["sunfish-glink-rx-packet-probe"]
+sunfish-qrtr-hello-probe = ["sunfish-glink-done-probe"]
+sunfish-qrtr-next-probe = ["sunfish-qrtr-hello-probe"]
+sunfish-qrtr-discovery-probe = ["sunfish-qrtr-next-probe"]
+sunfish-qrtr-credit-probe = ["sunfish-qrtr-discovery-probe"]
+sunfish-qrtr-wait-probe = ["sunfish-qrtr-credit-probe"]
+sunfish-qrtr-servreg-probe = ["sunfish-qrtr-wait-probe"]
+sunfish-qrtr-servreg-prequery-check = ["sunfish-qrtr-servreg-probe"]
+sunfish-qrtr-servreg-query-check = ["sunfish-qrtr-servreg-probe"]
+sunfish-qrtr-servreg-pdr-reply = ["sunfish-qrtr-servreg-probe"]
+sunfish-qrtr-servreg-pdr-followup = ["sunfish-qrtr-servreg-pdr-reply"]
+sunfish-modem-crash-probe = ["sunfish-qrtr-wait-probe"]
+sunfish-modem-fatal-trace-probe = ["sunfish-modem-crash-probe"]
 budget-pressure = []
 development-crypto = []
 storage-test = ["development-crypto"]
 host-backup = ["development-crypto"]
+
+[[bin]]
+name = "rust_sunfish_native_startup_preflight"
+path = "src/sunfish_native_startup_preflight.rs"
+required-features = ["sunfish-native-startup-preflight"]
+test = false
+bench = false
 
 [[bin]]
 name = "rust_server"
@@ -62,6 +324,230 @@ bench = false
 [[bin]]
 name = "rust_fake_modem"
 path = "src/fake_modem.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rust_wlan_protocol_probe"
+path = "src/wlan_protocol_probe.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rust_sunfish_aop_probe"
+path = "src/sunfish_aop_probe.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rust_sunfish_ipa_read_probe"
+path = "src/sunfish_ipa_read_probe.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rust_sunfish_ufs_pool_probe"
+path = "src/sunfish_ufs_pool_probe.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rust_sunfish_ufs_hci_read_probe"
+path = "src/sunfish_ufs_hci_read_probe.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rust_sunfish_ufs_gcc_snapshot_probe"
+path = "src/sunfish_ufs_gcc_snapshot_probe.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rust_sunfish_aop_handshake_probe"
+path = "src/sunfish_aop_handshake_probe.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rust_sunfish_aop_packet_probe"
+path = "src/sunfish_aop_packet_probe.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rust_sunfish_rpmh_read_probe"
+path = "src/sunfish_rpmh_read_probe.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rust_sunfish_rpmh_cx_read_probe"
+path = "src/sunfish_rpmh_cx_read_probe.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rust_sunfish_rpmh_resource_reads_probe"
+path = "src/sunfish_rpmh_resource_reads_probe.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rust_sunfish_rpmh_cx_turbo_hold_probe"
+path = "src/sunfish_rpmh_cx_turbo_hold_probe.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rust_sunfish_rpmh_resources_hold_probe"
+path = "src/sunfish_rpmh_resources_hold_probe.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rust_sunfish_bcm_read_probe"
+path = "src/sunfish_bcm_read_probe.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rust_sunfish_smmu_install_probe"
+path = "src/sunfish_smmu_install_probe.rs"
+required-features = ["sunfish-smmu-install-probe"]
+test = false
+bench = false
+
+[[bin]]
+name = "rust_sunfish_ipa_bcm_metadata_probe"
+path = "src/sunfish_ipa_bcm_metadata_probe.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rust_sunfish_rpmh_handoff_probe"
+path = "src/sunfish_rpmh_handoff_probe.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rust_sunfish_bcm_reads_probe"
+path = "src/sunfish_bcm_reads_probe.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rust_sunfish_ipa_path_bcm_probe"
+path = "src/sunfish_ipa_path_bcm_probe.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rust_sunfish_bcm_mc0_hold_probe"
+path = "src/sunfish_bcm_mc0_hold_probe.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rust_sunfish_rpmh_proxy_hold_probe"
+path = "src/sunfish_rpmh_proxy_hold_probe.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rust_sunfish_rpmh_pas_bus_probe"
+path = "src/sunfish_rpmh_pas_bus_probe.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rust_sunfish_modem_image_boot_check"
+path = "src/sunfish_modem_image_boot_check.rs"
+required-features = ["sunfish-firmware-metadata-probe"]
+test = false
+bench = false
+
+[[bin]]
+name = "rust_sunfish_modem_smp2p_probe"
+path = "src/sunfish_modem_smp2p_probe.rs"
+required-features = ["sunfish-firmware-metadata-probe"]
+test = false
+bench = false
+
+[[bin]]
+name = "rust_sunfish_modem_ready_probe"
+path = "src/sunfish_modem_ready_probe.rs"
+required-features = ["sunfish-firmware-metadata-probe"]
+test = false
+bench = false
+
+[[bin]]
+name = "rust_sunfish_modem_auth_probe"
+path = "src/sunfish_modem_auth_probe.rs"
+required-features = ["sunfish-firmware-metadata-probe"]
+test = false
+bench = false
+
+[[bin]]
+name = "rust_sunfish_modem_image_probe"
+path = "src/sunfish_modem_image_probe.rs"
+required-features = ["sunfish-firmware-metadata-probe"]
+test = false
+bench = false
+
+[[bin]]
+name = "rust_sunfish_modem_segment_probe"
+path = "src/sunfish_modem_segment_probe.rs"
+required-features = ["sunfish-firmware-metadata-probe"]
+test = false
+bench = false
+
+[[bin]]
+name = "rust_sunfish_modem_data_probe"
+path = "src/sunfish_modem_data_probe.rs"
+required-features = ["sunfish-firmware-metadata-probe"]
+test = false
+bench = false
+
+[[bin]]
+name = "rust_sunfish_pas_mem_setup_probe"
+path = "src/sunfish_pas_mem_setup_probe.rs"
+required-features = ["sunfish-firmware-metadata-probe"]
+test = false
+bench = false
+
+[[bin]]
+name = "rust_sunfish_pas_init_probe"
+path = "src/sunfish_pas_init_probe.rs"
+required-features = ["sunfish-firmware-metadata-probe"]
+test = false
+bench = false
+
+[[bin]]
+name = "rust_sunfish_modem_prepare_probe"
+path = "src/sunfish_modem_prepare_probe.rs"
+required-features = ["sunfish-firmware-metadata-probe"]
+test = false
+bench = false
+
+[[bin]]
+name = "rust_sunfish_modem_bcm_after_aop_probe"
+path = "src/sunfish_modem_bcm_after_aop_probe.rs"
+required-features = ["sunfish-firmware-metadata-probe"]
+test = false
+bench = false
+
+[[bin]]
+name = "rust_sunfish_modem_bcm_aop_delta_probe"
+path = "src/sunfish_modem_bcm_aop_delta_probe.rs"
+required-features = ["sunfish-firmware-metadata-probe"]
+test = false
+bench = false
+
+[[bin]]
+name = "rust_sunfish_pas_metadata_probe"
+path = "src/sunfish_pas_metadata_probe.rs"
+required-features = ["sunfish-firmware-metadata-probe"]
 test = false
 bench = false
 
@@ -127,7 +613,13 @@ test = false
 bench = false
 
 [dependencies]
+aes = { version = "=0.9.3", default-features = false, features = ["zeroize"] }
 aes-gcm-siv = { version = "=0.12.1", default-features = false, features = ["aes"] }
+hmac = { version = "=0.12.1", default-features = false }
+pbkdf2 = { version = "=0.12.2", default-features = false, features = ["hmac"] }
+sha1 = { version = "=0.10.7", default-features = false }
+subtle = { version = "=2.6.1", default-features = false }
+zeroize = { version = "=1.9.0", default-features = false }
 
 [target.'cfg(target_os = "none")'.dependencies]
 sel4 = { git = "https://github.com/seL4/rust-sel4", rev = "891b59622306e94ad428193838f0d6214bb5c7aa" }

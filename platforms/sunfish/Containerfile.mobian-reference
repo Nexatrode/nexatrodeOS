@@ -1,0 +1,7 @@
+FROM docker.io/library/debian@sha256:441888b788d52d35c32f28c10abb5c748f3427c7836f61612700d30afb4572cb
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bc bison bsdextrautils build-essential busybox-static ca-certificates cpio debootstrap \
+    dwarves e2fsprogs flex gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+    kmod libelf-dev libssl-dev lz4 make mount perl python3 rsync util-linux \
+    xz-utils zstd && rm -rf /var/lib/apt/lists/*
