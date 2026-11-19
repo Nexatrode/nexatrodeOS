@@ -443,44 +443,22 @@ pub fn prepare_skia_label() -> bool {
 
 /// Returns true when the title band was written (caller should damage it).
 pub fn blit_skia_chrome(frame: &mut [u8], page: i32) -> bool {
-    // Home card titles/details/hints and "SECURE · PRIVATE · YOURS" are Slint
-    // Text now. Blitting Skia sprites on top doubled every label after wallet boot.
-    if page == 0 {
+    // Slint has already painted this frame. Only clear the band on pages
+    // whose title Skia owns. NexaWal draws Home and its tab title here.
+    if !(1..=TITLES.len() as i32).contains(&page) {
         return false;
     }
+    let index = (page - 1) as usize;
     let origin_x = px(17.0);
     let origin_y = px(51.0);
-    let clear_title_band = |frame: &mut [u8]| {
-        // ReusedBuffer keeps prior glyphs; always erase before a new title — and
-        // for pages with no Skia title (NexaWal=16) so PRIVATE NOTES cannot flash.
-        fill_rect(
-            frame,
-            origin_x,
-            origin_y,
-            TITLE_WIDTH as usize,
-            TITLE_HEIGHT as usize,
-            0x05,
-            0x0a,
-            0x12,
-        );
-    };
-    let Some(index) = page.checked_sub(1).and_then(|index| {
-        if (index as usize) < TITLES.len() {
-            Some(index as usize)
-        } else {
-            None
-        }
-    }) else {
-        clear_title_band(frame);
-        return true;
-    };
     let ready = unsafe { core::ptr::addr_of!(TITLE_READY).cast::<bool>().add(index).read() };
     let pixels = unsafe {
         core::ptr::addr_of!(TITLE_PIXELS)
             .cast::<u8>()
             .add(index * TITLE_BYTES)
     };
-    clear_title_band(frame);
+    fill_rect(frame, origin_x, origin_y, TITLE_WIDTH as usize, TITLE_HEIGHT as usize,
+              0x05, 0x0a, 0x12);
     blit_sprite(
         frame,
         pixels,
