@@ -12,6 +12,10 @@ experimental graphics profile now includes isolated Notes, Contacts, a
 four-function Calculator, a read-only UTC Clock app, a bounded Calendar reminder
 list, an offline Messages peer-key shell, and a read-only Settings stub with routed navigation.
 
+The SimpleX messaging guest includes a modified SimpleXMQ agent. Its license,
+upstream revision, port sources, and decoder credits are listed in the
+[SimpleX third-party notices](THIRD_PARTY_NOTICES.md).
+
 ## Run
 
 On this Mac, from any directory:

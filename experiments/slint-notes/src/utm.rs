@@ -12,7 +12,8 @@ use core::{
 };
 mod skia_guest;
 
-use personal_os_rust_server::messages::{split_file_reference, split_message_time, split_photo_reference};
+use personal_os_rust_server::messages::{decode_direct_text, split_direct_text};
+use personal_os_rust_server::messages::{photo_reference, split_file_reference, split_message_time, split_photo_reference};
 use personal_os_rust_server::vault_blob_transfer::BlobTransferPage;
 use personal_os_slint_notes_spike::{
     NotesWindow,
@@ -981,24 +982,29 @@ impl MessagesServiceClient {
         Ok(payload.to_vec())
     }
 
+    fn read_attachment_part(&self, chat: u64, id: u64, part: usize) -> Option<usize> {
+        set_mr(0, chat);
+        set_mr(1, id);
+        set_mr(2, part as u64);
+        let reply = MESSAGES_SERVICE.pp_call(MessageInfo::new(REQUEST_MESSAGES_IMAGE_CHUNK, 3));
+        if reply.label() != REPLY_MESSAGES_IMAGE_CHUNK || reply.count() != 1 {
+            return None;
+        }
+        Some(get_mr(0) as usize)
+    }
+
     fn message_attachment(&self, chat: u64, id: u64) -> Option<Vec<u8>> {
         const CHUNK: usize = 3072;
         const MAX_SIZE: usize = 1024 * 1024;
         const MAX_PARTS: usize = MAX_SIZE.div_ceil(CHUNK);
+        if id == 0 { return None; }
         let mut bytes = Vec::new();
         for part in 0..MAX_PARTS {
-            set_mr(0, chat);
-            set_mr(1, id);
-            set_mr(2, part as u64);
-            let reply = MESSAGES_SERVICE.pp_call(MessageInfo::new(REQUEST_MESSAGES_IMAGE_CHUNK, 3));
-            if reply.label() != REPLY_MESSAGES_IMAGE_CHUNK || reply.count() != 1 {
-                return None;
-            }
-            let total = get_mr(0) as usize;
+            let total = self.read_attachment_part(chat, id, part)?;
+            let payload = unsafe { self.transfer.as_ref() }.payload()?;
             if !(1..=MAX_SIZE).contains(&total) || bytes.len() >= total {
                 return None;
             }
-            let payload = unsafe { self.transfer.as_ref() }.payload()?;
             if payload.len() != CHUNK.min(total - bytes.len()) {
                 return None;
             }
@@ -2568,6 +2574,7 @@ fn sync_message_bubbles(ui: &NotesWindow, service: &MessagesServiceClient) {
     let mut photo_ready = Vec::new();
     let mut photo_ids = Vec::new();
     let mut files = Vec::new();
+    let mut failed_uploads = Vec::new();
     let mut saw_outgoing_photo = false;
     let mut incoming_photo: i32 = -1;
     for line in transcript.lines() {
@@ -2578,23 +2585,29 @@ fn sync_message_bubbles(ui: &NotesWindow, service: &MessagesServiceClient) {
         let body = line.split_once(": ").map(|(_, body)| body).unwrap_or(line);
         let body = if body.is_empty() { line } else { body };
         let (clock, body) = split_message_time(body);
-        let delivered = body.ends_with(" \u{2713}");
+        let direct = split_direct_text(body);
+        let mine = mine && direct.is_none();
+        let delivered = direct.is_none() && body.ends_with(" \u{2713}");
         let body = if delivered {
             body.trim_end_matches(" \u{2713}")
         } else {
             body
         };
         let body = if body.is_empty() { line } else { body };
-        let indexed_photo = split_photo_reference(body);
-        photo_ids.push(slint::SharedString::from(indexed_photo.map(|(_, id, _)| id.to_string()).unwrap_or_default()));
+        let failed = mine && body.ends_with(personal_os_rust_server::messages::UPLOAD_FAILED_SUFFIX);
+        let body = if failed { body.trim_end_matches(personal_os_rust_server::messages::UPLOAD_FAILED_SUFFIX) } else { body };
+        failed_uploads.push(failed);
+        let indexed_photo = photo_reference(body);
+        photo_ids.push(slint::SharedString::from(indexed_photo.map(|r| r.save_id.to_string()).unwrap_or_default()));
         let (image, body) = match indexed_photo {
-            Some((_, id, caption)) => {
+            Some(photo) => {
+                let id = photo.display_id;
                 let image = service.message_attachment(chat, id).and_then(|bytes| {
                     let image = decode_jpeg_preview(&bytes)?;
                     debug_println!("SLINT SIMPLEX MESSAGE PHOTO {} {}", id, bytes.len());
                     Some(image)
                 });
-                (image, caption)
+                (image, photo.caption)
             }
             None => (None, body),
         };
@@ -2605,20 +2618,27 @@ fn sync_message_bubbles(ui: &NotesWindow, service: &MessagesServiceClient) {
         files.push(file);
         photo_ready.push(image.is_some());
         photos.push(image.unwrap_or_default());
-        let (msg_id, body) = strip_shared_msg_id(body);
+        let (msg_id, body) = direct.map(|(id, body)| (id.to_string(), body))
+            .unwrap_or_else(|| strip_shared_msg_id(body));
         let (body, react) = strip_reaction_suffix(body);
+        let mut decoded = String::new();
+        let body = if direct.is_some() && decode_direct_text(body, &mut decoded).is_ok() {
+            decoded.as_str()
+        } else { body };
         let (quote, body) = split_quote_display(body);
         if mine && body == "Photo" && indexed_photo.is_none() {
             saw_outgoing_photo = true;
         }
-        if !mine && indexed_photo.is_none() && body == "Photo" {
+        if direct.is_none() && !mine && indexed_photo.is_none() && body == "Photo" {
             incoming_photo = bodies.len() as i32;
         }
         let mut when = String::new();
         if let Some(clock) = clock {
             when.push_str(clock);
         }
-        if delivered {
+        if failed {
+            when.push_str("  Upload failed");
+        } else if delivered {
             if !when.is_empty() {
                 when.push_str("  ");
             }
@@ -2642,6 +2662,7 @@ fn sync_message_bubbles(ui: &NotesWindow, service: &MessagesServiceClient) {
     ui.set_message_bubble_photo_ready(ModelRc::new(VecModel::from(photo_ready)));
     ui.set_message_bubble_photo_ids(ModelRc::new(VecModel::from(photo_ids)));
     ui.set_message_bubble_files(ModelRc::new(VecModel::from(files)));
+    ui.set_message_bubble_upload_failed(ModelRc::new(VecModel::from(failed_uploads)));
     ui.set_message_incoming_photo_index(incoming_photo);
     if saw_outgoing_photo && !ui.get_message_image_visible() {
         if let Some(jpeg) = bundled_photo_jpeg() {
@@ -2655,19 +2676,27 @@ fn sync_message_bubbles(ui: &NotesWindow, service: &MessagesServiceClient) {
     debug_println!("SLINT BUBBLES {}", count);
 }
 
-fn chat_preview(transcript: &str) -> &str {
+fn chat_preview(transcript: &str) -> alloc::borrow::Cow<'_, str> {
     let Some(line) = transcript.lines().rev().find(|line| !line.is_empty()) else {
-        return "Encrypted";
+        return "Encrypted".into();
     };
     let body = match line.split_once(": ") {
         Some((_, body)) if !body.is_empty() => body,
         _ => line,
     };
-    let body = split_message_time(body).1.trim_end_matches(" \u{2713}");
+    let body = split_message_time(body).1;
+    if let Some((_, encoded)) = split_direct_text(body) {
+        let mut preview = String::new();
+        if decode_direct_text(strip_reaction_suffix(encoded).0, &mut preview).is_ok() {
+            return preview.into();
+        }
+    }
+    let body = body.trim_end_matches(" \u{2713}");
+    let body = body.strip_suffix(personal_os_rust_server::messages::UPLOAD_FAILED_SUFFIX).unwrap_or(body);
     let body = split_photo_reference(body)
         .or_else(|| split_file_reference(body))
         .map_or(body, |(_, _, caption)| caption);
-    strip_reaction_suffix(strip_shared_msg_id(body).1).0
+    strip_reaction_suffix(strip_shared_msg_id(body).1).0.into()
 }
 
 fn unread_incoming(transcript: &str, seen: usize) -> usize {
@@ -2735,7 +2764,8 @@ fn keep_received_message(
                 ui.set_message_transcript(saved.into());
             }
         }
-        Err(_) => remember_chat_line(ui, transcripts, index, speaker.as_str(), text),
+        Err(_) if !text.is_empty() => remember_chat_line(ui, transcripts, index, speaker.as_str(), text),
+        Err(_) => {}
     }
     ui.set_message_incoming_body("".into());
     ui.set_message_receive_status(alloc::format!("From {speaker}").into());
@@ -3981,12 +4011,12 @@ fn init() -> SlintService {
     let select_transcripts = chat_transcripts.clone();
     let select_drafts = chat_drafts.clone();
     ui.on_open_chat(move |index| {
-        let index = if index < 0 { 0 } else { index as u64 };
+        let index = index as u64;
         if let Err(error) = select_service.borrow().select_chat(index) {
             debug_println!("SLINT SIMPLEX SELECT CHAT FAIL {} {}", index, error);
-        } else {
-            debug_println!("SLINT SIMPLEX SELECT CHAT {}", index);
+            return false;
         }
+        debug_println!("SLINT SIMPLEX SELECT CHAT {}", index);
         if let Some(ui) = weak_ui.upgrade() {
             if ui.get_message_view() {
                 let previous = ui.get_message_chat_index().max(0) as usize;
@@ -4000,11 +4030,13 @@ fn init() -> SlintService {
             select_transcripts.borrow_mut()[(index as usize).min(CHAT_SLOTS - 1)] = saved.clone();
             let draft = select_drafts.borrow()[(index as usize).min(CHAT_SLOTS - 1)].clone();
             ui.set_message_chat_index(index as i32);
+            ui.set_message_view(true);
             ui.set_message_transcript(saved.into());
             ui.set_message_body(draft.into());
             present_message_image(&ui, &select_service.borrow());
             present_group_invite(&ui, &select_service.borrow());
         }
+        true
     });
     let weak_ui = ui.as_weak();
     let delete_service = messages_service.clone();
@@ -4108,8 +4140,24 @@ fn init() -> SlintService {
                 ui.set_message_send_status("Photo unavailable".into()); return;
             };
             let chat = ui.get_message_chat_index().max(0) as usize;
-            let name = alloc::format!("Photo-{id}.jpg");
-            match library_save_service.borrow_mut().save_to_library(chat, id, &name) {
+            let mut service = library_save_service.borrow_mut();
+            let id = service.transcript(chat as u64).ok().and_then(|transcript|
+                personal_os_rust_server::messages::current_photo_save_id(&transcript, id)
+            );
+            let Some(id) = id else {
+                ui.set_message_send_status("Photo unavailable".into()); return;
+            };
+            let first = service.read_attachment_part(chat as u64, id, 0)
+                .and_then(|_| unsafe { service.transfer.as_ref() }.payload());
+            let suffix = match first {
+                Some(bytes) if bytes.starts_with(&[0xff, 0xd8]) => ".jpg",
+                Some(bytes) if bytes.starts_with(b"\x89PNG\r\n\x1a\n") => ".png",
+                Some(bytes) if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") => ".gif",
+                Some(bytes) if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") => ".webp",
+                _ => "",
+            };
+            let name = alloc::format!("Photo-{id}{suffix}");
+            match service.save_to_library(chat, id, &name) {
                 Ok(()) => ui.set_message_send_status("Saved to Files".into()),
                 Err(message) => ui.set_message_send_status(message.into()),
             }
@@ -4251,6 +4299,15 @@ fn init() -> SlintService {
     });
     let weak_ui = ui.as_weak();
     let attach_service = messages_service.clone();
+    let retry_service = messages_service.clone();
+    let retry_ui = ui.as_weak();
+    ui.on_retry_attachment(move |value, name| {
+        let Some(ui) = retry_ui.upgrade() else { return; };
+        let chat = ui.get_message_chat_index().max(0) as usize;
+        let sent = value.parse::<u64>().ok().is_some_and(|id|
+            retry_service.borrow_mut().send_saved_photo(chat, id, name.as_str()).is_ok());
+        ui.set_message_send_status(if sent { "Sending…" } else { "Could not retry attachment" }.into());
+    });
     let picker_choices = saved_photo_choices.clone();
     ui.on_pick_saved_photo(move |index| {
         if let Some(ui) = weak_ui.upgrade() {
@@ -4272,7 +4329,7 @@ fn init() -> SlintService {
     let send_drafts = chat_drafts.clone();
     ui.on_send_message(move |text| {
         if let Some(ui) = weak_ui.upgrade() {
-            if text.is_empty() {
+            if text.is_empty() || !ui.get_message_view() || !ui.get_message_service_ready() {
                 return;
             }
             // FWD/DEL chips already pass fully framed bodies.
@@ -4345,6 +4402,7 @@ fn init() -> SlintService {
             match send_service.borrow().send_status() {
                 Ok((0, _)) => ui.set_message_send_status("Ready".into()),
                 Ok((1, _)) => ui.set_message_send_status("Sending…".into()),
+                Ok((7, _)) => ui.set_message_send_status("Upload failed · tap Retry".into()),
                 Ok((5, _)) => {
                     let index = ui.get_message_chat_index().max(0) as usize;
                     if let Ok(saved) = send_service.borrow().transcript(index as u64) {
@@ -4361,7 +4419,6 @@ fn init() -> SlintService {
                         ui.set_message_transcript(saved.into());
                     }
                     ui.set_message_send_status("Sent".into());
-                    ui.set_message_body("".into());
                 }
                 Ok((_, _)) => ui.set_message_send_status("Send failed".into()),
                 Err(_) => ui.set_message_send_status("Send status unknown".into()),
@@ -5388,6 +5445,7 @@ impl SlintService {
                 );
                 present_message_image(&self._ui, &self.messages_service.borrow());
             }
+            Ok((7, _, _)) => self._ui.set_message_receive_status("Couldn’t save message to vault. Retrying…".into()),
             Ok((6, _, chat_index)) => {
                 // RECEIVE_STATUS already persisted the line; sync the Slint
                 // copy so unread badges still move when the UI missed status 2.
@@ -5418,6 +5476,7 @@ impl SlintService {
             match send_status {
                 Ok((2, _)) => self._ui.set_message_send_status("Sent".into()),
                 Ok((5, _)) => self._ui.set_message_send_status("Photo transfer unverified".into()),
+                Ok((7, _)) => self._ui.set_message_send_status("Upload failed · tap Retry".into()),
                 Ok((4, _)) => self._ui.set_message_send_status("Send failed".into()),
                 Ok((1, _)) => self._ui.set_message_send_status("Sending…".into()),
                 _ => {}

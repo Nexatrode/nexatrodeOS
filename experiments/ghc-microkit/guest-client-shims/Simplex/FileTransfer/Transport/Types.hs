@@ -1,3 +1,6 @@
+-- SPDX-License-Identifier: AGPL-3.0-only
+-- Copyright 2020-2022 simplex.chat
+-- NexatrodeOS adaptation (2026-11-19): extract XFTP protocol types for the guest.
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}

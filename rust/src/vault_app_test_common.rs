@@ -15,7 +15,7 @@ use crate::input_protocol::{
 };
 use crate::notes::{NOTE_TEXT_CAPACITY, NOTES_BLOB_CAPACITY, NotesApp};
 #[cfg(feature = "simplex-agent")]
-use crate::simplex_ipc::{AgentPage, InvitationRequest, Operation, PayloadReader, Status};
+use crate::simplex_ipc::{AgentPage, InvitationRequest, MessageOutbox, Operation, PayloadReader, Status};
 use crate::vault_protocol::{
     APP_TEST_SUPERVISOR_CHANNEL, INITIAL_VALUE, REPLY_BAD_REQUEST, REPLY_DENIED,
     REPLY_NAMESPACE_TEST, REPLY_NET_TX_OK, REPLY_NO_BLOB, REPLY_NO_NET, REPLY_OK,
@@ -49,6 +49,12 @@ const IMAGE_CAP: usize = crate::vault_protocol::PHOTO_MAX;
 const PEER_IMAGE_CAP: usize = 12 * 1024;
 #[cfg(feature = "simplex-agent")]
 use crate::vault_protocol::{PHOTO_CHUNK, REQUEST_PHOTO_STAGE, REQUEST_PHOTO_COMMIT, REQUEST_PHOTO_READ};
+// Only the serialized Messages handler uses these buffers. Long messages do
+// not grow the Microkit service stack or the stack frames of sibling apps.
+#[cfg(feature = "simplex-agent")]
+static mut DIRECT_BODY: [u8; vault_history::DIRECT_TEXT_LIMIT] = [0; vault_history::DIRECT_TEXT_LIMIT];
+#[cfg(feature = "simplex-agent")]
+static mut DIRECT_LINE: [u8; vault_history::DIRECT_LINE_LIMIT] = [0; vault_history::DIRECT_LINE_LIMIT];
 #[cfg(feature = "simplex-agent")]
 static mut MESSAGE_PREVIEW: [u8; IMAGE_CAP] = [0; IMAGE_CAP];
 #[cfg(feature = "simplex-agent")]
@@ -60,7 +66,7 @@ static mut INCOMING_PHOTO_HANDLE: u64 = 0;
 #[cfg(feature = "simplex-agent")]
 static mut RECEIVED_ATTACHMENT_ID: Option<u64> = None;
 #[cfg(feature = "simplex-agent")]
-static mut RECEIVED_ATTACHMENT_IS_FILE: bool = false;
+use personal_os_rust_server::messages::ReceivedAttachment;
 #[cfg(feature = "simplex-agent")]
 static mut PEER_PHOTOS: [[u8; PEER_IMAGE_CAP]; CHAT_SLOT_COUNT] = [[0; PEER_IMAGE_CAP]; CHAT_SLOT_COUNT];
 #[cfg(feature = "simplex-agent")]
@@ -228,6 +234,8 @@ pub struct NamespaceTest {
     #[cfg(feature = "simplex-agent")]
     simplex_agent_connection_handles: [u64; SIMPLEX_MAX_CONNECTION_HANDLES],
     #[cfg(feature = "simplex-agent")]
+    slint_displayed_handles: [u64; CHAT_SLOT_COUNT],
+    #[cfg(feature = "simplex-agent")]
     simplex_agent_connection_handles_length: usize,
     #[cfg(feature = "simplex-agent")]
     simplex_agent_contact_name: [u8; 32],
@@ -248,16 +256,11 @@ pub struct NamespaceTest {
     #[cfg(feature = "simplex-agent")]
     simplex_agent_selected_index: usize,
     #[cfg(feature = "simplex-agent")]
-    simplex_agent_pending_send: [u8; 2048],
-    #[cfg(feature = "simplex-agent")]
-    simplex_agent_pending_send_length: usize,
+    simplex_agent_outbox: MessageOutbox,
     #[cfg(feature = "simplex-agent")]
     simplex_agent_join_status: u64,
     #[cfg(feature = "simplex-agent")]
     simplex_agent_join_handle: u64,
-    #[cfg(feature = "simplex-agent")]
-    #[cfg(feature = "simplex-agent")]
-    simplex_agent_send_started: bool,
     #[cfg(feature = "simplex-agent")]
     upload_phase: u8,
     #[cfg(feature = "simplex-agent")]
@@ -281,19 +284,11 @@ pub struct NamespaceTest {
     #[cfg(feature = "simplex-agent")]
     simplex_agent_send_message_id: u64,
     #[cfg(feature = "simplex-agent")]
-    simplex_agent_send_handle: u64,
-    /// Body of an in-flight send that still needs a transcript line on PASS
-    /// (agent-queued join hello/photo). UI sends record before begin().
-    #[cfg(feature = "simplex-agent")]
-    simplex_agent_send_body: [u8; 2048],
-    #[cfg(feature = "simplex-agent")]
-    simplex_agent_send_body_len: usize,
-    #[cfg(feature = "simplex-agent")]
-    simplex_agent_send_record_transcript: bool,
-    #[cfg(feature = "simplex-agent")]
     simplex_agent_image_len: usize,
     #[cfg(feature = "simplex-agent")]
     simplex_agent_image_filled: usize,
+    #[cfg(feature = "simplex-agent")]
+    received_attachment: ReceivedAttachment,
     #[cfg(feature = "simplex-agent")]
     simplex_agent_image_chat: usize,
     #[cfg(feature = "simplex-agent")]
@@ -331,6 +326,16 @@ pub struct NamespaceTest {
     simplex_agent_receive_message_id: u64,
     #[cfg(feature = "simplex-agent")]
     simplex_agent_receive_part: u16,
+    #[cfg(feature = "simplex-agent")]
+    direct_kind: u8,
+    #[cfg(feature = "simplex-agent")]
+    direct_total: usize,
+    #[cfg(feature = "simplex-agent")]
+    direct_filled: usize,
+    #[cfg(feature = "simplex-agent")]
+    direct_id: [u8; 64],
+    #[cfg(feature = "simplex-agent")]
+    direct_id_len: usize,
     #[cfg(feature = "simplex-agent")]
     simplex_agent_receive_body: [u8; 2048],
     #[cfg(feature = "simplex-agent")]
@@ -402,6 +407,8 @@ impl NamespaceTest {
             #[cfg(feature = "simplex-agent")]
             simplex_agent_connection_handles: [0; SIMPLEX_MAX_CONNECTION_HANDLES],
             #[cfg(feature = "simplex-agent")]
+            slint_displayed_handles: [0; CHAT_SLOT_COUNT],
+            #[cfg(feature = "simplex-agent")]
             simplex_agent_connection_handles_length: 0,
             #[cfg(feature = "simplex-agent")]
             simplex_agent_contact_name: [0; 32],
@@ -422,15 +429,11 @@ impl NamespaceTest {
             #[cfg(feature = "simplex-agent")]
             simplex_agent_selected_index: 0,
             #[cfg(feature = "simplex-agent")]
-            simplex_agent_pending_send: [0; 2048],
-            #[cfg(feature = "simplex-agent")]
-            simplex_agent_pending_send_length: 0,
+            simplex_agent_outbox: MessageOutbox::new(),
             #[cfg(feature = "simplex-agent")]
             simplex_agent_join_status: 0,
             #[cfg(feature = "simplex-agent")]
             simplex_agent_join_handle: 0,
-            #[cfg(feature = "simplex-agent")]
-            simplex_agent_send_started: false,
             #[cfg(feature = "simplex-agent")]
             upload_phase: 0,
             #[cfg(feature = "simplex-agent")]
@@ -454,17 +457,11 @@ impl NamespaceTest {
             #[cfg(feature = "simplex-agent")]
             simplex_agent_send_message_id: 0,
             #[cfg(feature = "simplex-agent")]
-            simplex_agent_send_handle: 0,
-            #[cfg(feature = "simplex-agent")]
-            simplex_agent_send_body: [0; 2048],
-            #[cfg(feature = "simplex-agent")]
-            simplex_agent_send_body_len: 0,
-            #[cfg(feature = "simplex-agent")]
-            simplex_agent_send_record_transcript: false,
-            #[cfg(feature = "simplex-agent")]
             simplex_agent_image_len: 0,
             #[cfg(feature = "simplex-agent")]
             simplex_agent_image_filled: 0,
+            #[cfg(feature = "simplex-agent")]
+            received_attachment: ReceivedAttachment::Preview,
             #[cfg(feature = "simplex-agent")]
             simplex_agent_image_chat: 0,
             #[cfg(feature = "simplex-agent")]
@@ -502,6 +499,16 @@ impl NamespaceTest {
             simplex_agent_receive_message_id: 0,
             #[cfg(feature = "simplex-agent")]
             simplex_agent_receive_part: 0,
+            #[cfg(feature = "simplex-agent")]
+            direct_kind: 0,
+            #[cfg(feature = "simplex-agent")]
+            direct_total: 0,
+            #[cfg(feature = "simplex-agent")]
+            direct_filled: 0,
+            #[cfg(feature = "simplex-agent")]
+            direct_id: [0; 64],
+            #[cfg(feature = "simplex-agent")]
+            direct_id_len: 0,
             #[cfg(feature = "simplex-agent")]
             simplex_agent_receive_body: [0; 2048],
             #[cfg(feature = "simplex-agent")]
@@ -579,7 +586,7 @@ impl NamespaceTest {
             self.receive_upload_chunk();
         } else if self.upload_phase == 2 && page.response(14).is_some() {
             self.receive_upload_send();
-        } else if self.simplex_agent_send_started && page.response(4).is_some() {
+        } else if self.simplex_agent_outbox.in_flight.is_some() && page.response(4).is_some() {
             self.receive_agent_send_message();
         } else if self.simplex_agent_receive_started && page.response(5).is_some() {
             self.receive_agent_next();
@@ -791,18 +798,22 @@ impl NamespaceTest {
     }
 
     #[cfg(feature = "simplex-agent")]
-    fn request_agent_set_profile(&mut self, name: &[u8]) {
+    fn request_agent_set_profile(&mut self, name: &[u8]) -> bool {
+        if self.agent_busy() {
+            return false;
+        }
         let Some(mut page) = self.simplex_agent_page else {
             debug_println!("SIMPLEXIPC|MESSAGES_APP|PROFILE_FAIL_NO_PAGE");
-            return;
+            return false;
         };
         if !unsafe { page.as_mut() }.begin(Operation::SetProfile, 10, name) {
             debug_println!("SIMPLEXIPC|MESSAGES_APP|PROFILE_FAIL_ENCODE");
-            return;
+            return false;
         }
         core::sync::atomic::fence(Ordering::Release);
         SIMPLEX_AGENT_REQUEST.notify();
         debug_println!("SIMPLEXIPC|MESSAGES_APP|PROFILE_REQUEST|{}", name.len());
+        true
     }
 
     /// Invite the selected direct contact into a new group. The agent sends
@@ -1074,7 +1085,6 @@ impl NamespaceTest {
                         );
                         self.simplex_agent_join_status = 2;
                         self.simplex_agent_join_handle = handle;
-                        self.simplex_agent_selected_handle = handle;
                         self.simplex_agent_group_len = 0;
                         self.request_agent_connection_snapshot();
                         return;
@@ -1103,9 +1113,9 @@ impl NamespaceTest {
             .unwrap_or(255)
     }
 
-    /// A delivery receipt identifies the outgoing Agent message.
+    /// Receipts and XFTP failures identify the original outgoing offer by contact and agent ID.
     #[cfg(feature = "simplex-agent")]
-    fn note_delivery(&mut self, handle: u64, message_id: u64) {
+    fn note_send_notice(&mut self, handle: u64, message_id: u64, failed_upload: bool) {
         use core::fmt::Write;
         use personal_os_rust_server::messages::TranscriptBuffer;
 
@@ -1122,13 +1132,21 @@ impl NamespaceTest {
         else {
             return;
         };
-        if line.ends_with(" ✓") {
+        let Some((base, suffix)) = personal_os_rust_server::messages::outgoing_notice_update(line, failed_upload) else {
             return;
-        }
+        };
         let mut bytes = [0; vault_history::MAX_EVENT_SIZE - vault_history::ROW_HEADER];
         let mut updated = TranscriptBuffer::new(&mut bytes);
-        if write!(updated, "{line} ✓").is_ok() && self.append_history_line(owner, key, updated.as_str()) {
-            debug_println!("SIMPLEXIPC|MESSAGES_APP|DELIVERY_MARKED|{}|{}", chat, message_id);
+        if write!(updated, "{base}{suffix}").is_ok() && self.append_history_line(owner, key, updated.as_str()) {
+            if failed_upload {
+                if self.simplex_agent_send_status == 5 && self.upload_target == handle
+                    && self.simplex_agent_send_message_id == message_id {
+                    self.simplex_agent_send_status = 7;
+                }
+                debug_println!("SIMPLEXIPC|MESSAGES_APP|UPLOAD_FAILED|{}|{}", chat, message_id);
+            } else {
+                debug_println!("SIMPLEXIPC|MESSAGES_APP|DELIVERY_MARKED|{}|{}", chat, message_id);
+            }
         }
     }
 
@@ -1241,16 +1259,18 @@ impl NamespaceTest {
 
     #[cfg(feature = "simplex-agent")]
     fn accept_image_preview(&mut self, reader: &mut PayloadReader<'_>, file: bool) {
-        let parsed = reader
-            .u64()
-            .zip(reader.u64())
-            .zip(reader.bytes())
-            .zip(reader.u16());
-        let parsed = parsed.and_then(|(head, short)| {
+        let parsed = (|| {
+            let handle = reader.u64()?;
+            let message_id = reader.u64()?;
+            let caption = reader.bytes()?;
+            let short = reader.u16()?;
             let total = if short == 0 { reader.u32()? as usize } else { short as usize };
-            Some((head, total, reader.bytes()?))
-        });
-        let Some(((((handle, message_id), caption), total), chunk)) = parsed.map(|(head, total, chunk)| ((head, total), chunk)) else {
+            let kind = if file { ReceivedAttachment::File } else if short == 0 {
+                ReceivedAttachment::Original
+            } else { ReceivedAttachment::Preview };
+            Some((handle, message_id, caption, total, kind, reader.bytes()?))
+        })();
+        let Some((handle, message_id, caption, total, kind, chunk)) = parsed else {
             self.simplex_agent_receive_status = 4;
             self.settle_agent(false, false);
             return;
@@ -1272,7 +1292,7 @@ impl NamespaceTest {
         } else {
             caption
         };
-        unsafe { RECEIVED_ATTACHMENT_IS_FILE = file; }
+        self.received_attachment = kind;
         if caption.len() > self.simplex_agent_receive_body.len() {
             self.simplex_agent_receive_status = 4;
             self.settle_agent(false, false);
@@ -1354,7 +1374,7 @@ impl NamespaceTest {
     fn begin_peer_photo_fetch(&mut self) {
         if self.simplex_agent_peer_photo_started
             || self.simplex_agent_image_started
-            || self.simplex_agent_send_started
+            || self.simplex_agent_outbox.in_flight.is_some()
             || self.simplex_agent_receive_started
             || self.simplex_agent_ack_started
             || self.simplex_agent_delete_started
@@ -1465,11 +1485,12 @@ impl NamespaceTest {
     fn finish_image_message(&mut self) {
         let len = self.simplex_agent_image_len;
         if len != 0 && len == self.simplex_agent_image_filled
-            && unsafe { RECEIVED_ATTACHMENT_IS_FILE || (len >= 4 && MESSAGE_PREVIEW[..len].starts_with(&[0xff, 0xd8])) }
+            && (self.received_attachment != ReceivedAttachment::Preview
+                || (len >= 4 && unsafe { MESSAGE_PREVIEW[..len].starts_with(&[0xff, 0xd8]) }))
         {
             // The file and its history reference must both commit before acknowledgement.
             unsafe { RECEIVED_ATTACHMENT_ID = Some(0); }
-        } else if unsafe { RECEIVED_ATTACHMENT_IS_FILE } {
+        } else if self.received_attachment != ReceivedAttachment::Preview {
             self.simplex_agent_receive_status = 4;
             self.settle_agent(false, false);
             return;
@@ -1553,7 +1574,9 @@ impl NamespaceTest {
         }
         set_mr(0, handle);
         set_mr(1, len as u64);
-        let label = if unsafe { RECEIVED_ATTACHMENT_IS_FILE } {
+        let label = if self.received_attachment == ReceivedAttachment::File
+            || !unsafe { MESSAGE_PREVIEW[..len].starts_with(&[0xff, 0xd8]) }
+        {
             crate::vault_protocol::REQUEST_ATTACHMENT_COMMIT
         } else {
             REQUEST_PHOTO_COMMIT
@@ -1564,7 +1587,7 @@ impl NamespaceTest {
             return None;
         }
         let id = get_mr(0);
-        if unsafe { RECEIVED_ATTACHMENT_IS_FILE } {
+        if self.received_attachment == ReceivedAttachment::File {
             debug_println!("SIMPLEXIPC|MESSAGES_APP|FILE_DISK|{}|{}", id, len);
         } else {
             debug_println!("SIMPLEXIPC|MESSAGES_APP|PHOTO_DISK|{}|{}", id, len);
@@ -1609,6 +1632,57 @@ impl NamespaceTest {
     }
 
     #[cfg(feature = "simplex-agent")]
+    fn record_direct_event(&mut self, chat: usize, speaker: &[u8]) -> Result<(), ()> {
+        use core::fmt::Write;
+        use personal_os_rust_server::messages::{TranscriptBuffer, write_direct_text};
+        use vault_history::PeerVersion;
+
+        let owner = self.ensure_chat_history(chat)?;
+        let delivery = self.incoming_history_key();
+        let history = unsafe { messages_history::index() };
+        if history.record_for(owner, delivery).is_some() { return Ok(()); }
+        let id = core::str::from_utf8(&self.direct_id[..self.direct_id_len]).map_err(|_| ())?;
+        let mut version = PeerVersion {
+            key: delivery, shared_id: id, revision: (delivery.number, delivery.part), deleted: self.direct_kind == 9,
+        };
+        let mut line = TranscriptBuffer::new(unsafe { &mut *core::ptr::addr_of_mut!(DIRECT_LINE) });
+        let mut found = false;
+        if !id.is_empty() {
+            for record in history.peer_records(owner, delivery.source, id) {
+                let Some((_, Event::Peer(row))) = messages_history::read(record, unsafe { self.blob_transfer.as_mut() })?
+                    else { continue };
+                if row.version.shared_id != id || row.version.key.source != delivery.source { continue; }
+                if self.direct_kind == 7 || !row.version.accepts(delivery, id) { return Ok(()); }
+                let (prefix, _) = row.first.split_once(personal_os_rust_server::messages::DIRECT_PREFIX).ok_or(())?;
+                line.write_str(prefix).map_err(|_| ())?;
+                version.key = row.version.key;
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            // Older rows never stored an authenticated peer SharedMsgId.
+            // A display name or text marker cannot establish ownership.
+            if self.direct_kind != 7 { return Ok(()); }
+            let name = core::str::from_utf8(speaker).map_err(|_| ())?;
+            write!(line, "{name}: ").map_err(|_| ())?;
+            let mut clock = [0; 6];
+            if Self::read_message_clock().and_then(|t| prefix_message_time(t, b"", &mut clock)).is_some() {
+                line.write_str(core::str::from_utf8(&clock).map_err(|_| ())?).map_err(|_| ())?;
+            }
+        }
+        let body = if version.deleted { "Message deleted" } else {
+            core::str::from_utf8(unsafe { &DIRECT_BODY[..self.direct_total] }).map_err(|_| ())?
+        };
+        write_direct_text(&mut line, id, body).map_err(|_| ())?;
+        vault_history::store_peer_line(version, line.as_str(), |bytes| {
+            history.append_record(owner, bytes, self.blob_transfer)
+        })?;
+        debug_println!("SIMPLEXIPC|MESSAGES_APP|HISTORY_SAVED|{}", line.as_str().len());
+        Ok(())
+    }
+
+    #[cfg(feature = "simplex-agent")]
     fn record_received_attachment(&mut self, chat: usize, speaker: &[u8], caption: &[u8], id: u64) -> bool {
         use core::fmt::Write;
         use personal_os_rust_server::messages::TranscriptBuffer;
@@ -1617,19 +1691,23 @@ impl NamespaceTest {
         let Ok(owner) = self.ensure_chat_history(chat) else {
             return false;
         };
-        let file = unsafe { RECEIVED_ATTACHMENT_IS_FILE };
-        let prefix = if file { FILE_REFERENCE_PREFIX } else { PHOTO_REFERENCE_PREFIX };
+        // The shared transfer page is reused by blob storage. Copy the old row
+        // before committing so its sender, time and caption survive an upgrade.
+        let mut old_line = [0; vault_history::MAX_EVENT_SIZE];
+        let mut old_len = 0;
         if let Some(record) = unsafe { messages_history::index() }.record_for(owner, key) {
-            if let Ok(Some((_, vault_history::Event::Row(_, line)))) =
+            let Ok(Some((_, vault_history::Event::Row(_, line)))) =
                 messages_history::read(record, unsafe { self.blob_transfer.as_mut() })
-            {
-                if line.split_once(": ").is_some_and(|(_, body)| {
-                    let (_, body) = personal_os_rust_server::messages::split_message_time(body);
-                    body.starts_with(prefix)
-                }) {
-                    return true;
-                }
-            }
+            else { return false; };
+            old_len = line.len();
+            old_line[..old_len].copy_from_slice(line.as_bytes());
+        }
+        let line = core::str::from_utf8(&old_line[..old_len]).unwrap();
+        let old_body = line.split_once(": ").map_or("", |(_, body)| {
+            personal_os_rust_server::messages::split_message_time(body).1
+        });
+        if !self.received_attachment.needs_blob(old_body) {
+            return true;
         }
         let id = if id != 0 {
             id
@@ -1643,16 +1721,23 @@ impl NamespaceTest {
             unsafe { RECEIVED_ATTACHMENT_ID = Some(id); }
             id
         };
-        let mut bytes = [0; 512];
+        let mut bytes = [0; vault_history::MAX_EVENT_SIZE - vault_history::ROW_HEADER];
         let mut marked = TranscriptBuffer::new(&mut bytes);
-        let _ = write!(marked, "{}{}\x1f{}\x1f", prefix, key.number, id);
-        for character in core::str::from_utf8(caption).unwrap_or("Photo").chars() {
-            let character = if character.is_control() { ' ' } else { character };
-            if marked.write_char(character).is_err() {
-                break;
-            }
+        if old_len != 0 && marked.write_str(&line[..old_len - old_body.len()]).is_err() {
+            return false;
         }
-        self.append_display_line(owner, key, speaker, marked.as_str())
+        let jpeg = unsafe { MESSAGE_PREVIEW[..self.simplex_agent_image_len].starts_with(&[0xff, 0xd8]) };
+        let caption = core::str::from_utf8(caption).unwrap_or("Photo");
+        if self.received_attachment.write_reference(
+            &mut marked, old_body, key.number, id, jpeg, caption,
+        ).is_err() {
+            return false;
+        }
+        if old_len != 0 {
+            self.append_history_line(owner, key, marked.as_str())
+        } else {
+            self.append_display_line(owner, key, speaker, marked.as_str())
+        }
     }
 
     #[cfg(feature = "simplex-agent")]
@@ -1675,6 +1760,7 @@ impl NamespaceTest {
                 Ok(Some((_, vault_history::Event::Row(_, line)))) if line.len() <= line_bytes.len() => {
                     line_bytes[..line.len()].copy_from_slice(line.as_bytes()); line.len()
                 }
+                Ok(Some((_, Event::Peer(_)))) => continue,
                 _ => return false,
             };
             let Ok(line) = core::str::from_utf8(&line_bytes[..line_len]) else { return false; };
@@ -1832,7 +1918,7 @@ impl NamespaceTest {
 
     #[cfg(feature = "simplex-agent")]
     fn agent_busy(&self) -> bool {
-        matches!(self.upload_phase, 1 | 2) || self.simplex_agent_send_started
+        matches!(self.upload_phase, 1 | 2) || self.simplex_agent_outbox.in_flight.is_some()
             || self.simplex_agent_receive_started
             || self.simplex_agent_ack_started
             || self.simplex_agent_request_started
@@ -1843,6 +1929,7 @@ impl NamespaceTest {
             || self.simplex_agent_peer_photo_started
             || self.simplex_agent_group_create_started
             || self.simplex_agent_address_request_started
+            || self.simplex_agent_page.is_some_and(|page| unsafe { page.as_ref() }.request().is_some())
     }
 
     #[cfg(feature = "simplex-agent")]
@@ -1931,32 +2018,28 @@ impl NamespaceTest {
         SLINT_MESSAGES_SERVICE.notify();
     }
 
-    /// One agent request at a time. A send that arrives while a receive or
-    /// acknowledge is in flight is kept and started when the page is free.
-    #[cfg(feature = "simplex-agent")]
-    fn remember_pending_send(&mut self, text: &[u8]) {
-        if text.len() > self.simplex_agent_pending_send.len() {
-            self.simplex_agent_send_status = 4;
-            return;
-        }
-        self.simplex_agent_pending_send[..text.len()].copy_from_slice(text);
-        self.simplex_agent_pending_send_length = text.len();
-        self.simplex_agent_send_status = 1;
-    }
-
     #[cfg(feature = "simplex-agent")]
     fn flush_pending_send(&mut self) -> bool {
-        let length = self.simplex_agent_pending_send_length;
-        if length == 0 || self.agent_busy() {
+        if self.agent_busy() {
             return false;
         }
-        let mut text = [0u8; 2048];
-        text[..length].copy_from_slice(&self.simplex_agent_pending_send[..length]);
-        self.simplex_agent_pending_send_length = 0;
-        // Join hello/photo never went through the Slint SEND request, so the
-        // PASS path must write the NexatrodeOS: transcript line for ✓ marks.
-        self.request_agent_send_message(&text[..length], true);
-        self.simplex_agent_send_started
+        let Some(mut page) = self.simplex_agent_page else { return false; };
+        let live = &self.simplex_agent_connection_handles[..self.simplex_agent_connection_handles_length];
+        match self.simplex_agent_outbox.begin(unsafe { page.as_mut() }, live) {
+            Ok(true) => {
+                self.simplex_agent_send_status = 1;
+                self.simplex_agent_send_message_id = 0;
+                core::sync::atomic::fence(Ordering::Release);
+                SIMPLEX_AGENT_REQUEST.notify();
+                true
+            }
+            Ok(false) => false,
+            Err(()) => {
+                self.simplex_agent_send_status = 4;
+                self.notify_chat_ui();
+                false
+            }
+        }
     }
 
     /// Pull one queued SMP message when the page is free. An empty result must
@@ -2000,65 +2083,25 @@ impl NamespaceTest {
     }
 
     #[cfg(feature = "simplex-agent")]
-    fn request_agent_send_message(&mut self, text: &[u8], record_transcript: bool) {
-        if text.is_empty() || text.len() > 2048 || core::str::from_utf8(text).is_err() {
-            self.simplex_agent_send_status = 4;
-            return;
-        }
-        if self.agent_busy() {
-            self.remember_pending_send(text);
-            return;
-        }
-        let known = &self.simplex_agent_connection_handles
-            [..self.simplex_agent_connection_handles_length];
-        let handle = if self.simplex_agent_selected_handle != 0
-            && known.contains(&self.simplex_agent_selected_handle)
+    fn request_agent_send_message(&mut self, text: &[u8]) -> bool {
+        let live = &self.simplex_agent_connection_handles[..self.simplex_agent_connection_handles_length];
+        let handle = self.simplex_agent_selected_handle;
+        if self.simplex_agent_page.is_none()
+            || live.get(self.simplex_agent_selected_index) != Some(&handle)
+            || !self.simplex_agent_outbox.queue(handle, live, text)
         {
-            self.simplex_agent_selected_handle
-        } else if self.simplex_agent_join_handle != 0 && known.contains(&self.simplex_agent_join_handle)
-        {
-            self.simplex_agent_join_handle
-        } else if let Some(first) = known.first().copied() {
-            first
-        } else {
-            self.simplex_agent_send_status = 4;
-            return;
-        };
+            return false;
+        }
         debug_println!("SIMPLEXIPC|MESSAGES_APP|SEND_HANDLE|{}", handle);
-        self.simplex_agent_send_handle = handle;
-        self.simplex_agent_send_record_transcript = record_transcript;
-        if record_transcript {
-            self.simplex_agent_send_body[..text.len()].copy_from_slice(text);
-            self.simplex_agent_send_body_len = text.len();
-        } else {
-            self.simplex_agent_send_body_len = 0;
-        }
-        let Some(mut page) = self.simplex_agent_page else {
-            self.simplex_agent_send_status = 4;
-            return;
-        };
-        let mut payload = [0; personal_os_rust_server::simplex_ipc::PAYLOAD_CAPACITY];
-        let mut writer = personal_os_rust_server::simplex_ipc::PayloadWriter::new(&mut payload);
-        if !writer.u64(handle) || !writer.bytes(text) {
-            self.simplex_agent_send_status = 4;
-            return;
-        }
-        let length = writer.len();
-        if !unsafe { page.as_mut() }.begin(Operation::SendMessage, 4, &payload[..length]) {
-            self.simplex_agent_send_status = 4;
-            return;
-        }
-        self.simplex_agent_send_started = true;
         self.simplex_agent_send_status = 1;
-        self.simplex_agent_send_message_id = 0;
-        core::sync::atomic::fence(Ordering::Release);
-        SIMPLEX_AGENT_REQUEST.notify();
+        self.flush_pending_send();
+        self.simplex_agent_send_status == 1
     }
 
     #[cfg(feature = "simplex-agent")]
     fn receive_agent_send_message(&mut self) {
         core::sync::atomic::fence(Ordering::Acquire);
-        self.simplex_agent_send_started = false;
+        let Some(sent) = self.simplex_agent_outbox.in_flight.take() else { return; };
         let Some(page) = self.simplex_agent_page else {
             self.simplex_agent_send_status = 4;
             return;
@@ -2073,20 +2116,9 @@ impl NamespaceTest {
                         self.simplex_agent_send_status = 2;
                         self.simplex_agent_send_message_id = message_id;
                         debug_println!("SIMPLEXIPC|MESSAGES_APP|SEND_MESSAGE_PASS");
-                        if self.simplex_agent_send_record_transcript {
-                            let len = self.simplex_agent_send_body_len.min(2048);
-                            let mut body = [0u8; 2048];
-                            body[..len].copy_from_slice(&self.simplex_agent_send_body[..len]);
-                            self.simplex_agent_send_record_transcript = false;
-                            self.simplex_agent_send_body_len = 0;
-                            let chat = self.chat_index_for_handle(self.simplex_agent_send_handle);
-                            if chat < CHAT_SLOT_COUNT as u64 {
-                                self.apply_send_transcript(
-                                    chat as usize,
-                                    &body[..len],
-                                    shared_id,
-                                );
-                            }
+                        let chat = self.chat_index_for_handle(sent.handle);
+                        if chat < CHAT_SLOT_COUNT as u64 {
+                            self.apply_send_transcript(chat as usize, sent.text(), shared_id);
                         }
                         self.settle_agent(true, true);
                         return;
@@ -2121,12 +2153,52 @@ impl NamespaceTest {
         }
         unsafe {
             RECEIVED_ATTACHMENT_ID = None;
-            RECEIVED_ATTACHMENT_IS_FILE = false;
         }
+        self.direct_kind = 0;
+        self.direct_total = 0;
+        self.direct_filled = 0;
+        self.simplex_agent_receive_length = 0;
         self.simplex_agent_receive_started = true;
         self.simplex_agent_receive_status = 1;
         core::sync::atomic::fence(Ordering::Release);
         SIMPLEX_AGENT_REQUEST.notify();
+    }
+
+    #[cfg(feature = "simplex-agent")]
+    fn accept_direct_chunk(&mut self, chunk: &[u8]) {
+        let remaining = self.direct_total - self.direct_filled;
+        if chunk.len() != remaining.min(3000) {
+            self.simplex_agent_receive_status = 4;
+            return;
+        }
+        let end = self.direct_filled + chunk.len();
+        unsafe { DIRECT_BODY[self.direct_filled..end].copy_from_slice(chunk); }
+        self.direct_filled = end;
+        if end < self.direct_total {
+            let offset = (end as u32).to_le_bytes();
+            let mut page = self.simplex_agent_page.unwrap();
+            if unsafe { page.as_mut() }.begin(Operation::ReceiveNext, 5, &offset) {
+                self.simplex_agent_receive_started = true;
+                core::sync::atomic::fence(Ordering::Release);
+                SIMPLEX_AGENT_REQUEST.notify();
+            } else {
+                self.simplex_agent_receive_status = 4;
+            }
+            return;
+        }
+        let Ok(text) = core::str::from_utf8(unsafe { &DIRECT_BODY[..end] }) else {
+            self.simplex_agent_receive_status = 4;
+            return;
+        };
+        // The status payload is a notification. The transcript service serves
+        // the complete committed body, including text spanning several pages.
+        if self.direct_kind == 7 && text.len() <= self.simplex_agent_receive_body.len() {
+            self.simplex_agent_receive_body[..end].copy_from_slice(text.as_bytes());
+            self.simplex_agent_receive_length = end;
+        }
+        self.simplex_agent_receive_status = 2;
+        debug_println!("SIMPLEXIPC|MESSAGES_APP|RECEIVE_MESSAGE_PASS");
+        self.settle_agent(false, true);
     }
 
     #[cfg(feature = "simplex-agent")]
@@ -2151,6 +2223,27 @@ impl NamespaceTest {
                 }
             }
             Some((Status::Ok, payload)) => {
+                if self.direct_kind != 0 {
+                    self.accept_direct_chunk(payload);
+                    return;
+                }
+                if matches!(payload.first(), Some(7..=9)) {
+                    let Some(frame) = crate::simplex_ipc::DirectFrame::parse(payload, vault_history::DIRECT_TEXT_LIMIT)
+                        .filter(|frame| vault_history::valid_shared_id(frame.id)) else {
+                        self.simplex_agent_receive_status = 4;
+                        return;
+                    };
+                    self.direct_kind = frame.kind;
+                    self.direct_total = frame.total;
+                    self.direct_id_len = frame.id.len();
+                    self.direct_id[..frame.id.len()].copy_from_slice(frame.id.as_bytes());
+                    self.simplex_agent_receive_handle = frame.handle;
+                    self.simplex_agent_receive_chat_handle = frame.handle;
+                    self.simplex_agent_receive_message_id = frame.message;
+                    self.simplex_agent_receive_part = frame.part;
+                    self.accept_direct_chunk(frame.first);
+                    return;
+                }
                 let mut reader = PayloadReader::new(payload);
                 let kind = reader.u8();
                 if kind == Some(4) {
@@ -2161,10 +2254,10 @@ impl NamespaceTest {
                     self.accept_image_preview(&mut reader, kind == Some(6));
                     return;
                 }
-                if kind == Some(2) {
+                if matches!(kind, Some(2 | 12)) {
                     let delivered = reader.u64().zip(reader.u64());
                     if let Some((handle, message_id)) = delivered.filter(|_| reader.is_empty()) {
-                        self.note_delivery(handle, message_id);
+                        self.note_send_notice(handle, message_id, kind == Some(12));
                         self.simplex_agent_receive_status = 3;
                         self.settle_agent(true, true);
                         return;
@@ -2177,7 +2270,7 @@ impl NamespaceTest {
                     self.accept_group_member_message(&mut reader);
                     return;
                 }
-                if kind != Some(1) {
+                if !matches!(kind, Some(1 | 11)) {
                     self.simplex_agent_receive_status = 4;
                     self.settle_agent(false, false);
                     return;
@@ -2198,6 +2291,7 @@ impl NamespaceTest {
                         self.simplex_agent_receive_status = 4;
                         return;
                     }
+                    if kind == Some(11) { self.direct_kind = 11; }
                     self.simplex_agent_receive_body[..body.len()].copy_from_slice(body);
                     self.simplex_agent_receive_length = body.len();
                     self.simplex_agent_receive_handle = handle;
@@ -2229,7 +2323,7 @@ impl NamespaceTest {
             self.simplex_agent_ack_status = 4;
             return;
         }
-        if self.simplex_agent_send_started
+        if self.simplex_agent_outbox.in_flight.is_some()
             || self.simplex_agent_receive_started
             || self.simplex_agent_request_started
             || self.invitation_request == InvitationRequest::InFlight
@@ -2376,7 +2470,7 @@ impl Handler for NamespaceTest {
                 && self.simplex_agent_page.and_then(|page| unsafe { page.as_ref() }.response(14)).is_some()
             {
                 self.receive_upload_send();
-            } else if self.simplex_agent_send_started
+            } else if self.simplex_agent_outbox.in_flight.is_some()
                 && self
                     .simplex_agent_page
                     .and_then(|page| unsafe { page.as_ref() }.response(4))
@@ -2530,6 +2624,10 @@ impl NamespaceTest {
     fn handle_slint_messages(&mut self, request: MessageInfo) -> MessageInfo {
         #[cfg(feature = "simplex-agent")]
         if request.label() != REQUEST_SLINT_MESSAGES_CREATE_INVITATION
+            && request.label() != REQUEST_SLINT_MESSAGES_SET_PROFILE
+            && request.label() != REQUEST_SLINT_MESSAGES_SEND
+            && request.label() != REQUEST_SLINT_MESSAGES_SELECT_CHAT
+            && request.label() != REQUEST_SLINT_MESSAGES_JOIN_INVITATION
             && request.label() != REQUEST_SLINT_MESSAGES_CREATE_GROUP
             && request.label() != REQUEST_SLINT_MESSAGES_CREATE_ADDRESS
             && request.label() != REQUEST_SLINT_MESSAGES_SEND_SAVED_PHOTO
@@ -2647,7 +2745,7 @@ impl NamespaceTest {
                     let source = get_mr(0) as usize;
                     let photo_id = get_mr(1);
                     let Some(name) = (unsafe { self.blob_transfer.as_ref() }).payload() else { return MessageInfo::new(REPLY_BAD_REQUEST, 0); };
-                    if name.is_empty() || name.len() > self.upload_name.len()
+                    if self.upload_phase != 0 || name.is_empty() || name.len() > self.upload_name.len()
                         || core::str::from_utf8(name).is_err()
                         || name.iter().any(|c| *c < 32 || *c == b'/' || *c == b'\\')
                     { return MessageInfo::new(REPLY_BAD_REQUEST, 0); }
@@ -2723,6 +2821,9 @@ impl NamespaceTest {
                     if payload.len() != length || !payload.is_ascii() {
                         return MessageInfo::new(REPLY_ROUTED_EVENT_BAD, 0);
                     }
+                    if self.agent_busy() {
+                        return MessageInfo::new(REPLY_ROUTED_EVENT_BAD, 0);
+                    }
                     self.request_agent_join_invitation(payload);
                     return MessageInfo::new(REPLY_SLINT_MESSAGES_JOIN_INVITATION, 0);
                 }
@@ -2761,7 +2862,9 @@ impl NamespaceTest {
                     }
                     // Record on agent PASS so SharedMsgId can be embedded for
                     // later edit/delete; Slint refreshes transcript via status.
-                    self.request_agent_send_message(&body[..length], true);
+                    if !self.request_agent_send_message(&body[..length]) {
+                        return MessageInfo::new(REPLY_ROUTED_EVENT_BAD, 0);
+                    }
                     return MessageInfo::new(REPLY_SLINT_MESSAGES_SEND, 0);
                 }
                 #[cfg(not(feature = "simplex-agent"))]
@@ -2770,7 +2873,13 @@ impl NamespaceTest {
             (REQUEST_SLINT_MESSAGES_SEND_STATUS, 0) => {
                 #[cfg(feature = "simplex-agent")]
                 {
-                    set_mr(0, self.simplex_agent_send_status);
+                    let status = if matches!(self.simplex_agent_send_status, 5 | 7)
+                        && self.simplex_agent_selected_handle != self.upload_target {
+                        0
+                    } else {
+                        self.simplex_agent_send_status
+                    };
+                    set_mr(0, status);
                     set_mr(1, self.simplex_agent_send_message_id);
                     return MessageInfo::new(REPLY_SLINT_MESSAGES_SEND_STATUS, 2);
                 }
@@ -2823,10 +2932,12 @@ impl NamespaceTest {
                         // Only expose the acknowledgeable state after the
                         // vault commits the transcript. Leave a failed write
                         // pending for the next poll.
-                        let recorded = if body[..length].starts_with(b"\x1eR\x1f") {
-                            self.apply_reaction_wire(chat_index, &body[3..length])
+                        let recorded = if matches!(self.direct_kind, 7..=9) {
+                            self.record_direct_event(chat_index, &speaker[..speaker_len]).is_ok()
                         } else if let Some(id) = unsafe { RECEIVED_ATTACHMENT_ID } {
                             self.record_received_attachment(chat_index, &speaker[..speaker_len], &body[..length], id)
+                        } else if self.direct_kind == 11 && body[..length].starts_with(b"\x1eR\x1f") {
+                            self.apply_reaction_wire(chat_index, &body[3..length])
                         } else {
                             self.record_chat_line(chat_index, &speaker[..speaker_len], &body[..length])
                         };
@@ -2834,7 +2945,7 @@ impl NamespaceTest {
                             if !unsafe { self.blob_transfer.as_mut() }.set_payload(&[]) {
                                 return MessageInfo::new(REPLY_ROUTED_EVENT_BAD, 0);
                             }
-                            set_mr(0, 1);
+                            set_mr(0, 7);
                             set_mr(1, 0);
                             set_mr(2, chat);
                             return MessageInfo::new(REPLY_SLINT_MESSAGES_RECEIVE_STATUS, 3);
@@ -2883,13 +2994,12 @@ impl NamespaceTest {
                 #[cfg(feature = "simplex-agent")]
                 {
                     let index = get_mr(0) as usize;
-                    if index < self.simplex_agent_connection_handles_length && index < CHAT_SLOT_COUNT {
-                        self.simplex_agent_selected_index = index;
-                        self.simplex_agent_selected_handle =
-                            self.simplex_agent_connection_handles[index];
-                        if self.simplex_agent_send_status != 1 {
-                            self.simplex_agent_send_started = false;
-                        }
+                    self.simplex_agent_selected_index = index;
+                    let live = &self.simplex_agent_connection_handles[..self.simplex_agent_connection_handles_length];
+                    self.simplex_agent_selected_handle =
+                        crate::simplex_ipc::chat_at_displayed_row(&self.slint_displayed_handles, live, index)
+                            .unwrap_or(0);
+                    if self.simplex_agent_selected_handle != 0 {
                         debug_println!(
                             "SIMPLEXIPC|MESSAGES_APP|SELECT_CHAT|{}|{}",
                             index,
@@ -2931,21 +3041,29 @@ impl NamespaceTest {
                     let mut output = [0; personal_os_rust_server::vault_blob_record::MAX_PAYLOAD_SIZE];
                     let mut length = 0;
                     let mut next = 0;
-                    for (index, record) in history.records(owner).filter(|(index, _)| *index >= start) {
-                        let Ok(Some((record_owner, Event::Row(_, line)))) = messages_history::read(record, page) else {
-                            return MessageInfo::new(REPLY_BAD_REQUEST, 0);
-                        };
-                        if record_owner != owner {
-                            return MessageInfo::new(REPLY_BAD_REQUEST, 0);
+                    // High bits select the row; the low byte advances inside
+                    // one row. Each part is valid UTF-8 even across replies.
+                    let start_row = start >> 8;
+                    for (index, record) in history.records(owner).filter(|(index, _)| *index >= start_row) {
+                        let mut part = if index == start_row { start & 255 } else { 0 };
+                        loop {
+                            let Ok((text, more)) = messages_history::read_row_part(owner, record, part, page) else {
+                                return MessageInfo::new(REPLY_BAD_REQUEST, 0);
+                            };
+                            if length + text.len() + usize::from(!more) > output.len() {
+                                next = (index << 8) | part;
+                                break;
+                            }
+                            output[length..length + text.len()].copy_from_slice(text.as_bytes());
+                            length += text.len();
+                            if !more {
+                                output[length] = b'\n';
+                                length += 1;
+                                break;
+                            }
+                            part += 1;
                         }
-                        if length + line.len() + 1 > output.len() {
-                            next = index;
-                            break;
-                        }
-                        output[length..length + line.len()].copy_from_slice(line.as_bytes());
-                        length += line.len();
-                        output[length] = b'\n';
-                        length += 1;
+                        if next != 0 { break; }
                     }
                     if !page.set_payload(&output[..length]) {
                         return MessageInfo::new(REPLY_BAD_REQUEST, 0);
@@ -3206,10 +3324,12 @@ impl NamespaceTest {
                     {
                         return MessageInfo::new(REPLY_BAD_REQUEST, 0);
                     }
+                    if !self.request_agent_set_profile(payload) {
+                        return MessageInfo::new(REPLY_ROUTED_EVENT_BAD, 0);
+                    }
                     self.simplex_profile_name = [0; 48];
                     self.simplex_profile_name[..length].copy_from_slice(payload);
                     self.simplex_profile_name_length = length;
-                    self.request_agent_set_profile(payload);
                     if !unsafe { self.blob_transfer.as_mut() }.set_payload(payload) {
                         return MessageInfo::new(REPLY_ROUTED_EVENT_BAD, 0);
                     }
@@ -3331,6 +3451,10 @@ impl NamespaceTest {
         if !unsafe { self.blob_transfer.as_mut() }.set_payload(&text[..payload_length]) {
             debug_println!("SLINT MESSAGES SERVICE LOAD FAILED: transfer capacity");
             return MessageInfo::new(REPLY_ROUTED_EVENT_BAD, 0);
+        }
+        #[cfg(feature = "simplex-agent")]
+        {
+            self.slint_displayed_handles = self.simplex_agent_connection_handles;
         }
         set_mr(0, payload_length as MessageRegisterValue);
         debug_println!("SLINT MESSAGES SERVICE LOAD PASS LEN {}", payload_length);
@@ -4369,6 +4493,9 @@ impl NamespaceTest {
             else {
                 continue;
             };
+            if key.source != u64::MAX && !(key.source == 0 && line.starts_with("NexatrodeOS: ")) {
+                continue;
+            }
             let Some((_, body)) = line.split_once(": ") else {
                 continue;
             };
@@ -4503,7 +4630,11 @@ impl NamespaceTest {
 
     #[cfg(feature = "simplex-agent")]
     fn record_chat_line(&mut self, index: usize, speaker: &[u8], body: &[u8]) -> bool {
-        self.record_chat_line_with_id(index, speaker, body, &[], self.incoming_history_key())
+        let Ok(owner) = self.ensure_chat_history(index) else { return false };
+        let Ok(body) = core::str::from_utf8(body) else { return false };
+        let key = self.incoming_history_key();
+        unsafe { messages_history::index() }.record_for(owner, key).is_some()
+            || self.append_display_line(owner, key, speaker, body)
     }
 
     fn render_messages_snapshot(&mut self) -> bool {

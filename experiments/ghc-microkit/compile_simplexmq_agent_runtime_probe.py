@@ -7,6 +7,7 @@ import subprocess
 import os
 from pathlib import Path
 
+from build_simplex_zstd_decoder import build_decoder
 from compile_simplexmq_agent_client import (
     prepare_agent_json,
     prepare_guest_store_codecs,
@@ -99,6 +100,7 @@ def main() -> None:
             f"agent runtime probe failed; full diagnostics: {diagnostics}\n"
             + result.stderr[-12000:]
         )
+    build_decoder(output)
     count = len(list(output.rglob("*.o")))
     print(f"SIMPLEX AGENT RUNTIME|AARCH64 OBJECT BUILD PASS|{count} objects")
 

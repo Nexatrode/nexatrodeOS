@@ -22,6 +22,7 @@ struct Row {
     owner: u64,
     key: MessageKey,
     record: u64,
+    peer_id_hash: u64,
 }
 
 impl Row {
@@ -29,7 +30,12 @@ impl Row {
         owner: 0,
         key: MessageKey::LOCAL,
         record: 0,
+        peer_id_hash: 0,
     };
+}
+
+fn peer_hash(id: &str) -> u64 {
+    id.bytes().fold(0xcbf29ce484222325, |hash, b| (hash ^ u64::from(b)).wrapping_mul(0x100000001b3)) | 1
 }
 
 pub struct History {
@@ -49,14 +55,9 @@ impl History {
 
     fn apply(&mut self, record: u64, owner: u64, event: Event<'_>) {
         match event {
-            Event::Row(key, _) => {
-                if let Some(row) = self.find_mut(owner, key) {
-                    row.record = record;
-                } else {
-                    self.rows[self.used] = Row { owner, key, record };
-                    self.used += 1;
-                }
-            }
+            Event::Fragment(_) => {}
+            Event::Row(key, _) => self.apply_row(record, owner, key, 0),
+            Event::Peer(peer) => self.apply_row(record, owner, peer.version.key, peer_hash(peer.version.shared_id)),
             Event::Cleared => {
                 for row in &mut self.rows[..self.used] {
                     if row.owner == owner && row.record != 0 {
@@ -67,6 +68,24 @@ impl History {
             }
             Event::Migrated => self.mark_migrated(owner),
         }
+    }
+
+    fn apply_row(&mut self, record: u64, owner: u64, key: MessageKey, peer_id_hash: u64) {
+        let row = Row { owner, key, record, peer_id_hash };
+        if let Some(old) = self.find_mut(owner, key) {
+            *old = row;
+        } else {
+            self.rows[self.used] = row;
+            self.used += 1;
+        }
+    }
+
+    /// Hash only narrows vault reads. The caller compares the full stored ID.
+    pub fn peer_records(&self, owner: u64, source: u64, id: &str) -> impl Iterator<Item = u64> + '_ {
+        let hash = peer_hash(id);
+        self.rows[..self.used].iter().filter(move |row| row.owner == owner
+            && row.key.source == source && row.record != 0 && row.peer_id_hash == hash)
+            .map(|row| row.record)
     }
 
     fn mark_migrated(&mut self, owner: u64) {
@@ -149,11 +168,17 @@ impl History {
     }
 
     pub fn append(
+        &mut self, owner: u64, bytes: &[u8], page: NonNull<BlobTransferPage>,
+    ) -> Result<(), ()> {
+        self.append_record(owner, bytes, page).map(|_| ())
+    }
+
+    pub fn append_record(
         &mut self,
         owner: u64,
         bytes: &[u8],
         mut page: NonNull<BlobTransferPage>,
-    ) -> Result<(), ()> {
+    ) -> Result<u64, ()> {
         let event = vault_history::decode_event(bytes).ok_or(())?;
         if owner == 0 || self.scanned >= MAX_RECORDS || !unsafe { page.as_mut() }.set_payload(bytes)
         {
@@ -167,11 +192,12 @@ impl History {
         let record = get_mr(0);
         if matches!(event, Event::Cleared) || record != self.scanned as u64 + 1 {
             // A previous append may have reserved an ID before losing power.
-            return self.refresh(page);
+            self.refresh(page)?;
+            return Ok(record);
         }
         self.apply(record, owner, event);
         self.scanned += 1;
-        Ok(())
+        Ok(record)
     }
 
     pub fn migrate(
@@ -242,4 +268,29 @@ pub fn read(record: u64, page: &mut BlobTransferPage) -> Result<Option<(u64, Eve
         .filter(|bytes| bytes.len() == len)
         .ok_or(())?;
     Ok(Some((owner, vault_history::decode_event(bytes).ok_or(())?)))
+}
+
+/// Return one UTF-8 part of an indexed row. Check ownership again after the
+/// second vault read so a fragment reference cannot cross a chat boundary.
+pub fn read_row_part(
+    owner: u64, record: u64, part: usize, page: &mut BlobTransferPage,
+) -> Result<(&str, bool), ()> {
+    let page_ptr = NonNull::from(&mut *page);
+    let (stored_owner, event) = read(record, page)?.ok_or(())?;
+    if owner != stored_owner { return Err(()); }
+    let (fragment, more) = match event {
+        Event::Row(_, line) if part == 0 => return Ok((line, false)),
+        Event::Peer(row) => {
+            if part == 0 { return Ok((row.first, row.fragment_ids().next().is_some())); }
+            let mut ids = row.fragment_ids().skip(part - 1);
+            (ids.next().ok_or(())?, ids.next().is_some())
+        }
+        _ => return Err(()),
+    };
+    if fragment == 0 || fragment >= record { return Err(()); }
+    // The head view is consumed before the shared transfer page is reused.
+    match read(fragment, unsafe { &mut *page_ptr.as_ptr() })? {
+        Some((fragment_owner, Event::Fragment(text))) if fragment_owner == owner => Ok((text, more)),
+        _ => Err(()),
+    }
 }

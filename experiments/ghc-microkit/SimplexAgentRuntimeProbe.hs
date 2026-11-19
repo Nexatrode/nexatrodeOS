@@ -61,6 +61,7 @@ import Simplex.Messaging.Agent.Store.Shared
 import qualified Data.Sequence as Seq
 import Crypto.Random.Entropy (getEntropy)
 import NativeNetwork (tryAcquireEphemeralGate)
+import SimplexUploads (PendingXftpSend (..), takePendingUpload)
 import Simplex.FileTransfer.Client.Presets (defaultXFTPServers)
 import Simplex.FileTransfer.Description
   ( FileChunk (..),
@@ -91,18 +92,19 @@ import System.IO (BufferMode (LineBuffering), hSetBuffering, stdout)
 import Control.Monad (forever)
 #endif
 import SMPFixtureCA (caDER)
+import SimplexAttachmentOffer
+import SimplexDirect (DirectChange (..), parseChange, frameDirect, splitChatBatch)
+
+#ifdef SIMPLEX_AGENT_SERVICE_MODE
+data SendNotice = Delivered Word64 Word64 | UploadFailed Word64 Word64
+#endif
 
 #ifdef SIMPLEX_PUBLIC_SMP
-data PendingXftpSend = PendingXftpSend
-  { pendingXftpSndId :: B.ByteString
-  , pendingXftpConn :: AgentProtocol.ConnId
-  , pendingXftpSharedMsg :: B.ByteString
-  }
-
 -- | Recipient FD ready after SFDONE, but slot 1 is still held by the XFTP
 -- TLS session until it disconnects. Flush once the ephemeral gate is free.
 data PendingXftpDescr = PendingXftpDescr
   { pendingDescrConn :: AgentProtocol.ConnId
+  , pendingDescrOfferId :: Int64
   , pendingDescrShared :: B.ByteString
   , pendingDescrRfd :: ValidFileDescription 'FRecipient
   }
@@ -126,6 +128,7 @@ data XftpImageReady = XftpImageReady
   , xftpReadyPart :: Word16
   , xftpReadyBytes :: B.ByteString
   , xftpReadyName :: B.ByteString
+  , xftpReadyCaption :: Maybe B.ByteString
   }
 
 deferredXftpDescrs :: IORef [PendingXftpDescr]
@@ -539,6 +542,7 @@ simplexAgentServiceLoop store client userId = do
   loadGroupLinks store >>= writeIORef groupLinks
   loadGuestProfile store
   pendingPieces <- newIORef []
+  directInFlight <- newIORef Nothing
 #ifdef SIMPLEX_PUBLIC_SMP
   pendingXftp <- newIORef ([] :: [PendingXftpSend])
   pendingXftpRcv <- newIORef ([] :: [PendingXftpRcv])
@@ -555,7 +559,7 @@ simplexAgentServiceLoop store client userId = do
   allocaBytes 4076 $ \payloadPtr -> forever $ do
 #ifdef SIMPLEX_PUBLIC_SMP
     processAvailableAgentEvents store client eventBacklog deliveryReceipts pendingXftp pendingXftpRcv xftpImageReady
-    flushDeferredXftpDescrs client eventBacklog
+    flushDeferredXftpDescrs client eventBacklog deliveryReceipts
 #else
     processAvailableAgentEvents store client eventBacklog deliveryReceipts
 #endif
@@ -735,11 +739,13 @@ simplexAgentServiceLoop store client userId = do
                               _ -> Nothing
                             else Nothing
                         case waited of
-                          Left err -> putStrLn ("SIMPLEXIPC|GUEST_AGENT_ATTACHMENT_SENT_FAIL|" <> show err)
+                          Left err -> do
+                            queueUploadFailure deliveryReceipts connectionId messageId
+                            putStrLn ("SIMPLEXIPC|GUEST_AGENT_ATTACHMENT_SENT_FAIL|" <> show err)
                           Right () -> do
                             flushBacklogSideEffects store client eventBacklog deliveryReceipts pendingXftp pendingXftpRcv xftpImageReady
                             threadDelay 500000
-                            startXftpFile client userId pendingXftp connectionId (BA.convert sharedRaw) fileSize path
+                            startXftpFile client userId pendingXftp deliveryReceipts connectionId (BA.convert sharedRaw) messageId fileSize path
                 _ -> writeIORef outgoingAttachment B.empty >> simplexIpcComplete requestId 3 0
 #else
               let _ = (handle, nameBytes)
@@ -861,14 +867,15 @@ simplexAgentServiceLoop store client userId = do
                                   _ -> Nothing
                                 else Nothing
                           case waited of
-                            Left err ->
+                            Left err -> do
+                              queueUploadFailure deliveryReceipts connectionId messageId
                               putStrLn ("SIMPLEXIPC|GUEST_AGENT_XFTP_WAIT_SENT_FAIL|" <> show err)
                             Right () -> do
                               putStrLn "SIMPLEXIPC|GUEST_AGENT_XFTP_WAIT_SENT_PASS"
                               flushBacklogSideEffects store client eventBacklog deliveryReceipts
                                 pendingXftp pendingXftpRcv xftpImageReady
                               threadDelay 500000
-                              startXftpFile client userId pendingXftp connectionId (BA.convert sharedRaw) fileSize path
+                              startXftpFile client userId pendingXftp deliveryReceipts connectionId (BA.convert sharedRaw) messageId fileSize path
 #else
                         -- XFTP is only initialized by the public-relay build.
                         -- Fail the request rather than reporting an unsent file.
@@ -934,21 +941,30 @@ simplexAgentServiceLoop store client userId = do
                                   _ -> Nothing
                                 else Nothing
                           case waited of
-                            Left err ->
+                            Left err -> do
+                              queueUploadFailure deliveryReceipts connectionId messageId
                               putStrLn ("SIMPLEXIPC|GUEST_AGENT_XFTP_WAIT_SENT_FAIL|" <> show err)
                             Right () -> do
                               putStrLn "SIMPLEXIPC|GUEST_AGENT_XFTP_WAIT_SENT_PASS"
                               flushBacklogSideEffects store client eventBacklog deliveryReceipts
                                 pendingXftp pendingXftpRcv xftpImageReady
                               threadDelay 500000
-                              startImageXftp client userId pendingXftp connectionId sharedRaw fileSize
+                              startXftpFile client userId pendingXftp deliveryReceipts connectionId sharedRaw messageId fileSize "xftp/photo.jpg"
 #else
                         void (pure (sentId, offer))
 #endif
+        | operation == 5 -> do
+            direct <- readIORef directInFlight
+            case direct of
+              Just (_, _, frame, bytes)
+                | B.null requestPayload -> B.useAsCStringLen frame $ \(ptr, len) ->
+                    simplexIpcCompleteBytes requestId 1 (castPtr ptr) (fromIntegral len)
+                | otherwise -> sendByteChunk requestId requestPayload bytes
+              Nothing | not (B.null requestPayload) -> simplexIpcComplete requestId 3 0
 #ifdef SIMPLEX_PUBLIC_SMP
-        | operation == 5 -> receiveNextMessage requestId eventBacklog deliveryReceipts imageBytes groupInvites groupSelves groupLinks pendingPieces pendingXftp pendingXftpRcv xftpImageReady xftpInFlight
+              Nothing -> receiveNextMessage requestId eventBacklog deliveryReceipts imageBytes directInFlight groupInvites groupSelves groupLinks pendingPieces pendingXftp pendingXftpRcv xftpImageReady xftpInFlight
 #else
-        | operation == 5 -> receiveNextMessage requestId eventBacklog deliveryReceipts imageBytes groupInvites groupSelves groupLinks pendingPieces
+              Nothing -> receiveNextMessage requestId eventBacklog deliveryReceipts imageBytes directInFlight groupInvites groupSelves groupLinks pendingPieces
 #endif
         | operation == 8 -> sendImageChunk requestId requestPayload imageBytes
         | operation == 9 -> case decodePeerImagePayload requestPayload of
@@ -978,22 +994,31 @@ simplexAgentServiceLoop store client userId = do
                   more <- batchHasMore pendingPieces connectionId messageId
                   -- Each part is committed by Messages before it advances
                   -- to the next one. Only the final part removes the relay item.
-                  when (not more) $ void $ runExceptT $
+                  direct <- readIORef directInFlight
+                  let directAck = case direct of
+                        Just (h, m, _, _) -> h == handle && m == messageId
+                        Nothing -> False
+                  acked <- if more then pure (Right ()) else runExceptT $
                     Agent.ackMessage client connectionId (fromIntegral messageId) Nothing
+                  case acked of
+                    Left _ | directAck -> simplexIpcComplete requestId 5 0
+                    _ -> do
+                      when directAck $ writeIORef directInFlight Nothing
 #ifdef SIMPLEX_PUBLIC_SMP
-                  ready <- readIORef xftpInFlight
-                  case ready of
-                    Just XftpImageReady {xftpReadyConn, xftpReadyFileId, xftpReadyMsgId, xftpReadyPart}
-                      | xftpReadyConn == connectionId && xftpReadyMsgId == messageId -> do
-                          withTransaction' store $ \db ->
-                            SQL.execute db "DELETE FROM guest_xftp_inbox WHERE conn_id = ? AND msg_id = ? AND part = ?"
-                              (connectionId, fromIntegral messageId :: Int64, fromIntegral xftpReadyPart :: Int64)
-                          writeIORef xftpInFlight Nothing
-                          Agent.xftpDeleteRcvFile client xftpReadyFileId
-                    _ -> pure ()
+                      ready <- readIORef xftpInFlight
+                      case ready of
+                        Just XftpImageReady {xftpReadyConn, xftpReadyFileId, xftpReadyMsgId, xftpReadyPart}
+                          | xftpReadyConn == connectionId && xftpReadyMsgId == messageId -> do
+                              withTransaction' store $ \db -> do
+                                markAttachmentComplete db connectionId (fromIntegral messageId) (fromIntegral xftpReadyPart)
+                                SQL.execute db "DELETE FROM guest_xftp_inbox WHERE conn_id = ? AND msg_id = ? AND part = ?"
+                                  (connectionId, fromIntegral messageId :: Int64, fromIntegral xftpReadyPart :: Int64)
+                              writeIORef xftpInFlight Nothing
+                              Agent.xftpDeleteRcvFile client xftpReadyFileId
+                        _ -> pure ()
 #endif
-                  simplexIpcCompleteBytes requestId 1 nullPtr 0
-                  putStrLn "SIMPLEXIPC|GUEST_AGENT_ACKNOWLEDGE_PASS"
+                      simplexIpcCompleteBytes requestId 1 nullPtr 0
+                      putStrLn "SIMPLEXIPC|GUEST_AGENT_ACKNOWLEDGE_PASS"
         | operation == 10 -> do
             let name = sanitizeProfileName requestPayload
             writeIORef guestProfileName name
@@ -1116,9 +1141,9 @@ simplexAgentServiceLoop store client userId = do
         | otherwise -> simplexIpcComplete requestId 3 0
   where
 #ifdef SIMPLEX_PUBLIC_SMP
-    receiveNextMessage requestId eventBacklog deliveryReceipts imageBytes groupInvites groupSelves groupLinks pendingPieces pendingXftp pendingXftpRcv xftpImageReady xftpInFlight = do
+    receiveNextMessage requestId eventBacklog deliveryReceipts imageBytes directInFlight groupInvites groupSelves groupLinks pendingPieces pendingXftp pendingXftpRcv xftpImageReady xftpInFlight = do
 #else
-    receiveNextMessage requestId eventBacklog deliveryReceipts imageBytes groupInvites groupSelves groupLinks pendingPieces = do
+    receiveNextMessage requestId eventBacklog deliveryReceipts imageBytes directInFlight groupInvites groupSelves groupLinks pendingPieces = do
 #endif
       -- The SMP subscription already pushes messages into the agent queue.
       -- This read only takes what is waiting. It must return immediately so a
@@ -1142,15 +1167,15 @@ simplexAgentServiceLoop store client userId = do
                 Seq.EmptyL -> (pending, Nothing)
                 next Seq.:< rest -> (rest, Just next)
           case ready of
-            Just item@XftpImageReady {xftpReadyHandle, xftpReadyMsgId, xftpReadyPart, xftpReadyBytes, xftpReadyName} -> do
+            Just item@XftpImageReady {xftpReadyHandle, xftpReadyMsgId, xftpReadyPart, xftpReadyBytes, xftpReadyName, xftpReadyCaption} -> do
               writeIORef xftpInFlight (Just item)
-              let photo = B.isPrefixOf "\xff\xd8" xftpReadyBytes
+              let photo = maybe (B.isPrefixOf "\xff\xd8" xftpReadyBytes) (const True) xftpReadyCaption
                   size = B.length xftpReadyBytes
               if size <= 1048576
                 then do
                   writeIORef imageBytes xftpReadyBytes
-                  let first = B.take 3000 xftpReadyBytes
-                      name = if photo then B.empty else B.take 240 xftpReadyName
+                  let name = maybe (if photo then B.empty else xftpReadyName) id xftpReadyCaption
+                      first = B.take (min 3000 (4000 - B.length name)) xftpReadyBytes
                       kind = if photo then 3 else 6
                       payload = B.pack
                         (kind : word64LE xftpReadyHandle <> word64LE xftpReadyMsgId
@@ -1178,8 +1203,11 @@ simplexAgentServiceLoop store client userId = do
             [] -> ([], Nothing)
             item : rest -> (rest, Just item)
           case receipt of
-            Just (handle, messageId) -> do
-              let payload = B.pack (2 : word64LE handle <> word64LE messageId)
+            Just notice -> do
+              let (kind, handle, messageId) = case notice of
+                    Delivered h mid -> (2, h, mid)
+                    UploadFailed h mid -> (12, h, mid)
+                  payload = B.pack (kind : word64LE handle <> word64LE messageId)
               B.useAsCStringLen payload $ \(bytes, length_) ->
                 simplexIpcCompleteBytes requestId 1 (castPtr bytes) (fromIntegral length_)
               putStrLn "SIMPLEXIPC|GUEST_AGENT_DELIVERY_PASS"
@@ -1202,14 +1230,18 @@ simplexAgentServiceLoop store client userId = do
             Just (_, connectionId, AgentProtocol.AEvt AgentProtocol.SAEConn
                 (AgentProtocol.MSG meta _ body))
               | connectionId `elem` connectionIds -> do
-                  let pieces = splitChatBatch body
-                  case pieces of
-                    [] -> do
+                  parsed <- splitChatBatch body
+                  case parsed of
+                    Left err -> do
+                      -- Keep malformed or unsupported envelopes unacknowledged.
+                      putStrLn ("SIMPLEXIPC|GUEST_AGENT_BATCH_ERROR|" <> err)
+                      simplexIpcComplete requestId 5 0
+                    Right [] -> do
                       _ <- runExceptT $ Agent.ackMessage client connectionId (fromIntegral (fst (AgentProtocol.recipient meta))) Nothing
                       if remaining <= 1
                         then simplexIpcComplete requestId 2 0
                         else deliver connectionIds (remaining - 1)
-                    first : rest -> do
+                    Right pieces@(first : rest) -> do
                       when (not (null rest)) $ do
                         modifyIORef' pendingPieces (<> [(connectionId, meta, part, piece) | (part, piece) <- zip [1..] rest])
                         putStrLn ("SIMPLEXIPC|GUEST_AGENT_BATCH|" <> show (length pieces))
@@ -1226,7 +1258,7 @@ simplexAgentServiceLoop store client userId = do
             handle = stableConnectionHandle connectionId
             messageId = fst (AgentProtocol.recipient meta)
             deliverLinked link = case Aeson.eitherDecodeStrict' body of
-              Right (IncomingText text) ->
+              Right (IncomingText _ text) ->
                 deliverMemberText (groupLinkHost link) (groupLinkName link) text
               Right (IncomingForwarded text) ->
                 deliverMemberText (groupLinkHost link) B.empty text
@@ -1240,7 +1272,7 @@ simplexAgentServiceLoop store client userId = do
                         ]
                         <> if add then Text.empty else Text.pack "\x1f0"
                  in deliverMemberText (groupLinkHost link) (groupLinkName link) framed
-              Right (IncomingImage caption _) ->
+              Right (IncomingImage _ caption _) ->
                 deliverMemberText (groupLinkHost link) (groupLinkName link)
                   (if Text.null caption then "Photo" else caption)
               _ -> ackIntro
@@ -1264,12 +1296,14 @@ simplexAgentServiceLoop store client userId = do
                 savePeerProfile store connectionId info
                 putStrLn "SIMPLEXIPC|GUEST_AGENT_PEER_INFO_MSG"
                 ackIntro
-              Right (IncomingText text)
-                | B.length (TE.encodeUtf8 text) <= 2048 && not (B.null (TE.encodeUtf8 text)) ->
-                    finishText handle text "SIMPLEXIPC|GUEST_AGENT_RECEIVE_MESSAGE_PASS"
-              Right (IncomingForwarded text)
-                | B.length (TE.encodeUtf8 text) <= 2048 && not (B.null (TE.encodeUtf8 text)) ->
-                    finishText handle text "SIMPLEXIPC|GUEST_AGENT_GROUP_MESSAGE_PASS"
+              Right (IncomingText shared text) ->
+                finishDirect 7 (maybe Text.empty id shared) text "SIMPLEXIPC|GUEST_AGENT_RECEIVE_MESSAGE_PASS"
+              Right (IncomingForwarded text) ->
+                finishDirect 7 Text.empty text "SIMPLEXIPC|GUEST_AGENT_GROUP_MESSAGE_PASS"
+              Right (IncomingChange (Update target text)) ->
+                finishDirect 8 target text "SIMPLEXIPC|GUEST_AGENT_RECEIVE_EDIT"
+              Right (IncomingChange (Delete target)) ->
+                finishDirect 9 target Text.empty "SIMPLEXIPC|GUEST_AGENT_RECEIVE_DELETE"
               Right (IncomingReact targetMsgId emoji add) -> do
                 let framed =
                       Text.concat
@@ -1279,40 +1313,31 @@ simplexAgentServiceLoop store client userId = do
                         , emoji
                         ]
                         <> if add then Text.empty else Text.pack "\x1f0"
-                finishText handle framed "SIMPLEXIPC|GUEST_AGENT_RECEIVE_REACT_PASS"
-              Right (IncomingImage caption bytes) -> do
-                writeIORef imageBytes bytes
-                let captionBytes = B.take 128 (TE.encodeUtf8 caption)
-                    first = B.take 3000 bytes
-                    payload = B.pack
-                      (3 : word64LE handle <> word64LE (fromIntegral messageId)
-                        <> word16LE (fromIntegral (B.length captionBytes)))
-                      <> captionBytes
-                      <> B.pack (word16LE (fromIntegral (B.length bytes))
-                        <> word16LE (fromIntegral (B.length first)))
-                      <> first <> B.pack (word16LE part)
-                B.useAsCStringLen payload $ \(ptr, length_) ->
-                  simplexIpcCompleteBytes requestId 1 (castPtr ptr) (fromIntegral length_)
-                putStrLn ("SIMPLEXIPC|GUEST_AGENT_RECEIVE_IMAGE_PASS|" <> show (B.length bytes))
+                finishSmall 11 handle framed "SIMPLEXIPC|GUEST_AGENT_RECEIVE_REACT_PASS"
+              Right (IncomingImage offer caption bytes) -> do
+                let captionBytes = attachmentCaption caption
+#ifdef SIMPLEX_PUBLIC_SMP
+                sameRow <- acceptOffer offer (Just captionBytes)
+#else
+                let sameRow = True
+#endif
+                if not sameRow then ackIntro else
+                  if B.null bytes
+                    then finishText handle (if B.null captionBytes then "Photo" else TE.decodeUtf8 captionBytes)
+                      "SIMPLEXIPC|GUEST_AGENT_RECEIVE_IMAGE_PASS|0"
+                    else deliverPreview captionBytes bytes
 #ifdef SIMPLEX_PUBLIC_SMP
               Right (IncomingFileDescr sharedId descrText True) -> do
-                offer <- loadAttachmentOffer store connectionId sharedId
+                offer <- withTransaction' store $ \db -> lookupAttachmentOffer db connectionId sharedId
                 let (nameBytes, rowId, rowPart) = case offer of
                       Just (name, offeredId, offeredPart) -> (name, fromIntegral offeredId, fromIntegral offeredPart)
                       Nothing -> ("File", fromIntegral messageId, part)
                 queueXftpReceive store client userId pendingXftpRcv nameBytes connectionId handle rowId rowPart descrText
                 ackIntro
               Right (IncomingFileDescr _ _ False) -> ackIntro
-              Right (IncomingFileOffer sharedId name mDescr) -> do
-                let nameBytes = TE.encodeUtf8 (Text.take 80 name)
-                forM_ sharedId $ \shared ->
-                  saveAttachmentOffer store connectionId shared nameBytes
-                    (fromIntegral messageId) (fromIntegral part)
-                case mDescr of
-                  Just (descrText, True) | not (Text.null descrText) ->
-                    queueXftpReceive store client userId pendingXftpRcv nameBytes connectionId handle (fromIntegral messageId) part descrText
-                  _ -> pure ()
-                finishText handle name "SIMPLEXIPC|GUEST_AGENT_RECEIVE_FILE_NAME"
+              Right (IncomingFileOffer offer) -> do
+                sameRow <- acceptOffer offer Nothing
+                if sameRow then finishText handle (offerName offer) "SIMPLEXIPC|GUEST_AGENT_RECEIVE_FILE_NAME" else ackIntro
 #endif
               Right (IncomingGroupInvite groupName memberId uri) -> do
                 let nameBytes = B.take 64 (TE.encodeUtf8 groupName)
@@ -1336,14 +1361,57 @@ simplexAgentServiceLoop store client userId = do
               Right (IncomingMemberForward memberId memberName uri) ->
                 joinForwardedMember memberId memberName uri
               _ -> ackIntro
-            finishText replyHandle text label = do
+            finishDirect kind shared text label = do
+              let bytes = TE.encodeUtf8 text
+                  goodId = not (Text.null shared) && Text.length shared <= 64 &&
+                    Text.all (\c -> c `elem` ("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=_-" :: String)) shared
+                  sid = if goodId then shared else Text.empty
+              if kind /= 7 && not goodId
+                then ackIntro
+                else if B.length bytes > 65536
+                  then do
+                    -- Preserve the unhandled part ahead of its batch siblings.
+                    modifyIORef' pendingPieces ((connectionId, meta, part, body) :)
+                    simplexIpcComplete requestId 3 0
+                  else do
+                    let payload = frameDirect kind handle (fromIntegral messageId) part sid bytes
+                    writeIORef directInFlight (Just (handle, fromIntegral messageId, payload, bytes))
+                    B.useAsCStringLen payload $ \(ptr, len) ->
+                      simplexIpcCompleteBytes requestId 1 (castPtr ptr) (fromIntegral len)
+                    putStrLn label
+            finishText = finishSmall 1
+            finishSmall kind replyHandle text label = do
               let textBytes = TE.encodeUtf8 text
                   payload = B.pack
-                    (1 : word64LE replyHandle <> word64LE (fromIntegral messageId)
+                    (kind : word64LE replyHandle <> word64LE (fromIntegral messageId)
                       <> word16LE (fromIntegral (B.length textBytes))) <> textBytes <> B.pack (word16LE part)
               B.useAsCStringLen payload $ \(bytes, length_) ->
                 simplexIpcCompleteBytes requestId 1 (castPtr bytes) (fromIntegral length_)
               putStrLn label
+#ifdef SIMPLEX_PUBLIC_SMP
+            acceptOffer offer caption = do
+              (row, rowPart) <- withTransaction' store $ \db ->
+                rememberAttachmentOffer db connectionId offer (fromIntegral messageId) (fromIntegral part) caption
+              case offerDescription offer of
+                Just (descrText, True) | not (Text.null descrText) ->
+                  queueXftpReceive store client userId pendingXftpRcv (TE.encodeUtf8 (offerName offer))
+                    connectionId handle (fromIntegral row) (fromIntegral rowPart) descrText
+                _ -> pure ()
+              pure (row == fromIntegral messageId && rowPart == fromIntegral part)
+#endif
+            deliverPreview captionBytes bytes = do
+              writeIORef imageBytes bytes
+              let first = B.take (min 3000 (4000 - B.length captionBytes)) bytes
+                  payload = B.pack
+                    (3 : word64LE handle <> word64LE (fromIntegral messageId)
+                      <> word16LE (fromIntegral (B.length captionBytes)))
+                    <> captionBytes
+                    <> B.pack (word16LE (fromIntegral (B.length bytes))
+                      <> word16LE (fromIntegral (B.length first)))
+                    <> first <> B.pack (word16LE part)
+              B.useAsCStringLen payload $ \(ptr, length_) ->
+                simplexIpcCompleteBytes requestId 1 (castPtr ptr) (fromIntegral length_)
+              putStrLn ("SIMPLEXIPC|GUEST_AGENT_RECEIVE_IMAGE_PASS|" <> show (B.length bytes))
             ackIntro = do
               more <- batchHasMore pendingPieces connectionId (fromIntegral messageId)
               when (not more) $ void $ runExceptT $
@@ -1426,11 +1494,12 @@ batchHasMore pending connectionId msgId =
 #endif
 
 data IncomingBody
-  = IncomingText Text.Text
+  = IncomingText (Maybe Text.Text) Text.Text
+  | IncomingChange DirectChange
   | IncomingForwarded Text.Text
-  | IncomingImage Text.Text B.ByteString
+  | IncomingImage AttachmentOffer Text.Text B.ByteString
   | IncomingFileDescr Text.Text Text.Text Bool
-  | IncomingFileOffer (Maybe Text.Text) Text.Text (Maybe (Text.Text, Bool))
+  | IncomingFileOffer AttachmentOffer
   | IncomingGroupInvite Text.Text Text.Text Text.Text
   | IncomingMemberIntro Text.Text Text.Text
   | IncomingMemberForward Text.Text Text.Text Text.Text
@@ -1445,6 +1514,8 @@ instance FromJSON IncomingBody where
       "x.msg.new" -> do
         sharedId <- event .:? "msgId"
         parseContent sharedId params
+      "x.msg.update" -> IncomingChange <$> parseChange name params
+      "x.msg.del" -> IncomingChange <$> parseChange name params
       "x.msg.react" -> parseReact params
       "x.msg.file.descr" -> parseFileDescr params
       "x.grp.inv" -> parseGroupInvite params
@@ -1496,25 +1567,12 @@ parseContent sharedId params = do
           Just q -> Text.concat ["↩ ", Text.replace "\n" " " q, " · ", base]
           Nothing -> base
     case kind of
-      "text" -> pure (IncomingText (withQuote caption))
+      "text" -> pure (IncomingText sharedId (withQuote caption))
       "image" -> do
         image <- fields .: "image" :: Parser Text.Text
-        pure (IncomingImage (withQuote caption) (decodeImagePreview image))
-      "file" -> do
-        offered <- params .:? "file"
-        parsed <- case offered of
-          Nothing -> pure ("file", Nothing)
-          Just obj -> flip (withObject "SimpleX file") obj $ \fileObj -> do
-            name <- fileObj .:? "fileName" .!= ("file" :: Text.Text)
-            descrObj <- fileObj .:? "fileDescr"
-            descr <- case descrObj of
-              Nothing -> pure Nothing
-              Just descrValue -> flip (withObject "SimpleX file description") descrValue $ \descrFields -> do
-                descrText <- descrFields .:? "fileDescrText" .!= ("" :: Text.Text)
-                complete <- descrFields .:? "fileDescrComplete" .!= False
-                pure (Just (descrText, complete))
-            pure (name, descr)
-        pure (IncomingFileOffer sharedId (Text.take 80 (fst parsed)) (snd parsed))
+        offer <- parseAttachmentOffer sharedId params
+        pure (IncomingImage offer (withQuote caption) (decodeImagePreview image))
+      "file" -> IncomingFileOffer <$> parseAttachmentOffer sharedId params
       _ -> fail "unsupported SimpleX content") content
 
 parseGroupInvite :: Aeson.Object -> Parser IncomingBody
@@ -1538,8 +1596,8 @@ parseGroupForward params = do
         Left err -> fail err
     other -> Aeson.parseJSON other
   case inner of
-    IncomingText text -> pure (IncomingForwarded (groupSender sender text))
-    IncomingImage caption bytes -> pure (IncomingImage (groupSender sender caption) bytes)
+    IncomingText _ text -> pure (IncomingForwarded (groupSender sender text))
+    IncomingImage offer caption bytes -> pure (IncomingImage offer (groupSender sender caption) bytes)
     IncomingForwarded text -> pure (IncomingForwarded (groupSender sender text))
     _ -> fail "unsupported forwarded SimpleX content"
 
@@ -1547,15 +1605,6 @@ groupSender :: Text.Text -> Text.Text -> Text.Text
 groupSender sender text
   | Text.null sender = text
   | otherwise = Text.take 48 sender <> ": " <> text
-
--- Several chat events can arrive as one JSON array. Hand them out one by one.
-splitChatBatch :: B.ByteString -> [B.ByteString]
-splitChatBatch body
-  | not (B.null body) && B.head body == 91 =
-      case Aeson.eitherDecodeStrict' body of
-        Right values -> map (BL.toStrict . Aeson.encode) (values :: [Aeson.Value])
-        Left _ -> [body]
-  | otherwise = [body]
 
 parseMemberIntro :: Aeson.Object -> Parser IncomingBody
 parseMemberIntro params = do
@@ -1574,6 +1623,10 @@ parseMemberForward params = do
   intro <- params .: "memberIntro" :: Parser Aeson.Object
   uri <- intro .: "groupConnReq" :: Parser Text.Text
   pure (IncomingMemberForward memberId memberName uri)
+
+-- The Messages body fits 2048 bytes; drop only the incomplete UTF-8 suffix.
+attachmentCaption :: Text.Text -> B.ByteString
+attachmentCaption = TE.encodeUtf8 . TE.decodeUtf8With (\_ _ -> Nothing) . B.take 2048 . TE.encodeUtf8
 
 -- The other app embeds a resized preview, at most about 14 KB of data-URL
 -- text. Keep the decoded bytes that fit in the guest buffer.
@@ -1617,11 +1670,13 @@ base64Value byte
   | otherwise = Nothing
 
 sendImageChunk :: Word32 -> B.ByteString -> IORef B.ByteString -> IO ()
-sendImageChunk requestId request imageBytes
+sendImageChunk requestId request imageBytes = readIORef imageBytes >>= sendByteChunk requestId request
+
+sendByteChunk :: Word32 -> B.ByteString -> B.ByteString -> IO ()
+sendByteChunk requestId request bytes
   | B.length request /= 4 = simplexIpcComplete requestId 3 0
   | otherwise = do
       let offset = sum [fromIntegral (B.index request i) `shiftL` (8 * i) | i <- [0..3]]
-      bytes <- readIORef imageBytes
       if offset > B.length bytes
         then simplexIpcComplete requestId 3 0
         else do
@@ -1634,7 +1689,7 @@ sendImageChunk requestId request imageBytes
 #ifdef SIMPLEX_PUBLIC_SMP
 processAvailableAgentEvents :: DBStore -> Agent.AgentClient
   -> IORef [AgentProtocol.ATransmission]
-  -> IORef [(Word64, Word64)]
+  -> IORef [SendNotice]
   -> IORef [PendingXftpSend]
   -> IORef [PendingXftpRcv]
   -> IORef (Seq.Seq XftpImageReady) -> IO ()
@@ -1647,7 +1702,7 @@ processAvailableAgentEvents store client backlog deliveryReceipts pendingXftp pe
 #else
 processAvailableAgentEvents :: DBStore -> Agent.AgentClient
   -> IORef [AgentProtocol.ATransmission]
-  -> IORef [(Word64, Word64)] -> IO ()
+  -> IORef [SendNotice] -> IO ()
 processAvailableAgentEvents store client backlog deliveryReceipts = do
   flushBacklogSideEffects store client backlog deliveryReceipts
   drain 32
@@ -1671,7 +1726,7 @@ flushBacklogSideEffects
   :: DBStore
   -> Agent.AgentClient
   -> IORef [AgentProtocol.ATransmission]
-  -> IORef [(Word64, Word64)]
+  -> IORef [SendNotice]
   -> IORef [PendingXftpSend]
   -> IORef [PendingXftpRcv]
   -> IORef (Seq.Seq XftpImageReady)
@@ -1691,7 +1746,7 @@ flushBacklogSideEffects
   :: DBStore
   -> Agent.AgentClient
   -> IORef [AgentProtocol.ATransmission]
-  -> IORef [(Word64, Word64)]
+  -> IORef [SendNotice]
   -> IO ()
 flushBacklogSideEffects store client backlog deliveryReceipts = do
   side <- atomicModifyIORef' backlog $ \events ->
@@ -1718,7 +1773,7 @@ backlogSideEffect _ = False
 #ifdef SIMPLEX_PUBLIC_SMP
 waitForRelay :: DBStore -> Agent.AgentClient
   -> IORef [AgentProtocol.ATransmission]
-  -> IORef [(Word64, Word64)]
+  -> IORef [SendNotice]
   -> IORef [PendingXftpSend]
   -> IORef [PendingXftpRcv]
   -> IORef (Seq.Seq XftpImageReady) -> IO ()
@@ -1729,11 +1784,12 @@ waitForRelay store client backlog deliveryReceipts pendingXftp pendingXftpRcv xf
   -- XFTP decrypt can finish after an empty ReceiveNext reply; a coalesced
   -- notify is easy to miss, so keep poking while the file is waiting.
   ready <- readIORef xftpImageReady
-  when (not (Seq.null ready)) simplexIpcNotify
+  notices <- readIORef deliveryReceipts
+  when (not (Seq.null ready && null notices)) simplexIpcNotify
 #else
 waitForRelay :: DBStore -> Agent.AgentClient
   -> IORef [AgentProtocol.ATransmission]
-  -> IORef [(Word64, Word64)] -> IO ()
+  -> IORef [SendNotice] -> IO ()
 waitForRelay store client backlog deliveryReceipts = do
   threadDelay 200000
   processAvailableAgentEvents store client backlog deliveryReceipts
@@ -1751,7 +1807,7 @@ pokeInbox backlog = do
 #ifdef SIMPLEX_PUBLIC_SMP
 ingestAgentEvent :: DBStore -> Agent.AgentClient
   -> IORef [AgentProtocol.ATransmission]
-  -> IORef [(Word64, Word64)]
+  -> IORef [SendNotice]
   -> IORef [PendingXftpSend]
   -> IORef [PendingXftpRcv]
   -> IORef (Seq.Seq XftpImageReady)
@@ -1760,7 +1816,7 @@ ingestAgentEvent store client backlog deliveryReceipts pendingXftp pendingXftpRc
 #else
 ingestAgentEvent :: DBStore -> Agent.AgentClient
   -> IORef [AgentProtocol.ATransmission]
-  -> IORef [(Word64, Word64)]
+  -> IORef [SendNotice]
   -> AgentProtocol.ATransmission -> IO ()
 ingestAgentEvent store client backlog deliveryReceipts event = case event of
 #endif
@@ -1804,16 +1860,18 @@ ingestAgentEvent store client backlog deliveryReceipts event = case event of
     forM_ receipts $ \(AgentProtocol.MsgReceipt deliveredId status) ->
       when (status == AgentProtocol.MROk && deliveredId > 0) $ do
         modifyIORef' deliveryReceipts $ \pending ->
-          take 16 (pending <> [(handle, fromIntegral deliveredId)])
+          pending <> [Delivered handle (fromIntegral deliveredId)]
         simplexIpcNotify
         putStrLn "SIMPLEXIPC|GUEST_AGENT_DELIVERY_QUEUED"
 #ifdef SIMPLEX_PUBLIC_SMP
   -- ATransmission is (corrId, entityId, event); XFTP notifies with empty corrId.
   (_, sndFileId, AgentProtocol.AEvt AgentProtocol.SAESndFile
       (AgentProtocol.SFDONE _ recipientFds)) ->
-    completePendingXftpSend client backlog pendingXftp sndFileId recipientFds
+    completePendingXftpSend deliveryReceipts pendingXftp sndFileId recipientFds
   (_, sndFileId, AgentProtocol.AEvt AgentProtocol.SAESndFile
-      (AgentProtocol.SFERR err)) ->
+      (AgentProtocol.SFERR err)) -> do
+    failed <- takePendingUpload pendingXftp sndFileId
+    forM_ failed $ \upload -> queueUploadFailure deliveryReceipts (pendingXftpConn upload) (pendingOfferId upload)
     putStrLn ("SIMPLEXIPC|GUEST_AGENT_XFTP_SEND_FAIL|" <> show err <> "|" <> show (B.length sndFileId))
   (_, _, AgentProtocol.AEvt AgentProtocol.SAESndFile
       (AgentProtocol.SFPROG sent total)) ->
@@ -1834,6 +1892,8 @@ ingestAgentEvent store client backlog deliveryReceipts event = case event of
           else do
             -- ReadImage must keep serving the current JPEG until the shell
             -- asks for the next message, even if another download finishes.
+            (caption, _) <- withTransaction' store $ \db -> attachmentReceipt db pendingXftpRcvConn
+              (fromIntegral pendingXftpRcvMsgId) (fromIntegral pendingXftpRcvPart)
             let completed = XftpImageReady
                   { xftpReadyHandle = pendingXftpRcvHandle
                   , xftpReadyConn = pendingXftpRcvConn
@@ -1841,6 +1901,7 @@ ingestAgentEvent store client backlog deliveryReceipts event = case event of
                   , xftpReadyMsgId = pendingXftpRcvMsgId
                   , xftpReadyPart = pendingXftpRcvPart
                   , xftpReadyBytes = bytes
+                  , xftpReadyCaption = caption
                   , xftpReadyName = pendingXftpRcvName
                   }
             atomicModifyIORef' xftpImageReady $ \pending -> (pending Seq.|> completed, ())
@@ -1936,14 +1997,6 @@ prepareImageXftpOffer imageText = do
             ]
       pure (Just (sharedMsgIdText, fileField, sharedRaw, fileSize))
 
-startImageXftp
-  :: Agent.AgentClient
-  -> AgentProtocol.UserId
-  -> IORef [PendingXftpSend]
-  -> AgentProtocol.ConnId
-  -> B.ByteString
-  -> Integer
-  -> IO ()
 -- The XFTP worker's temporary files are volatile on the guest. Keep the
 -- validated download description in the encrypted agent DB until Messages
 -- confirms its own durable save. A reboot can then restart the download.
@@ -1951,7 +2004,7 @@ restoreXftpReceives
   :: DBStore -> Agent.AgentClient -> AgentProtocol.UserId -> IORef [PendingXftpRcv] -> IO ()
 restoreXftpReceives store client userId pending = do
   saved <- withTransaction' store $ \db -> do
-    SQL.execute_ db "CREATE TABLE IF NOT EXISTS guest_attachment_offers (conn_id BLOB NOT NULL, shared_id BLOB NOT NULL, name BLOB NOT NULL, msg_id INTEGER NOT NULL, part INTEGER NOT NULL, PRIMARY KEY (conn_id, shared_id))"
+    setupAttachmentOffers db
     SQL.execute_ db "CREATE TABLE IF NOT EXISTS guest_xftp_inbox (conn_id BLOB NOT NULL, msg_id INTEGER NOT NULL, part INTEGER NOT NULL, name BLOB NOT NULL, descr BLOB NOT NULL, rcv_id BLOB, PRIMARY KEY (conn_id, msg_id, part))"
     SQL.query_ db "SELECT conn_id, msg_id, part, name, descr, rcv_id FROM guest_xftp_inbox ORDER BY rowid"
       :: IO [(AgentProtocol.ConnId, Int64, Int64, B.ByteString, B.ByteString, Maybe B.ByteString)]
@@ -1964,19 +2017,6 @@ restoreXftpReceives store client userId pending = do
       else withTransaction' store $ \db ->
         SQL.execute db "DELETE FROM guest_xftp_inbox WHERE conn_id = ? AND msg_id = ? AND part = ?"
           (connectionId, messageId, part)
-
-saveAttachmentOffer :: DBStore -> AgentProtocol.ConnId -> Text.Text -> B.ByteString -> Int64 -> Int64 -> IO ()
-saveAttachmentOffer store connectionId sharedId name messageId part = withTransaction' store $ \db ->
-  SQL.execute db "INSERT OR IGNORE INTO guest_attachment_offers (conn_id, shared_id, name, msg_id, part) VALUES (?, ?, ?, ?, ?)"
-    (connectionId, TE.encodeUtf8 sharedId, name, messageId, part)
-
-loadAttachmentOffer :: DBStore -> AgentProtocol.ConnId -> Text.Text -> IO (Maybe (B.ByteString, Int64, Int64))
-loadAttachmentOffer store connectionId sharedId = withTransaction' store $ \db -> do
-  offers <- SQL.query db "SELECT name, msg_id, part FROM guest_attachment_offers WHERE conn_id = ? AND shared_id = ?"
-    (connectionId, TE.encodeUtf8 sharedId)
-  pure $ case offers of
-    offer : _ -> Just offer
-    [] -> Nothing
 
 queueXftpReceive
   :: DBStore -> Agent.AgentClient -> AgentProtocol.UserId -> IORef [PendingXftpRcv]
@@ -1995,7 +2035,8 @@ startXftpReceive store client userId pending name connectionId handle messageId 
           alreadyPending item = pendingXftpRcvConn item == connectionId
             && pendingXftpRcvMsgId item == messageId && pendingXftpRcvPart item == part
       waiting <- readIORef pending
-      when (not (any alreadyPending waiting)) $ do
+      (_, completed) <- withTransaction' store $ \db -> attachmentReceipt db connectionId msg partId
+      when (not completed && not (any alreadyPending waiting)) $ do
         withTransaction' store $ \db ->
           SQL.execute db "INSERT OR IGNORE INTO guest_xftp_inbox (conn_id, msg_id, part, name, descr) VALUES (?, ?, ?, ?, ?)"
             (connectionId, msg, partId, name, descr)
@@ -2014,51 +2055,52 @@ startXftpReceive store client userId pending name connectionId handle messageId 
       putStrLn ("SIMPLEXIPC|GUEST_AGENT_XFTP_RCV_PARSE_FAIL|" <> err)
 
 
-startImageXftp client userId pendingXftp connectionId sharedRaw fileSize =
-  startXftpFile client userId pendingXftp connectionId sharedRaw fileSize "xftp/photo.jpg"
+queueUploadFailure :: IORef [SendNotice] -> AgentProtocol.ConnId -> Int64 -> IO ()
+queueUploadFailure notices conn offerId = do
+  modifyIORef' notices (<> [UploadFailed (stableConnectionHandle conn) (fromIntegral offerId)])
+  simplexIpcNotify
 
-startXftpFile client userId pendingXftp connectionId sharedRaw fileSize path = do
+startXftpFile client userId pendingXftp notices connectionId sharedRaw offerId fileSize path = do
   -- One recipient key is enough for a 1:1 / group member photo; fewer replica
   -- creates means fewer serialized ephemeral XFTP connects on the single slot.
   started <- runExceptT $ Agent.xftpSendFile client userId (plain path) 1
   case started of
-    Left err ->
+    Left err -> do
+      queueUploadFailure notices connectionId offerId
       putStrLn ("SIMPLEXIPC|GUEST_AGENT_XFTP_START_FAIL|" <> show err)
     Right sndFileId -> do
       modifyIORef' pendingXftp $ \pending ->
-        take 8 (PendingXftpSend sndFileId connectionId sharedRaw : pending)
+        PendingXftpSend sndFileId connectionId sharedRaw offerId : pending
       putStrLn ("SIMPLEXIPC|GUEST_AGENT_XFTP_START|" <> show (B.length sndFileId) <> "|" <> show fileSize)
 
 completePendingXftpSend
-  :: Agent.AgentClient
-  -> IORef [AgentProtocol.ATransmission]
+  :: IORef [SendNotice]
   -> IORef [PendingXftpSend]
   -> B.ByteString
   -> [ValidFileDescription 'FRecipient]
   -> IO ()
-completePendingXftpSend _client _backlog pendingXftp sndFileId recipientFds = do
-  matched <- atomicModifyIORef' pendingXftp $ \pending ->
-    case break ((== sndFileId) . pendingXftpSndId) pending of
-      (before, found : after) -> (before ++ after, Just found)
-      (_, []) -> (pending, Nothing)
+completePendingXftpSend notices pendingXftp sndFileId recipientFds = do
+  matched <- takePendingUpload pendingXftp sndFileId
   case (matched, recipientFds) of
-    (Just PendingXftpSend {pendingXftpConn, pendingXftpSharedMsg}, rfd : _) -> do
+    (Just PendingXftpSend {pendingXftpConn, pendingXftpSharedMsg, pendingOfferId}, rfd : _) -> do
       -- Do not send while the XFTP TLS session still owns slot 1; that races
       -- the secondary SMP reconnect and drops the YAML descr. Flush later.
       modifyIORef' deferredXftpDescrs $ \pending ->
-        take 4 (PendingXftpDescr pendingXftpConn pendingXftpSharedMsg rfd : pending)
+        pending <> [PendingXftpDescr pendingXftpConn pendingOfferId pendingXftpSharedMsg rfd]
       putStrLn "SIMPLEXIPC|GUEST_AGENT_XFTP_DESCR_DEFERRED"
+    (Just upload, []) -> queueUploadFailure notices (pendingXftpConn upload) (pendingOfferId upload)
     _ -> putStrLn ("SIMPLEXIPC|GUEST_AGENT_XFTP_DONE_UNMATCHED|" <> show (B.length sndFileId))
 
 flushDeferredXftpDescrs
   :: Agent.AgentClient
   -> IORef [AgentProtocol.ATransmission]
+  -> IORef [SendNotice]
   -> IO ()
-flushDeferredXftpDescrs client backlog = do
+flushDeferredXftpDescrs client backlog notices = do
   free <- tryAcquireEphemeralGate
   when free $ do
     pending <- atomicModifyIORef' deferredXftpDescrs $ \xs -> ([], xs)
-    forM_ pending $ \PendingXftpDescr {pendingDescrConn, pendingDescrShared, pendingDescrRfd} -> do
+    forM_ pending $ \PendingXftpDescr {pendingDescrConn, pendingDescrOfferId, pendingDescrShared, pendingDescrRfd} -> do
       let descrText = TE.decodeUtf8 (strEncode pendingDescrRfd)
           body = BL.toStrict . Aeson.encode $ Aeson.object
             [ "v" .= ("1-19" :: String)
@@ -2080,7 +2122,8 @@ flushDeferredXftpDescrs client backlog = do
                     putStrLn ("SIMPLEXIPC|GUEST_AGENT_XFTP_DESCR_RETRY|" <> show n <> "|" <> show err)
                     threadDelay 1000000
                     attempt (n + 1)
-                | otherwise ->
+                | otherwise -> do
+                    queueUploadFailure notices pendingDescrConn pendingDescrOfferId
                     putStrLn ("SIMPLEXIPC|GUEST_AGENT_XFTP_DESCR_FAIL|" <> show err)
               Right (descrMsgId, _) -> do
                 putStrLn ("SIMPLEXIPC|GUEST_AGENT_XFTP_DESCR_QUEUED|" <> show descrMsgId)
@@ -2101,7 +2144,8 @@ flushDeferredXftpDescrs client backlog = do
                         putStrLn ("SIMPLEXIPC|GUEST_AGENT_XFTP_DESCR_SENT_RETRY|" <> show n <> "|" <> show err)
                         threadDelay 1000000
                         attempt (n + 1)
-                    | otherwise ->
+                    | otherwise -> do
+                        queueUploadFailure notices pendingDescrConn pendingDescrOfferId
                         putStrLn ("SIMPLEXIPC|GUEST_AGENT_XFTP_DESCR_FAIL|" <> show err)
       attempt (0 :: Int)
 #endif

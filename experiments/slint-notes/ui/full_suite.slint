@@ -321,6 +321,7 @@ export component NotesWindow inherits Window {
     in-out property <[image]> message-bubble-photos;
     in-out property <[bool]> message-bubble-photo-ready;
     in-out property <[string]> message-bubble-photo-ids;
+    in-out property <[bool]> message-bubble-upload-failed;
     in-out property <[string]> message-bubble-files;
     in-out property <bool> message-file-open: false;
     in-out property <string> message-file-name: "";
@@ -468,6 +469,7 @@ export component NotesWindow inherits Window {
     callback send-message(string);
     callback attach-picture(bool);
     callback pick-saved-photo(int);
+    callback retry-attachment(string, string);
     callback save-chat-photo(string);
     callback save-chat-file(string, string);
     callback refresh-files();
@@ -477,7 +479,7 @@ export component NotesWindow inherits Window {
     callback inspect-bubble(string, string);
     callback check-message-send-status();
     callback receive-next-message();
-    callback open-chat(int);
+    callback open-chat(int) -> bool;
     callback check-message-receive-status();
     callback acknowledge-incoming-message();
     callback check-message-ack-status();
@@ -496,14 +498,13 @@ export component NotesWindow inherits Window {
     callback system-recents();
 
     function open-named-chat(index: int, name: string) {
-        root.message-selected = name;
-        root.message-body = "";
-        root.message-chat-index = index;
-        root.message-view = true;
-        // Keyboard stays down until the compose field is tapped.
         root.edit-target = 0;
-        root.open-chat(index);
-        root.receive-next-message();
+        root.message-view = root.open-chat(index);
+        if root.message-view {
+            root.message-selected = name;
+            root.message-chat-index = index;
+            root.receive-next-message();
+        }
     }
 
     Rectangle {
@@ -1461,6 +1462,12 @@ export component NotesWindow inherits Window {
             TouchArea { x: parent.width * 2 / 3; y: 348px; width: parent.width / 3; height: 44px;
                 clicked => { root.message-list-tab = 2; } }
         }
+        if root.page == 6 && root.message-service-ready && !root.message-view
+            && !root.message-join-view && !root.message-invitation-view && !root.chat-list-keyboard: Text {
+            x: 25px; y: 610px; width: parent.width - 50px;
+            text: "SimpleXMQ 7.0.0.6 · AGPL-3.0-only\nPort source: github.com/Nexatrode/nexatrodeOS";
+            color: #9bb6c4; font-size: 12px; wrap: word-wrap;
+        }
         if root.page == 6 && !root.message-view && !root.message-join-view && root.message-service-ready && root.message-invitation-view: Rectangle {
             x: 17px; y: 176px; width: parent.width - 34px; height: 397px;
             background: #050a12;
@@ -1658,7 +1665,10 @@ export component NotesWindow inherits Window {
                         property <bool> saved-photo: index < root.message-bubble-photo-ready.length && root.message-bubble-photo-ready[index];
                         property <bool> has-photo-id: index < root.message-bubble-photo-ids.length && root.message-bubble-photo-ids[index] != "";
                         property <bool> has-file-id: index < root.message-bubble-files.length && root.message-bubble-files[index] != "";
+                        property <bool> retryable: (has-photo-id || has-file-id) && index < root.message-bubble-upload-failed.length && root.message-bubble-upload-failed[index];
                         property <bool> show-photo: photo-here || incoming-photo || saved-photo;
+                        property <bool> show-caption: show-photo && bubble != "" && bubble != "Photo";
+                        property <length> content-h: show-photo ? 148px + (show-caption ? msg.preferred-height : 0px) : msg.preferred-height;
                         property <bool> has-quote: index < root.message-bubble-quotes.length && root.message-bubble-quotes[index] != "";
                         property <bool> has-react: index < root.message-bubble-reacts.length && root.message-bubble-reacts[index] != "";
                         // Fixed quote band avoids forward-id preferred-height in Slint.
@@ -1669,20 +1679,20 @@ export component NotesWindow inherits Window {
                         preferred-height: card.height;
                         card := Rectangle {
                             x: root.message-bubble-side[index] == 1 ? parent.width - self.width - 4px : 4px;
-                            width: show-photo || has-photo-id ? 220px : min(parent.width * 74%, msg.preferred-width + 16px);
-                            height: (show-photo ? 148px : msg.preferred-height) + quote-h + (has-react ? 22px : 0px) + (root.message-bubble-time[index] == "" ? 16px : 32px);
+                            width: show-photo || has-photo-id ? 220px : min(parent.width * 74%, max(retryable ? 140px : 0px, msg.preferred-width + 16px));
+                            height: (retryable ? 30px : 0px) + content-h + quote-h + (has-react ? 22px : 0px) + (root.message-bubble-time[index] == "" ? 16px : 32px);
                             border-radius: 14px;
                             background: root.message-bubble-side[index] == 1 ? #0d2936 : #101c28;
                             border-color: root.message-bubble-side[index] == 1 ? #28d8e8 : #294454;
                             border-width: 1px;
                             if photo-here: Image {
-                                x: 4px; y: 4px;
+                                x: 4px; y: 4px + quote-h;
                                 width: parent.width - 8px;
                                 height: 140px;
                                 source: root.message-image; image-fit: cover;
                             }
                             if incoming-photo || saved-photo: Image {
-                                x: 4px; y: 4px;
+                                x: 4px; y: 4px + quote-h;
                                 width: parent.width - 8px;
                                 height: 140px;
                                 source: saved-photo ? root.message-bubble-photos[index] : root.message-incoming-image;
@@ -1700,23 +1710,23 @@ export component NotesWindow inherits Window {
                                 vertical-alignment: center;
                             }
                             msg := Text {
-                                x: 8px; y: 8px + quote-h;
-                                width: show-photo ? 0px : parent.width - 16px;
-                                text: show-photo ? "" : bubble;
+                                x: 8px; y: 8px + quote-h + (show-photo ? 144px : 0px);
+                                width: parent.width - 16px;
+                                text: show-photo && !show-caption ? "" : bubble;
                                 wrap: word-wrap;
                                 font-size: 15px;
                                 color: #e8f5fb;
                             }
                             if has-react: Text {
                                 x: 8px;
-                                y: (show-photo ? 148px : msg.preferred-height) + quote-h + 4px;
+                                y: content-h + quote-h + 4px;
                                 text: root.message-bubble-reacts[index];
                                 font-size: 14px;
                                 color: #ffcc55;
                             }
                             Text {
                                 x: root.message-bubble-side[index] == 1 ? parent.width - self.preferred-width - 8px : 8px;
-                                y: (show-photo ? 148px : msg.preferred-height) + quote-h + (has-react ? 26px : 8px);
+                                y: content-h + quote-h + (has-react ? 26px : 8px) + (retryable ? 30px : 0px);
                                 text: root.message-bubble-time[index];
                                 font-size: 11px;
                                 color: root.message-bubble-side[index] == 1 ? #28d8e8 : #8299a7;
@@ -1737,6 +1747,15 @@ export component NotesWindow inherits Window {
                                         }
                                     }
                                 }
+                            }
+                            if retryable: Rectangle {
+                                x: 8px; y: parent.height - 47px; width: 62px; height: 24px;
+                                background: #12384a; border-radius: 5px;
+                                Text { width: parent.width; height: parent.height; text: "Retry";
+                                    color: #7ee7f2; horizontal-alignment: center; vertical-alignment: center; font-size: 13px; }
+                                TouchArea { width: parent.width; height: parent.height; clicked => {
+                                    root.retry-attachment(has-file-id ? root.message-bubble-files[index] : root.message-bubble-photo-ids[index], bubble);
+                                } }
                             }
                             if has-photo-id && root.message-bubble-side[index] == 0: Rectangle {
                                 x: parent.width - 58px; y: 8px; width: 50px; height: 26px;

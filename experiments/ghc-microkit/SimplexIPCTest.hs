@@ -7,6 +7,8 @@ import qualified Data.ByteString as B
 import Data.Bits (shiftR)
 import Data.Word (Word8, Word16, Word32)
 import SimplexIPC
+import SimplexUploads
+import Data.IORef (newIORef, readIORef)
 
 main :: IO ()
 main = do
@@ -36,6 +38,18 @@ main = do
   assert "trailing typed payload rejected" (isLeft (decodePayload [1, 3, 4] (payload <> "x")))
   assert "oversized typed payload rejected before encoding"
     (isLeft (encodePayload [FBytes (B.replicate payloadCapacity 0)]))
+  let first = PendingXftpSend "file-1" "alice" "shared-1" 41
+      second = PendingXftpSend "file-2" "bob" "shared-2" 42
+  uploads <- newIORef [first, second]
+  failed <- takePendingUpload uploads "file-1"
+  assert "upload error belongs to the original contact and offer" (failed == Just first)
+  duplicate <- takePendingUpload uploads "file-1"
+  assert "duplicate error cannot clear another transfer" (duplicate == Nothing)
+  remaining <- readIORef uploads
+  assert "concurrent transfer survives another file's error" (remaining == [second])
+  _ <- takePendingUpload uploads "file-2"
+  slots <- readIORef uploads
+  assert "a new upload can start after terminal errors" (null slots)
   putStrLn "Simplex IPC ABI tests: PASS"
 
 assert :: String -> Bool -> IO ()

@@ -574,13 +574,108 @@ pub fn split_message_time(body: &str) -> (Option<&str>, &str) {
     }
 }
 
-/// The agent ID identifies the incoming message. The vault ID identifies its
-/// current JPEG.
+/// Stored on the outgoing attachment row when XFTP reports a terminal failure.
+pub const UPLOAD_FAILED_SUFFIX: &str = "\x1eX\x1f";
+
+/// A delivery receipt confirms the SMP offer. The XFTP transfer can still fail.
+pub fn outgoing_notice_update(line: &str, failed_upload: bool) -> Option<(&str, &'static str)> {
+    if line.ends_with(UPLOAD_FAILED_SUFFIX) {
+        return None;
+    }
+    if failed_upload {
+        Some((line.strip_suffix(" ✓").unwrap_or(line), UPLOAD_FAILED_SUFFIX))
+    } else if line.ends_with(" ✓") {
+        None
+    } else {
+        Some((line, " ✓"))
+    }
+}
+
 pub const PHOTO_REFERENCE_PREFIX: &str = "\x1eP\x1f";
+pub const ORIGINAL_PHOTO_PREFIX: &str = "\x1eO\x1f";
 pub const FILE_REFERENCE_PREFIX: &str = "\x1eF\x1f";
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ReceivedAttachment {
+    Preview,
+    Original,
+    File,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PhotoReference<'a> {
+    pub message_id: u64,
+    pub save_id: u64,
+    pub display_id: u64,
+    pub caption: &'a str,
+    pub original: bool,
+}
+
+pub fn photo_reference(body: &str) -> Option<PhotoReference<'_>> {
+    if let Some((message_id, save_id, rest)) = split_attachment_reference(body, ORIGINAL_PHOTO_PREFIX) {
+        let (display, caption) = rest.split_once('\x1f')?;
+        let display_id = display.parse::<u64>().ok()?;
+        return Some(PhotoReference { message_id, save_id, display_id, caption, original: true });
+    }
+    let (message_id, save_id, caption) = split_attachment_reference(body, PHOTO_REFERENCE_PREFIX)?;
+    Some(PhotoReference { message_id, save_id, display_id: save_id, caption, original: false })
+}
+
 pub fn split_photo_reference(body: &str) -> Option<(u64, u64, &str)> {
-    split_attachment_reference(body, PHOTO_REFERENCE_PREFIX)
+    photo_reference(body).map(|r| (r.message_id, r.save_id, r.caption))
+}
+
+/// A button can still carry the preview ID between a vault commit and a repaint.
+pub fn current_photo_save_id(transcript: &str, selected: u64) -> Option<u64> {
+    transcript.lines().find_map(|line| {
+        let (_, body) = line.split_once(": ")?;
+        let photo = photo_reference(split_message_time(body).1)?;
+        (selected != 0 && (photo.save_id == selected || photo.display_id == selected))
+            .then_some(photo.save_id)
+    })
+}
+
+impl ReceivedAttachment {
+    /// Decide before allocating another vault object, including after a reboot.
+    pub fn needs_blob(self, current: &str) -> bool {
+        let photo = photo_reference(current);
+        match self {
+            Self::Preview => photo.is_none_or(|r| r.display_id == 0),
+            Self::Original => photo.is_none_or(|r| !r.original),
+            Self::File => split_file_reference(current).is_none(),
+        }
+    }
+
+    pub fn write_reference(
+        self, output: &mut impl core::fmt::Write, current: &str, message_id: u64,
+        blob_id: u64, jpeg: bool, caption: &str,
+    ) -> core::fmt::Result {
+        let previous = photo_reference(current);
+        match self {
+            Self::Original => {
+                let display_id = previous.map(|r| r.display_id)
+                    .unwrap_or(if jpeg { blob_id } else { 0 });
+                write!(output, "{ORIGINAL_PHOTO_PREFIX}{message_id}\x1f{blob_id}\x1f{display_id}\x1f")?;
+            }
+            Self::Preview => {
+                if let Some(original) = previous.filter(|r| r.original) {
+                    write!(output, "{ORIGINAL_PHOTO_PREFIX}{message_id}\x1f{}\x1f{blob_id}\x1f", original.save_id)?;
+                } else {
+                    write!(output, "{PHOTO_REFERENCE_PREFIX}{message_id}\x1f{blob_id}\x1f")?;
+                }
+            }
+            Self::File => {
+                write!(output, "{FILE_REFERENCE_PREFIX}{message_id}\x1f{blob_id}\x1f")?;
+            }
+        }
+        if let Some(photo) = previous {
+            return output.write_str(photo.caption);
+        }
+        for c in caption.chars() {
+            output.write_char(if c.is_control() { ' ' } else { c })?;
+        }
+        Ok(())
+    }
 }
 
 pub fn split_file_reference(body: &str) -> Option<(u64, u64, &str)> {
@@ -593,6 +688,37 @@ fn split_attachment_reference<'a>(body: &'a str, prefix: &str) -> Option<(u64, u
     let agent = agent.parse::<u64>().ok()?;
     let vault = vault.parse::<u64>().ok()?;
     (agent != 0 && vault != 0).then_some((agent, vault, caption))
+}
+
+/// Peer text has its own transcript representation. Escaping record separators
+/// and physical newlines keeps arbitrary Unicode in a single, literal bubble.
+pub const DIRECT_PREFIX: &str = "\x1ep\x1f";
+
+pub fn write_direct_text(out: &mut impl core::fmt::Write, id: &str, text: &str) -> core::fmt::Result {
+    write!(out, "{DIRECT_PREFIX}{id}\x1f")?;
+    for c in text.chars() {
+        match c {
+            '\n' => out.write_str("\x1en")?,
+            '\r' => out.write_str("\x1er")?,
+            '\x1e' => out.write_str("\x1ee")?,
+            _ => out.write_char(c)?,
+        }
+    }
+    Ok(())
+}
+
+pub fn split_direct_text(body: &str) -> Option<(&str, &str)> {
+    body.strip_prefix(DIRECT_PREFIX)?.split_once('\x1f')
+}
+
+pub fn decode_direct_text(encoded: &str, out: &mut impl core::fmt::Write) -> core::fmt::Result {
+    let mut chars = encoded.chars();
+    while let Some(c) = chars.next() {
+        out.write_char(if c == '\x1e' { match chars.next() {
+            Some('n') => '\n', Some('r') => '\r', Some('e') => '\x1e', _ => return Err(core::fmt::Error),
+        } } else { c })?;
+    }
+    Ok(())
 }
 
 pub struct TranscriptBuffer<'a> {
@@ -1288,6 +1414,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn file_offer_receipt_never_masks_a_failed_upload() {
+        let offered = "NexatrodeOS: \x1eF\x1f41\x1f8\x1fnote.txt";
+        let delivered = std::format!("{offered} ✓");
+        let (base, suffix) = super::outgoing_notice_update(&delivered, true).unwrap();
+        assert_eq!(base, offered);
+        assert_eq!(suffix, super::UPLOAD_FAILED_SUFFIX);
+        let failed = std::format!("{base}{suffix}");
+        assert!(super::outgoing_notice_update(&failed, false).is_none());
+        assert!(super::outgoing_notice_update(&failed, true).is_none());
+        assert_eq!(super::split_file_reference(failed.strip_prefix("NexatrodeOS: ").unwrap()
+            .strip_suffix(super::UPLOAD_FAILED_SUFFIX).unwrap()), Some((41, 8, "note.txt")));
+    }
+
+    #[test]
     fn empty_then_add_persist_and_delete() {
         let mut app = Messages::new();
         let mut buffer = [0; 128];
@@ -1476,6 +1616,54 @@ mod tests {
         assert_eq!(photos.next(), Some((73, 2, "First photo")));
         assert_eq!(photos.next(), Some((74, 3, "Second photo")));
         assert_eq!(photos.next(), None);
+    }
+
+    #[test]
+    fn reloaded_photo_row_saves_the_original_with_its_caption() {
+        let mut chats = ChatTranscripts::new();
+        chats.append(1, "Mac", "\x1eO\x1f73\x1f502\x1f398\x1f海岸");
+        let mut encoded = [0; ARCHIVE_CAPACITY];
+        let length = encode_archive(&Messages::new(), &chats, &mut encoded).unwrap();
+        let (_, restored) = decode_archive(&encoded[..length]).unwrap();
+        let line = core::str::from_utf8(restored.text(1)).unwrap().trim_end();
+        let (_, body) = line.split_once(": ").unwrap();
+        assert_eq!(split_photo_reference(body), Some((73, 502, "海岸")));
+    }
+
+    #[test]
+    fn original_upgrades_one_preview_and_both_replays_keep_the_original() {
+        let preview = "\x1eP\x1f73\x1f398\x1fSea cliffs";
+        assert!(!ReceivedAttachment::Preview.needs_blob(preview));
+        assert!(ReceivedAttachment::Original.needs_blob(preview));
+        let mut bytes = [0; 128];
+        let mut row = TranscriptBuffer::new(&mut bytes);
+        ReceivedAttachment::Original.write_reference(&mut row, preview, 73, 502, false, "Photo").unwrap();
+        let upgraded = row.as_str();
+        assert!(!ReceivedAttachment::Preview.needs_blob(upgraded));
+        assert!(!ReceivedAttachment::Original.needs_blob(upgraded));
+        let reference = photo_reference(upgraded).unwrap();
+        assert_eq!(reference.display_id, 398);
+        assert_eq!(reference.save_id, 502);
+        assert_eq!(reference.caption, "Sea cliffs");
+    }
+
+    #[test]
+    fn large_jpeg_keeps_its_small_bubble_image_and_saves_full_bytes() {
+        let mut bytes = [0; 128];
+        let mut row = TranscriptBuffer::new(&mut bytes);
+        ReceivedAttachment::Original.write_reference(
+            &mut row, "\x1eP\x1f73\x1f398\x1fCliffs", 73, 502, true, "Cliffs",
+        ).unwrap();
+        let photo = photo_reference(row.as_str()).unwrap();
+        assert_eq!((photo.display_id, photo.save_id), (398, 502));
+    }
+
+    #[test]
+    fn save_clicked_on_a_stale_preview_uses_the_latest_photo_in_that_chat() {
+        let transcript = "Mac: \x1eO\x1f72\x1f501\x1f397\x1fOther\nMac: 12:04\x1f\x1eO\x1f73\x1f502\x1f398\x1fCliffs\n";
+        assert_eq!(current_photo_save_id(transcript, 398), Some(502));
+        assert_eq!(current_photo_save_id(transcript, 502), Some(502));
+        assert_eq!(current_photo_save_id(transcript, 5), None);
     }
 
     #[test]

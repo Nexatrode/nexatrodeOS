@@ -1,34 +1,13 @@
 #![cfg(feature = "full-suite-ui")]
 
 use personal_os_slint_notes_spike::NotesWindow;
-use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
-use slint::platform::{Platform, WindowAdapter};
+mod platform;
+
 use slint::{ComponentHandle, ModelRc, PhysicalSize, SharedString, VecModel};
-use std::{rc::Rc, time::Instant};
-
-struct KeyboardTestPlatform {
-    window: Rc<MinimalSoftwareWindow>,
-    start: Instant,
-}
-
-impl Platform for KeyboardTestPlatform {
-    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, slint::PlatformError> {
-        Ok(self.window.clone())
-    }
-
-    fn duration_since_start(&self) -> std::time::Duration {
-        self.start.elapsed()
-    }
-}
 
 #[test]
 fn chat_search_and_composer_paint_the_same_docked_keyboard() {
-    let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
-    slint::platform::set_platform(Box::new(KeyboardTestPlatform {
-        window: window.clone(),
-        start: Instant::now(),
-    }))
-    .unwrap();
+    let window = platform::install();
     let ui = NotesWindow::new().unwrap();
     ui.set_page(6);
     ui.set_message_service_ready(true);

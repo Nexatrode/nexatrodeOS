@@ -196,6 +196,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "full-suite-ui")]
     if args.iter().any(|value| value == "--message-service-ready") {
         app.set_message_service_ready(true);
+        app.on_open_chat(|_| true);
     }
     #[cfg(feature = "full-suite-ui")]
     if args.iter().any(|value| value == "--lockdown-preview") {

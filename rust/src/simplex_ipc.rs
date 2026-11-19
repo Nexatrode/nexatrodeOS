@@ -9,6 +9,11 @@ pub const VERSION: u16 = 2;
 pub const HEADER_SIZE: usize = 20;
 pub const PAYLOAD_CAPACITY: usize = PAGE_SIZE - HEADER_SIZE;
 
+pub fn chat_at_displayed_row(displayed: &[u64], live: &[u64], index: usize) -> Option<u64> {
+    let handle = *displayed.get(index)?;
+    (handle != 0 && live.get(index) == Some(&handle)).then_some(handle)
+}
+
 /// Resolve only the explicitly selected live direct contact.
 pub fn group_invitee(handles: &[u64], visible_chats: usize, group_mask: u16, index: usize) -> Option<u64> {
     if index >= visible_chats || index >= 16 || group_mask & (1u16 << index) != 0 { return None; }
@@ -105,6 +110,64 @@ impl InvitationRequest {
         let reply = page.response(2)?;
         *self = Self::Idle;
         Some(reply)
+    }
+}
+
+/// Keep the destination with the body until the send reply is recorded.
+pub struct OutgoingMessage {
+    pub handle: u64,
+    body: [u8; 2048],
+    length: usize,
+}
+
+impl OutgoingMessage {
+    pub fn text(&self) -> &[u8] {
+        &self.body[..self.length]
+    }
+}
+
+pub struct MessageOutbox {
+    pending: Option<OutgoingMessage>,
+    pub in_flight: Option<OutgoingMessage>,
+}
+
+impl MessageOutbox {
+    pub const fn new() -> Self {
+        Self { pending: None, in_flight: None }
+    }
+
+    pub fn queue(&mut self, handle: u64, live: &[u64], text: &[u8]) -> bool {
+        if self.pending.is_some() || handle == 0 || !live.contains(&handle)
+            || text.is_empty() || text.len() > 2048 || core::str::from_utf8(text).is_err()
+        {
+            return false;
+        }
+        let mut message = OutgoingMessage { handle, body: [0; 2048], length: text.len() };
+        message.body[..text.len()].copy_from_slice(text);
+        self.pending = Some(message);
+        true
+    }
+
+    /// Wait for the shared page. A deleted destination fails the accepted send.
+    pub fn begin(&mut self, page: &mut AgentPage, live: &[u64]) -> Result<bool, ()> {
+        if self.in_flight.is_some() || page.request().is_some() {
+            return Ok(false);
+        }
+        let Some(message) = self.pending.take() else { return Ok(false); };
+        if !live.contains(&message.handle) {
+            return Err(());
+        }
+        let mut payload = [0; 8 + 2 + 2048];
+        let mut writer = PayloadWriter::new(&mut payload);
+        if !writer.u64(message.handle) || !writer.bytes(message.text()) {
+            return Err(());
+        }
+        let length = writer.len();
+        if !page.begin(Operation::SendMessage, 4, &payload[..length]) {
+            return Err(());
+        }
+        self.in_flight = Some(message);
+        Ok(true)
     }
 }
 
@@ -256,7 +319,7 @@ impl AgentPage {
 
     /// Begin one bounded request. Call only after acquiring the Agent endpoint.
     pub fn begin(&mut self, operation: Operation, request_id: u32, payload: &[u8]) -> bool {
-        if request_id == 0 || payload.len() > PAYLOAD_CAPACITY {
+        if request_id == 0 || payload.len() > PAYLOAD_CAPACITY || self.request().is_some() {
             return false;
         }
         self.magic = MAGIC;
@@ -332,6 +395,73 @@ const _: () = assert!(core::mem::offset_of!(AgentPage, payload) == HEADER_SIZE);
 #[cfg(test)]
 mod tests {
     use super::{AgentPage, InvitationRequest, Operation, PAYLOAD_CAPACITY, Status};
+
+    #[test]
+    fn queued_send_keeps_its_recipient_and_body_when_the_chat_changes() {
+        let mut page = AgentPage::new();
+        let mut sends = super::MessageOutbox::new();
+        assert!(page.begin(Operation::ReceiveNext, 5, &[]));
+        assert!(sends.queue(11, &[11, 22], b"first draft"));
+        assert_eq!(sends.begin(&mut page, &[11, 22]), Ok(false));
+        assert!(!sends.queue(22, &[11, 22], b"another draft"));
+        assert!(page.respond(5, Status::NoEvent, &[]));
+        assert_eq!(sends.begin(&mut page, &[22, 11]), Ok(true));
+        let (op, id, payload) = page.request().unwrap();
+        assert_eq!((op, id), (Operation::SendMessage, 4));
+        let mut body = super::PayloadReader::new(payload);
+        assert_eq!(body.u64(), Some(11));
+        assert_eq!(body.bytes(), Some(&b"first draft"[..]));
+        assert!(body.is_empty());
+        assert!(sends.queue(22, &[22, 11], b"retry"));
+        assert!(page.respond(4, Status::Ok, &[]));
+        assert_eq!(sends.begin(&mut page, &[22, 11]), Ok(false));
+        let sent = sends.in_flight.take().unwrap();
+        assert_eq!((sent.handle, sent.text()), (11, &b"first draft"[..]));
+        assert_eq!(sends.begin(&mut page, &[22, 11]), Ok(true));
+        let sent = sends.in_flight.take().unwrap();
+        assert_eq!((sent.handle, sent.text()), (22, &b"retry"[..]));
+    }
+
+    #[test]
+    fn send_requires_a_live_recipient_at_admission_and_at_dispatch() {
+        let mut page = AgentPage::new();
+        let mut sends = super::MessageOutbox::new();
+        assert!(!sends.queue(0, &[0, 22], b"no selection"));
+        assert!(!sends.queue(11, &[22], b"old selection"));
+        assert!(sends.queue(11, &[11, 22], b"accepted"));
+        assert_eq!(sends.begin(&mut page, &[22]), Err(()));
+        assert!(sends.in_flight.is_none());
+        assert!(page.request().is_none());
+        assert!(sends.queue(22, &[22], b"next"));
+        assert_eq!(sends.begin(&mut page, &[22]), Ok(true));
+    }
+
+    #[test]
+    fn selecting_a_row_requires_the_contact_shown_in_the_last_snapshot() {
+        let displayed = [11, 22, 0];
+        assert_eq!(super::chat_at_displayed_row(&displayed, &[22, 11], 0), None);
+        assert_eq!(super::chat_at_displayed_row(&displayed, &[11], 1), None);
+        assert_eq!(super::chat_at_displayed_row(&displayed, &[11, 22, 0], 2), None);
+        assert_eq!(super::chat_at_displayed_row(&displayed, &[11, 22], usize::MAX), None);
+        assert_eq!(super::chat_at_displayed_row(&displayed, &[11, 22], 1), Some(22));
+    }
+
+    #[test]
+    fn profile_update_cannot_replace_an_active_send_and_retries_after_reply() {
+        let mut page = AgentPage::new();
+        let mut sends = super::MessageOutbox::new();
+        assert!(sends.queue(11, &[11], b"message"));
+        assert_eq!(sends.begin(&mut page, &[11]), Ok(true));
+        assert!(!page.begin(Operation::SetProfile, 10, b"New Name"));
+        assert_eq!(page.request().unwrap().0, Operation::SendMessage);
+        assert!(page.respond(4, Status::Ok, &[]));
+        sends.in_flight.take();
+        assert!(page.begin(Operation::SetProfile, 10, b"New Name"));
+        assert!(sends.queue(11, &[11], b"next"));
+        assert_eq!(sends.begin(&mut page, &[11]), Ok(false));
+        assert!(page.respond(10, Status::Ok, &[]));
+        assert_eq!(sends.begin(&mut page, &[11]), Ok(true));
+    }
 
     #[test]
     fn invitation_waits_for_receive_and_releases_the_page_after_its_reply() {
@@ -498,5 +628,37 @@ mod tests {
         assert!(writer.u8(1));
         assert!(!writer.u64(2));
         assert!(!writer.bytes(b"x"));
+    }
+}
+
+/// The first page of a direct message. Continuation replies contain raw bytes
+/// starting at the requested offset, which may fall inside a UTF-8 character.
+pub struct DirectFrame<'a> {
+    pub kind: u8,
+    pub handle: u64,
+    pub message: u64,
+    pub part: u16,
+    pub id: &'a str,
+    pub total: usize,
+    pub first: &'a [u8],
+}
+
+impl<'a> DirectFrame<'a> {
+    pub fn parse(payload: &'a [u8], limit: usize) -> Option<Self> {
+        let mut r = PayloadReader::new(payload);
+        let kind = r.u8()?;
+        let handle = r.u64()?;
+        let message = r.u64()?;
+        let part = r.u16()?;
+        let id = core::str::from_utf8(r.bytes()?).ok()?;
+        let total = r.u32()? as usize;
+        let first = r.bytes()?;
+        if !r.is_empty() || !(7..=9).contains(&kind) || handle == 0 || message == 0
+            || total > limit || first.len() != total.min(3000)
+            || id.len() > 64 || (kind != 7 && id.is_empty())
+            || (kind == 9 && total != 0) {
+            return None;
+        }
+        Some(Self { kind, handle, message, part, id, total, first })
     }
 }
