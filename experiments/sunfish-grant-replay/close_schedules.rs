@@ -1,5 +1,21 @@
 #[test]
 fn replay_original_grant() {
+    run_grant_schedule(false, 15..=60);
+}
+
+#[cfg(feature = "sunfish-grant-ad-writer-trace")]
+#[test]
+fn trace_ordinary_ad_after_registration() {
+    run_grant_schedule(true, 20..=60);
+}
+
+#[cfg(feature = "sunfish-grant-ad-writer-trace")]
+#[test]
+fn trace_registration_ad_at_close_boundary() {
+    run_grant_schedule(false, 4..=9);
+}
+
+fn run_grant_schedule(late_grant: bool, deadlines: std::ops::RangeInclusive<u32>) {
     use elf_blocker_irq::{Kernel, Router};
     use qcom_qrtr_tftp::{AuthorizedWlanImage, Server};
     use qcom_tftp_server_check::{SERVICE_PORT, ServerCheck};
@@ -13,7 +29,7 @@ fn replay_original_grant() {
     }
     static CLOCK: AtomicU64 = AtomicU64::new(100);
     let clock = || CLOCK.fetch_add(1, Relaxed);
-    for deadline in 15..=60 {
+    for deadline in deadlines {
         COUNT.set(None);
         ANCHOR.set(None);
         PHASES.take();
@@ -49,7 +65,11 @@ fn replay_original_grant() {
             false,
             qcom_tftp_server_check::REQUEST,
         ));
-        GRANT_AFTER_DONE.set(Some(r.available[0]));
+        if !late_grant {
+            GRANT_AFTER_DONE.set(Some(r.available[0]));
+        }
+        #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+        GRANT_AFTER_REGISTRATION.set(late_grant);
         r.enqueue(&lo_packet(
             1,
             LO_PEER_CLIENT,
@@ -144,6 +164,29 @@ fn replay_original_grant() {
         let ack = writes.iter().position(|b| b[0] == 8).unwrap();
         assert!(ad < ack);
         assert!(lo_word(writes[ad], 8) >= 52 && lo_word(writes[ack], 4) == 1);
+        #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+        {
+            use qcom_glink_qmi::GrantAdWriter;
+            let captured = grant.backing;
+            let published = r.owner.ipa_registration_trace().unwrap().published_at.unwrap();
+            assert_eq!(captured.requested, 52);
+            assert_eq!(captured.intent, Some(lo_word(writes[ad], 12)));
+            let reserved = captured.reserved_at.unwrap();
+            assert_eq!(reserved > published, late_grant);
+            let fallback = !late_grant && deadline <= 5;
+            let expected = if late_grant || fallback { GrantAdWriter::Ordinary } else { GrantAdWriter::Registration };
+            assert_eq!(captured.writer, Some(expected));
+            let advertised = captured.advertised_at.unwrap();
+            assert!(advertised > reserved && advertised > published);
+            if fallback {
+                assert!(grant.advertisement_at.is_none());
+                let injected = phases.iter().position(|p| p.0 == "injected").unwrap();
+                let ad_head = phases.iter().position(|p| p.0 == "ad-head").unwrap();
+                assert!(ad_head > injected);
+            } else {
+                assert!(advertised <= grant.advertisement_at.unwrap());
+            }
+        }
         let sends: Vec<_> = writes
             .iter()
             .enumerate()

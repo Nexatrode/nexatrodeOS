@@ -148,6 +148,25 @@ pub struct IntentDenialDiagnostic {
     /// One four-bit receive-state code per slot, least-significant slot first.
     pub states: u32,
 }
+#[cfg(feature = "sunfish-grant-ad-writer-trace")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum GrantAdWriter {
+    Ordinary = 1,
+    Registration = 2,
+    OtherFollowup = 3,
+}
+
+#[cfg(feature = "sunfish-grant-ad-writer-trace")]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct GrantBackingTrace {
+    pub requested: u32,
+    pub intent: Option<u32>,
+    pub reserved_at: Option<u64>,
+    pub writer: Option<GrantAdWriter>,
+    pub advertised_at: Option<u64>,
+}
+
 #[cfg(feature = "sunfish-glink-intent-denial-snapshot")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IntentDenialSlots {
@@ -805,6 +824,8 @@ pub struct Session {
     retry_full_intent: bool,
     #[cfg(feature = "sunfish-wlan-intent-ack-turn")]
     intent_ack_backing: Option<u32>,
+    #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+    pub(crate) grant_backing: GrantBackingTrace,
     #[cfg(feature = "sunfish-wlan-intent-ack-turn")]
     intent_ack_yield: bool,
     #[cfg(feature = "sunfish-wlan-intent-ack-turn")]
@@ -1641,6 +1662,8 @@ impl Session {
             retry_full_intent: false,
             #[cfg(feature = "sunfish-wlan-intent-ack-turn")]
             intent_ack_backing: None,
+            #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+            grant_backing: GrantBackingTrace::default(),
             #[cfg(feature = "sunfish-wlan-intent-ack-turn")]
             intent_ack_yield: false,
             #[cfg(feature = "sunfish-wlan-intent-ack-turn")]
@@ -2622,6 +2645,8 @@ impl Session {
             self.intent_ack_backing = None;
             self.intent_ack_yield = false;
             self.intent_ack_summary = (0, None);
+            #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+            { self.grant_backing = GrantBackingTrace::default(); }
         }
         #[cfg(feature = "sunfish-wlan-registry-ack-trace")]
         { self.intent_ack_started = None; }
@@ -4147,10 +4172,17 @@ impl Session {
                     }
                     self.intent_denial = Some(IntentDenialDiagnostic { requested: parameter, states });
                 }
+                #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+                { self.grant_backing = GrantBackingTrace { requested: parameter, ..Default::default() }; }
                 if granted {
                     let _id = self.offer_receive(generation)?;
                     #[cfg(feature = "sunfish-wlan-intent-ack-turn")]
                     { self.intent_ack_backing = Some(_id); }
+                    #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+                    {
+                        self.grant_backing.intent = Some(_id);
+                        self.grant_backing.reserved_at = self.intent_ack_clock.map(|now| now());
+                    }
                 }
                 #[cfg(feature = "sunfish-glink-retry-full-intent")]
                 { self.retry_full_intent = !granted && parameter != 0
@@ -7956,6 +7988,15 @@ impl Session {
                 self.observe_oack_intent_available(self.receive[index].id);
                 #[cfg(feature = "sunfish-wlan-intent-ack-turn")]
                 if self.intent_ack_backing == Some(self.receive[index].id) {
+                    #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+                    if self.grant_backing.intent == self.intent_ack_backing {
+                        self.grant_backing.writer = Some(match followup {
+                            None => GrantAdWriter::Ordinary,
+                            Some(OackFollowup::FirstGrantAd) => GrantAdWriter::Registration,
+                            Some(_) => GrantAdWriter::OtherFollowup,
+                        });
+                        self.grant_backing.advertised_at = self.intent_ack_clock.map(|now| now());
+                    }
                     #[cfg(feature = "sunfish-tftp-oack-slot-follow")]
                     self.follow_oack_slot_available(index, 2);
                     self.intent_ack_backing = None;
@@ -8068,6 +8109,11 @@ impl Session {
                     {
                         let id = self.offer_receive(generation)?;
                         self.intent_ack_backing = Some(id);
+                        #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+                        {
+                            self.grant_backing.intent = Some(id);
+                            self.grant_backing.reserved_at = self.intent_ack_clock.map(|now| now());
+                        }
                         self.intent_request_ack = Some(true);
                         self.retry_full_intent = false;
                     }

@@ -3693,7 +3693,9 @@ impl RuntimeDomain {
             let reads = owner.read_sequence();
             #[cfg(feature = "sunfish-ipa-init-close-visibility")]
             let close = owner.init_close_fifo();
-            #[cfg(feature = "sunfish-paired-oack-init")]
+            #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+            display.replace_line(1, "GRANT RESERVE AND AD");
+            #[cfg(all(feature = "sunfish-paired-oack-init", not(feature = "sunfish-grant-ad-writer-trace")))]
             display.replace_line(1, "PAIRED OACK AND INIT");
             #[cfg(all(feature = "sunfish-ipa-init-close-visibility", not(feature = "sunfish-paired-oack-init")))]
             display.replace_line(1, "INIT CLOSE VISIBILITY");
@@ -3704,19 +3706,27 @@ impl RuntimeDomain {
                 (3, "ERROR DETAIL", self.detail),
                 (4, "FIRST PEER", first.map_or(u32::MAX, |t| t.peer.port)),
                 (5, "FIRST WRQ US", age(first.and_then(|t| t.wrq_at))),
-                #[cfg(feature = "sunfish-ipa-init-close-visibility")]
+                #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+                (6, "GRANT INTENT", grant.backing.intent.unwrap_or(u32::MAX)),
+                #[cfg(all(feature = "sunfish-ipa-init-close-visibility", not(feature = "sunfish-grant-ad-writer-trace")))]
                 (6, "FRESH RX BYTES", close.fresh_unread.unwrap_or(u32::MAX)),
                 #[cfg(not(feature = "sunfish-ipa-init-close-visibility"))]
                 (6, "OACK QUEUE US", age(gates.queued_at)),
-                #[cfg(feature = "sunfish-ipa-init-close-visibility")]
+                #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+                (7, "RESERVED US", age(grant.backing.reserved_at)),
+                #[cfg(all(feature = "sunfish-ipa-init-close-visibility", not(feature = "sunfish-grant-ad-writer-trace")))]
                 (7, "SAMPLE START US", age(close.sample_start)),
                 #[cfg(not(feature = "sunfish-ipa-init-close-visibility"))]
                 (7, "INIT QUEUE US", age(transport.and_then(|t| t.queued_at))),
-                #[cfg(feature = "sunfish-ipa-init-close-visibility")]
+                #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+                (8, "REG PUB US", age(reg.and_then(|t| t.published_at))),
+                #[cfg(all(feature = "sunfish-ipa-init-close-visibility", not(feature = "sunfish-grant-ad-writer-trace")))]
                 (8, "SAMPLE END US", age(close.sample_end)),
                 #[cfg(not(feature = "sunfish-ipa-init-close-visibility"))]
                 (8, "REG PUB US", age(reg.and_then(|t| t.published_at))),
-                #[cfg(feature = "sunfish-ipa-init-close-visibility")]
+                #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+                (9, "AD WRITER", grant.backing.writer.map_or(0, |w| w as u32)),
+                #[cfg(all(feature = "sunfish-ipa-init-close-visibility", not(feature = "sunfish-grant-ad-writer-trace")))]
                 (9, "CLOSE IN SAMPLE", close.visible_at_sample().map_or(u32::MAX, u32::from)),
                 #[cfg(not(feature = "sunfish-ipa-init-close-visibility"))]
                 (9, "REG DONE US", age(reg.and_then(|t| t.completed_at))),
@@ -3726,6 +3736,9 @@ impl RuntimeDomain {
                 (12, "LAST ABSENT US", age(close.bounds.and_then(|b| b.last_absent))),
                 #[cfg(not(feature = "sunfish-ipa-init-close-visibility"))]
                 (12, "INIT RESP US", age(init.and_then(|t| t.response_at))),
+                #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+                (13, "BACKING AD US", age(grant.backing.advertised_at)),
+                #[cfg(not(feature = "sunfish-grant-ad-writer-trace"))]
                 (13, "BACKING AD US", age(grant.advertisement_at)),
                 (14, "GRANT ACK US", age(grant.ack_at)),
                 (15, "FOLLOW RESULT", grant.outcome),
@@ -3739,7 +3752,9 @@ impl RuntimeDomain {
                 (22, "CLOSE VIS US", age(close.bounds.and_then(|b| b.first_visible))),
                 #[cfg(not(feature = "sunfish-ipa-init-close-visibility"))]
                 (22, "READ KIND MASK", reads.kinds),
-                #[cfg(feature = "sunfish-ipa-init-close-visibility")]
+                #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+                (23, "REQUEST BYTES", grant.backing.intent.map_or(u32::MAX, |_| grant.backing.requested)),
+                #[cfg(all(feature = "sunfish-ipa-init-close-visibility", not(feature = "sunfish-grant-ad-writer-trace")))]
                 (23, "RX BYTES AHEAD", close.bounds.and_then(|b| b.bytes_ahead).unwrap_or(u32::MAX)),
                 #[cfg(not(feature = "sunfish-ipa-init-close-visibility"))]
                 (23, "FIRST READ US", age(reads.first[0].and_then(|r| r.2))),

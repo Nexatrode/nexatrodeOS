@@ -1449,6 +1449,8 @@ pub struct SessionFailureDiagnostic {
 #[cfg(feature = "sunfish-first-oack-grant-window")]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FirstGrantTrace {
+    #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+    pub backing: core::GrantBackingTrace,
     pub trigger: u32,
     pub advertisement_at: Option<u64>,
     pub ack_at: Option<u64>,
@@ -2603,6 +2605,10 @@ impl<I: Io> Adapter<I> {
         let expected = if self.first_grant.trigger == 0 {
             self.session.first_oack_grant_trigger()
         } else { None };
+        #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+        if expected.is_some() {
+            self.first_grant.backing = self.session.grant_backing;
+        }
         #[cfg(feature = "sunfish-paired-oack-init")]
         let awaiting_registration = self.registration_close_fifo().is_none();
         let ordinary = self.publish_next(generation)?;
@@ -2613,6 +2619,8 @@ impl<I: Io> Adapter<I> {
         {
             let candidate = self.session.first_oack_grant_trigger();
             if let Some(ad @ Published::ReceiveIntent(_)) = candidate {
+                #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+                { self.first_grant.backing = self.session.grant_backing; }
                 if self.publish_inner(generation, Some(core::OackFollowup::FirstGrantAd))?
                     != Transmit::Session(ad)
                 {
@@ -2624,6 +2632,8 @@ impl<I: Io> Adapter<I> {
         } else { expected };
         let Some(event) = expected else { return Ok((ordinary, 0)); };
         if extra == 0 && ordinary != Transmit::Session(event) { return Ok((ordinary, 0)); }
+        #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+        { self.first_grant.backing = self.session.grant_backing; }
         let clock = self.ring.first_server_check_clock;
         if matches!(event, Published::ReceiveIntent(_)) {
             self.first_grant.trigger = 5;
@@ -2789,6 +2799,14 @@ impl<I: Io> Adapter<I> {
         let result = self.session.publish_next(generation, writer);
         if let Some(error) = failure {
             return Err(error);
+        }
+        // A receive-priority yield can move this exact advertisement to a later writer pass.
+        #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+        if let Ok(Some(core::Published::ReceiveIntent(id))) = result
+            && self.first_grant.backing.intent == Some(id)
+            && self.session.grant_backing.intent == Some(id)
+        {
+            self.first_grant.backing = self.session.grant_backing;
         }
         #[cfg(feature = "sunfish-ipa-tftp-original-trace")]
         if let Ok(Some(core::Published::Data { remote_intent, last_fragment: true })) = result

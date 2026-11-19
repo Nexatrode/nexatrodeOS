@@ -1,5 +1,7 @@
 // Host replay instrumentation. One count is one cursor sample.
 thread_local! {
+    #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+    static GRANT_AFTER_REGISTRATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static COUNT: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
     static ANCHOR: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
     static DEADLINE: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
@@ -41,6 +43,11 @@ fn replay_io(peer: &Fake, op: &Op) {
         }
         Op::Snapshot => {
             COUNT.set(Some(n + 1));
+            #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+            if GRANT_AFTER_REGISTRATION.get() && ANCHOR.get().is_some_and(|at| n + 1 == at + 4) {
+                GRANT_AFTER_REGISTRATION.set(false);
+                peer.push(&control(7, 2, 52));
+            }
             if ANCHOR.get().is_some_and(|at| n + 1 == at + DEADLINE.get())
                 && let Some(frame) = FRAME.take()
             {
