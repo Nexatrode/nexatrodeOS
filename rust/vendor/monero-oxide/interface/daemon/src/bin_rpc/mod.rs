@@ -1,0 +1,379 @@
+use core::{
+  ops::{Bound, RangeBounds},
+  future::Future,
+};
+
+use alloc::{borrow::ToOwned as _, format, vec, vec::Vec};
+
+use monero_oxide::{
+  ed25519::Point,
+  transaction::{Output, Timelock},
+  DEFAULT_LOCK_WINDOW,
+};
+
+use monero_interface::*;
+
+use crate::{
+  MAX_RESPONSE_SIZE, MIN_RESPONSE_SIZE_IN_BYTES_ESTIMATE, HTTP_OVERHEAD_ESTIMATE,
+  REQUEST_SIZE_TARGET, TRANSACTION_SIZE_BOUND, HttpTransport, MoneroDaemon,
+};
+
+mod epee;
+
+macro_rules! epee_key_len {
+  ($key: literal) => {{
+    #[expect(clippy::as_conversions, clippy::cast_possible_truncation)]
+    {
+      // Check this cast is well-formed when compiling
+      const _KEY_LEN_IS_LESS_THAN_256: [(); 255 - $key.len()] = [(); _];
+      $key.len() as u8
+    }
+  }};
+}
+
+mod blocks_bin;
+
+impl<T: HttpTransport> MoneroDaemon<T> {
+  /// Fetch one bounded RingCT output-distribution range.
+  ///
+  /// Cuprate and monerod return an empty distribution when the requested range is entirely
+  /// before RingCT activation. In that case `start_height` is after `to`, which is represented
+  /// here as an empty vector so callers can move on to the next range.
+  async fn ringct_output_distribution_range(
+    &self,
+    from: usize,
+    to: usize,
+  ) -> Result<Vec<u64>, InterfaceError> {
+    let zero_zero_case = (from == 0) && (to == 0);
+    let request_to = if zero_zero_case { 1 } else { to };
+
+    #[expect(clippy::as_conversions)]
+    let request = [
+      epee::HEADER.as_slice(),
+      &[epee::VERSION],
+      &[5 << 2],
+      &[epee_key_len!("from_height")],
+      "from_height".as_bytes(),
+      &[epee::Type::Uint64 as u8],
+      &u64::try_from(from)
+        .map_err(|_| {
+          InterfaceError::InternalError("range's from wasn't representable as a `u64`".to_owned())
+        })?
+        .to_le_bytes(),
+      &[epee_key_len!("to_height")],
+      "to_height".as_bytes(),
+      &[epee::Type::Uint64 as u8],
+      &u64::try_from(request_to)
+        .map_err(|_| {
+          InterfaceError::InternalError("range's to wasn't representable as a `u64`".to_owned())
+        })?
+        .to_le_bytes(),
+      &[epee_key_len!("cumulative")],
+      "cumulative".as_bytes(),
+      &[epee::Type::Bool as u8],
+      &[1],
+      &[epee_key_len!("compress")],
+      "compress".as_bytes(),
+      &[epee::Type::Bool as u8],
+      &[0], // TODO: Use compression
+      &[epee_key_len!("amounts")],
+      "amounts".as_bytes(),
+      // `amounts` is a vector of `u64` in the daemon protocol. Cuprate's Epee decoder enforces
+      // that width, so do not encode the RingCT zero as a one-byte integer.
+      &[(epee::Type::Uint64 as u8) | (epee::Array::Array as u8)],
+      &[1 << 2],
+      &0u64.to_le_bytes(),
+    ]
+    .concat();
+
+    let response = self
+      .bin_call(
+        "get_output_distribution.bin",
+        request,
+        request_to.saturating_sub(from).saturating_add(2).saturating_mul(8),
+      )
+      .await?;
+
+    let start_height = epee::extract_start_height(&response)?;
+    if start_height < from {
+      return Err(InterfaceError::InvalidInterface(format!(
+        "requested distribution from {from} and got from {start_height}"
+      )));
+    }
+    if start_height > request_to {
+      return Ok(Vec::new());
+    }
+
+    let expected_len = if zero_zero_case {
+      2
+    } else {
+      (request_to - start_height).checked_add(1).ok_or_else(|| {
+        InterfaceError::InternalError("distribution length exceeded usize".to_owned())
+      })?
+    };
+    let mut distribution = epee::extract_distribution(&response, expected_len)?;
+    if zero_zero_case {
+      distribution.pop();
+    }
+    Ok(distribution)
+  }
+
+  /// Perform a binary call to the specified route with the provided parameters.
+  ///
+  /// The `response_size_limit` is expected to be in terms of the amount of bytes of data
+  /// communicated with the response. A flat amount for the overhead of HTTP will be automatically
+  /// applied.
+  ///
+  /// This method is NOT guaranteed by SemVer and may be removed in a future release. No guarantees
+  /// on the safety nor correctness of bespoke calls made with this function are guaranteed.
+  #[doc(hidden)]
+  pub async fn bin_call<'a>(
+    &'a self,
+    route: &'a str,
+    params: Vec<u8>,
+    response_size_limit: usize,
+  ) -> Result<Vec<u8>, InterfaceError> {
+    let response_size_limit = {
+      let response_size_limit = response_size_limit.max(MIN_RESPONSE_SIZE_IN_BYTES_ESTIMATE);
+      let full_response_size_limit = HTTP_OVERHEAD_ESTIMATE.saturating_add(response_size_limit);
+      full_response_size_limit.min(MAX_RESPONSE_SIZE)
+    };
+
+    let mut res = self
+      .transport
+      .post(route, params, self.response_size_limits.then_some(response_size_limit))
+      .await?;
+
+    /*
+      If the transport erroneously returned more bytes, truncate it before we expand it into an
+      object. This may invalidate it, but it limits the impact of a DoS the transport was supposed
+      to prevent. Since this is EPEE-encoded, we should be able to read the values present before
+      the cut-off without issue, so long as we stop our deserialization before hitting EOF.
+    */
+    res.truncate(response_size_limit);
+
+    epee::check_status(&res)?;
+    Ok(res)
+  }
+}
+
+impl<T: HttpTransport> ProvidesUnvalidatedOutputs for MoneroDaemon<T> {
+  fn output_indexes(
+    &self,
+    hash: [u8; 32],
+  ) -> impl Send + Future<Output = Result<Vec<u64>, InterfaceError>> {
+    async move {
+      #[expect(clippy::as_conversions)]
+      let request = [
+        epee::HEADER.as_slice(),
+        &[epee::VERSION],
+        &[1 << 2],
+        &[epee_key_len!("txid")],
+        "txid".as_bytes(),
+        &[epee::Type::String as u8],
+        &[32 << 2],
+        &hash,
+      ]
+      .concat();
+
+      const OUTPUTS_AMOUNT_BOUND: usize =
+        TRANSACTION_SIZE_BOUND.div_ceil(Output::SIZE_LOWER_BOUND.0);
+      let epee =
+        self.bin_call("get_o_indexes.bin", request, OUTPUTS_AMOUNT_BOUND.saturating_mul(8)).await?;
+
+      epee::extract_output_indexes(&epee)
+    }
+  }
+
+  fn ringct_outputs(
+    &self,
+    indexes: &[u64],
+  ) -> impl Send + Future<Output = Result<Vec<RingCtOutputInformation>, InterfaceError>> {
+    async move {
+      // https://github.com/monero-project/monero/blob/cc73fe71162d564ffda8e549b79a350bca53c454
+      //   /src/rpc/core_rpc_server.cpp#L67
+      const EXPLICIT_MAX_OUTS: usize = 5000;
+      const IMPLICIT_MAX_OUTS: usize = REQUEST_SIZE_TARGET / 32;
+      const MAX_OUTS: usize =
+        monero_oxide::primitives::const_min!(EXPLICIT_MAX_OUTS, IMPLICIT_MAX_OUTS);
+
+      let expected_request_header_len = 19;
+      let expected_request_len =
+        expected_request_header_len + 8 + (indexes.len().min(MAX_OUTS) * 32);
+      let mut request = Vec::with_capacity(expected_request_len);
+      request.extend(epee::HEADER);
+      request.push(epee::VERSION);
+      request.push(1 << 2);
+      request.push(epee_key_len!("outputs"));
+      request.extend("outputs".as_bytes());
+      #[expect(clippy::as_conversions)]
+      request.push((epee::Type::Object as u8) | (epee::Array::Array as u8));
+      debug_assert_eq!(request.len(), expected_request_header_len);
+
+      let mut res = Vec::with_capacity(indexes.len());
+      let mut first_iter = true;
+      for indexes in indexes.chunks(MAX_OUTS) {
+        // Form the request
+        {
+          request.truncate(expected_request_header_len);
+
+          let indexes_len_u64 =
+            u64::try_from(indexes.len()).expect("requesting more than 2**64 indexes?");
+          // TODO: This can truncate some of the indexes requested if an absurd amount is requested
+          // https://github.com/monero-oxide/monero-oxide/issues/93
+          request.extend(((indexes_len_u64 << 2) | 0b11).to_le_bytes());
+
+          for index in indexes {
+            request.push(2 << 2);
+
+            // The Epee field is declared as `u64` by monerod and Cuprate. Keep the wire width
+            // at 64 bits even though RingCT outputs always use amount zero; Cuprate's decoder
+            // rejects the narrower `u8` encoding previously emitted here.
+            request.push(epee_key_len!("amount"));
+            request.extend("amount".as_bytes());
+            #[expect(clippy::as_conversions)]
+            request.push(epee::Type::Uint64 as u8);
+            request.extend(&0u64.to_le_bytes());
+
+            request.push(epee_key_len!("index"));
+            request.extend("index".as_bytes());
+            #[expect(clippy::as_conversions)]
+            request.push(epee::Type::Uint64 as u8);
+            request.extend(&index.to_le_bytes());
+          }
+
+          // Only checked on the first iteration as the final chunk may be shorter
+          if first_iter {
+            debug_assert_eq!(expected_request_len, request.len());
+            first_iter = false;
+          }
+        }
+
+        // This is the size of the data, doubled to account for epee's structure
+        const BOUND_PER_OUT: usize = 2 * (8 + 8 + 32 + 32 + 32 + 1);
+
+        let outs = self
+          .bin_call("get_outs.bin", request.clone(), indexes.len().saturating_mul(BOUND_PER_OUT))
+          .await?;
+
+        epee::accumulate_outs(&outs, indexes.len(), &mut res)?;
+      }
+
+      Ok(res)
+    }
+  }
+}
+
+impl<T: HttpTransport> ProvidesUnvalidatedDecoys for MoneroDaemon<T> {
+  fn ringct_output_distribution(
+    &self,
+    range: impl Send + RangeBounds<usize>,
+  ) -> impl Send + Future<Output = Result<Vec<u64>, InterfaceError>> {
+    async move {
+      let from = match range.start_bound() {
+        Bound::Included(from) => *from,
+        Bound::Excluded(from) => from.checked_add(1).ok_or_else(|| {
+          InterfaceError::InternalError("range's from wasn't representable".to_owned())
+        })?,
+        Bound::Unbounded => 0,
+      };
+      let to = match range.end_bound() {
+        Bound::Included(to) => *to,
+        Bound::Excluded(to) => to.checked_sub(1).ok_or_else(|| {
+          InterfaceError::InternalError("range's to wasn't representable".to_owned())
+        })?,
+        Bound::Unbounded => self.latest_block_number().await?,
+      };
+      if from > to {
+        Err(InterfaceError::InternalError(format!(
+          "malformed range: inclusive start {from}, inclusive end {to}"
+        )))?;
+      }
+
+      // I2P HTTP tunnels can close long-lived responses before a megabyte. Keep each
+      // cumulative distribution response near 400 KB, then join ranges in height order.
+      // Since the daemon returns cumulative counts, concatenation preserves the original values.
+      const MAX_BLOCKS_PER_DISTRIBUTION_REQUEST: usize = 50_000;
+      let range_len = to.saturating_sub(from).saturating_add(1);
+      if range_len <= MAX_BLOCKS_PER_DISTRIBUTION_REQUEST {
+        return self.ringct_output_distribution_range(from, to).await;
+      }
+
+      let mut distribution = Vec::new();
+      let mut chunk_from = from;
+      loop {
+        let chunk_to = chunk_from.saturating_add(MAX_BLOCKS_PER_DISTRIBUTION_REQUEST - 1).min(to);
+        distribution.extend(self.ringct_output_distribution_range(chunk_from, chunk_to).await?);
+        if chunk_to == to {
+          break;
+        }
+        chunk_from = chunk_to.checked_add(1).ok_or_else(|| {
+          InterfaceError::InternalError("distribution range exceeded usize".to_owned())
+        })?;
+      }
+      Ok(distribution)
+    }
+  }
+
+  fn unlocked_ringct_outputs(
+    &self,
+    indexes: &[u64],
+    evaluate_unlocked: EvaluateUnlocked,
+  ) -> impl Send + Future<Output = Result<Vec<Option<[Point; 2]>>, TransactionsError>> {
+    async move {
+      let outs = <Self as ProvidesOutputs>::ringct_outputs(self, indexes).await?;
+
+      // Only need to fetch transactions if we're doing a deterministic check on the timelock
+      let txs =
+        if matches!(evaluate_unlocked, EvaluateUnlocked::FingerprintableDeterministic { .. }) {
+          <Self as ProvidesTransactions>::pruned_transactions(
+            self,
+            &outs.iter().map(|out| out.transaction).collect::<Vec<_>>(),
+          )
+          .await?
+        } else {
+          vec![]
+        };
+
+      // TODO: https://github.com/serai-dex/serai/issues/104
+      outs
+        .iter()
+        .enumerate()
+        .map(|(i, out)| {
+          /*
+            If the key is invalid, preventing it from being used as a decoy, return `None` to
+            trigger selection of a replacement decoy.
+          */
+          let Some(key) = out.key.decompress() else {
+            return Ok(None);
+          };
+          Ok(
+            (match evaluate_unlocked {
+              EvaluateUnlocked::Normal => out.unlocked,
+              EvaluateUnlocked::FingerprintableDeterministic { block_number } => {
+                // https://github.com/monero-project/monero/blob
+                //   /cc73fe71162d564ffda8e549b79a350bca53c454/src/cryptonote_config.h#L90
+                const ACCEPTED_TIMELOCK_DELTA: usize = 1;
+
+                let global_timelock_satisfied = out
+                  .block_number
+                  .checked_add(DEFAULT_LOCK_WINDOW - 1)
+                  .is_some_and(|locked| locked <= block_number);
+
+                // https://github.com/monero-project/monero/blob
+                //   /cc73fe71162d564ffda8e549b79a350bca53c454/src/cryptonote_core
+                //   /blockchain.cpp#L3836
+                let transaction_timelock_satisfied =
+                  Timelock::Block(block_number.saturating_add(ACCEPTED_TIMELOCK_DELTA)) >=
+                    txs[i].prefix().additional_timelock;
+
+                global_timelock_satisfied && transaction_timelock_satisfied
+              }
+            })
+            .then_some([key, out.commitment]),
+          )
+        })
+        .collect()
+    }
+  }
+}
