@@ -821,7 +821,11 @@ fn linuxlink_registration_turn_preserves_grant_and_credit_and_falls_back_after_b
             let trace = rig.link.ipa_registration_trace().unwrap();
             assert_eq!(trace.tx.target_blocked, 1);
             assert!(trace.published_at.is_none());
-
+            #[cfg(feature = "sunfish-reg-writer-timeline")]
+            {
+                assert!(trace.tx.selected_at.is_some());
+                assert_eq!(trace.tx.committed_write_start, None);
+            }
         } else {
             assert!(matches!(result, Ok(Some(Published::Data { last_fragment: true, .. }))));
         }
@@ -831,6 +835,15 @@ fn linuxlink_registration_turn_preserves_grant_and_credit_and_falls_back_after_b
         if blocked {
             let (_, frame) = publish_until_data(&mut rig.link);
             assert_eq!(&frame[48..48 + reply.bytes().len()], reply.bytes());
+        }
+        #[cfg(feature = "sunfish-reg-writer-timeline")]
+        {
+            let reg = rig.link.ipa_registration_trace().unwrap();
+            let first = reg.tx.selected_at.unwrap();
+            let committed = reg.tx.committed_write_start.unwrap();
+            assert_eq!(first < committed, blocked);
+            assert!(first <= committed && committed < reg.tx.last_end.unwrap());
+            assert!(reg.tx.last_end.unwrap() < reg.published_at.unwrap());
         }
     }
 }

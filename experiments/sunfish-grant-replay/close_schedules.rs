@@ -15,6 +15,16 @@ fn trace_registration_ad_at_close_boundary() {
     run_grant_schedule(false, 4..=9);
 }
 
+#[cfg(feature = "sunfish-reg-writer-timeline")]
+#[test]
+fn trace_108_byte_reservation_on_either_side_of_request_done() {
+    for arrival in [51, 56] {
+        GRANT_SAMPLE.set(Some(arrival));
+        run_grant_schedule(false, 6..=9);
+    }
+    GRANT_SAMPLE.set(None);
+}
+
 fn run_grant_schedule(late_grant: bool, deadlines: std::ops::RangeInclusive<u32>) {
     use elf_blocker_irq::{Kernel, Router};
     use qcom_qrtr_tftp::{AuthorizedWlanImage, Server};
@@ -66,7 +76,13 @@ fn run_grant_schedule(late_grant: bool, deadlines: std::ops::RangeInclusive<u32>
             qcom_tftp_server_check::REQUEST,
         ));
         if !late_grant {
-            GRANT_AFTER_DONE.set(Some(r.available[0]));
+            #[cfg(feature = "sunfish-reg-writer-timeline")]
+            let default_arrival = GRANT_SAMPLE.get().is_none();
+            #[cfg(not(feature = "sunfish-reg-writer-timeline"))]
+            let default_arrival = true;
+            if default_arrival {
+                GRANT_AFTER_DONE.set(Some(r.available[0]));
+            }
         }
         #[cfg(feature = "sunfish-grant-ad-writer-trace")]
         GRANT_AFTER_REGISTRATION.set(late_grant);
@@ -169,7 +185,27 @@ fn run_grant_schedule(late_grant: bool, deadlines: std::ops::RangeInclusive<u32>
             use qcom_glink_qmi::GrantAdWriter;
             let captured = grant.backing;
             let published = r.owner.ipa_registration_trace().unwrap().published_at.unwrap();
-            assert_eq!(captured.requested, 52);
+            #[cfg(feature = "sunfish-reg-writer-timeline")]
+            let sample = GRANT_SAMPLE.get();
+            #[cfg(not(feature = "sunfish-reg-writer-timeline"))]
+            let sample: Option<u32> = None;
+            assert_eq!(captured.requested, if sample.is_some() { 108 } else { 52 });
+            #[cfg(feature = "sunfish-reg-writer-timeline")]
+            if let Some(arrival) = sample {
+                let reg = r.owner.ipa_registration_trace().unwrap();
+                let queued = reg.queued_at.unwrap();
+                let done = reg.tx.request_done_at.unwrap();
+                let reservation = captured.reserved_at.unwrap();
+                let pass = reg.tx.first_pass_at.unwrap();
+                let selected = reg.tx.selected_at.unwrap();
+                assert!(queued < reservation && reservation < selected);
+                assert_eq!(reservation < done, arrival == 51);
+                assert!(done < pass && pass < selected);
+                assert_eq!(reg.tx.target_blocked, 0);
+                assert_eq!(reg.tx.committed_write_start, Some(selected));
+                let end = reg.tx.last_end.unwrap();
+                assert!(selected < end && end < published);
+            }
             assert_eq!(captured.intent, Some(lo_word(writes[ad], 12)));
             let reserved = captured.reserved_at.unwrap();
             assert_eq!(reserved > published, late_grant);

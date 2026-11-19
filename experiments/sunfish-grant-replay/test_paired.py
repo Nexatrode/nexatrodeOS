@@ -33,7 +33,8 @@ def main():
         binary = work / "paired"
         subprocess.run(["rustc", "--edition=2024", "--test", "-A", "dead_code", "-A", "deprecated",
                         *flags(), "--cfg", 'feature="sunfish-paired-oack-init"', "tests/paired.rs",
-                        "--cfg", 'feature="sunfish-grant-ad-writer-trace"', "-o", str(binary)], cwd=work, env=env, check=True)
+                        "--cfg", 'feature="sunfish-grant-ad-writer-trace"',
+                        "--cfg", 'feature="sunfish-reg-writer-timeline"', "-o", str(binary)], cwd=work, env=env, check=True)
         raw = subprocess.check_output([str(binary), "--exact",
             "independent_runtime_tests::replay_original_grant", "--nocapture"], text=True, env=env)
         tested = set()
