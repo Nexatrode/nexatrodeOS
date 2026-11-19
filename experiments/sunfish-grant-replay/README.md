@@ -1,0 +1,5 @@
+# Pixel 4a grant eligibility replay
+
+Run `python3 experiments/sunfish-grant-replay/replay.py` from a checkout with Rust 2024, Git, Python 3.11 or later, and the existing Linux RMTFS reference fixtures. The host transport harness reads the two C reference outputs at compile time. The defaults are `.cache/sunfish-native-wifi/private/linux-rmtfs/linux-scm.txt` and `.cache/sunfish-native-wifi/private/linux-rmtfs-server/wire.txt`. To use fixtures from another checkout, set `SUNFISH_LINUX_RMTFS_C` and `SUNFISH_RMTFS_WIRE_C` to their paths. The existing Sunfish reference runners are `platforms/sunfish/test-native-linux-rmtfs.py` and `platforms/sunfish/test-native-linux-rmtfs-server.py`.
+
+The replay builds the real Rust owner and FIFO in temporary host directories and exercises 46 close schedules per policy. It checks the original transfer port, committed TX heads, grant ordering, and the four schedules matching the IMG_9638 panel. Snapshot counts measure ordering in the simulated FIFO. The two alternative policies exist only in the replay patches. The phone image uses the baseline writer.

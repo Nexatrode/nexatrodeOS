@@ -1,0 +1,80 @@
+--- a/rust/src/qcom_glink_fifo.rs
++++ b/rust/src/qcom_glink_fifo.rs
+@@ -2595,7 +2595,12 @@
+         let expected = if self.first_grant.trigger == 0 {
+             self.session.first_oack_grant_trigger()
+         } else { None };
++        if expected.is_some(){crate::mark("eligible-entry");}
++        let before_reg=self.registration_close_fifo().is_none();
+         let ordinary = self.publish_next(generation)?;
++        let reg_edge=before_reg && self.registration_close_fifo().is_some();
++        if reg_edge && self.session.first_oack_grant_trigger().is_some(){crate::mark("eligible-at-reg");}
++
+         let Some(event) = expected else { return Ok((ordinary, 0)); };
+         if ordinary != Transmit::Session(event) { return Ok((ordinary, 0)); }
+         let clock = self.ring.first_server_check_clock;
+@@ -2802,7 +2807,7 @@
+             self.ring.init_close.sample_end = clock.map(|now| now());
+             self.ring.init_close.fresh_unread = self.ring.rx_bytes.map(|length|
+                 ring_distance(self.ring.words[2], self.ring.words[3], length) as u32);
+-            self.ring.init_close.fresh_head = self.ring.registration_rx.as_ref().map(|h| h.head);
++            crate::start_window(); self.ring.init_close.fresh_head = self.ring.registration_rx.as_ref().map(|h| h.head);
+         }
+         #[cfg(feature = "sunfish-ipa-registration-reply-path")]
+         if registration_pending
+--- a/rust/src/qcom_modem_owner.rs
++++ b/rust/src/qcom_modem_owner.rs
+@@ -3072,7 +3072,7 @@
+         {
+             blocker.first_turn = self.rmtfs_event_clock.map(|clock| clock());
+         }
+-        self.adapter.revalidate(self.generation)?;
++        crate::mark("work"); self.adapter.revalidate(self.generation)?;
+         let mut progress = Progress::default();
+         let mut exhausted = true;
+         for _ in 0..WORK_BUDGET {
+@@ -3131,10 +3131,10 @@
+                 let _ = count;
+                 self.adapter.set_tftp_owner_peers(self.generation, peers)?;
+                 #[cfg(feature = "sunfish-tftp-close-owner-fence")]
+-                { let _ = firmware_count; self.adapter.set_tftp_firmware_peers(self.generation, firmware_guard)?; }
++                { let _ = firmware_count; crate::mark("firmware-fence"); self.adapter.set_tftp_firmware_peers(self.generation, firmware_guard)?; }
+                 self.tftp_owner_snapshot = snapshot;
+             }
+-            let rx = self.adapter.poll_receive(self.generation)?;
++            crate::mark("poll"); let rx = self.adapter.poll_receive(self.generation)?;
+             #[cfg(feature = "sunfish-tftp-wlan-close-handoff")]
+             if let Receive::Session(Event::FirmwareClosePending { peer }) = rx {
+                 self.pending_firmware_close = Some(peer);
+@@ -3473,7 +3473,7 @@
+             let awaiting_registration = self.adapter.registration_close_fifo().is_none();
+             #[cfg(feature = "sunfish-first-oack-grant-window")]
+             let tx = {
+-                let (ordinary, extra) = self.adapter.publish_first_grant_turn(self.generation)?;
++                crate::mark("ordinary"); let (ordinary, extra) = self.adapter.publish_first_grant_turn(self.generation)?;
+                 progress.published += extra;
+                 ordinary
+             };
+--- a/rust/src/qcom_glink_qmi.rs
++++ b/rust/src/qcom_glink_qmi.rs
+@@ -3199,6 +3199,7 @@
+         if local.port == SERVICE_PORT && rx.server_check_wrq.is_none() && matches_request(packet) {
+             let at = clock.map(|clock| clock());
+             let intent = rx.tftp_datagram_id();
++            if peer.port==0x1f {crate::mark("wrq-accepted");}
+             rx.server_check_wrq = Some(ServerCheckOackTrace {
+                 #[cfg(feature = "sunfish-first-oack-after-ipa-publish")]
+                 early_oack_attempted: false,
+@@ -4154,6 +4155,12 @@
+                 self.intent_request_ack = Some(granted);
+                 #[cfg(feature = "sunfish-wlan-registry-ack-trace")]
+                 { self.intent_ack_started = self.intent_ack_clock.map(|clock| clock()); }
++                if parameter==52 && granted {
++                    crate::mark("grant-reserved");
++                    if let Some(first)=self.first_oack_transfer() {
++                        println!("reserve snapshot={:?} mask={:#x}",crate::COUNT.get(), self.first_oack_blockers(first));
++                    }
++                }
+                 Ok(Event::ReceiveIntentRequest { granted })
+             }
+             #[cfg(feature = "sunfish-glink-intent-request-experiment")]

@@ -1,0 +1,12 @@
+--- a/rust/src/qcom_glink_fifo.rs
++++ b/rust/src/qcom_glink_fifo.rs
+@@ -2609,7 +2609,8 @@
+             crate::mark("early-attempt");
+             let ad=self.publish_inner(generation,Some(core::OackFollowup::FirstGrantAd))?;
+             if ad!=Transmit::Session(expected.unwrap()){return Ok((ordinary,0));}
+-            extra+=1;
++            self.first_grant.advertisement_at = self.ring.first_server_check_clock.map(|clock| clock());
++            return Ok((ordinary,1));
+         }
+         let Some(event) = expected else { return Ok((ordinary, 0)); };
+         if extra == 0 && ordinary != Transmit::Session(event) { return Ok((ordinary, 0)); }
