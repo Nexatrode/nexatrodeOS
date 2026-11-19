@@ -1,0 +1,51 @@
+--- a/rts/rts.cabal.in
++++ b/rts/rts.cabal.in
+@@ -664,6 +664,8 @@
+         c-sources: sel4/AwaitEvent.c
+                    sel4/GetTime.c
+                    sel4/OSMem.c
++                   sel4/OSThreads.c
++                   sel4/TTY.c
+       else
+          c-sources: posix/GetEnv.c
+                     posix/GetTime.c
+--- /dev/null
++++ b/rts/sel4/OSThreads.c
+@@ -0,0 +1,22 @@
++/*
++ * Minimal OS-thread lifecycle hooks for the initial single-threaded seL4 RTS.
++ * GHC's non-threaded POSIX implementation has exactly these semantics.
++ */
++
++#include "Rts.h"
++#include "rts/OSThreads.h"
++
++#if defined(THREADED_RTS)
++#error "The initial Microkit runtime is non-threaded"
++#endif
++
++void freeThreadingResources(void)
++{
++    /* No host thread resources exist in a Microkit protection domain. */
++}
++
++uint32_t getNumberOfProcessors(void)
++{
++    /* One schedulable Haskell capability is supported by this RTS build. */
++    return 1;
++}
+--- /dev/null
++++ b/rts/sel4/TTY.c
+@@ -0,0 +1,12 @@
++/*
++ * Terminal cleanup hook for the initial non-interactive seL4 RTS.
++ * POSIX terminal support is not configured for this target.
++ */
++
++#include "Rts.h"
++#include "posix/TTY.h"
++
++void resetTerminalSettings(void)
++{
++    /* There are no termios settings to restore in a Microkit PD. */
++}

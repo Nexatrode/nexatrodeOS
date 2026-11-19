@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<system>
+    <memory_region name="screen" size="0x100000" page_size="0x4000" phys_addr="0x8bb80c000" />
+    <memory_region name="spi2" size="0x4000" page_size="0x4000" phys_addr="0x20a088000" />
+    <memory_region name="pmgr" size="0x4000" page_size="0x4000" phys_addr="0x20e080000" />
+    <memory_region name="i2c01" size="0x4000" page_size="0x4000" phys_addr="0x20a110000" />
+    <memory_region name="touch_clock" size="0x4000" page_size="0x4000" phys_addr="0x20e078000" />
+    <memory_region name="gpio" size="0x4000" page_size="0x4000" phys_addr="0x20f100000" />
+    <protection_domain name="spi2_fault" stack_size="0x4000" priority="110">
+        <program_image path="spi2-fault.elf" />
+        <map mr="screen" vaddr="0x40000000" perms="rw" cached="false" setvar_vaddr="spi2_fault_framebuffer" />
+        <protection_domain name="touch_startup_probe" id="1" stack_size="0x4000" priority="100">
+            <program_image path="touch-startup-probe.elf" />
+            <map mr="screen" vaddr="0x40000000" perms="rw" cached="false" setvar_vaddr="spi2_probe_framebuffer" />
+            <map mr="spi2" vaddr="0x41000000" perms="rw" cached="false" setvar_vaddr="spi2_probe_mmio" />
+            <map mr="pmgr" vaddr="0x42000000" perms="rw" cached="false" setvar_vaddr="spi2_probe_gate" />
+            <map mr="i2c01" vaddr="0x43000000" perms="rw" cached="false" setvar_vaddr="touch_probe_i2c0" />
+            <map mr="touch_clock" vaddr="0x44000000" perms="rw" cached="false" setvar_vaddr="touch_probe_clock" />
+            <map mr="gpio" vaddr="0x45000000" perms="rw" cached="false" setvar_vaddr="touch_probe_gpio" />
+        </protection_domain>
+    </protection_domain>
+</system>

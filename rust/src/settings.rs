@@ -3,12 +3,19 @@
 /// Shared with `AppViewState::set_display_text` alphabet rules.
 pub const SETTINGS_TEXT_CAPACITY: usize = 128;
 
+#[cfg(not(feature = "iphone-shell"))]
 const PREFIX: &[u8] = b"LOCAL ONLY\nVAULT LOCAL\nNO NET YET\n";
+#[cfg(feature = "iphone-shell")]
+const PREFIX: &[u8] = b"LOCAL ONLY\nVAULT WAIT\nNO NET YET\n";
 const NO_ALERTS: &[u8] = b"NO ALERTS YET";
 
 /// Format the four-line Settings body. Line 4 is `NO ALERTS YET` or
 /// `ALERTS RING N SMS M` (uppercase digits only).
-pub fn format_settings_text(rings: u64, sms: u64, out: &mut [u8; SETTINGS_TEXT_CAPACITY]) -> Option<usize> {
+pub fn format_settings_text(
+    rings: u64,
+    sms: u64,
+    out: &mut [u8; SETTINGS_TEXT_CAPACITY],
+) -> Option<usize> {
     out.fill(0);
     if PREFIX.len() > SETTINGS_TEXT_CAPACITY {
         return None;
@@ -39,7 +46,11 @@ pub fn format_settings_text(rings: u64, sms: u64, out: &mut [u8; SETTINGS_TEXT_C
     Some(cursor)
 }
 
-fn write_decimal(value: u64, out: &mut [u8; SETTINGS_TEXT_CAPACITY], cursor: usize) -> Option<usize> {
+fn write_decimal(
+    value: u64,
+    out: &mut [u8; SETTINGS_TEXT_CAPACITY],
+    cursor: usize,
+) -> Option<usize> {
     let mut digits = [0u8; 20];
     let mut remaining = value;
     let mut count = 0;
@@ -68,22 +79,31 @@ mod tests {
     fn zero_alerts_keeps_the_stub_line() {
         let mut buffer = [0u8; SETTINGS_TEXT_CAPACITY];
         let length = format_settings_text(0, 0, &mut buffer).unwrap();
-        assert_eq!(&buffer[..length], b"LOCAL ONLY\nVAULT LOCAL\nNO NET YET\nNO ALERTS YET");
+        let expected = if cfg!(feature = "iphone-shell") {
+            b"LOCAL ONLY\nVAULT WAIT\nNO NET YET\nNO ALERTS YET".as_slice()
+        } else {
+            b"LOCAL ONLY\nVAULT LOCAL\nNO NET YET\nNO ALERTS YET".as_slice()
+        };
+        assert_eq!(&buffer[..length], expected);
     }
 
     #[test]
     fn non_zero_alerts_use_the_ring_sms_line() {
         let mut buffer = [0u8; SETTINGS_TEXT_CAPACITY];
         let length = format_settings_text(1, 1, &mut buffer).unwrap();
-        assert_eq!(
-            &buffer[..length],
-            b"LOCAL ONLY\nVAULT LOCAL\nNO NET YET\nALERTS RING 1 SMS 1"
-        );
+        let expected = if cfg!(feature = "iphone-shell") {
+            b"LOCAL ONLY\nVAULT WAIT\nNO NET YET\nALERTS RING 1 SMS 1".as_slice()
+        } else {
+            b"LOCAL ONLY\nVAULT LOCAL\nNO NET YET\nALERTS RING 1 SMS 1".as_slice()
+        };
+        assert_eq!(&buffer[..length], expected);
         let length = format_settings_text(12, 0, &mut buffer).unwrap();
-        assert_eq!(
-            &buffer[..length],
-            b"LOCAL ONLY\nVAULT LOCAL\nNO NET YET\nALERTS RING 12 SMS 0"
-        );
+        let expected = if cfg!(feature = "iphone-shell") {
+            b"LOCAL ONLY\nVAULT WAIT\nNO NET YET\nALERTS RING 12 SMS 0".as_slice()
+        } else {
+            b"LOCAL ONLY\nVAULT LOCAL\nNO NET YET\nALERTS RING 12 SMS 0".as_slice()
+        };
+        assert_eq!(&buffer[..length], expected);
     }
 
     #[test]

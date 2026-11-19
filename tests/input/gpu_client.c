@@ -12,6 +12,25 @@
 #include <sddf/gpu/events.h>
 #include <sddf/timer/client.h>
 #include <gpu_config.h>
+#include "slint_frame.h"
+
+/* Queue records live in device memory, which can fault on wide, unaligned
+ * stores even when the compiler considers them valid for normal RAM. */
+static inline int enqueue_gpu_request(gpu_queue_handle_t *handle, gpu_req_t request)
+{
+    if (gpu_queue_full_req(handle)) {
+        return -1;
+    }
+    gpu_req_queue_t *queue = handle->req_queue;
+    volatile uint8_t *dst = (volatile uint8_t *)&queue->buffers[queue->tail % handle->capacity];
+    const uint8_t *src = (const uint8_t *)&request;
+    for (size_t i = 0; i < sizeof(request); ++i) {
+        dst[i] = src[i];
+    }
+    queue->tail++;
+    return 0;
+}
+#define gpu_enqueue_req enqueue_gpu_request
 
 /* Uncomment this to enable debug logging */
 // #define DEBUG_GPU_CLIENT
@@ -71,6 +90,7 @@ uintptr_t calendar_view;
 uintptr_t messages_view;
 uintptr_t settings_view;
 uintptr_t phone_view;
+uintptr_t slint_frame;
 
 typedef struct {
     uint32_t revision;
@@ -93,6 +113,7 @@ static bool pending_display_info_request = false;
 static uint32_t rendered_focus = UINT32_MAX;
 static uint32_t rendered_view_revision = UINT32_MAX;
 static uint32_t rendered_pointer_revision = UINT32_MAX;
+static uint32_t rendered_slint_frame_revision = UINT32_MAX;
 
 static const uint8_t font_5x7[26][7] = {
     {0x0e, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11},
@@ -652,49 +673,84 @@ static void draw_notes_list(uint8_t *frame, const char *text, uint32_t length,
 
 static void draw_pointer_cursor(uint8_t *frame, uint32_t x, uint32_t y)
 {
-    /* Amber arrow with a dark halo so UTM USB Tablet mode stays aimable. */
+    /* Neon light-blue arrow with a dark halo so UTM USB Tablet mode stays aimable.
+     * The mark was sized for a 300px-wide frame. On 1080 it needs to be larger. */
     static const char *rows[] = {
         "X      ",
         "XX     ",
-        "X X    ",
-        "X  X   ",
-        "X   X  ",
-        "X    X ",
+        "XXX    ",
+        "XXXX   ",
         "XXXXX  ",
-        "X  X   ",
-        "X   X  ",
-        "     X ",
+        "XXXXXX ",
+        "XXXXXXX",
+        "XXXX   ",
+        "XXX    ",
+        "XX     ",
+        "X      ",
     };
-    for (int row = 0; row < 10; row++) {
+    const int scale = 4;
+    for (int row = 0; row < 11; row++) {
         for (int column = 0; column < 7; column++) {
             if (rows[row][column] != 'X') {
                 continue;
             }
-            int px = (int)x + column;
-            int py = (int)y + row;
-            if (px < 0 || py < 0 || px >= FB_IMG_WIDTH || py >= FB_IMG_HEIGHT) {
-                continue;
-            }
-            for (int oy = -1; oy <= 1; oy++) {
-                for (int ox = -1; ox <= 1; ox++) {
-                    if (ox == 0 && oy == 0) {
+            int px = (int)x + column * scale;
+            int py = (int)y + row * scale;
+            for (int sy = 0; sy < scale; sy++) {
+                for (int sx = 0; sx < scale; sx++) {
+                    int qx = px + sx;
+                    int qy = py + sy;
+                    if (qx < 0 || qy < 0 || qx >= FB_IMG_WIDTH || qy >= FB_IMG_HEIGHT) {
                         continue;
                     }
-                    int hx = px + ox;
-                    int hy = py + oy;
-                    if (hx < 0 || hy < 0 || hx >= FB_IMG_WIDTH || hy >= FB_IMG_HEIGHT) {
-                        continue;
-                    }
-                    size_t outline = ((size_t)hy * FB_IMG_WIDTH + (size_t)hx) * GPU_BPP_2D;
-                    frame[outline] = 18;
-                    frame[outline + 1] = 21;
-                    frame[outline + 2] = 11;
+                    size_t offset = ((size_t)qy * FB_IMG_WIDTH + (size_t)qx) * GPU_BPP_2D;
+                    frame[offset] = 255;
+                    frame[offset + 1] = 244;
+                    frame[offset + 2] = 64;
+                    frame[offset + 3] = 255;
                 }
             }
-            size_t offset = ((size_t)py * FB_IMG_WIDTH + (size_t)px) * GPU_BPP_2D;
-            frame[offset] = 20;
-            frame[offset + 1] = 206;
-            frame[offset + 2] = 255;
+        }
+    }
+    for (int row = 0; row < 11; row++) {
+        for (int column = 0; column < 7; column++) {
+            if (rows[row][column] != 'X') {
+                continue;
+            }
+            int px = (int)x + column * scale;
+            int py = (int)y + row * scale;
+            for (int sy = 0; sy < scale; sy++) {
+                for (int sx = 0; sx < scale; sx++) {
+                    int qx = px + sx;
+                    int qy = py + sy;
+                    for (int oy = -1; oy <= 1; oy++) {
+                        for (int ox = -1; ox <= 1; ox++) {
+                            if (ox == 0 && oy == 0) {
+                                continue;
+                            }
+                            int hx = qx + ox;
+                            int hy = qy + oy;
+                            if (hx < 0 || hy < 0 || hx >= FB_IMG_WIDTH || hy >= FB_IMG_HEIGHT) {
+                                continue;
+                            }
+                            int lx = hx - (int)x;
+                            int ly = hy - (int)y;
+                            if (lx >= 0 && ly >= 0) {
+                                int cover_column = lx / scale;
+                                int cover_row = ly / scale;
+                                if (cover_column < 7 && cover_row < 11 &&
+                                    rows[cover_row][cover_column] == 'X') {
+                                    continue;
+                                }
+                            }
+                            size_t outline = ((size_t)hy * FB_IMG_WIDTH + (size_t)hx) * GPU_BPP_2D;
+                            frame[outline] = 18;
+                            frame[outline + 1] = 21;
+                            frame[outline + 2] = 11;
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -943,6 +999,118 @@ static void draw_app_page(uint8_t *frame, uint32_t focus, const char *text,
     }
 }
 
+#define CURSOR_SCALE 4
+#define CURSOR_COLS 7
+#define CURSOR_ROWS 11
+#define CURSOR_BACKUP_W 40
+#define CURSOR_BACKUP_H 56
+
+static int cursor_saved;
+static int saved_x, saved_y, saved_w, saved_h;
+static uint8_t cursor_backup[CURSOR_BACKUP_W * CURSOR_BACKUP_H * 4];
+
+static void flush_band(int y, int height)
+{
+    if (height <= 0) {
+        return;
+    }
+    if (y < 0) {
+        height += y;
+        y = 0;
+    }
+    if (y >= FB_IMG_HEIGHT || height <= 0) {
+        return;
+    }
+    if (y + height > FB_IMG_HEIGHT) {
+        height = FB_IMG_HEIGHT - y;
+    }
+    gpu_rect_t rect = {
+        .x = 0,
+        .y = y,
+        .width = FB_IMG_WIDTH,
+        .height = height,
+    };
+    int err = gpu_enqueue_req(&gpu_queue_handle, (gpu_req_t) {
+        .code = GPU_REQ_TRANSFER_TO_2D,
+        .id = get_and_inc_req_id(),
+        .transfer_to_2d = {
+            .resource_id = 1,
+            .rect = rect,
+            .mem_offset = (uint64_t)y * FB_IMG_WIDTH * GPU_BPP_2D,
+        },
+    });
+    if (err) {
+        return;
+    }
+    err = gpu_enqueue_req(&gpu_queue_handle, (gpu_req_t) {
+        .code = GPU_REQ_RESOURCE_FLUSH,
+        .id = get_and_inc_req_id(),
+        .resource_flush = {
+            .resource_id = 1,
+            .rect = rect,
+        },
+    });
+    if (err) {
+        return;
+    }
+}
+
+static void restore_cursor_outside(uint8_t *frame, int band_y, int band_bottom)
+{
+    if (!cursor_saved) {
+        return;
+    }
+    for (int row = 0; row < saved_h; row++) {
+        int frame_y = saved_y + row;
+        if (band_bottom > band_y && frame_y >= band_y && frame_y < band_bottom) {
+            continue;
+        }
+        memcpy(frame + ((size_t)frame_y * FB_IMG_WIDTH + (size_t)saved_x) * GPU_BPP_2D,
+               cursor_backup + (size_t)row * (size_t)saved_w * GPU_BPP_2D,
+               (size_t)saved_w * GPU_BPP_2D);
+    }
+    cursor_saved = 0;
+}
+
+static void backup_cursor(uint8_t *frame, uint32_t x, uint32_t y)
+{
+    int left = (int)x - 1;
+    int top = (int)y - 1;
+    int right = (int)x + CURSOR_COLS * CURSOR_SCALE + 1;
+    int bottom = (int)y + CURSOR_ROWS * CURSOR_SCALE + 1;
+    if (left < 0) {
+        left = 0;
+    }
+    if (top < 0) {
+        top = 0;
+    }
+    if (right > FB_IMG_WIDTH) {
+        right = FB_IMG_WIDTH;
+    }
+    if (bottom > FB_IMG_HEIGHT) {
+        bottom = FB_IMG_HEIGHT;
+    }
+    saved_w = right - left;
+    saved_h = bottom - top;
+    if (saved_w <= 0 || saved_h <= 0 || saved_w > CURSOR_BACKUP_W || saved_h > CURSOR_BACKUP_H) {
+        cursor_saved = 0;
+        return;
+    }
+    saved_x = left;
+    saved_y = top;
+    for (int row = 0; row < saved_h; row++) {
+        memcpy(cursor_backup + (size_t)row * (size_t)saved_w * GPU_BPP_2D,
+               frame + ((size_t)(saved_y + row) * FB_IMG_WIDTH + (size_t)saved_x) * GPU_BPP_2D,
+               (size_t)saved_w * GPU_BPP_2D);
+    }
+    cursor_saved = 1;
+}
+
+static int span_inside(int top, int bottom, uint32_t y, uint32_t height)
+{
+    return top >= 0 && bottom > top && top >= (int)y && bottom <= (int)(y + height);
+}
+
 static void do_draw_state(void)
 {
     uint32_t focus = *(volatile uint32_t *)ui_focus;
@@ -1017,54 +1185,125 @@ static void do_draw_state(void)
                                      &notes_field)) {
         return;
     }
+    const slint_frame_header_t *slint_surface = (const slint_frame_header_t *)slint_frame;
+    uint32_t slint_revision = 0;
+    bool slint_frame_ready = focus == 1 && slint_frame != 0 &&
+        FB_IMG_WIDTH == SLINT_FRAME_WIDTH && FB_IMG_HEIGHT == SLINT_FRAME_HEIGHT &&
+        slint_frame_header_valid(slint_surface, SLINT_FRAME_REGION_BYTES, &slint_revision);
     if (focus != rendered_focus || view_revision != rendered_view_revision
-        || pointer.revision != rendered_pointer_revision) {
+        || pointer.revision != rendered_pointer_revision
+        || (slint_frame_ready && slint_revision != rendered_slint_frame_revision)) {
+        /* A full queue used to abort this program and leave the last frame up. */
+        if (gpu_queue_length_req(&gpu_queue_handle) + 8 > gpu_queue_handle.capacity) {
+            sddf_printf("GPU|QUEUE FULL\n");
+            return;
+        }
         uint8_t *frame = (uint8_t *)(gpu_data + DISPLAY_INFO_DATA_OFFSET);
         size_t frame_size = FB_IMG_WIDTH * FB_IMG_HEIGHT * GPU_BPP_2D;
-        memcpy(frame, _fb_img, frame_size);
+        bool have_slint = rendered_slint_frame_revision != UINT32_MAX;
+        /* A click publishes the Slint frame while this copy may already be
+         * running. Keep the picture on screen instead of the old notes page. */
+        if (!slint_frame_ready && have_slint) {
+            return;
+        }
 
-        if (focus == 1 || focus == 2 || focus == 3 || focus == 4 || focus == 5
-            || focus == 6 || focus == 7 || focus == 8) {
+        bool content = false;
+        bool drew_slint_frame = false;
+        uint32_t band_y = 0;
+        uint32_t band_h = FB_IMG_HEIGHT;
+        int old_top = cursor_saved ? saved_y : -1;
+        int old_bottom = cursor_saved ? saved_y + saved_h : -1;
+        bool pointer_only = slint_frame_ready && have_slint &&
+            slint_revision == rendered_slint_frame_revision;
+
+        if (!slint_frame_ready) {
+            size_t image_bytes = (size_t)(_fb_img_end - _fb_img);
+            if (image_bytes > frame_size) {
+                image_bytes = frame_size;
+            }
+            memset(frame, 0, frame_size);
+            memcpy(frame, _fb_img, image_bytes);
+            cursor_saved = 0;
+            old_top = -1;
+            content = true;
+        } else if (!pointer_only) {
+            uint32_t y = atomic_load_explicit(&slint_surface->damage_y, memory_order_relaxed);
+            uint32_t height = atomic_load_explicit(&slint_surface->damage_height, memory_order_relaxed);
+            if (!have_slint || height == 0 || y >= SLINT_FRAME_HEIGHT ||
+                height > SLINT_FRAME_HEIGHT - y) {
+                y = 0;
+                height = SLINT_FRAME_HEIGHT;
+            }
+            sddf_printf("GPU|SLINT COPY rev=%u y=%u h=%u\n", slint_revision, y, height);
+            drew_slint_frame = slint_frame_copy_band_to_bgra(
+                slint_surface,
+                (const uint8_t *)slint_surface + sizeof(*slint_surface),
+                SLINT_FRAME_REGION_BYTES, frame, frame_size, y, height);
+            if (!drew_slint_frame && have_slint) {
+                sddf_printf("GPU|SLINT COPY FAIL\n");
+                return;
+            }
+            if (drew_slint_frame) {
+                content = true;
+                band_y = y;
+                band_h = height;
+                restore_cursor_outside(frame, (int)band_y, (int)(band_y + band_h));
+            }
+        } else {
+            restore_cursor_outside(frame, 0, 0);
+        }
+
+        /* Legacy C notes/contacts UI was authored for a ~300px panel. On the
+         * 1080 Slint image it flashes as a tiny PRIVATE NOTES strip whenever
+         * ui_focus is set but the Slint surface is not copyable yet. Slint is
+         * always mapped here — never fall back to that old page. */
+        if (!drew_slint_frame && !have_slint && !pointer_only && slint_frame == 0 &&
+            (focus == 1 || focus == 2 || focus == 3 || focus == 4 || focus == 5
+            || focus == 6 || focus == 7 || focus == 8)) {
             draw_app_page(frame, focus, app_text, app_text_length, scroll_start_line,
                           notes_mode, selected_note, note_count, notes_delete_armed,
                           notes_field);
+            content = true;
+            band_y = 0;
+            band_h = FB_IMG_HEIGHT;
         }
         if (pointer.visible) {
+            backup_cursor(frame, pointer.x, pointer.y);
             draw_pointer_cursor(frame, pointer.x, pointer.y);
         }
+        int new_top = cursor_saved ? saved_y : -1;
+        int new_bottom = cursor_saved ? saved_y + saved_h : -1;
 
-        gpu_rect_t full = {
-            .x = 0,
-            .y = 0,
-            .width = FB_IMG_WIDTH,
-            .height = FB_IMG_HEIGHT,
-        };
         if (rendered_focus == UINT32_MAX) {
+            gpu_rect_t full = {
+                .x = 0,
+                .y = 0,
+                .width = FB_IMG_WIDTH,
+                .height = FB_IMG_HEIGHT,
+            };
             draw_image(1, FB_IMG_WIDTH, FB_IMG_HEIGHT, 0, full);
         } else {
-            int err = gpu_enqueue_req(&gpu_queue_handle, (gpu_req_t) {
-                .code = GPU_REQ_TRANSFER_TO_2D,
-                .id = get_and_inc_req_id(),
-                .transfer_to_2d = {
-                    .resource_id = 1,
-                    .rect = full,
-                    .mem_offset = 0,
-                },
-            });
-            assert(!err);
-            err = gpu_enqueue_req(&gpu_queue_handle, (gpu_req_t) {
-                .code = GPU_REQ_RESOURCE_FLUSH,
-                .id = get_and_inc_req_id(),
-                .resource_flush = {
-                    .resource_id = 1,
-                    .rect = full,
-                },
-            });
-            assert(!err);
+            if (content) {
+                flush_band((int)band_y, (int)band_h);
+            }
+            bool pointer_moved = pointer.revision != rendered_pointer_revision;
+            if (old_top >= 0 && (pointer_moved || !pointer.visible) &&
+                !(content && span_inside(old_top, old_bottom, band_y, band_h))) {
+                flush_band(old_top, old_bottom - old_top);
+            }
+            if (pointer.visible && new_top >= 0 && pointer_moved &&
+                !(content && span_inside(new_top, new_bottom, band_y, band_h))) {
+                flush_band(new_top, new_bottom - new_top);
+            }
         }
         rendered_focus = focus;
         rendered_view_revision = view_revision;
         rendered_pointer_revision = pointer.revision;
+        if (drew_slint_frame) {
+            rendered_slint_frame_revision = slint_revision;
+        } else if (!have_slint) {
+            rendered_slint_frame_revision = UINT32_MAX;
+        }
         microkit_notify(VIRT_CH);
     }
 }
@@ -1126,13 +1365,17 @@ void notified(microkit_channel ch)
             display_info_init = true;
             LOG_GPU_CLIENT("Now starting the draw state machine\n");
             do_draw_state();
+            /* Poll the Slint frame. A publish during sync can miss the
+             * one-shot focus notification, and this client is above the
+             * network so a copy finishes once it is queued. */
+            sddf_timer_set_timeout(TIMER_CH, 200000000ull);
         }
         return;
     }
 
     if (ch == TIMER_CH) {
-        LOG_GPU_CLIENT("Received notification from timer\n");
         do_draw_state();
+        sddf_timer_set_timeout(TIMER_CH, 200000000ull);
         return;
     }
 
@@ -1159,12 +1402,15 @@ void notified(microkit_channel ch)
         assert(!err);
         if (resp.status != GPU_RESP_OK) {
             LOG_GPU_CLIENT_ERR("Failed request %d with status %d\n", resp.id, resp.status);
+            continue;
         }
-        assert(resp.status == GPU_RESP_OK);
         LOG_GPU_CLIENT("Response received for request %d\n", resp.id);
         if (resp.id == display_info_req_id) {
             handle_display_info_response();
             pending_display_info_request = false;
         }
     }
+    /* A tap can publish the Slint frame while this scanout is in flight.
+     * Present that frame when the virtio response lands. */
+    do_draw_state();
 }

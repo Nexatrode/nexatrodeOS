@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Slint UI frame producer for the QEMU/UTM VirtIO graphics path. -->
+<system>
+    <memory_region name="slint_frame" size="0x80000" page_size="0x1000" />
+    <memory_region name="slint_heap" size="0x800000" page_size="0x1000" />
+
+    <!-- Input router (95) calls the UI; the UI (99) calls Notes (100). -->
+    <protection_domain name="slint_ui" priority="99" budget="9000" period="10000" stack_size="0x20000">
+        <program_image path="slint_notes_utm.elf" />
+        <map mr="slint_heap" vaddr="0x48_000_000" perms="rw" cached="false" setvar_vaddr="slint_heap" />
+        <map mr="ui_focus" vaddr="0x42_000_000" perms="rw" cached="false" setvar_vaddr="ui_focus" />
+        <map mr="ui_pointer" vaddr="0x47_000_000" perms="r" cached="false" setvar_vaddr="ui_pointer" />
+        <map mr="slint_frame" vaddr="0x4d_000_000" perms="rw" cached="false" setvar_vaddr="slint_frame" />
+        <map mr="notes_transfer" vaddr="0x45_000_000" perms="rw" cached="false" setvar_vaddr="notes_transfer" />
+        <map mr="contacts_transfer" vaddr="0x46_000_000" perms="rw" cached="false" setvar_vaddr="contacts_transfer" />
+        <map mr="calendar_transfer" vaddr="0x4a_000_000" perms="rw" cached="false" setvar_vaddr="calendar_transfer" />
+        <map mr="messages_transfer" vaddr="0x4b_000_000" perms="rw" cached="false" setvar_vaddr="messages_transfer" />
+    </protection_domain>
+    <channel>
+        <end pd="input_service" id="9" pp="true" notify="false" />
+        <end pd="slint_ui" id="1" notify="true" />
+    </channel>
+    <!-- The UI schedules a one-shot deadline for timer- or animation-driven redraws. -->
+    <channel>
+        <end pd="timer_driver" id="7" notify="true" />
+        <end pd="slint_ui" id="8" pp="true" notify="true" setvar_id="slint_timer_channel" />
+    </channel>
+    <!-- Notes app mediates Slint storage; the shell receives no vault capability. -->
+    <channel>
+        <end pd="notes_app" id="3" notify="false" />
+        <end pd="slint_ui" id="2" pp="true" notify="false" />
+    </channel>
+    <!-- Contacts service owns its namespace and validates the contact record. -->
+    <channel>
+        <end pd="contacts_app" id="3" notify="false" />
+        <end pd="slint_ui" id="3" pp="true" notify="false" />
+    </channel>
+    <!-- Calendar service owns the reminder list and its vault namespace. -->
+    <channel>
+        <end pd="calendar_app" id="3" notify="false" />
+        <end pd="slint_ui" id="4" pp="true" notify="false" />
+    </channel>
+    <!-- Messages owns the peer model; Slint receives a read-only snapshot. -->
+    <channel>
+        <end pd="messages_app" id="5" notify="false" />
+        <end pd="slint_ui" id="5" pp="true" notify="false" />
+    </channel>
+</system>

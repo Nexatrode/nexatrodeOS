@@ -3,6 +3,9 @@
 #[cfg(target_os = "none")]
 mod freestanding;
 
+#[cfg(test)]
+mod wallet_range_plan;
+
 pub mod app_view;
 pub mod ath10k_board;
 pub mod ath10k_ce;
@@ -129,7 +132,9 @@ pub mod qcom_wlfw_bdf;
 pub mod qcom_wlfw_client;
 pub mod qcom_wmi_ce;
 pub mod record_crypto;
+pub mod wallet_pin;
 pub mod settings;
+pub mod simplex_ipc;
 pub mod sunfish_htt_rx_profile;
 pub mod sunfish_htt_rx_ring;
 pub mod sunfish_icnss_startup;
@@ -238,6 +243,8 @@ pub mod vault_backup;
 pub mod vault_blob_record;
 pub mod vault_blob_transfer;
 pub mod vault_crypto;
+pub mod vault_file;
+pub mod vault_history;
 pub mod vault_record;
 pub mod wlan_key_confirmation;
 pub mod wlan_protocol_probe_ipa;

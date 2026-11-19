@@ -1,6 +1,10 @@
 #![no_std]
 #![no_main]
 
+#[cfg(target_os = "none")]
+#[path = "freestanding.rs"]
+mod freestanding;
+
 mod input_protocol;
 
 use core::{
@@ -31,6 +35,10 @@ const CALCULATOR_INPUT: Channel = Channel::new(5);
 const CALENDAR_INPUT: Channel = Channel::new(6);
 const MESSAGES_INPUT: Channel = Channel::new(7);
 const PHONE_INPUT: Channel = Channel::new(8);
+#[cfg(feature = "utm-slint-input")]
+const SLINT_INPUT: Channel = Channel::new(9);
+#[cfg(feature = "utm-slint-input")]
+const REQUEST_SLINT_EVENT: u64 = 0x530;
 
 #[protection_domain]
 fn init() -> InputService {
@@ -39,21 +47,35 @@ fn init() -> InputService {
     let ui_pointer = memory_region_symbol!(ui_pointer: *mut UiPointerState);
     let notes_touch_mode = memory_region_symbol!(notes_touch_mode: *mut AtomicU32);
     unsafe {
-        ui_focus
-            .as_ref()
-            .store(focus_value(FocusTarget::None), Ordering::Release);
+        ui_focus.as_ref().store(
+            focus_value(if cfg!(feature = "utm-slint-input") {
+                FocusTarget::Notes
+            } else {
+                FocusTarget::None
+            }),
+            Ordering::Release,
+        );
         ui_pointer.as_ptr().write(UiPointerState::new());
     };
     debug_println!(
-        "UIINPUT|READY: bounded event service capacity={} focus=none touch-surfaces=notes,contacts,calculator,clock,calendar,messages pointer=guest-cursor",
-        EVENT_CAPACITY
+        "UIINPUT|READY: bounded event service capacity={} posted=224 focus={} touch-surfaces=notes,contacts,calculator,clock,calendar,messages pointer=guest-cursor",
+        EVENT_CAPACITY,
+        focus_name(if cfg!(feature = "utm-slint-input") {
+            FocusTarget::Notes
+        } else {
+            FocusTarget::None
+        })
     );
     InputService {
         ring,
         ui_focus,
         ui_pointer,
         notes_touch_mode,
-        focus: FocusTarget::None,
+        focus: if cfg!(feature = "utm-slint-input") {
+            FocusTarget::Notes
+        } else {
+            FocusTarget::None
+        },
         tablet_x: None,
         tablet_y: None,
         key_owners: KeyOwners::new(),
@@ -67,7 +89,26 @@ fn init() -> InputService {
         gpu_dirty: false,
         last_pointer_gpu_x: POINTER_PARK_X,
         last_pointer_gpu_y: POINTER_PARK_Y,
+        #[cfg(feature = "utm-slint-input")]
+        pointer_down: false,
+        #[cfg(feature = "utm-slint-input")]
+        last_drag_x: u32::MAX,
+        #[cfg(feature = "utm-slint-input")]
+        last_drag_y: u32::MAX,
     }
+}
+
+#[cfg(feature = "utm-slint-input")]
+fn kick_slint_catch_up(ui_focus: NonNull<AtomicU32>) {
+    // Volatile — matches slint's write_volatile on uncached ui_focus[1].
+    let flag = unsafe { ui_focus.as_ptr().add(1).cast::<u32>() };
+    let catch_up = unsafe { core::ptr::read_volatile(flag) };
+    if catch_up == 0 {
+        return;
+    }
+    unsafe { core::ptr::write_volatile(flag, 0) };
+    debug_println!("UIINPUT|CATCH_UP: notify slint wallet boot");
+    SLINT_INPUT.notify();
 }
 
 struct InputService {
@@ -89,12 +130,66 @@ struct InputService {
     gpu_dirty: bool,
     last_pointer_gpu_x: u32,
     last_pointer_gpu_y: u32,
+    #[cfg(feature = "utm-slint-input")]
+    pointer_down: bool,
+    #[cfg(feature = "utm-slint-input")]
+    last_drag_x: u32,
+    #[cfg(feature = "utm-slint-input")]
+    last_drag_y: u32,
 }
 
 impl InputService {
+    /// Queue a tap or key for the Slint PD and wake it.
+    ///
+    /// A protected call blocks here while the wallet sync pump owns that PD,
+    /// so the button release never arrives and the press is stuck. The focus
+    /// page already holds the focus word and the catch-up flag; the ring
+    /// starts at the third word and is drained from Slint's own handler.
+    #[cfg(feature = "utm-slint-input")]
+    fn post_slint_event(&mut self, event: EventRecord) {
+        let x = self
+            .tablet_x
+            .map(|value| tablet_axis_to_pixel(value, DISPLAY_WIDTH))
+            .unwrap_or(0);
+        let y = self
+            .tablet_y
+            .map(|value| tablet_axis_to_pixel(value, DISPLAY_HEIGHT))
+            .unwrap_or(0);
+        unsafe {
+            let base = self.ui_focus.as_ptr().cast::<u32>();
+            let head = &*base.add(2).cast::<core::sync::atomic::AtomicU32>();
+            let tail = &*base.add(3).cast::<core::sync::atomic::AtomicU32>();
+            let h = head.load(Ordering::Relaxed);
+            let t = tail.load(Ordering::Acquire);
+            if h.wrapping_sub(t) >= 224 {
+                self.rejected = self.rejected.saturating_add(1);
+                return;
+            }
+            let slot = (h % 224) as usize;
+            let record = base.add(4 + slot * 4);
+            core::ptr::write_volatile(
+                record,
+                event.device as u32 | ((event.event_type as u32) << 16),
+            );
+            core::ptr::write_volatile(record.add(1), event.code as u32);
+            core::ptr::write_volatile(record.add(2), event.value);
+            core::ptr::write_volatile(record.add(3), x | (y << 16));
+            head.store(h.wrapping_add(1), Ordering::Release);
+        }
+        SLINT_INPUT.notify();
+        self.gpu_dirty = true;
+    }
+
     fn route_event(&mut self, event: EventRecord) {
         if !valid_event(event) {
             self.rejected = self.rejected.saturating_add(1);
+            if event.device == DEVICE_TABLET && event.event_type == EVENT_KEY {
+                debug_println!(
+                    "UIINPUT|REJECT code={} val={}",
+                    event.code,
+                    event.value
+                );
+            }
             return;
         }
         self.accepted = self.accepted.saturating_add(1);
@@ -120,6 +215,54 @@ impl InputService {
                         self.gpu_dirty = true;
                     }
                 }
+            }
+        }
+
+        #[cfg(feature = "utm-slint-input")]
+        {
+            if event.device == DEVICE_TABLET
+                && (event.event_type == EVENT_ABS || event.event_type == EVENT_SYN)
+            {
+                // The tablet path drops SYN and keeps only the latest point in
+                // each batch. While the button is held, that point is the drag.
+                if self.pointer_down && event.event_type == EVENT_ABS {
+                    if let (Some(x), Some(y)) = (self.tablet_x, self.tablet_y) {
+                        let pixel_x = tablet_axis_to_pixel(x, DISPLAY_WIDTH);
+                        let pixel_y = tablet_axis_to_pixel(y, DISPLAY_HEIGHT);
+                        if pixel_x != self.last_drag_x || pixel_y != self.last_drag_y {
+                            self.last_drag_x = pixel_x;
+                            self.last_drag_y = pixel_y;
+                        }
+                    }
+                }
+                return;
+            }
+            if (event.device == DEVICE_TABLET
+                && event.event_type == EVENT_KEY
+                && event.code == BTN_LEFT)
+                || (event.device == DEVICE_KEYBOARD && event.event_type == EVENT_KEY)
+            {
+                // Key releases do not change the field. Queueing them overflows
+                // the burst that holds one address.
+                let modifier_release = matches!(event.code, 29 | 42 | 54 | 97 | 125 | 126);
+                if event.device == DEVICE_KEYBOARD
+                    && event.value == 0
+                    && !modifier_release
+                {
+                    return;
+                }
+                self.post_slint_event(event);
+                if event.device == DEVICE_TABLET && event.code == BTN_LEFT {
+                    self.pointer_down = event.value != 0;
+                    if event.value == 0 {
+                        self.last_drag_x = u32::MAX;
+                        self.last_drag_y = u32::MAX;
+                    }
+                }
+                return;
+            }
+            if event.event_type == EVENT_SYN {
+                return;
             }
         }
 
@@ -180,11 +323,7 @@ impl InputService {
                 if let Some(code) = touch_contacts_action(self.focus, pixel_x, pixel_y) {
                     if event.value == 1 {
                         self.dispatch_virtual_key(code);
-                        debug_println!(
-                            "UIROUTER|VKEY: {} code={}",
-                            focus_name(self.focus),
-                            code
-                        );
+                        debug_println!("UIROUTER|VKEY: {} code={}", focus_name(self.focus), code);
                     }
                     return;
                 }
@@ -344,6 +483,8 @@ impl InputService {
             self.gpu_dirty = false;
             GPU_FOCUS_NOTIFICATION.notify();
         }
+        #[cfg(feature = "utm-slint-input")]
+        kick_slint_catch_up(self.ui_focus);
     }
 }
 
@@ -351,8 +492,36 @@ impl Handler for InputService {
     type Error = Infallible;
 
     fn notified(&mut self, channels: ChannelSet) -> Result<(), Self::Error> {
-        if !channels.contains(INPUT_NOTIFICATION) {
+        #[cfg(feature = "utm-slint-input")]
+        if channels.contains(SLINT_INPUT) {
+            // The chat or wallet published a frame without a key or click.
+            debug_println!("UIINPUT|SCANOUT");
+            self.gpu_dirty = true;
+            self.flush_gpu();
+        }
+        // The virtio driver only runs on an edge. Ask it to drain any taps
+        // that arrived while the line was stuck. It runs above us, so the
+        // records are in the ring before the next wake; drain here too in
+        // case they were already published.
+        #[cfg(feature = "utm-slint-input")]
+        INPUT_NOTIFICATION.notify();
+        let ring_pending = {
+            let ring = unsafe { self.ring.as_ref() };
+            ring.head.load(Ordering::Acquire) != ring.tail.load(Ordering::Relaxed)
+        };
+        if !channels.contains(INPUT_NOTIFICATION) && !ring_pending {
             if channels.contains(GPU_FOCUS_NOTIFICATION) {
+                // gpu_client pulses after each Slint scanout — advance one
+                // wallet-boot phase / sync poll without a tablet tap.
+                #[cfg(feature = "utm-slint-input")]
+                {
+                    debug_println!("UIINPUT|POST_SCANOUT: notify slint");
+                    SLINT_INPUT.notify();
+                }
+                return Ok(());
+            }
+            #[cfg(feature = "utm-slint-input")]
+            if channels.contains(SLINT_INPUT) {
                 return Ok(());
             }
             debug_println!("UIINPUT|ERROR: unexpected notification");

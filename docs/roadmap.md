@@ -241,6 +241,15 @@ to `dhcp_client` for host delivery (peer IP/port on the shared TX page; demo
 default `10.0.2.2:1237`); a host toy router forwards to a second guest. Graphics
 UTM stays offline. Dual-UTM Shared Network LAN is a manual sketch (see
 [network-spike.md](network-spike.md)); not part of `./dev test-net`.
+Separately, the upstream SimpleX Agent completes bidirectional CLI
+interoperability and encrypted-store reboot restoration in QEMU. The merged
+Slint + Messages + Agent image now exchanges encrypted messages with an
+independent upstream CLI peer: Slint sends, the CLI replies, and Slint receives
+and acknowledges the reply. The CLI and local SMP server are host-side test
+fixtures; the application path under test runs in the guest. Pixel Wi-Fi,
+Internet access, durable Slint chat history, and device verification remain
+open. Details and limitations are tracked in
+[simplex-port-feasibility.md](simplex-port-feasibility.md).
 
 **Settings** is the eighth workspace alongside Phone, below the 2×3 grid:
 isolated PD, static local-only status (`LOCAL ONLY` / `VAULT LOCAL` / `NO NET YET` /
@@ -249,11 +258,42 @@ and no vault.
 
 ### How we “port” apps on seL4
 
-seL4/Microkit does not run Linux binaries. The benefit is explicit isolation and
-a small trusted kernel, so apps are **rewritten** against our vault/input/display
-(and later net) interfaces. Porting SimpleX Chat means a new native client or a
-future Linux guest VM—not installing the Haskell Linux build. See
+seL4/Microkit does not run Linux binaries. Apps use explicit capabilities for
+storage, input, display, and networking. For SimpleX Chat, the selected
+experiment is a native GHC runtime and dependency port, with the missing OS
+services developed as reusable capabilities along the way. An ARM64 Linux
+build is useful as a behavior and dependency reference; it is not the planned
+guest architecture. See
+[simplex-port-feasibility.md](simplex-port-feasibility.md) and
 [utm-vs-hardware.md](utm-vs-hardware.md#messaging-and-simplex-chat-long-term).
+
+### Target app isolation
+
+The native app model should give each app its own Microkit protection domain,
+with a private address space and only the capabilities needed for its features.
+Apps request storage and networking through narrow broker services: the vault
+assigns an app-specific namespace, and a network service grants only the
+connection operations the app needs. Apps should not receive direct device
+MMIO, IRQs, another app's memory, or a global filesystem/network handle by
+default. The shell, input router, and display path remain separate services
+with bounded interfaces. This follows the current capability probes and is a
+target architecture, not the present Pixel layout: most workspace views still
+run inside one Slint domain, Notes alone has a separate service, and its Pixel
+vault is volatile.
+
+Use separate protection domains for native NexatrodeOS apps. A VM can be a
+later compatibility boundary for a legacy or less-trusted guest, but needs a
+VMM, virtual devices, and suitable EL2/hardware support; it is not part of the
+current Pixel bring-up. Dynamic installation and launch also need a trusted
+app manager and resource-allocation policy, since the current Microkit system
+is configured statically at boot.
+
+GrapheneOS is a useful production benchmark for app sandboxing, permissions,
+profiles, verified boot, and exploit mitigations. NexatrodeOS should not claim
+comparable phone security until it has an authenticated boot/update chain,
+durable encrypted app storage, a real per-app permission model, and tested
+device services; seL4's kernel isolation alone does not provide those system
+features.
 
 ## Scope controls and security claims
 
@@ -302,11 +342,12 @@ the emulator cannot prove.
 
 Begin P0 as a bounded feasibility study alongside U3. Follow the
 [P0 boot/debug checklist](pixel-p0-boot-feasibility.md); keep partition writes
-out of scope until that report’s go/no-go table is filled. As of 29 September
-2026 the desk half of P0 is largely done (boot v2 anatomy, DT map, Lineage
-20260924 rollback kit on disk, sunfish scaffold) with a **conditional go**:
-ADB refresh still shows `console=null` / UART disabled path; still need a USB-C
-SBU UART capture and a confirmed userdata backup before any flash. A desk platform
+out of scope until that report’s go/no-go table is filled. As of 6 October
+2026, P0 has boot v2 anatomy, DT map, a Lineage 20260924 rollback kit,
+userdata backup, and a USB-Cereal capture of bootloader and Android kernel
+logs. The bootloader UART setting is enabled and Android boots normally with
+`console=ttyMSM0,115200n8`. The P1 desk port can proceed; live slot dumps or
+explicit acceptance of kit-only restore remain before any custom-image flash. A desk platform
 scaffold lives in [`platforms/sunfish/`](../platforms/sunfish/README.md) (overlay
 DTS + GENI putchar stubs; not linked into the QEMU build). The [Pixel key
 feasibility note](pixel-key-feasibility.md) finds Titan M/StrongBox support in

@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "shared": {
+    "ui": "experiments/slint-notes/ui/full_suite.slint",
+    "screen_wiring": "experiments/slint-notes/src/suite.rs",
+    "cargo_package": "experiments/slint-notes/Cargo.toml",
+    "common_feature": "full-suite-ui"
+  },
+  "targets": [
+    {
+      "id": "utm-qemu-virt",
+      "page_size_bytes": 4096,
+      "kernel_target": "rust/targets/aarch64-sel4-microkit.json",
+      "slint_mode": "guest-software-renderer",
+      "entrypoint": "dev",
+      "build_check": "QEMU boot, all eight app page frame comparisons, Lock Screen lock/unlock, Notes, Contacts, and Calendar vault save/readback across reboot, text entry in Messages, Calculator 1+2, and Phone dial/call state",
+      "interactive_guest_slint": true,
+      "notes": "The full Slint UI renders in a Microkit guest PD and reaches VirtIO scanout. Notes, Contacts, and Calendar own narrow service calls to their vault namespaces; the UI receives no vault capability. QEMU tests verify all three app records survive a guest reboot."
+    },
+    {
+      "id": "pixel-4a-sunfish",
+      "page_size_bytes": 4096,
+      "kernel_target": "rust/targets/aarch64-sel4-microkit-pixel4k.json",
+      "slint_mode": "interactive-framebuffer",
+      "entrypoint": "platforms/sunfish/build-slint-display.sh",
+      "build_check": "RAM-boot image build; no flash",
+      "interactive_guest_slint": true,
+      "notes": "1080x2340 framebuffer and Pixel touch service; display image has a volatile Notes vault."
+    },
+    {
+      "id": "iphone-7-plus",
+      "page_size_bytes": 16384,
+      "kernel_target": "rust/targets/aarch64-sel4-microkit-iphone16k.json",
+      "slint_mode": "interactive-framebuffer",
+      "entrypoint": "platforms/iphone7plus/build-slint-full-suite.sh",
+      "build_check": "Pongo loader build; upload is a separate step",
+      "interactive_guest_slint": true,
+      "notes": "1080x1920 framebuffer and D11 touch path; uses a 16 KiB seL4 target."
+    }
+  ]
+}

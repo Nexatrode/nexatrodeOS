@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<system>
+    <!-- Full 1080 x 1920 framebuffer; Rust Settings and Phone PDs own their views. -->
+    <memory_region name="screen" size="0x7f8000" page_size="0x4000" phys_addr="0x8bb80c000" />
+    <memory_region name="settings_view" size="0x4000" page_size="0x4000" />
+    <memory_region name="phone_view" size="0x4000" page_size="0x4000" />
+    <memory_region name="touch_state" size="0x4000" page_size="0x4000" />
+    <memory_region name="touch_spi2" size="0x4000" page_size="0x4000" phys_addr="0x20a088000" />
+    <memory_region name="touch_pmgr" size="0x4000" page_size="0x4000" phys_addr="0x20e080000" />
+    <memory_region name="touch_i2c01" size="0x4000" page_size="0x4000" phys_addr="0x20a110000" />
+    <memory_region name="touch_clock" size="0x4000" page_size="0x4000" phys_addr="0x20e078000" />
+    <memory_region name="touch_gpio" size="0x4000" page_size="0x4000" phys_addr="0x20f100000" />
+    <protection_domain name="settings_app" priority="100" passive="true" stack_size="0x4000">
+        <program_image path="rust_settings_app.elf" />
+        <map mr="settings_view" vaddr="0x43000000" perms="rw" cached="false" setvar_vaddr="settings_view" />
+    </protection_domain>
+    <protection_domain name="phone_app" priority="100" passive="true" stack_size="0x4000">
+        <program_image path="rust_phone_app.elf" />
+        <map mr="phone_view" vaddr="0x43000000" perms="rw" cached="false" setvar_vaddr="phone_view" />
+    </protection_domain>
+    <!-- Demo dial target; validates digits without accessing cellular hardware. -->
+    <protection_domain name="fake_modem" priority="102" passive="true" stack_size="0x4000">
+        <program_image path="rust_fake_modem.elf" />
+    </protection_domain>
+    <protection_domain name="shell" priority="99" budget="20000" period="200000" stack_size="0x4000">
+        <program_image path="shell.elf" />
+        <map mr="screen" vaddr="0x40000000" perms="rw" cached="false" setvar_vaddr="os_framebuffer" />
+        <map mr="settings_view" vaddr="0x41000000" perms="r" cached="false" setvar_vaddr="shell_settings_view" />
+        <map mr="phone_view" vaddr="0x42000000" perms="r" cached="false" setvar_vaddr="shell_phone_view" />
+        <map mr="touch_state" vaddr="0x44000000" perms="r" cached="false" setvar_vaddr="shell_touch_state" />
+    </protection_domain>
+    <protection_domain name="touch_service" priority="90" budget="20000" period="200000" stack_size="0x4000">
+        <program_image path="touch-service.elf" />
+        <map mr="touch_spi2" vaddr="0x41000000" perms="rw" cached="false" setvar_vaddr="touch_service_spi2" />
+        <map mr="touch_pmgr" vaddr="0x42000000" perms="rw" cached="false" setvar_vaddr="touch_service_pmgr" />
+        <map mr="touch_i2c01" vaddr="0x43000000" perms="rw" cached="false" setvar_vaddr="touch_service_i2c0" />
+        <map mr="touch_clock" vaddr="0x44000000" perms="rw" cached="false" setvar_vaddr="touch_service_clock" />
+        <map mr="touch_gpio" vaddr="0x45000000" perms="rw" cached="false" setvar_vaddr="touch_service_gpio" />
+        <map mr="touch_state" vaddr="0x46000000" perms="rw" cached="false" setvar_vaddr="touch_service_shared_state" />
+    </protection_domain>
+    <channel>
+        <end pd="settings_app" id="0" notify="false" />
+        <end pd="shell" id="0" pp="true" notify="false" />
+    </channel>
+    <channel>
+        <end pd="phone_app" id="0" notify="false" />
+        <end pd="shell" id="1" pp="true" notify="false" />
+    </channel>
+    <channel>
+        <end pd="touch_service" id="0" />
+        <end pd="shell" id="2" />
+    </channel>
+    <channel>
+        <end pd="phone_app" id="2" notify="false" />
+        <end pd="shell" id="3" pp="true" notify="false" />
+    </channel>
+    <channel>
+        <end pd="fake_modem" id="1" notify="false" />
+        <end pd="phone_app" id="1" pp="true" notify="false" />
+    </channel>
+</system>

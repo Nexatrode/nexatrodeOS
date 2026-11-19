@@ -1,0 +1,18 @@
+--- a/rts/eventlog/EventLog.c
++++ b/rts/eventlog/EventLog.c
+@@ -104,7 +104,14 @@
+ static eventlog_init_func_t *eventlog_header_funcs = NULL;
+ 
+ // See Note [Maximum event length]
+-#define EVENT_LOG_SIZE 2 * (1024 * 1024) // 2MB
++#if defined(sel4_HOST_OS)
++#ifndef SEL4_EVENT_LOG_SIZE
++#define SEL4_EVENT_LOG_SIZE (64 * 1024)
++#endif
++#define EVENT_LOG_SIZE SEL4_EVENT_LOG_SIZE
++#else
++#define EVENT_LOG_SIZE (2 * 1024 * 1024) // 2MB
++#endif
+ 
+ static int flushCount = 0;
+ 

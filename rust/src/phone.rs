@@ -243,7 +243,10 @@ mod tests {
         assert!(phone.press_call());
         assert!(phone.press_digit(9));
         let mut buffer = [0u8; PHONE_TEXT_CAPACITY];
-        assert_eq!(phone.display(&mut buffer).unwrap(), b"DIAL\n9\nRING 0 SMS 0");
+        assert_eq!(
+            phone.display(&mut buffer).unwrap(),
+            b"DIAL\n9\nRING 0 SMS 0"
+        );
     }
 
     #[test]

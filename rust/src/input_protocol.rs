@@ -27,8 +27,18 @@ pub const KEY_F7: u16 = 65;
 pub const BTN_LEFT: u16 = 272;
 pub const KEY_MAX: u16 = 0x2ff;
 pub const TABLET_AXIS_MAX: u32 = 0x7fff;
-pub const DISPLAY_WIDTH: u32 = 300;
-pub const DISPLAY_HEIGHT: u32 = 400;
+const LAUNCHER_WIDTH: u32 = 300;
+const LAUNCHER_HEIGHT: u32 = 400;
+pub const DISPLAY_WIDTH: u32 = if cfg!(feature = "utm-slint-input") {
+    1080
+} else {
+    LAUNCHER_WIDTH
+};
+pub const DISPLAY_HEIGHT: u32 = if cfg!(feature = "utm-slint-input") {
+    2340
+} else {
+    LAUNCHER_HEIGHT
+};
 /// Known cursor park used by QEMU frame compares (footer chrome).
 pub const POINTER_PARK_X: u32 = 290;
 pub const POINTER_PARK_Y: u32 = 390;
@@ -100,7 +110,11 @@ impl UiPointerState {
         if self.visible == 1 && self.x == x && self.y == y {
             return false;
         }
-        let odd = self.revision.load(core::sync::atomic::Ordering::Relaxed).wrapping_add(1) | 1;
+        let odd = self
+            .revision
+            .load(core::sync::atomic::Ordering::Relaxed)
+            .wrapping_add(1)
+            | 1;
         self.revision
             .store(odd, core::sync::atomic::Ordering::SeqCst);
         self.x = x;
@@ -181,8 +195,8 @@ pub const fn touch_focus_target(
     {
         return None;
     }
-    let x = tablet_axis_to_pixel(tablet_x, DISPLAY_WIDTH);
-    let y = tablet_axis_to_pixel(tablet_y, DISPLAY_HEIGHT);
+    let x = tablet_axis_to_pixel(tablet_x, LAUNCHER_WIDTH);
+    let y = tablet_axis_to_pixel(tablet_y, LAUNCHER_HEIGHT);
     match (x, y) {
         (12..=147, 50..=93) => Some(FocusTarget::Notes),
         (153..=288, 50..=93) => Some(FocusTarget::Contacts),
@@ -652,26 +666,14 @@ mod tests {
             next_focus_target(FocusTarget::Calculator),
             FocusTarget::Clock
         );
-        assert_eq!(
-            next_focus_target(FocusTarget::Clock),
-            FocusTarget::Calendar
-        );
+        assert_eq!(next_focus_target(FocusTarget::Clock), FocusTarget::Calendar);
         assert_eq!(
             next_focus_target(FocusTarget::Calendar),
             FocusTarget::Messages
         );
-        assert_eq!(
-            next_focus_target(FocusTarget::Messages),
-            FocusTarget::Phone
-        );
-        assert_eq!(
-            next_focus_target(FocusTarget::Phone),
-            FocusTarget::Settings
-        );
-        assert_eq!(
-            next_focus_target(FocusTarget::Settings),
-            FocusTarget::Notes
-        );
+        assert_eq!(next_focus_target(FocusTarget::Messages), FocusTarget::Phone);
+        assert_eq!(next_focus_target(FocusTarget::Phone), FocusTarget::Settings);
+        assert_eq!(next_focus_target(FocusTarget::Settings), FocusTarget::Notes);
     }
 
     #[test]

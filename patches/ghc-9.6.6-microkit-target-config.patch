@@ -1,0 +1,98 @@
+--- a/hadrian/src/Rules/Generate.hs
++++ b/hadrian/src/Rules/Generate.hs
+@@ -527,21 +527,41 @@
+ generateGhcAutoconfH :: Expr String
+ generateGhcAutoconfH = do
+     trackGenerateHs
+-    configHContents  <- expr $ mapMaybe undefinePackage <$> readFileLines configH
++    targetOs <- getSetting TargetOs
++    configHContents  <- expr $ mapMaybe (undefinePackage targetOs) <$> readFileLines configH
+     return . unlines $
+         [ "#if !defined(__GHCAUTOCONF_H__)"
+         , "#define __GHCAUTOCONF_H__" ]
+         ++ configHContents ++
+         [ "#endif /* __GHCAUTOCONF_H__ */" ]
+   where
+-    undefinePackage s
++    undefinePackage targetOs s
+         | "#define PACKAGE_" `isPrefixOf` s
+             = Just $ "/* #undef " ++ takeWhile (/=' ') (drop 8 s) ++ " */"
+         | "#define __GLASGOW_HASKELL" `isPrefixOf` s
+             = Nothing
+         | "/* REMOVE ME */" == s
+             = Nothing
++        | targetOs == "sel4"
++        , "#define " `isPrefixOf` s
++        , takeWhile (/=' ') (drop 8 s) `elem` sel4Unavailable
++            = Just $ "/* #undef " ++ takeWhile (/=' ') (drop 8 s) ++ " */"
+         | otherwise = Just s
++
++    -- mk/config.h describes the machine running configure (macOS here), but
++    -- RTS compilation for Microkit must not enable those host-only services.
++    sel4Unavailable =
++        [ "HAVE_CLOCK_GETTIME", "HAVE_CTIME_R", "HAVE_FORK"
++        , "HAVE_GETEUID", "HAVE_GETEGID", "HAVE_GETGID", "HAVE_GETPID"
++        , "HAVE_GETTIMEOFDAY", "HAVE_GETUID", "HAVE_LIBPTHREAD"
++        , "HAVE_PTHREAD_H", "HAVE_PTHREAD_SETNAME_NP_DARWIN"
++        , "HAVE_RAISE", "HAVE_SCHED_H", "HAVE_SETITIMER"
++        , "HAVE_SIGINTERRUPT", "HAVE_SIGNAL_H", "HAVE_SYSCONF"
++        , "HAVE_SYS_MMAN_H", "HAVE_SYS_SELECT_H", "HAVE_SYS_TIMEB_H"
++        , "HAVE_SYS_TIMES_H", "HAVE_SYS_TIME_H", "HAVE_TERMIOS_H"
++        , "HAVE_TIME_H", "HAVE_TIMES", "HAVE_UTIME_H", "HAVE_VFORK"
++        , "HAVE_WORKING_FORK", "HAVE_WORKING_VFORK"
++        ]
+ 
+ -- | Generate @Version.hs@ files.
+ generateVersionHs :: Expr String
+--- a/hadrian/src/Rules/Register.hs
++++ b/hadrian/src/Rules/Register.hs
+@@ -46,6 +46,13 @@
+           when isGmp $
+             need [buildP -/- "include/ghc-gmp.h"]
+         Cabal.configurePackage ctx
++        targetOs <- setting TargetOs
++        when (pkg == base && targetOs == "sel4") $ do
++            forM_ ["HsBaseConfig.h", "EventConfig.h"] $ \headerName -> do
++                let header = buildP -/- "include" -/- headerName
++                contents <- liftIO $ readFile header
++                writeFileChanged header . unlines $
++                    map undefineSel4HostFeature (lines contents)
+ 
+     root -/- "**/autogen/cabal_macros.h" %> \out -> do
+         (stage, path) <- parsePath (parseToBuildSubdirectory root) "<cabal macros path parser>" out
+@@ -54,7 +61,24 @@
+ 
+     root -/- "**/autogen/Paths_*.hs" %> \out ->
+         need [takeDirectory out -/- "cabal_macros.h"]
++
++undefineSel4HostFeature :: String -> String
++undefineSel4HostFeature line
++    | "#define " `isPrefixOf` line
++    , featureName `elem` sel4UnavailableFeatures
++        = "/* #undef " ++ featureName ++ " */"
++    | otherwise = line
++  where
++    featureName = takeWhile (/=' ') (drop 8 line)
+ 
++sel4UnavailableFeatures :: [String]
++sel4UnavailableFeatures =
++    [ "HAVE_CLOCK_GETTIME", "HAVE_FORK", "HAVE_GETPID", "HAVE_GETTIMEOFDAY"
++    , "HAVE_LIBPTHREAD", "HAVE_PTHREAD_H", "HAVE_SCHED_H", "HAVE_SIGNAL_H"
++    , "HAVE_SYS_MMAN_H", "HAVE_SYS_SELECT_H", "HAVE_TERMIOS_H", "HAVE_TIMES"
++    , "HTYPE_CC_T", "HTYPE_SPEED_T", "HTYPE_TCFLAG_T"
++    ]
++
+ parseSetupConfig :: FilePath -> Parsec.Parsec String () (Stage, FilePath)
+ parseSetupConfig root = do
+     _ <- Parsec.string root *> Parsec.optional (Parsec.char '/')
+--- a/libraries/base/include/HsBase.h
++++ b/libraries/base/include/HsBase.h
+@@ -377,7 +377,7 @@
+ }
+ #endif
+ 
+-#if !defined(_WIN32)
++#if !defined(_WIN32) && defined(HAVE_SIGNAL_H)
+ INLINE HsInt
+ __hscore_sizeof_sigset_t( void )
+ {

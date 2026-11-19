@@ -1,0 +1,22 @@
+--- a/libraries/base/GHC/Event/Control.hs
++++ b/libraries/base/GHC/Event/Control.hs
+@@ -235,7 +235,7 @@
+    c_eventfd_write :: CInt -> CULLong -> IO CInt
+ #endif
+ 
+-#if defined(wasm32_HOST_ARCH)
++#if defined(wasm32_HOST_ARCH) || defined(sel4_HOST_OS)
+ c_setIOManagerWakeupFd :: CInt -> IO ()
+ c_setIOManagerWakeupFd _ = pure ()
+ #else
+--- a/libraries/base/GHC/Event/Thread.hs
++++ b/libraries/base/GHC/Event/Thread.hs
+@@ -429,7 +429,7 @@
+               tid <- restartPollLoop mgr i
+               writeIOArray eventManagerArray i (Just (tid,mgr))
+ 
+-#if defined(wasm32_HOST_ARCH)
++#if defined(wasm32_HOST_ARCH) || defined(sel4_HOST_OS)
+ c_setIOManagerControlFd :: CUInt -> CInt -> IO ()
+ c_setIOManagerControlFd _ _ = pure ()
+ 

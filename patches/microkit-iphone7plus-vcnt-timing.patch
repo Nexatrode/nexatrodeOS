@@ -1,0 +1,11 @@
+--- a/build_sdk.py
++++ b/build_sdk.py
+@@ -319,6 +319,8 @@
+             "KernelPlatform": "iphone7plus",
+             # This first target has no UART, so do not emit console calls.
+             "KernelPrinting": False,
++            # Timing-only SDK: allow the Notes diagnostic to read CNTVCT_EL0.
++            "KernelArmExportVCNTUser": True,
+         },
+     ),
+     BoardInfo(

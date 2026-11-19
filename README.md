@@ -142,6 +142,7 @@ with either one.
 | `./dev backup-restore --archive vault.pvlt --output restored.img [--allow-rollback]` | Restore into a new copy of the default CLI disk; older authenticated generations require the explicit override |
 | `./dev run --disk restored.img` | Boot QEMU from a selected raw disk image |
 | `./dev utm` | Build and create/update the UTM bundle |
+| `./dev utm-accelerated` | Rebuild the regular four-vCPU NexatrodeOS image and stage its UTM configuration using the pinned [handoff-prime-m1-100 profile](experiments/hvf-smp/README.md#regular-accelerated-vm). |
 | `python3 tests/negative_controls.py` | Verify broken isolation and an unrelated fault are rejected |
 
 This initial bootstrap supports **Apple Silicon macOS**, Python 3.12+, Rustup/Cargo,

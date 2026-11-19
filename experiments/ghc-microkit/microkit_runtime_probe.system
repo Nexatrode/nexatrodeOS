@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<system>
+    <protection_domain name="capability_service" priority="101" passive="true" stack_size="0x4000">
+        <program_image path="capability_service.elf" />
+    </protection_domain>
+    <protection_domain name="ghc_runtime_probe" priority="100" stack_size="0x8000">
+        <program_image path="microkit_runtime_probe.elf" />
+    </protection_domain>
+    <channel>
+        <end pd="capability_service" id="0" notify="false" />
+        <end pd="ghc_runtime_probe" id="0" pp="true" notify="false" />
+    </channel>
+</system>

@@ -240,18 +240,29 @@ app-view renderer.
 The full-suite screen now has a darker ink background, a cyan system wordmark
 and divider, muted secondary labels, and restrained cyan, violet, amber, and
 coral app accents. It keeps all eight workspaces and the existing touch flows.
+The visual direction is documented in
+[`docs/slint-visual-direction.md`](../../docs/slint-visual-direction.md): the
+clean mockup guides layout and legibility, with optional Aurora accents kept
+away from text and controls.
 Host validation at the phone's 1080 x 1920 layout runs
 `--exercise-suite --compare-line`, covering navigation, keyboard input,
 calculator arithmetic, and the Phone demo while comparing both software
 rendering paths pixel-for-pixel. `build/slint-aurora-contact-sheet.png` shows
 all nine views at Pixel 4a resolution.
 
-`./dev utm-slint-preview` builds a separate UTM profile with a 1080 x 2340
-Slint-rendered Home frame. The headless guest GPU test confirms exact scanout,
-but this is a static host-rendered image rather than an interactive Slint
-protection domain. The current UTM run reported “Display output is not active,”
-so the live UTM display path still needs debugging. The full interactive Slint
-image for Pixel 4a builds with `sh platforms/sunfish/build-slint-display.sh`
+`./dev test-slint-utm` builds the shared full suite as a Microkit guest
+protection domain, boots it beside the trusted VirtIO GPU client, and checks
+guest-rendered frames against the host renderer while exercising all eight
+pages and their current controls. Notes, Contacts, and Calendar load and save
+through separate protected calls to their owning app domains; the UI has no
+vault capability. Calendar currently persists the selected reminder title and
+preserves its date/time fields and sibling reminders. The test checks each save
+by reading it back and reboots the same QEMU disk to confirm all three values
+load again. This is development storage configuration, not a production
+encryption or key-management claim; other app data remains volatile or
+demo-only. `./dev utm-slint-preview` remains a separate profile
+that presents a larger host-rendered preview. The full interactive Slint image
+for Pixel 4a builds with `sh platforms/sunfish/build-slint-display.sh`
 and lands at `.cache/pixel-sunfish/slint-display/fastboot.img`; building it
 does not flash or boot the phone.
 The display image includes a reset task. Set `SLINT_RESET_OUTER` when building
@@ -259,6 +270,15 @@ to control its observation window. Use `SLINT_RESET_OUTER=0` to disable the
 automatic reset and leave the temporary Slint preview running until a manual
 restart; the reset task yields while idle. Positive values from 1 to 5000 set
 the bounded busy-wait window (for example, `SLINT_RESET_OUTER=600 sh platforms/sunfish/build-slint-display.sh`).
+
+For isolated UTM testing, build the Slint guest with the additional
+`utm-file-import-test` feature and set `NEXATRODE_TEST_IMPORT` to an absolute
+path to a file of 1 byte to 1 MiB. Optionally set
+`NEXATRODE_TEST_IMPORT_NAME` to its filename. The build embeds those bytes;
+the Files screen then offers **Import test file**. This is a test fixture,
+not shared folders or a live host file picker: changing the host file needs a
+rebuild. Use only disposable, non-secret test files and test disks. Ordinary
+builds omit the import button.
 
 The UI deliberately uses Slint's built-in `TextInput` with multi-line input
 and custom-drawn controls instead of standard widgets. That keeps the

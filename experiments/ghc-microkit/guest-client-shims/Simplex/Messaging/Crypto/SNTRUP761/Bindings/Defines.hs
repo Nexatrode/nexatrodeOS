@@ -1,0 +1,14 @@
+-- | Constants from the pinned upstream cbits/sntrup761.h.
+module Simplex.Messaging.Crypto.SNTRUP761.Bindings.Defines where
+
+c_SNTRUP761_SECRETKEY_SIZE :: Int
+c_SNTRUP761_SECRETKEY_SIZE = 1763
+
+c_SNTRUP761_PUBLICKEY_SIZE :: Int
+c_SNTRUP761_PUBLICKEY_SIZE = 1158
+
+c_SNTRUP761_CIPHERTEXT_SIZE :: Int
+c_SNTRUP761_CIPHERTEXT_SIZE = 1039
+
+c_SNTRUP761_SIZE :: Int
+c_SNTRUP761_SIZE = 32

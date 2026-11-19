@@ -347,18 +347,14 @@ impl Console {
             Self::run_calculation(&input[5..]);
         } else if input == b"crash" {
             Self::request_crash();
-        } else if input.len() >= 8
-            && &input[..7] == b"netpeer"
-            && matches!(input[7], b' ' | b'\t')
+        } else if input.len() >= 8 && &input[..7] == b"netpeer" && matches!(input[7], b' ' | b'\t')
         {
             Self::request_netpeer(&input[8..]);
         } else if input == b"netseal" {
             Self::request_netseal();
         } else if input == b"modemring" {
             Self::request_modemring();
-        } else if input.len() >= 9
-            && &input[..8] == b"modemsms"
-            && matches!(input[8], b' ' | b'\t')
+        } else if input.len() >= 9 && &input[..8] == b"modemsms" && matches!(input[8], b' ' | b'\t')
         {
             Self::request_modemsms(&input[9..]);
         } else {

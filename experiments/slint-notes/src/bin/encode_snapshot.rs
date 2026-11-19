@@ -6,13 +6,19 @@ const PPM_HEADER: &[u8] = b"P6\n1080 1920\n255\n";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = env::args_os().skip(1);
-    let source = args.next().ok_or("usage: encode_snapshot SOURCE.ppm DEST.rle")?;
-    let destination = args.next().ok_or("usage: encode_snapshot SOURCE.ppm DEST.rle")?;
+    let source = args
+        .next()
+        .ok_or("usage: encode_snapshot SOURCE.ppm DEST.rle")?;
+    let destination = args
+        .next()
+        .ok_or("usage: encode_snapshot SOURCE.ppm DEST.rle")?;
     if args.next().is_some() {
         return Err("usage: encode_snapshot SOURCE.ppm DEST.rle".into());
     }
     let ppm = fs::read(source)?;
-    let rgb = ppm.strip_prefix(PPM_HEADER).ok_or("unexpected PPM header")?;
+    let rgb = ppm
+        .strip_prefix(PPM_HEADER)
+        .ok_or("unexpected PPM header")?;
     if rgb.len() != WIDTH * HEIGHT * 3 {
         return Err("unexpected PPM pixel count".into());
     }
@@ -37,7 +43,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     | ((rgb[next + 1] as u32) << 16)
                     | ((rgb[next + 2] as u32) << 8)
                     | 0xff;
-                if next_color != color { break; }
+                if next_color != color {
+                    break;
+                }
                 length += 1;
             }
             encoded.extend_from_slice(&(length as u16).to_le_bytes());
@@ -45,8 +53,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             run_count += 1;
             column += length;
         }
-        encoded[run_count_offset..run_count_offset + 2]
-            .copy_from_slice(&run_count.to_le_bytes());
+        encoded[run_count_offset..run_count_offset + 2].copy_from_slice(&run_count.to_le_bytes());
         total_runs += run_count as usize;
     }
 
@@ -60,16 +67,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for _ in 0..count {
             let length = u16::from_le_bytes([encoded[offset], encoded[offset + 1]]) as usize;
             let color = u32::from_le_bytes([
-                encoded[offset + 2], encoded[offset + 3],
-                encoded[offset + 4], encoded[offset + 5],
+                encoded[offset + 2],
+                encoded[offset + 3],
+                encoded[offset + 4],
+                encoded[offset + 5],
             ]);
             offset += 6;
             decoded.extend(std::iter::repeat_n(color, length));
             column += length;
         }
-        if column != WIDTH { return Err("RLE decoded row width mismatch".into()); }
+        if column != WIDTH {
+            return Err("RLE decoded row width mismatch".into());
+        }
     }
-    if offset != encoded.len() { return Err("RLE trailing bytes".into()); }
+    if offset != encoded.len() {
+        return Err("RLE trailing bytes".into());
+    }
     for (pixel, source) in decoded.iter().zip(rgb.chunks_exact(3)) {
         if pixel.to_be_bytes() != [source[0], source[1], source[2], 0xff] {
             return Err("RLE round trip failed".into());

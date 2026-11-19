@@ -57,7 +57,7 @@
     </channel>
     <channel>
         <end pd="input_service" id="7" pp="true" notify="false" />
-        <end pd="messages_app" id="2" notify="false" />
+        <end pd="messages_app" id="6" notify="false" />
     </channel>
     <channel>
         <end pd="input_service" id="8" pp="true" notify="false" />

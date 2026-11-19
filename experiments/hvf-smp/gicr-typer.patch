@@ -1,0 +1,8 @@
+--- a/src/arch/arm/machine/gic_v3.c
++++ b/src/arch/arm/machine/gic_v3.c
+@@ -257,4 +257,4 @@
+-        uint64_t typer = ((struct gic_rdist_map *)((word_t)gicr_base + offset))->typer;
++        uint64_t typer = ((volatile struct gic_rdist_map *)((word_t)gicr_base + offset))->typer;
+         if ((typer >> 32) == ((MPIDR_AFF3(mpidr) << 24) |
+                               (MPIDR_AFF2(mpidr) << 16) |
+                               (MPIDR_AFF1(mpidr) <<  8) |

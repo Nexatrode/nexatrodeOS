@@ -1,0 +1,918 @@
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -439,7 +439,6 @@
+ [[package]]
+ name = "sel4"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "cfg-if",
+  "sel4-config",
+@@ -449,7 +448,6 @@
+ [[package]]
+ name = "sel4-alloca"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "cfg-if",
+ ]
+@@ -457,7 +455,6 @@
+ [[package]]
+ name = "sel4-bitfield-ops"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "rustversion",
+ ]
+@@ -465,12 +462,10 @@
+ [[package]]
+ name = "sel4-build-env"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ 
+ [[package]]
+ name = "sel4-capdl-initializer"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "log",
+  "rkyv",
+@@ -488,7 +483,6 @@
+ [[package]]
+ name = "sel4-capdl-initializer-types"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "miniz_oxide",
+  "rkyv",
+@@ -500,7 +494,6 @@
+ [[package]]
+ name = "sel4-capdl-initializer-types-derive"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "proc-macro2",
+  "quote",
+@@ -510,7 +503,6 @@
+ [[package]]
+ name = "sel4-config"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "prettyplease",
+  "proc-macro2",
+@@ -524,7 +516,6 @@
+ [[package]]
+ name = "sel4-config-data"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "sel4-build-env",
+  "sel4-config-types",
+@@ -534,7 +525,6 @@
+ [[package]]
+ name = "sel4-config-macros"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "fallible-iterator",
+  "proc-macro2",
+@@ -547,7 +537,6 @@
+ [[package]]
+ name = "sel4-config-types"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "serde",
+ ]
+@@ -555,12 +544,10 @@
+ [[package]]
+ name = "sel4-ctors-dtors"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ 
+ [[package]]
+ name = "sel4-dlmalloc"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "dlmalloc",
+  "lock_api",
+@@ -569,17 +556,14 @@
+ [[package]]
+ name = "sel4-immediate-sync-once-cell"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ 
+ [[package]]
+ name = "sel4-immutable-cell"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ 
+ [[package]]
+ name = "sel4-initialize-tls"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "cfg-if",
+  "sel4-alloca",
+@@ -588,7 +572,6 @@
+ [[package]]
+ name = "sel4-logging"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "lock_api",
+  "log",
+@@ -597,12 +580,10 @@
+ [[package]]
+ name = "sel4-no-allocator"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ 
+ [[package]]
+ name = "sel4-panicking"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "cfg-if",
+  "sel4-immediate-sync-once-cell",
+@@ -613,12 +594,10 @@
+ [[package]]
+ name = "sel4-panicking-env"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ 
+ [[package]]
+ name = "sel4-phdrs"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "sel4-phdrs-constants",
+ ]
+@@ -626,12 +605,10 @@
+ [[package]]
+ name = "sel4-phdrs-constants"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ 
+ [[package]]
+ name = "sel4-phdrs-patched"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "sel4-phdrs",
+  "sel4-rodata-static",
+@@ -640,12 +617,10 @@
+ [[package]]
+ name = "sel4-rodata-static"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ 
+ [[package]]
+ name = "sel4-root-task"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "sel4",
+  "sel4-dlmalloc",
+@@ -660,7 +635,6 @@
+ [[package]]
+ name = "sel4-root-task-macros"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "proc-macro2",
+  "quote",
+@@ -670,7 +644,6 @@
+ [[package]]
+ name = "sel4-runtime-common"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "cfg-if",
+  "sel4",
+@@ -686,12 +659,10 @@
+ [[package]]
+ name = "sel4-stack"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ 
+ [[package]]
+ name = "sel4-sync"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "lock_api",
+  "sel4",
+@@ -701,7 +672,6 @@
+ [[package]]
+ name = "sel4-sys"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "bindgen",
+  "glob",
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -12,12 +12,10 @@
+ ]
+ 
+ [workspace.dependencies.sel4-capdl-initializer]
+-git = "https://github.com/seL4/rust-sel4"
+-rev = "dbe6445d56059ed9a757e53c7137892aece1d179"
++path = "../rust-sel4-iphone7plus16k/crates/sel4-capdl-initializer"
+ 
+ [workspace.dependencies.sel4-capdl-initializer-types]
+-git = "https://github.com/seL4/rust-sel4"
+-rev = "dbe6445d56059ed9a757e53c7137892aece1d179"
++path = "../rust-sel4-iphone7plus16k/crates/sel4-capdl-initializer/types"
+ 
+ [profile.release.package.microkit-tool]
+ strip = true
+--- a/build_sdk.py
++++ b/build_sdk.py
+@@ -704,7 +704,7 @@
+         f"-S {sel4_dir.absolute()} -B {sel4_build_dir.absolute()}")
+ 
+     if llvm:
+-        cmd += f" -DTRIPLE={target_triple}"
++        cmd += f" -DTRIPLE={target_triple} -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld"
+     else:
+         cmd += f" -DCROSS_COMPILER_PREFIX={target_triple}-"
+ 
+@@ -975,6 +975,7 @@
+ def main() -> None:
+     parser = ArgumentParser()
+     parser.add_argument("--sel4", type=Path, required=True)
++    parser.add_argument("--build-dir", type=Path, default=Path("build"))
+     parser.add_argument("--tool-target-triple", default=get_tool_target_triple(),
+                         help="Compile the Microkit tool for this target triple")
+     parser.add_argument("--llvm", action="store_true",
+@@ -1106,7 +1107,7 @@
+         build_doc(sdk_dir)
+ 
+     if not args.skip_run_time:
+-        build_dir = Path("build")
++        build_dir = args.build_dir
+         for (board, configs) in build_goals:
+             for config in configs:
+                 if not args.skip_sel4:
+--- a/libmicrokit/microkit.ld
++++ b/libmicrokit/microkit.ld
+@@ -10,6 +10,7 @@
+ }
+ 
+ ENTRY(_start);
++MICROKIT_PAGE_SIZE = DEFINED(MICROKIT_PAGE_SIZE) ? MICROKIT_PAGE_SIZE : 0x1000;
+ 
+ SECTIONS
+ {
+@@ -24,7 +25,7 @@
+         _text_end = .;
+     } :text
+ 
+-    . = ALIGN(0x1000);
++    . = ALIGN(MICROKIT_PAGE_SIZE);
+ 
+     /* For some reason the ABI puts init array
+      * into writable memory, so we have to follow suit */
+--- a/loader/src/aarch64/mmu.c
++++ b/loader/src/aarch64/mmu.c
+@@ -6,6 +6,15 @@
+  */
+ 
+ #include <stdint.h>
++#include <kernel/gen_config.h>
++
++#if defined(CONFIG_PLAT_IPHONE7PLUS)
++#define BOOT_INDEX_BITS 11
++#define BOOT_PAGE_BITS 14
++#else
++#define BOOT_INDEX_BITS 9
++#define BOOT_PAGE_BITS 12
++#endif
+ 
+ #include "el.h"
+ #include "../arch.h"
+@@ -17,14 +26,14 @@
+ void el2_mmu_enable(void);
+ 
+ /* Paging structures for kernel mapping */
+-uint64_t boot_lvl0_upper[1 << 9] ALIGN(1 << 12);
+-uint64_t boot_lvl1_upper[1 << 9] ALIGN(1 << 12);
+-uint64_t boot_lvl2_upper[1 << 9] ALIGN(1 << 12);
++uint64_t boot_lvl0_upper[1 << BOOT_INDEX_BITS] ALIGN(1 << BOOT_PAGE_BITS);
++uint64_t boot_lvl1_upper[1 << BOOT_INDEX_BITS] ALIGN(1 << BOOT_PAGE_BITS);
++uint64_t boot_lvl2_upper[1 << BOOT_INDEX_BITS] ALIGN(1 << BOOT_PAGE_BITS);
+ 
+ /* Paging structures for identity mapping */
+-uint64_t boot_lvl0_lower[1 << 9] ALIGN(1 << 12);
+-uint64_t boot_lvl1_lower[1 << 9] ALIGN(1 << 12);
+-uint64_t boot_lvl2_lower[1 << 9] ALIGN(1 << 12);
++uint64_t boot_lvl0_lower[1 << BOOT_INDEX_BITS] ALIGN(1 << BOOT_PAGE_BITS);
++uint64_t boot_lvl1_lower[1 << BOOT_INDEX_BITS] ALIGN(1 << BOOT_PAGE_BITS);
++uint64_t boot_lvl2_lower[1 << BOOT_INDEX_BITS] ALIGN(1 << BOOT_PAGE_BITS);
+ 
+ int arch_mmu_enable(int logical_cpu)
+ {
+--- a/loader/src/aarch64/util64.S
++++ b/loader/src/aarch64/util64.S
+@@ -368,8 +368,8 @@
+     msr     mair_el1, x5
+ 
+ #if defined(CONFIG_PLAT_IPHONE7PLUS)
+-    /* Use a 39-bit low VA rooted at L1 and non-cacheable table walks. */
+-    ldr     x10, =TCR_T0SZ(39) | TCR_T1SZ(48) | (1 << 23) | TCR_IRGN_NC | TCR_ORGN_NC | TCR_TG0_4K | TCR_TG1_4K | TCR_ASID16 | TCR_SHARED
++    /* 48-bit low/high VA, 16 KiB granules, 8-bit ASIDs, NC table walks. */
++    ldr     x10, =TCR_TxSZ(48) | (2 << 14) | (1 << 30) | TCR_SHARED
+ #else
+     ldr     x10, =TCR_TxSZ(48) | TCR_IRGN_WBWA | TCR_ORGN_WBWA | TCR_TG0_4K | TCR_TG1_4K | TCR_ASID16
+ #endif
+@@ -378,12 +378,7 @@
+     msr     tcr_el1, x10
+ 
+     /* Setup page tables */
+-#if defined(CONFIG_PLAT_IPHONE7PLUS)
+-    /* T0SZ=25 selects a level-1 root for the 39-bit low VA range. */
+-    adrp    x8, boot_lvl1_lower
+-#else
+     adrp    x8, boot_lvl0_lower
+-#endif
+     msr     ttbr0_el1, x8
+     adrp    x8, boot_lvl0_upper
+     msr     ttbr1_el1, x8
+--- a/loader/src/loader.c
++++ b/loader/src/loader.c
+@@ -32,7 +32,9 @@
+ 
+ uint64_t _stack[NUM_ACTIVE_CPUS][STACK_SIZE / sizeof(uint64_t)] ALIGN(16);
+ 
+-extern uint64_t boot_lvl1_lower[1 << 9];
++#if defined(BOARD_iphone7plus)
++extern uint64_t boot_lvl2_lower[1 << 11];
++#endif
+ 
+ #if defined(BOARD_iphone7plus)
+ /* Build-time marker read by Microkit when choosing the loader's executable
+@@ -118,7 +120,7 @@
+     /* Visible checkpoint immediately before changing translation state. */
+     if (pongo_framebuffer_mapped) {
+ #if defined(BOARD_iphone7plus)
+-        /* Violet marks the rebuilt runtime L1 and is just before MMU setup. */
++        /* Last C checkpoint before enabling the 16 KiB tables. */
+         pongo_draw_loader_marker(0, 168, 0xffff00ffu, 0xffffffffu);
+ #else
+         pongo_draw_loader_marker(0, 168, 0xff00ff00u, 0xffffffffu);
+@@ -127,17 +129,6 @@
+ 
+     LDR_PRINT("INFO", logical_cpu, "enabling MMU\n");
+     int r = arch_mmu_enable(logical_cpu);
+-#if defined(BOARD_iphone7plus)
+-    if (r == 0) {
+-        /* Return to identity access before using the screen as a success
+-         * channel. This keeps the final signal independent of new mappings. */
+-        el1_mmu_disable();
+-        pongo_draw_loader_marker(0, 280, 0u, 0u);
+-        for (;;) {
+-            asm volatile("wfe");
+-        }
+-    }
+-#endif
+     pongo_mmu_stage(9);
+ #if defined(BOARD_iphone7plus)
+ #endif
+@@ -205,62 +196,27 @@
+     uint64_t height;
+ } pongo_display;
+ 
+-/* Pongo's display buffer is outside reported RAM on this device. Add a
+- * temporary 1 GiB device block to TTBR0 so the post-MMU diagnostic marker can
+- * be written. Refuse to replace any existing translation. */
++/* The tool creates 16 KiB tables. Validate the observed display range
++ * against those 32 MiB device mappings without overwriting loader mappings. */
+ static int pongo_map_framebuffer_for_mmu(void)
+ {
+ #if defined(BOARD_iphone7plus)
+-    if (pongo_display.framebuffer == NULL || pongo_display.stride_pixels == 0 ||
+-        pongo_display.height == 0) {
++    const uint64_t fb = (uint64_t)(uintptr_t)pongo_display.framebuffer;
++    const uint64_t bytes = pongo_display.stride_pixels * 4 * pongo_display.height;
++    const uint64_t block_size = 1ULL << 25;
++    if (!bytes || fb < 0x8ba000000ULL || fb >= 0x8be000000ULL ||
++        bytes > 0x8be000000ULL - fb) {
+         return 0;
+     }
+-
+-    const uint64_t fb = (uint64_t)(uintptr_t)pongo_display.framebuffer;
+-    const uint64_t bytes = pongo_display.stride_pixels * sizeof(uint32_t) *
+-                           pongo_display.height;
+-    const uint64_t block_size = 1ULL << 30;
+-    if (bytes == 0 || fb >= (1ULL << 48) || bytes > block_size ||
+-        fb > (1ULL << 48) - bytes ||
+-        (fb & ~(block_size - 1)) != ((fb + bytes - 1) & ~(block_size - 1))) {
+-        return 0;
+-    }
+-
+-    const uint64_t index = (fb >> 30) & 0x1ff;
+-    if (boot_lvl1_lower[index] != 0) {
+-        return 0;
+-    }
+-
+-    /* Valid level-1 block, AF=1, Outer Shareable, RW at the current EL,
+-     * AttrIndx=0 (MAIR Device-nGnRnE), output address rounded down to 1 GiB. */
+-    boot_lvl1_lower[index] = (fb & ~(block_size - 1)) | (1ULL << 10) |
+-                             (2ULL << 8) | 1ULL;
+-    asm volatile("dsb sy" ::: "memory");
++    for (uint64_t addr = fb & ~(block_size - 1); addr < fb + bytes; addr += block_size) {
++        if (boot_lvl2_lower[(addr >> 25) & 2047] != (addr | 0x601)) {
++            return 0;
++        }
++    }
+     pongo_framebuffer_mapped = 1;
+     return 1;
+ #else
+     return 0;
+-#endif
+-}
+-
+-/* Rebuild just the two identity blocks needed by this single-core bring-up:
+- * the loader/kernel RAM block as Normal WB and Pongo's display block as
+- * Device-nGnRnE. This bypasses the Microkit tool's pre-generated L1 contents
+- * while keeping the same addresses and descriptor semantics. */
+-static void pongo_build_minimal_l1(void)
+-{
+-#if defined(BOARD_iphone7plus)
+-    const uint64_t block_size = 1ULL << 30;
+-    const uint64_t loader = (uint64_t)(uintptr_t)&_text;
+-    const uint64_t index = (loader >> 30) & 0x1ff;
+-
+-    for (uint64_t i = 0; i < 512; i++) {
+-        boot_lvl1_lower[i] = 0;
+-    }
+-
+-    /* L1 block: valid, AF=1, inner-shareable, AttrIdx4 (Normal WB), EL1 RW. */
+-    boot_lvl1_lower[index] = (loader & ~(block_size - 1)) | 0x711;
+-    asm volatile("dsb sy" ::: "memory");
+ #endif
+ }
+ 
+@@ -388,7 +344,6 @@
+      */
+     copy_data();
+     pongo_draw_loader_marker(0, 56, 0xff0000ffu, 0xffff00ffu);
+-    pongo_build_minimal_l1();
+     if (pongo_map_framebuffer_for_mmu()) {
+         pongo_draw_loader_marker(0, 112, 0xffff0000u, 0xffffffffu);
+     }
+--- a/monitor/Makefile
++++ b/monitor/Makefile
+@@ -55,6 +55,10 @@
+ 
+ CFLAGS := -std=gnu11 -g -O3 -nostdlib -ffreestanding -Wall $(CFLAGS_TOOLCHAIN) -Werror -I$(SEL4_SDK)/include $(CFLAGS_ARCH) -DARCH_$(ARCH)
+ 
++ifeq ($(BOARD),iphone7plus)
++  LDFLAGS += --defsym=MICROKIT_PAGE_SIZE=0x4000 -z max-page-size=0x4000
++endif
++
+ PROGS := monitor.elf
+ OBJECTS := main.o crt0.o util.o
+ LINKSCRIPT := ../libmicrokit/microkit.ld
+@@ -73,4 +77,4 @@
+ all: $(OBJPROG)
+ 
+ $(OBJPROG): $(addprefix $(BUILD_DIR)/, $(OBJECTS)) $(LINKSCRIPT)
+-	$(LD) -z noexecstack -T$(LINKSCRIPT) $(addprefix $(BUILD_DIR)/, $(OBJECTS)) -o $@
++	$(LD) $(LDFLAGS) -z noexecstack -T$(LINKSCRIPT) $(addprefix $(BUILD_DIR)/, $(OBJECTS)) -o $@
+--- a/tool/microkit/src/build.rs
++++ b/tool/microkit/src/build.rs
+@@ -177,7 +177,7 @@
+     // The monitor is just a special PD
+     system_elfs.push(monitor_elf);
+ 
+-    let capdl_initialiser_orig = CapDLInitialiser::new(capdl_initialiser_elf);
++    let capdl_initialiser_orig = CapDLInitialiser::new(capdl_initialiser_elf, kernel_config.minimum_page_size.into());
+ 
+     // Now build the capDL spec and final image. We may need to do this in >1 iterations on ARM and RISC-V
+     // if there are Memory Regions without a paddr but subject to setvar region_paddr.
+--- a/tool/microkit/src/capdl/builder.rs
++++ b/tool/microkit/src/capdl/builder.rs
+@@ -65,7 +65,7 @@
+     }
+ }
+ 
+-const MON_STACK_SIZE: u64 = 0x1000;
++
+ 
+ // Where caps must be in the Monitor's CSpace
+ const MON_FAULT_EP_CAP_IDX: u64 = 1;
+@@ -295,7 +295,7 @@
+             let seg_mem_size: u64 = segment.mem_size();
+ 
+             let page_size = PageSize::Small;
+-            let page_size_bytes = page_size as u64;
++            let page_size_bytes = 1 << page_size.fixed_size_bits(sel4_config);
+ 
+             // Create and map all frames for this segment.
+             let mut cur_vaddr = round_down(seg_base_vaddr, page_size_bytes);
+@@ -520,8 +520,8 @@
+             &mut spec_container,
+             kernel_config,
+             mon_stack_frame_cap,
+-            PageSize::Small as u64,
+-            kernel_config.pd_stack_bottom(MON_STACK_SIZE),
++            kernel_config.minimum_page_size,
++            kernel_config.pd_stack_bottom(kernel_config.minimum_page_size),
+         )
+         .unwrap();
+ 
+@@ -541,7 +541,7 @@
+             &mut spec_container,
+             kernel_config,
+             mon_ipcbuf_frame_cap.clone(),
+-            PageSize::Small as u64,
++            kernel_config.minimum_page_size,
+             kernel_config.pd_ipc_buffer(),
+         )
+         .expect("should be able to map the IPC buffer as we checked overlaps in sel4.rs");
+@@ -724,7 +724,7 @@
+ 
+             for elf_seg in elf_obj.loadable_segments().iter() {
+                 let elf_seg_vaddr_range = elf_seg.virt_addr
+-                    ..elf_seg.virt_addr + round_up(elf_seg.mem_size(), PageSize::Small as u64);
++                    ..elf_seg.virt_addr + round_up(elf_seg.mem_size(), kernel_config.minimum_page_size);
+                 if ranges_overlap(&mr_vaddr_range, &elf_seg_vaddr_range) {
+                     return Err(
+                         format!(
+@@ -761,7 +761,7 @@
+                 &mut spec_container,
+                 kernel_config,
+                 ipcbuf_frame_cap.clone(),
+-                PageSize::Small as u64,
++                kernel_config.minimum_page_size,
+                 kernel_config.pd_ipc_buffer(),
+             )
+             .expect("should be able to map the IPC buffer as we checked overlaps in sel4.rs");
+@@ -773,7 +773,7 @@
+         // Step 3-3b: Create and map in the stack (bottom up)
+         let mut cur_stack_vaddr = kernel_config.pd_stack_bottom(pd.stack_size);
+         pd_stack_bottoms.push(cur_stack_vaddr);
+-        let num_stack_frames = pd.stack_size / PageSize::Small as u64;
++        let num_stack_frames = pd.stack_size / kernel_config.minimum_page_size;
+         for stack_frame_seq in 0..num_stack_frames {
+             let stack_frame_obj_id = capdl_util_make_frame_obj(
+                 &mut spec_container,
+@@ -792,11 +792,11 @@
+                     &mut spec_container,
+                     kernel_config,
+                     stack_frame_cap,
+-                    PageSize::Small as u64,
++                    kernel_config.minimum_page_size,
+                     cur_stack_vaddr,
+                 )
+                 .unwrap();
+-            cur_stack_vaddr += PageSize::Small as u64;
++            cur_stack_vaddr += kernel_config.minimum_page_size;
+         }
+ 
+         // Step 3-4 Create Scheduling Context
+--- a/tool/microkit/src/capdl/initialiser.rs
++++ b/tool/microkit/src/capdl/initialiser.rs
+@@ -13,8 +13,7 @@
+ use crate::{elf::ElfFile, sel4::PageSize};
+ use crate::{serialise_ut, UntypedObject};
+ 
+-// Page size used for allocating the spec and embedded frames segments.
+-pub const INITIALISER_GRANULE_SIZE: PageSize = PageSize::Small;
++
+ 
+ // Magic numbers for the initialiser to identify the data type.
+ // See rust-sel4 crates/sel4-phdrs/constants/src/lib.rs
+@@ -38,6 +37,7 @@
+ 
+ #[derive(Clone)]
+ pub struct CapDLInitialiser {
++    pub granule_size: PageSize,
+     pub elf: ElfFile,
+     pub phys_base: Option<u64>,
+     pub spec_metadata: Option<CapDLInitialiserSpecMetadata>,
+@@ -46,8 +46,9 @@
+ }
+ 
+ impl CapDLInitialiser {
+-    pub fn new(elf: ElfFile) -> CapDLInitialiser {
++    pub fn new(elf: ElfFile, granule_size: PageSize) -> CapDLInitialiser {
+         CapDLInitialiser {
++            granule_size,
+             elf,
+             phys_base: None,
+             spec_metadata: None,
+@@ -56,7 +57,7 @@
+     }
+ 
+     pub fn image_bound(&self) -> Range<u64> {
+-        self.elf.lowest_vaddr()..round_up(self.elf.highest_vaddr(), INITIALISER_GRANULE_SIZE as u64)
++        self.elf.lowest_vaddr()..round_up(self.elf.highest_vaddr(), self.granule_size as u64)
+     }
+ 
+     pub fn add_spec(&mut self, spec_payload: AlignedVec, embedded_frame_data: Vec<u8>) {
+@@ -67,7 +68,7 @@
+         }
+ 
+         // Follow implementation in rust-sel4: crates/sel4-capdl-initializer/add-spec/src/lib.rs
+-        let spec_vaddr = self.elf.next_vaddr(INITIALISER_GRANULE_SIZE);
++        let spec_vaddr = self.elf.next_vaddr(self.granule_size);
+         let spec_size = spec_payload.len() as u64;
+         self.elf.add_segment(
+             true,
+@@ -78,7 +79,7 @@
+             Some(PT_SEL4_CAPDL_SPEC),
+         );
+ 
+-        let embedded_frame_data_vaddr = self.elf.next_vaddr(INITIALISER_GRANULE_SIZE);
++        let embedded_frame_data_vaddr = self.elf.next_vaddr(self.granule_size);
+         self.elf.add_segment(
+             true,
+             false,
+@@ -92,7 +93,7 @@
+         // it to figure out its virtual address bound, spec location in memory etc.
+         // It would have been nicer if we can perform this step in ElfFile::reserialise() but
+         // that function is only relevant for x86.
+-        let phdrs_table_vaddr = self.elf.next_vaddr(INITIALISER_GRANULE_SIZE);
++        let phdrs_table_vaddr = self.elf.next_vaddr(self.granule_size);
+         let phdrs_table = self.elf.phdrs_table_serialised();
+         // Accounts for a PHENT_TYPE_PHDR meta phdr + PHENT_TYPE_LOADABLE phdr when we eventually inject
+         // the table as a segment.
+--- a/tool/microkit/src/capdl/memory.rs
++++ b/tool/microkit/src/capdl/memory.rs
+@@ -105,13 +105,13 @@
+     }
+ 
+     fn get_leaf_level(&self, sel4_config: &Config, page_size_bytes: u64) -> usize {
+-        const SMALL_PAGE_BYTES: u64 = PageSize::Small as u64;
+-        const LARGE_PAGE_BYTES: u64 = PageSize::Large as u64;
++        let small_page_bytes = 1 << PageSize::Small.fixed_size_bits(sel4_config);
++        let large_page_bytes = 1 << PageSize::Large.fixed_size_bits(sel4_config);
+         let levels = self.address_space_levels(sel4_config);
+ 
+         match page_size_bytes {
+-            SMALL_PAGE_BYTES => levels - 1,
+-            LARGE_PAGE_BYTES => levels - 2,
++            p if p == small_page_bytes => levels - 1,
++            p if p == large_page_bytes => levels - 2,
+             _ => unreachable!(
+             "internal bug: get_pt_level_to_insert(): unknown page_size_bytes: {page_size_bytes}"
+         ),
+--- a/tool/microkit/src/loader.rs
++++ b/tool/microkit/src/loader.rs
+@@ -428,18 +428,20 @@
+         };
+ 
+         let pagetable_vars = match config.arch {
++            Arch::Aarch64 if config.minimum_page_size == 0x4000 => Loader::aarch64_setup_pagetables_16k(
++                config, &loader_elf, kernel_first_vaddr, kernel_first_paddr),
+             Arch::Aarch64 => Loader::aarch64_setup_pagetables(
+                 config,
+                 &loader_elf,
+                 kernel_first_vaddr,
+                 kernel_first_paddr,
+-            ),
++            ).into_iter().map(|(a, s, d)| (a, s, d.to_vec())).collect(),
+             Arch::Riscv64 => Loader::riscv64_setup_pagetables(
+                 config,
+                 &loader_elf,
+                 kernel_first_vaddr,
+                 kernel_first_paddr,
+-            ),
++            ).into_iter().map(|(a, s, d)| (a, s, d.to_vec())).collect(),
+             Arch::X86_64 => unreachable!("x86_64 does not support creating a loader image"),
+         };
+ 
+@@ -786,6 +788,50 @@
+     ///      t = align_up(loader_end_addr, 2MiB),
+     /// ```
+     ///
++    fn aarch64_setup_pagetables_16k(
++        config: &Config, elf: &ElfFile, first_vaddr: u64, first_paddr: u64,
++    ) -> Vec<(u64, u64, Vec<u8>)> {
++        assert!(!config.hypervisor, "16 KiB bootstrap supports EL1 only");
++        let names = ["boot_lvl0_lower", "boot_lvl1_lower", "boot_lvl2_lower",
++                     "boot_lvl0_upper", "boot_lvl1_upper", "boot_lvl2_upper"];
++        let mut tables: Vec<_> = names.iter().map(|name| {
++            let (addr, size) = elf.find_symbol(name).expect("missing 16 KiB table");
++            assert_eq!(size, 16384); assert_eq!(addr & 16383, 0);
++            (addr, size, vec![0u8; 16384])
++        }).collect();
++        fn set(t: &mut [(u64,u64,Vec<u8>)], table: usize, index: usize, value: u64) {
++            assert_eq!(&t[table].2[index*8..index*8+8], &[0; 8]);
++            t[table].2[index*8..index*8+8].copy_from_slice(&value.to_le_bytes());
++        }
++        let block = 1u64 << 25;
++        let (start, _) = grab_symbol!(elf, "_loader_start");
++        let (end, _) = grab_symbol!(elf, "_loader_end");
++        assert_eq!(start >> 36, (end-1) >> 36);
++        let lower_l1 = tables[1].0 | 3;
++        let lower_l2 = tables[2].0 | 3;
++        set(&mut tables, 0, ((start >> 47) & 1) as usize, lower_l1);
++        set(&mut tables, 1, ((start >> 36) & 2047) as usize, lower_l2);
++        for addr in ((start & !(block-1))..end).step_by(block as usize) {
++            set(&mut tables, 2, ((addr >> 25) & 2047) as usize, addr | 0x711);
++        }
++        // Observed Pongo display spans two 32 MiB blocks. Same L1 as loader.
++        for addr in [0x8ba000000u64, 0x8bc000000] {
++            assert_eq!(addr >> 36, start >> 36);
++            set(&mut tables, 2, ((addr >> 25) & 2047) as usize, addr | 0x601);
++        }
++        assert_eq!(first_vaddr & (block-1), first_paddr & (block-1));
++        let upper_l1 = tables[4].0 | 3;
++        let upper_l2 = tables[5].0 | 3;
++        set(&mut tables, 3, ((first_vaddr >> 47) & 1) as usize, upper_l1);
++        set(&mut tables, 4, ((first_vaddr >> 36) & 2047) as usize, upper_l2);
++        let index = ((first_vaddr >> 25) & 2047) as usize;
++        for i in index..2048 {
++            let pa = (first_paddr & !(block-1)) + ((i-index) as u64)*block;
++            set(&mut tables, 5, i, pa | 0x711);
++        }
++        tables
++    }
++
+     fn aarch64_setup_pagetables(
+         _config: &Config,
+         elf: &ElfFile,
+--- a/tool/microkit/src/sdf/memory_region.rs
++++ b/tool/microkit/src/sdf/memory_region.rs
+@@ -742,7 +742,7 @@
+ 
+     if iomaps.iter().any(|iomap| {
+         mrs.iter()
+-            .any(|mr| mr.page_size == PageSize::Large && mr.name == iomap.mr_name())
++            .any(|mr| matches!(mr.page_size, PageSize::Large | PageSize::Large32M) && mr.name == iomap.mr_name())
+     }) {
+         return Err(
+             "Error: currently seL4 does not have large page support for the IOMMU".to_string(),
+--- a/tool/microkit/src/sdf/pd_vm.rs
++++ b/tool/microkit/src/sdf/pd_vm.rs
+@@ -184,7 +184,7 @@
+         let passive = sdf_parse_attribute(xml_sdf, node, "passive")?.unwrap_or(false);
+ 
+         let stack_size: u64 =
+-            sdf_parse_attribute(xml_sdf, node, "stack_size")?.unwrap_or(PD_DEFAULT_STACK_SIZE);
++            sdf_parse_attribute(xml_sdf, node, "stack_size")?.unwrap_or(PD_DEFAULT_STACK_SIZE.max(config.minimum_page_size));
+ 
+         let smc = sdf_parse_attribute(xml_sdf, node, "smc")?.unwrap_or(false);
+ 
+--- a/tool/microkit/src/sel4.rs
++++ b/tool/microkit/src/sel4.rs
+@@ -154,17 +154,18 @@
+ fn get_arch_n_paging(config: &Config, region: MemoryRegion) -> u64 {
+     match config.arch {
+         Arch::Aarch64 => {
+-            const PT_INDEX_OFFSET: u64 = 12;
+-            const PD_INDEX_OFFSET: u64 = PT_INDEX_OFFSET + 9;
+-            const PUD_INDEX_OFFSET: u64 = PD_INDEX_OFFSET + 9;
++            let pt_index_offset = config.object_sizes.small_page;
++            let index_bits = config.address_space_constants.page_table_index_bits;
++            let pd_index_offset = pt_index_offset + index_bits;
++            let pud_index_offset = pd_index_offset + index_bits;
+ 
+             if config.aarch64_vspace_s2_start_l1() {
+-                get_n_paging(region, PUD_INDEX_OFFSET) + get_n_paging(region, PD_INDEX_OFFSET)
++                get_n_paging(region, pud_index_offset) + get_n_paging(region, pd_index_offset)
+             } else {
+-                const PGD_INDEX_OFFSET: u64 = PUD_INDEX_OFFSET + 9;
+-                get_n_paging(region, PGD_INDEX_OFFSET)
+-                    + get_n_paging(region, PUD_INDEX_OFFSET)
+-                    + get_n_paging(region, PD_INDEX_OFFSET)
++                let pgd_index_offset = pud_index_offset + index_bits;
++                get_n_paging(region, pgd_index_offset)
++                    + get_n_paging(region, pud_index_offset)
++                    + get_n_paging(region, pd_index_offset)
+             }
+         }
+         Arch::Riscv64 => match config.riscv_pt_levels.unwrap() {
+@@ -189,7 +190,7 @@
+     let root_cnode_bits = config.init_cnode_bits; // CONFIG_ROOT_CNODE_SIZE_BITS
+     let tcb_bits = ObjectType::Tcb.fixed_size_bits(config).unwrap(); // seL4_TCBBits
+     let page_bits = ObjectType::SmallPage.fixed_size_bits(config).unwrap(); // seL4_PageBits
+-    let asid_pool_bits = 12; // seL4_ASIDPoolBits
++    let asid_pool_bits = config.object_sizes.asid_pool;
+     let vspace_bits = ObjectType::VSpace.fixed_size_bits(config).unwrap(); // seL4_VSpaceBits
+     let page_table_bits = ObjectType::PageTable.fixed_size_bits(config).unwrap(); // seL4_PageTableBits
+     let min_sched_context_bits = 7; // seL4_MinSchedContextBits
+@@ -232,8 +233,8 @@
+ 
+     let mut initial_task_virt_region = user_image_virt_region;
+     // Refer to `try_init_kernel()` of src/arch/[arm,riscv]/kernel/boot.c
+-    let ipc_size = PageSize::Small as u64; // seL4_PageBits
+-    let bootinfo_size = PageSize::Small as u64; // seL4_BootInfoFrameBits
++    let ipc_size = config.minimum_page_size; // seL4_PageBits
++    let bootinfo_size = config.minimum_page_size; // seL4_BootInfoFrameBits
+     initial_task_virt_region.end += ipc_size;
+     initial_task_virt_region.end += bootinfo_size;
+ 
+@@ -551,21 +552,21 @@
+ 
+     pub fn page_sizes(&self) -> [u64; 2] {
+         match self.arch {
+-            Arch::Aarch64 | Arch::Riscv64 | Arch::X86_64 => [0x1000, 0x200_000],
++            Arch::Aarch64 | Arch::Riscv64 | Arch::X86_64 => [1 << self.object_sizes.small_page, 1 << self.object_sizes.large_page],
+         }
+     }
+ 
+     /// IPC Buffer is located at the highest possible virtual memory page
+     pub fn pd_ipc_buffer(&self) -> u64 {
+         // user_top is inclusive, so we mask off the bits inside the page.
+-        self.address_space_constants.vspace_user_top & !(PageSize::Small as u64 - 1)
++        self.address_space_constants.vspace_user_top & !(self.minimum_page_size - 1)
+     }
+ 
+     /// The stack is located in the third highest possible virtual memory pages,
+     /// as the IPC buffer lives in the top, and we add a guard page inbetween.
+     pub fn pd_stack_top(&self) -> u64 {
+         // Subtract off the guard page.
+-        self.pd_ipc_buffer() - PageSize::Small as u64
++        self.pd_ipc_buffer() - self.minimum_page_size
+     }
+ 
+     pub fn pd_stack_bottom(&self, stack_size: u64) -> u64 {
+@@ -624,7 +625,9 @@
+     pub fn vspace_level_index_bits(&self, level: usize) -> u64 {
+         assert!(level < self.num_page_table_levels());
+ 
+-        if self.arch == Arch::Aarch64 && level == self.vspace_root_level() {
++        if self.arch == Arch::Aarch64 && self.minimum_page_size == 0x4000 && level == 0 {
++            1 // 48-bit VA: only bit 47 indexes a 16 KiB level-0 root.
++        } else if self.arch == Arch::Aarch64 && level == self.vspace_root_level() {
+             self.address_space_constants.vspace_index_bits.expect(
+                 "Error: An Aarch64 build should have seL4_VSpaceIndexBits defined
+                     by seL4, captured in tool/microkit/address_space_constants.h",
+@@ -737,14 +740,18 @@
+ #[derive(Debug, PartialEq, Eq, Copy, Clone)]
+ pub enum PageSize {
+     Small = 0x1000,
++    Small16K = 0x4000,
+     Large = 0x200_000,
++    Large32M = 0x200_0000,
+ }
+ 
+ impl From<u64> for PageSize {
+     fn from(item: u64) -> PageSize {
+         match item {
+             0x1000 => PageSize::Small,
++            0x4000 => PageSize::Small16K,
+             0x200_000 => PageSize::Large,
++            0x200_0000 => PageSize::Large32M,
+             _ => panic!("Unknown page size {item:x}"),
+         }
+     }
+@@ -753,8 +760,8 @@
+ impl PageSize {
+     pub fn fixed_size_bits(&self, sel4_config: &Config) -> u64 {
+         match self {
+-            PageSize::Small => ObjectType::SmallPage.fixed_size_bits(sel4_config).unwrap(),
+-            PageSize::Large => ObjectType::LargePage.fixed_size_bits(sel4_config).unwrap(),
++            PageSize::Small | PageSize::Small16K => ObjectType::SmallPage.fixed_size_bits(sel4_config).unwrap(),
++            PageSize::Large | PageSize::Large32M => ObjectType::LargePage.fixed_size_bits(sel4_config).unwrap(),
+         }
+     }
+ }
+--- a/tool/microkit/tests/test.rs
++++ b/tool/microkit/tests/test.rs
+@@ -19,8 +19,8 @@
+     vspace: 0,
+     page_table: 0,
+     huge_page: 0,
+-    large_page: 0,
+-    small_page: 0,
++    large_page: 21,
++    small_page: 12,
+     io_page_table: None,
+     asid_pool: 0,
+     vcpu: None,
+@@ -1538,3 +1538,26 @@
+         )
+     }
+ }
++
++#[test]
++fn aarch64_16k_geometry_and_xml() {
++    let mut config = DEFAULT_AARCH64_KERNEL_CONFIG;
++    config.hypervisor = false;
++    config.minimum_page_size = 0x4000;
++    config.object_sizes.small_page = 14;
++    config.object_sizes.large_page = 25;
++    config.address_space_constants.page_table_index_bits = 11;
++    config.address_space_constants.vspace_index_bits = Some(11);
++    assert_eq!(config.page_sizes(), [0x4000, 0x2000000]);
++    assert_eq!(config.vspace_level_index_bits(0), 1);
++    for level in 1..4 { assert_eq!(config.vspace_level_index_bits(level), 11); }
++    for size in [0x4000u64, 0x2000000] {
++        assert_eq!(sel4::PageSize::from(size) as u64, size);
++        let xml = format!(r#"<system><memory_region name="ram" size="{size}" page_size="{size}" />
++          <protection_domain name="test"><program_image path="test.elf" /></protection_domain></system>"#);
++        assert!(sdf::parse_xml(Path::new("16k.system"), &xml, &config, &vec![]).is_ok());
++    }
++    let xml = r#"<system><memory_region name="bad" size="0x1000" page_size="0x1000" />
++       <protection_domain name="test"><program_image path="test.elf" /></protection_domain></system>"#;
++    assert!(sdf::parse_xml(Path::new("16k.system"), xml, &config, &vec![]).is_err());
++}

@@ -1,0 +1,13 @@
+[package]
+name = "modem-storage-host"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lints.rust]
+# The shared TFTP module has a native private-input constructor. This regular
+# file adapter neither enables that feature nor includes the native provider.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("sunfish-native-wifi-private-inputs"))'] }
+
+[dependencies]
+sha2 = "=0.10.9"

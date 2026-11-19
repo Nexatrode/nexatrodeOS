@@ -1,0 +1,409 @@
+--- a/rts/rts.cabal.in
++++ b/rts/rts.cabal.in
+@@ -664,6 +664,11 @@
+                    wasm/OSMem.c
+                    wasm/OSThreads.c
+                    posix/Select.c
++      elif os(sel4)
++        -- Microkit-specific adapters replace POSIX facilities.
++        c-sources: sel4/AwaitEvent.c
++                   sel4/GetTime.c
++                   sel4/OSMem.c
+       else
+          c-sources: posix/GetEnv.c
+                     posix/GetTime.c
+--- a/rts/include/rts/OSThreads.h
++++ b/rts/include/rts/OSThreads.h
+@@ -14,7 +14,8 @@
+ 
+ #pragma once
+ 
+-#if defined(HAVE_PTHREAD_H) && !defined(mingw32_HOST_OS)
++#if defined(HAVE_PTHREAD_H) && !defined(mingw32_HOST_OS) && \
++    !defined(sel4_HOST_OS)
+ 
+ #if defined(CMINUSMINUS)
+ 
+@@ -174,6 +175,27 @@
+ 
+ #endif // CMINUSMINUS
+ 
++# elif defined(sel4_HOST_OS)
++
++#if defined(CMINUSMINUS)
++#else // CMINUSMINUS
++
++typedef uintptr_t Condition;
++typedef uintptr_t Mutex;
++typedef uintptr_t OSThreadId;
++typedef uintptr_t ThreadLocalKey;
++
++#define OSThreadProcAttr
++#define INIT_COND_VAR 0
++#define OS_ACQUIRE_LOCK(mutex) do { (void)(mutex); } while (0)
++#define OS_RELEASE_LOCK(mutex) do { (void)(mutex); } while (0)
++#define OS_TRY_ACQUIRE_LOCK(mutex) ((void)(mutex), 0)
++#define OS_ASSERT_LOCK_HELD(mutex) do { (void)(mutex); } while (0)
++#define OS_INIT_LOCK(mutex) do { (void)(mutex); } while (0)
++#define OS_CLOSE_LOCK(mutex) do { (void)(mutex); } while (0)
++
++#endif // CMINUSMINUS
++
+ # elif defined(THREADED_RTS)
+ #  error "Threads not supported"
+ # endif
+--- a/rts/include/rts/Threads.h
++++ b/rts/include/rts/Threads.h
+@@ -14,8 +14,10 @@
+ 
+ #pragma once
+ 
+-#if defined(HAVE_SYS_TYPES_H)
++#if defined(HAVE_SYS_TYPES_H) && !defined(sel4_HOST_OS)
+ #include <sys/types.h>
++#elif defined(sel4_HOST_OS)
++typedef int pid_t;
+ #endif
+ 
+ #include "rts/storage/TSO.h"
+--- a/rts/Timer.c
++++ b/rts/Timer.c
+@@ -27,7 +27,7 @@
+ #include "rts/EventLogWriter.h"
+ 
+ // See Note [No timer on wasm32]
+-#if !defined(wasm32_HOST_ARCH)
++#if !defined(wasm32_HOST_ARCH) && !defined(sel4_HOST_OS)
+ #define HAVE_PREEMPTION
+ #endif
+ 
+--- a/rts/sel4/OSMem.c
++++ b/rts/sel4/OSMem.c
+@@ -0,0 +1,182 @@
++/*
++ * SPDX-License-Identifier: BSD-2-Clause
++ *
++ * First bounded-memory adapter for GHC 9.6.6 on a Microkit protection domain.
++ * The fixed arena is part of the PD image; no libc or VM syscalls are used.
++ */
++
++#include "Rts.h"
++
++#include "RtsUtils.h"
++#include "sm/OSMem.h"
++#include "rts/storage/Block.h"
++
++#include <stddef.h>
++#include <stdint.h>
++
++#ifndef SEL4_MBLOCK_COUNT
++#define SEL4_MBLOCK_COUNT 8
++#endif
++
++_Alignas(MBLOCK_SIZE)
++static uint8_t mblock_arena[(size_t)SEL4_MBLOCK_COUNT * MBLOCK_SIZE];
++static uint8_t mblock_used[SEL4_MBLOCK_COUNT];
++
++void osMemInit(void)
++{
++    for (uint32_t i = 0; i < SEL4_MBLOCK_COUNT; i++) {
++        mblock_used[i] = 0;
++    }
++}
++
++void *osGetMBlocks(uint32_t count)
++{
++    if (count == 0 || count > SEL4_MBLOCK_COUNT) {
++        barf("osGetMBlocks: request exceeds fixed Microkit arena");
++    }
++
++    uint32_t run = 0;
++    for (uint32_t i = 0; i < SEL4_MBLOCK_COUNT; i++) {
++        if (mblock_used[i]) {
++            run = 0;
++            continue;
++        }
++
++        run++;
++        if (run == count) {
++            uint32_t first = i + 1 - count;
++            for (uint32_t j = first; j <= i; j++) {
++                mblock_used[j] = 1;
++            }
++            return &mblock_arena[(size_t)first * MBLOCK_SIZE];
++        }
++    }
++
++    barf("osGetMBlocks: fixed Microkit arena exhausted");
++}
++
++void osFreeMBlocks(void *addr, uint32_t count)
++{
++    uintptr_t base = (uintptr_t)mblock_arena;
++    uintptr_t ptr = (uintptr_t)addr;
++    uintptr_t arena_size = sizeof(mblock_arena);
++
++    if (count == 0 || ptr < base || ptr >= base + arena_size) {
++        barf("osFreeMBlocks: invalid Microkit arena range");
++    }
++
++    uintptr_t offset = ptr - base;
++    uint32_t first = (uint32_t)(offset / MBLOCK_SIZE);
++    if ((offset % MBLOCK_SIZE) != 0 ||
++        count > SEL4_MBLOCK_COUNT - first) {
++        barf("osFreeMBlocks: unaligned or out-of-bounds Microkit arena range");
++    }
++
++    for (uint32_t i = first; i < first + count; i++) {
++        if (!mblock_used[i]) {
++            barf("osFreeMBlocks: double free in Microkit arena");
++        }
++    }
++    for (uint32_t i = first; i < first + count; i++) {
++        mblock_used[i] = 0;
++    }
++}
++
++static bool in_heap_arena(void *addr, W_ len)
++{
++    uintptr_t base = (uintptr_t)mblock_arena;
++    uintptr_t ptr = (uintptr_t)addr;
++    uintptr_t arena_size = sizeof(mblock_arena);
++
++    return ptr >= base && ptr <= base + arena_size &&
++           len <= base + arena_size - ptr;
++}
++
++void *osReserveHeapMemory(void *startAddress, W_ *len)
++{
++    W_ size = *len;
++    W_ arena_size = sizeof(mblock_arena);
++
++    if ((startAddress != NULL && startAddress != mblock_arena) ||
++        size < MBLOCK_SIZE) {
++        barf("osReserveHeapMemory: invalid fixed Microkit heap request");
++    }
++
++    if (size > arena_size) {
++        size = arena_size;
++    }
++    size -= size % MBLOCK_SIZE;
++    if (size == 0) {
++        barf("osReserveHeapMemory: heap is smaller than one megablock");
++    }
++
++    *len = size;
++    return mblock_arena;
++}
++
++void osCommitMemory(void *addr, W_ len)
++{
++    if (!in_heap_arena(addr, len)) {
++        barf("osCommitMemory: range outside fixed Microkit heap");
++    }
++}
++
++void osDecommitMemory(void *addr, W_ len)
++{
++    if (!in_heap_arena(addr, len)) {
++        barf("osDecommitMemory: range outside fixed Microkit heap");
++    }
++}
++
++void osReleaseHeapMemory(void)
++{
++    /* Heap backing is statically mapped into the PD; it cannot be unmapped. */
++}
++
++void osReleaseFreeMemory(void)
++{
++    /* The PD's statically mapped memory cannot be returned to a host VM. */
++}
++
++void osFreeAllMBlocks(void)
++{
++    for (uint32_t i = 0; i < SEL4_MBLOCK_COUNT; i++) {
++        mblock_used[i] = 0;
++    }
++}
++
++size_t getPageSize(void)
++{
++    return 4096;
++}
++
++StgWord64 getPhysicalMemorySize(void)
++{
++    /* Unknown here: Microkit owns the static PD map, not a process VM. */
++    return 0;
++}
++
++bool osBuiltWithNumaSupport(void)
++{
++    return false;
++}
++
++bool osNumaAvailable(void)
++{
++    return false;
++}
++
++uint32_t osNumaNodes(void)
++{
++    return 1;
++}
++
++uint64_t osNumaMask(void)
++{
++    return 1;
++}
++
++void osBindMBlocksToNode(void *addr STG_UNUSED, StgWord size STG_UNUSED,
++                         uint32_t node STG_UNUSED)
++{
++}
+--- a/rts/sel4/GetTime.c
++++ b/rts/sel4/GetTime.c
+@@ -0,0 +1,64 @@
++/*
++ * GHC 9.6.6 time hooks for AArch64 seL4/Microkit.
++ *
++ * Monotonic and wall-clock time are delegated to image services. The seL4
++ * kernel does not grant user PDs access to the architected counter by default,
++ * so reading CNTVCT_EL0 directly is not a valid assumption. CPU accounting
++ * and page-fault counters are unavailable in the initial runtime.
++ */
++
++#include "Rts.h"
++#include "GetTime.h"
++
++#if !defined(aarch64_HOST_ARCH) || !defined(sel4_HOST_OS)
++#error "The initial seL4 time adapter requires an AArch64 seL4 target"
++#endif
++
++extern bool sel4_rts_read_monotonic_ns(StgWord64 *nsec);
++extern bool sel4_rts_read_unix_time(StgWord64 *sec, StgWord32 *nsec);
++
++void initializeTimer(void)
++{
++}
++
++StgWord64 getMonotonicNSec(void)
++{
++    StgWord64 nsec;
++    if (!sel4_rts_read_monotonic_ns(&nsec)) {
++        barf("getMonotonicNSec: no monotonic timer service is configured for this PD");
++    }
++    return nsec;
++}
++
++Time getProcessElapsedTime(void)
++{
++    return NSToTime(getMonotonicNSec());
++}
++
++Time getProcessCPUTime(void)
++{
++    return 0;
++}
++
++Time getCurrentThreadCPUTime(void)
++{
++    return 0;
++}
++
++void getProcessTimes(Time *user, Time *elapsed)
++{
++    *user = getProcessCPUTime();
++    *elapsed = getProcessElapsedTime();
++}
++
++void getUnixEpochTime(StgWord64 *sec, StgWord32 *nsec)
++{
++    if (!sel4_rts_read_unix_time(sec, nsec)) {
++        barf("getUnixEpochTime: no clock service is configured for this PD");
++    }
++}
++
++W_ getPageFaults(void)
++{
++    return 0;
++}
+--- a/rts/sel4/AwaitEvent.c
++++ b/rts/sel4/AwaitEvent.c
+@@ -0,0 +1,75 @@
++/*
++ * First event-wait hook for GHC's non-threaded RTS on seL4/Microkit.
++ *
++ * This handles GHC's timer queue. File-descriptor I/O remains unsupported;
++ * a later app-facing network service must provide that event source.
++ */
++
++#include "Rts.h"
++#include "Schedule.h"
++#include "Capability.h"
++#include "IOManager.h"
++#include "GetTime.h"
++#include "posix/Select.h"
++
++#if defined(THREADED_RTS)
++#error "The initial Microkit event waiter is non-threaded"
++#endif
++
++/* Implemented by the sDDF timer-client bridge in the compile fixture.
++ * The initial bridge supports the timer channel only and traps on any other
++ * badge until general Microkit deferred-event dispatch is integrated.
++ * Use UINT64_MAX when no timeout is pending. */
++extern void sel4_rts_wait_for_event(uint64_t deadline_ns);
++
++LowResTime getDelayTarget(HsInt us)
++{
++    Time elapsed = getProcessElapsedTime();
++    if (us > TimeToUS(TIME_MAX - elapsed)) {
++        return (LowResTime)TIME_MAX;
++    }
++    return (LowResTime)(elapsed + USToTime(us));
++}
++
++static bool wakeExpiredThreads(Capability *cap, LowResTime now)
++{
++    CapIOManager *iomgr = cap->iomgr;
++    bool woke = false;
++
++    while (iomgr->sleeping_queue != END_TSO_QUEUE) {
++        StgTSO *tso = iomgr->sleeping_queue;
++        if ((int64_t)(now - tso->block_info.target) < 0) {
++            break;
++        }
++        iomgr->sleeping_queue = tso->_link;
++        tso->why_blocked = NotBlocked;
++        tso->_link = END_TSO_QUEUE;
++        pushOnRunQueue(cap, tso);
++        woke = true;
++    }
++    return woke;
++}
++
++void awaitEvent(Capability *cap, bool wait)
++{
++    CapIOManager *iomgr = cap->iomgr;
++
++    if (iomgr->blocked_queue_hd != END_TSO_QUEUE) {
++        barf("awaitEvent: blocking file-descriptor I/O is not implemented");
++    }
++
++    for (;;) {
++        LowResTime now = (LowResTime)getProcessElapsedTime();
++        if (wakeExpiredThreads(cap, now) || !emptyRunQueue(cap) || !wait) {
++            return;
++        }
++
++        uint64_t deadline = UINT64_MAX;
++        if (iomgr->sleeping_queue != END_TSO_QUEUE) {
++            deadline = (uint64_t)iomgr->sleeping_queue->block_info.target;
++        }
++
++        sel4_rts_wait_for_event(deadline);
++        /* The bridge may have returned for an unrelated notification. */
++    }
++}

@@ -48,14 +48,55 @@ CFLAGS += \
 	  -MP
 
 CFLAGS += -Wno-tautological-constant-out-of-range-compare
+CFLAGS += $(EXTRA_CFLAGS)
 
 LDFLAGS := -L$(BOARD_DIR)/lib
 LIBS := --start-group -lmicrokit -Tmicrokit.ld libsddf_util_debug.a --end-group
 
-DHCP_OBJS := dhcp_client.o udp_echo_socket.o tcp_echo_socket.o dns_smoke.o tls_smoke.o
+DHCP_OBJS := dhcp_client.o udp_echo_socket.o tcp_echo_socket.o dns_smoke.o tls_smoke.o haskell_tcp_service.o
 DEPS := $(DHCP_OBJS:.o=.d)
 
 all: $(SYSTEM_FILE)
+
+# The opted-in UTM wallet SDF maps the entire shared 4 KiB region for this read.
+# Track the mode so changing the switch in an existing build directory relinks DHCP.
+NEXAWAL_UTM_WIDE_RX ?= 0
+ifeq ($(NEXAWAL_UTM_WIDE_RX),1)
+ifneq ($(MICROKIT_BOARD),qemu_virt_aarch64)
+$(error NEXAWAL_UTM_WIDE_RX requires the UTM qemu_virt_aarch64 network fragment)
+endif
+dhcp_client.o haskell_tcp_service.o: CFLAGS += -DNEXAWAL_UTM_WIDE_RX=1
+else ifneq ($(NEXAWAL_UTM_WIDE_RX),0)
+$(error NEXAWAL_UTM_WIDE_RX must be 0 or 1)
+endif
+
+# Enable only for a system granting dhcp_client a notification to wallet on id 4.
+NEXAWAL_UTM_RX_NOTIFY ?= 0
+ifeq ($(NEXAWAL_UTM_RX_NOTIFY),1)
+ifneq ($(NEXAWAL_UTM_WIDE_RX),1)
+$(error NEXAWAL_UTM_RX_NOTIFY requires NEXAWAL_UTM_WIDE_RX)
+endif
+dhcp_client.o haskell_tcp_service.o: CFLAGS += -DNEXAWAL_UTM_RX_NOTIFY=1
+else ifneq ($(NEXAWAL_UTM_RX_NOTIFY),0)
+$(error NEXAWAL_UTM_RX_NOTIFY must be 0 or 1)
+endif
+NEXAWAL_UTM_RX_AHEAD ?= 0
+ifeq ($(NEXAWAL_UTM_RX_AHEAD),1)
+ifneq ($(NEXAWAL_UTM_WIDE_RX),1)
+$(error NEXAWAL_UTM_RX_AHEAD requires NEXAWAL_UTM_WIDE_RX)
+endif
+haskell_tcp_service.o: CFLAGS += -DNEXAWAL_UTM_RX_AHEAD=1
+else ifneq ($(NEXAWAL_UTM_RX_AHEAD),0)
+$(error NEXAWAL_UTM_RX_AHEAD must be 0 or 1)
+endif
+WALLET_RX_MODE := $(NEXAWAL_UTM_WIDE_RX):$(NEXAWAL_UTM_RX_NOTIFY):$(NEXAWAL_UTM_RX_AHEAD)
+
+# The configured ELF is rewritten after link. Force both link and configuration
+# on a mode change even on make/filesystems with one-second timestamp resolution.
+ifneq ($(WALLET_RX_MODE),$(shell cat .wallet-rx-mode 2>/dev/null))
+.PHONY: wallet-rx-mode-changed dhcp_client.elf $(SYSTEM_FILE)
+dhcp_client.o haskell_tcp_service.o: wallet-rx-mode-changed
+endif
 
 include $(NET_SRC)/mbedtls.mk
 
@@ -77,6 +118,7 @@ $(SYSTEM_FILE): $(METAPROGRAM) $(IMAGES) $(DTB)
 	$(OBJCOPY) --update-section .net_client_config=net_client_dhcp_client.data dhcp_client.elf
 	$(OBJCOPY) --update-section .lib_sddf_lwip_config=lib_sddf_lwip_config_dhcp_client.data dhcp_client.elf
 	touch $@
+	@echo "$(WALLET_RX_MODE)" > .wallet-rx-mode
 
 ${IMAGE_FILE} $(REPORT_FILE): $(IMAGES) $(SYSTEM_FILE)
 	$(MICROKIT_TOOL) $(SYSTEM_FILE) --search-path $(BUILD_DIR) \

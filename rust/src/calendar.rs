@@ -4,8 +4,8 @@ pub const REMINDER_CAPACITY: usize = 3;
 pub const REMINDER_TITLE_CAPACITY: usize = 21;
 pub const DAY_CAPACITY: usize = 4;
 pub const TIME_CAPACITY: usize = 4;
-pub const CALENDAR_BLOB_CAPACITY: usize = 6
-    + REMINDER_CAPACITY * (1 + REMINDER_TITLE_CAPACITY + 1 + DAY_CAPACITY + 1 + TIME_CAPACITY);
+pub const CALENDAR_BLOB_CAPACITY: usize =
+    6 + REMINDER_CAPACITY * (1 + REMINDER_TITLE_CAPACITY + 1 + DAY_CAPACITY + 1 + TIME_CAPACITY);
 const MAGIC_V1: [u8; 4] = *b"PCAL";
 const MAGIC_V2: [u8; 4] = *b"PCL2";
 
@@ -65,11 +65,7 @@ impl Calendar {
                     if index > 0 {
                         offset = write(buffer, offset, b"\n");
                     }
-                    let marker = if index == self.selected {
-                        b"- "
-                    } else {
-                        b"  "
-                    };
+                    let marker = if index == self.selected { b"- " } else { b"  " };
                     offset = write(buffer, offset, marker);
                     offset = write(buffer, offset, &self.titles[index][..self.lengths[index]]);
                     if self.day_lengths[index] > 0 || self.time_lengths[index] > 0 {
@@ -137,6 +133,36 @@ impl Calendar {
         }
     }
 
+    /// The Slint prototype currently edits one reminder title at a time.
+    /// Keep the selected reminder's day/time and all sibling reminders intact.
+    pub fn selected_title(&self) -> Option<&[u8]> {
+        (self.count > 0 && self.selected < self.count)
+            .then(|| &self.titles[self.selected][..self.lengths[self.selected]])
+    }
+
+    pub fn replace_selected_title(&mut self, title: &[u8]) -> bool {
+        if self.phase != EditPhase::Browse
+            || title.is_empty()
+            || title.len() > REMINDER_TITLE_CAPACITY
+            || title
+                .iter()
+                .any(|byte| !matches!(byte, b'A'..=b'Z' | b'0'..=b'9' | b' '))
+        {
+            return false;
+        }
+        if self.count == 0 {
+            self.count = 1;
+            self.selected = 0;
+        }
+        let Some(slot) = self.titles.get_mut(self.selected) else {
+            return false;
+        };
+        slot.fill(0);
+        slot[..title.len()].copy_from_slice(title);
+        self.lengths[self.selected] = title.len();
+        true
+    }
+
     pub fn decode(payload: &[u8]) -> Option<Self> {
         if payload.len() < 6 {
             return None;
@@ -164,10 +190,7 @@ impl Calendar {
             }
             let length = payload[cursor] as usize;
             cursor += 1;
-            if length == 0
-                || length > REMINDER_TITLE_CAPACITY
-                || cursor + length > payload.len()
-            {
+            if length == 0 || length > REMINDER_TITLE_CAPACITY || cursor + length > payload.len() {
                 return None;
             }
             let title = &payload[cursor..cursor + length];
@@ -248,8 +271,7 @@ impl Calendar {
             if day_length != 0 && (day_length != DAY_CAPACITY || !valid_day(&self.days[index])) {
                 return None;
             }
-            if time_length != 0
-                && (time_length != TIME_CAPACITY || !valid_time(&self.times[index]))
+            if time_length != 0 && (time_length != TIME_CAPACITY || !valid_time(&self.times[index]))
             {
                 return None;
             }
@@ -640,6 +662,26 @@ mod tests {
         assert_eq!(&encoded[..4], &MAGIC_V2);
         let decoded = Calendar::decode(&encoded[..length]).unwrap();
         assert_eq!(decoded.display(&mut buffer), b"- CAL");
+    }
+
+    #[test]
+    fn replacing_selected_title_preserves_date_time_and_other_reminders() {
+        let payload = b"PCL2\x02\x00\x01A\x04\x30\x35\x31\x32\x04\x31\x32\x33\x30\x01B\x00\x00";
+        let mut calendar = Calendar::decode(payload).unwrap();
+        assert_eq!(calendar.selected_title(), Some(&b"A"[..]));
+        assert!(calendar.replace_selected_title(b"MEETING 2"));
+        assert_eq!(calendar.selected_title(), Some(&b"MEETING 2"[..]));
+        assert!(!calendar.replace_selected_title(b""));
+        assert!(!calendar.replace_selected_title(b"bad"));
+
+        let mut encoded = [0; CALENDAR_BLOB_CAPACITY];
+        let length = calendar.encode(&mut encoded).unwrap();
+        let decoded = Calendar::decode(&encoded[..length]).unwrap();
+        assert_eq!(decoded.count, 2);
+        assert_eq!(decoded.titles[0][..decoded.lengths[0]], *b"MEETING 2");
+        assert_eq!(&decoded.days[0], b"0512");
+        assert_eq!(&decoded.times[0], b"1230");
+        assert_eq!(decoded.titles[1][..decoded.lengths[1]], *b"B");
     }
 
     #[test]

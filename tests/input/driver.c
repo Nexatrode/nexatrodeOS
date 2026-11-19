@@ -157,7 +157,11 @@ static void handle_events(unsigned index)
 {
     struct input_queue *device = &devices[index];
     uint32_t interrupt_status = device->regs->InterruptStatus;
-    if (interrupt_status & VIRTIO_IRQ_VQUEUE) {
+    /* A lost edge leaves the used ring ahead of us with the line stuck or
+     * already cleared. Drain whenever descriptors are waiting, not only when
+     * the status bit is set on this entry. */
+    if ((interrupt_status & VIRTIO_IRQ_VQUEUE) ||
+        device->next_used != device->used->idx) {
         int published = 0;
         int have_abs_x = 0;
         int have_abs_y = 0;
@@ -244,5 +248,12 @@ void notified(microkit_channel channel)
     if (channel < INPUT_DEVICE_COUNT) {
         handle_events(channel);
         microkit_deferred_irq_ack(channel);
+        return;
+    }
+    /* input_service asks us to poll. The tablet IRQ is edge-triggered and a
+     * missed edge during wallet sync drops every later tap. */
+    if (channel == INPUT_SERVICE_CHANNEL) {
+        handle_events(0);
+        handle_events(1);
     }
 }

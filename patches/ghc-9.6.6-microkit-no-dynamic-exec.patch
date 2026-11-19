@@ -1,0 +1,16 @@
+--- a/rts/sm/Storage.c
++++ b/rts/sm/Storage.c
+@@ -1818,7 +1818,12 @@
+    writing code into memory, so the processor reliably sees it. */
+ void flushExec (W_ len, AdjustorExecutable exec_addr)
+ {
+-#if defined(i386_HOST_ARCH) || defined(x86_64_HOST_ARCH)
++#if defined(sel4_HOST_OS)
++  /* Runtime-generated code is forbidden by the static Microkit target. */
++  (void)len;
++  (void)exec_addr;
++  barf("runtime executable code is unavailable on seL4");
++#elif defined(i386_HOST_ARCH) || defined(x86_64_HOST_ARCH)
+   /* x86 doesn't need to do anything, so just suppress some warnings. */
+   (void)len;
+   (void)exec_addr;

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<system>
+    <!-- First phone OS profile: a real Rust service and a framebuffer client. -->
+    <memory_region name="server_private" size="0x4000" page_size="0x4000" />
+    <memory_region name="screen" size="0x100000" page_size="0x4000" phys_addr="0x8bb80c000" />
+    <protection_domain name="server" priority="100" passive="true" stack_size="0x4000">
+        <program_image path="rust_server.elf" />
+        <map mr="server_private" vaddr="0x40000000" perms="rw" setvar_vaddr="server_private_start" />
+    </protection_domain>
+    <protection_domain name="home" priority="99" budget="20000" period="200000" stack_size="0x4000">
+        <program_image path="home.elf" />
+        <map mr="screen" vaddr="0x40000000" perms="rw" cached="false" setvar_vaddr="os_framebuffer" />
+    </protection_domain>
+    <channel>
+        <end pd="server" id="0" notify="false" />
+        <end pd="home" id="0" pp="true" notify="false" />
+    </channel>
+</system>

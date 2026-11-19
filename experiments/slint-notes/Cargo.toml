@@ -10,6 +10,17 @@ pixel-pd = []
 pixel-notes-smoke = ["pixel-pd"]
 workspace-ui = []
 full-suite-ui = []
+simplex-agent-ui = []
+simplex-cli-qemu-test = []
+utm-file-import-test = []
+utm-files-selftest = ["utm-file-import-test"]
+utm-chat-list-selftest = []
+utm-chat-sync-selftest = []
+utm-keyboard-selftest = []
+utm-clock-selftest = []
+utm-perf-trace = []
+utm-pd = []
+utm-nexawal-rpc-bridge = []
 full-suite-profile = ["full-suite-ui", "frame-timing"]
 full-suite-input-profile = ["full-suite-profile"]
 full-suite-press-click = ["full-suite-profile"]
@@ -36,11 +47,22 @@ name = "slint_notes_pixel"
 path = "src/pixel.rs"
 required-features = ["pixel-pd"]
 
+[[bin]]
+name = "slint_notes_utm"
+path = "src/utm.rs"
+required-features = ["utm-pd", "full-suite-ui"]
+
 [dependencies]
 slint = { version = "=1.18.1", default-features = false, features = ["renderer-software", "unsafe-single-threaded", "libm", "compat-1-18"] }
+zune-jpeg = { version = "=0.5.15", default-features = false }
+qrcodegen-no-heap = { version = "=1.8.1", default-features = false }
 
 [build-dependencies]
 slint-build = "=1.18.1"
 
 [target.'cfg(target_os = "none")'.dependencies]
+sel4-config = { git = "https://github.com/seL4/rust-sel4", rev = "891b59622306e94ad428193838f0d6214bb5c7aa" }
+libm = { version = "=0.2.16", default-features = false }
+personal-os-rust-server = { path = "../../rust" }
 sel4-microkit = { git = "https://github.com/seL4/rust-sel4", rev = "891b59622306e94ad428193838f0d6214bb5c7aa" }
+sel4-dlmalloc = { git = "https://github.com/seL4/rust-sel4", rev = "891b59622306e94ad428193838f0d6214bb5c7aa" }

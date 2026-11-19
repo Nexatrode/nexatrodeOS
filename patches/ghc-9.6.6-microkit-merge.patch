@@ -1,0 +1,23 @@
+--- a/m4/find_merge_objects.m4
++++ b/m4/find_merge_objects.m4
+@@ -6,11 +6,20 @@
+ AC_DEFUN([FIND_MERGE_OBJECTS],[
+     AC_REQUIRE([FIND_LD])
+ 
++    dnl GHC emits C and Haskell object fragments that must be merged as ELF.
++    dnl Without an ld -r driver GHC falls back to nesting an ar archive in the
++    dnl .o file, which ELF linkers cannot consume as a relocatable object.
++    if test "$TargetOS" = "sel4" && test -z "$MergeObjsCmd"; then
++        AC_PATH_PROG([MergeObjsCmd], [ld.lld])
++    fi
+     if test -z "$MergeObjsCmd"; then
+         MergeObjsCmd="$LD"
+     fi
+     if test -z "$MergeObjsArgs"; then
+         MergeObjsArgs="-r"
+     fi
++    if test "$TargetOS" = "sel4" && test -z "$MergeObjsCmd"; then
++        AC_MSG_ERROR([ld.lld is required to merge GHC objects for the seL4 target])
++    fi
+ 
+     CHECK_FOR_GOLD_T22266($MergeObjsCmd)

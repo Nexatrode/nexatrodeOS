@@ -32,7 +32,7 @@ pub trait VaultCryptoProvider {
     ) -> Result<bool, CryptoProviderError>;
 }
 
-/// Fixed-key software crypto for QEMU and host-backup development only.
+/// Software crypto for QEMU, UTM, and host backup.
 ///
 /// The key is private to this type and is not returned to record or vault
 /// callers. This does not isolate it from the QEMU vault process: a future
@@ -51,9 +51,11 @@ const DEVELOPMENT_KEY: [u8; KEY_SIZE] = [
 #[cfg(feature = "development-crypto")]
 impl DevelopmentCryptoProvider {
     pub const fn new() -> Self {
-        Self {
-            key: DEVELOPMENT_KEY,
-        }
+        Self::with_key(DEVELOPMENT_KEY)
+    }
+
+    pub const fn with_key(key: [u8; KEY_SIZE]) -> Self {
+        Self { key }
     }
 }
 
