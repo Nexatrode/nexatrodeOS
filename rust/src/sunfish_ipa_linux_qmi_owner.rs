@@ -595,6 +595,8 @@ impl<I: Io> Owner<I> {
             && r.last_progress_client
         {
             r.init_trace.post_registration = PostRegistrationTurn::Queued;
+            #[cfg(feature = "sunfish-paired-oack-init")]
+            self.adapter.try_init_after_oack(self.generation)?;
         }
         Ok(())
     }

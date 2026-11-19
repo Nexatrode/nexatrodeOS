@@ -3693,7 +3693,9 @@ impl RuntimeDomain {
             let reads = owner.read_sequence();
             #[cfg(feature = "sunfish-ipa-init-close-visibility")]
             let close = owner.init_close_fifo();
-            #[cfg(feature = "sunfish-ipa-init-close-visibility")]
+            #[cfg(feature = "sunfish-paired-oack-init")]
+            display.replace_line(1, "PAIRED OACK AND INIT");
+            #[cfg(all(feature = "sunfish-ipa-init-close-visibility", not(feature = "sunfish-paired-oack-init")))]
             display.replace_line(1, "INIT CLOSE VISIBILITY");
             #[cfg(not(feature = "sunfish-ipa-init-close-visibility"))]
             display.replace_line(1, "POST INIT FIRST WRQ");

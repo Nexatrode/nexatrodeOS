@@ -2577,6 +2577,14 @@ impl<I: Io> Adapter<I> {
         Ok(())
     }
 
+    #[cfg(feature = "sunfish-paired-oack-init")]
+    pub(crate) fn try_init_after_oack(&mut self, generation: u64) -> Result<(), Error> {
+        if self.first_grant.outcome == 1 && self.ready_for_init_at_registration() {
+            self.publish_inner(generation, Some(core::OackFollowup::FirstGrantInit))?;
+        }
+        Ok(())
+    }
+
     /// Publish one session record, or use the reserved eight bytes for a single
     /// READ_NOTIF while blocked. A READ_NOTIF never commits the waiting session
     /// record; successful retry publishes that record once after peer progress.
@@ -2595,18 +2603,35 @@ impl<I: Io> Adapter<I> {
         let expected = if self.first_grant.trigger == 0 {
             self.session.first_oack_grant_trigger()
         } else { None };
+        #[cfg(feature = "sunfish-paired-oack-init")]
+        let awaiting_registration = self.registration_close_fifo().is_none();
         let ordinary = self.publish_next(generation)?;
-        let Some(event) = expected else { return Ok((ordinary, 0)); };
-        if ordinary != Transmit::Session(event) { return Ok((ordinary, 0)); }
-        let clock = self.ring.first_server_check_clock;
         let mut extra = 0;
+        #[cfg(feature = "sunfish-paired-oack-init")]
+        let expected = if awaiting_registration && self.registration_close_fifo().is_some()
+            && self.first_grant.trigger == 0 && self.ready_for_init_at_registration()
+        {
+            let candidate = self.session.first_oack_grant_trigger();
+            if let Some(ad @ Published::ReceiveIntent(_)) = candidate {
+                if self.publish_inner(generation, Some(core::OackFollowup::FirstGrantAd))?
+                    != Transmit::Session(ad)
+                {
+                    return Ok((ordinary, 0));
+                }
+                extra += 1;
+            }
+            candidate
+        } else { expected };
+        let Some(event) = expected else { return Ok((ordinary, 0)); };
+        if extra == 0 && ordinary != Transmit::Session(event) { return Ok((ordinary, 0)); }
+        let clock = self.ring.first_server_check_clock;
         if matches!(event, Published::ReceiveIntent(_)) {
             self.first_grant.trigger = 5;
             self.first_grant.advertisement_at = clock.map(|clock| clock());
             let ack = self.publish_inner(generation, Some(FirstGrantAck))?;
             if ack != Transmit::Session(Published::IntentRequestAck { granted: true }) {
                 self.first_grant_stop(ack);
-                return Ok((ordinary, 0));
+                return Ok((ordinary, extra));
             }
             extra += 1;
         } else {
@@ -2681,7 +2706,7 @@ impl<I: Io> Adapter<I> {
         self.quarantined = true;
         self.ring.sample()?;
         #[cfg(feature = "sunfish-first-oack-grant-window")]
-        let first_grant = matches!(followup, Some(core::OackFollowup::FirstGrantAck | core::OackFollowup::FirstGrantReply));
+        let first_grant = matches!(followup, Some(core::OackFollowup::FirstGrantAd | core::OackFollowup::FirstGrantInit | core::OackFollowup::FirstGrantAck | core::OackFollowup::FirstGrantReply));
         #[cfg(not(feature = "sunfish-first-oack-grant-window"))]
         let first_grant = false;
         #[cfg(feature = "sunfish-first-oack-grant-window")]

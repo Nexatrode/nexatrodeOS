@@ -1306,6 +1306,10 @@ impl OackResources {
 #[derive(Clone, Copy)]
 pub(crate) enum OackFollowup {
     #[cfg(feature = "sunfish-first-oack-grant-window")]
+    FirstGrantAd,
+    #[cfg(feature = "sunfish-first-oack-grant-window")]
+    FirstGrantInit,
+    #[cfg(feature = "sunfish-first-oack-grant-window")]
     FirstGrantAck,
     #[cfg(feature = "sunfish-first-oack-grant-window")]
     FirstGrantReply,
@@ -6892,7 +6896,7 @@ impl Session {
         F: FnOnce(&[u8]) -> Result<(), WriteError>,
     {
         #[cfg(feature = "sunfish-first-oack-grant-window")]
-        if matches!(stage, OackFollowup::FirstGrantAck | OackFollowup::FirstGrantReply) {
+        if matches!(stage, OackFollowup::FirstGrantAd | OackFollowup::FirstGrantInit | OackFollowup::FirstGrantAck | OackFollowup::FirstGrantReply) {
             return self.publish_inner(generation, writer, Some(stage));
         }
         let result = self.publish_inner(generation, writer, Some(stage));
@@ -6983,7 +6987,7 @@ impl Session {
                 #[cfg(any(feature = "sunfish-tftp-oack-credit-early", all(test, feature = "sunfish-tftp-oack-credit-retry")))]
                 OackFollowup::CreditReplay => {},
                 #[cfg(feature = "sunfish-first-oack-grant-window")]
-                OackFollowup::FirstGrantAck | OackFollowup::FirstGrantReply => unreachable!(),
+                OackFollowup::FirstGrantAd | OackFollowup::FirstGrantInit | OackFollowup::FirstGrantAck | OackFollowup::FirstGrantReply => unreachable!(),
                 OackFollowup::Advertise => trace.followup_ad = status,
                 #[cfg(feature = "sunfish-tftp-oack-early-reserve")]
                 OackFollowup::EarlyReserve => unreachable!(),
@@ -7568,7 +7572,7 @@ impl Session {
                         .map(|(_, peer)| peer.port)),
                 };
                 #[cfg(feature = "sunfish-first-oack-grant-window")]
-                let original = matches!(stage, OackFollowup::FirstGrantAck | OackFollowup::FirstGrantReply);
+                let original = matches!(stage, OackFollowup::FirstGrantAd | OackFollowup::FirstGrantInit | OackFollowup::FirstGrantAck | OackFollowup::FirstGrantReply);
                 #[cfg(not(feature = "sunfish-first-oack-grant-window"))]
                 let original = false;
                 if !original && let Some(trace) = self.oack_slot_follow.as_mut() {
@@ -7639,6 +7643,21 @@ impl Session {
                 }
             }
             let allowed = match (stage, &commit) {
+                #[cfg(feature = "sunfish-paired-oack-init")]
+                (OackFollowup::FirstGrantAd, Commit::Advertise(index)) =>
+                    self.first_oack_grant_trigger() == Some(Published::ReceiveIntent(self.receive[*index].id)),
+                #[cfg(feature = "sunfish-paired-oack-init")]
+                (OackFollowup::FirstGrantInit, Commit::Data(slot, _, chunk)) => {
+                    let tx = &self.transmit[*slot];
+                    self.queued_ipa_init_slot() == Some(*slot)
+                        && self.original_1f_close_count() == Some(0)
+                        && self.registration_reply_in_flight()
+                        && self.intent_request_ack.is_none()
+                        && self.next_transmit_in_order([1]).is_none()
+                        && tx.sent == 0 && *chunk == tx.len
+                        && !self.unsent_flow_predecessor(tx)
+                        && self.ready_remote_for_transmit(tx).is_some()
+                }
                 #[cfg(feature = "sunfish-first-oack-grant-window")]
                 (OackFollowup::FirstGrantAck, Commit::IntentAck) =>
                     self.first_oack_grant_trigger() == Some(Published::IntentRequestAck { granted: true }),
