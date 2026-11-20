@@ -16,6 +16,18 @@ The SimpleX messaging guest includes a modified SimpleXMQ agent. Its license,
 upstream revision, port sources, and decoder credits are listed in the
 [SimpleX third-party notices](THIRD_PARTY_NOTICES.md).
 
+## Screenshots
+
+NexatrodeOS running in accelerated UTM.
+
+| Home | SimpleX chats | SimpleX conversation | Settings |
+| :---: | :---: | :---: | :---: |
+| <img src="docs/screenshots/home.png" alt="NexatrodeOS home screen" width="200"> | <img src="docs/screenshots/simplex-chats.png" alt="SimpleX chat list" width="200"> | <img src="docs/screenshots/simplex-chat.png" alt="SimpleX conversation" width="200"> | <img src="docs/screenshots/settings.png" alt="NexatrodeOS settings" width="200"> |
+
+| NexaWal wallet | Receive XMR | Send XMR |
+| :---: | :---: | :---: |
+| <img src="docs/screenshots/nexawal-wallet.png" alt="NexaWal wallet overview" width="200"> | <img src="docs/screenshots/nexawal-receive.png" alt="NexaWal receive screen" width="200"> | <img src="docs/screenshots/nexawal-send.png" alt="NexaWal send screen" width="200"> |
+
 ## Run
 
 On this Mac, from any directory:
