@@ -1616,3 +1616,53 @@ fn announcement_work_marks_overwritten_intervals() {
     assert!(retained.windows(2).all(|w| w[0].end <= w[1].start));
     assert_eq!(retained.last().and_then(|e| work.distance(e)), Some(0));
 }
+
+#[cfg(feature = "sunfish-wrq-prefix-close")]
+#[test]
+fn original_wrq_prefix_retains_only_intervening_committed_rx_records() {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    static CLOCK: AtomicU64 = AtomicU64::new(1);
+    for count in [0, 12, 13] {
+        let mut session = lo_session();
+        let port = qcom_tftp_server_check::SERVICE_PORT;
+        session.prepare_tftp_server(1, port).unwrap();
+        let mut rig = LoRig::from_session_with_modem(0, false, session, false, false);
+        rig.owner.set_rmtfs_event_clock(|| CLOCK.fetch_add(1, Relaxed));
+        rig.peer.push(&control(13, 0, 0));
+        rig.enqueue(&owner_control_frame(4, [0x31, 0x201, 0, LO_MODEM]));
+        rig.peer.push(&control(13, 0, 0).repeat(count));
+        rig.enqueue(&lo_packet(1, 0x1f, port, false, qcom_tftp_server_check::REQUEST));
+        rig.drive().unwrap();
+        rig.peer.push(&control(13, 0, 0));
+        rig.drive().unwrap();
+        let prefix = rig.owner.wrq_prefix();
+        assert!(prefix.complete);
+        assert_eq!(prefix.bytes as usize, count * 8);
+        assert_eq!(prefix.records as usize, count);
+        assert_eq!(prefix.headers().len(), count.min(12));
+        assert!(prefix.headers().iter().all(|h| h.command == 13 && h.bytes == 8));
+    }
+}
+
+#[cfg(feature = "sunfish-wrq-prefix-close")]
+#[test]
+fn wrq_prefix_identifies_a_server_announcement_and_requires_original_peer() {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    static CLOCK: AtomicU64 = AtomicU64::new(1);
+    for peer in [0x1f, 0x49] {
+        let mut session = lo_session();
+        let port = qcom_tftp_server_check::SERVICE_PORT;
+        session.prepare_tftp_server(1, port).unwrap();
+        let mut rig = LoRig::from_session_with_modem(0, false, session, false, false);
+        rig.owner.set_rmtfs_event_clock(|| CLOCK.fetch_add(1, Relaxed));
+        rig.input(&owner_control_frame(4, [0x31, 0x201, 0, LO_MODEM])).unwrap();
+        rig.input(&owner_control_frame(4, [0x24, 1, 0, 0x1c])).unwrap();
+        rig.input(&lo_packet(1, peer, port, false, qcom_tftp_server_check::REQUEST)).unwrap();
+        let trace = rig.owner.wrq_prefix();
+        assert_eq!(trace.complete, peer == 0x1f);
+        assert_eq!((trace.records, trace.bytes), (1, 72));
+        let header = &trace.headers()[0];
+        assert_eq!((header.command, header.extra), (9, 0x24));
+        assert_eq!(header.qrtr.unwrap()[0], 4);
+    }
+}

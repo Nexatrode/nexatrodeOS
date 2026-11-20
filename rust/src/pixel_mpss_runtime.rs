@@ -3686,7 +3686,45 @@ impl RuntimeDomain {
             (28, "IPA COMPLETE", u32::from(self.ipa_complete_seen)),
         ] { display.hex(row, label, value); }
         }
-        #[cfg(feature = "sunfish-ipa-ingress-work")]
+        #[cfg(feature = "sunfish-wrq-prefix-close")]
+        {
+            let prefix = owner.wrq_prefix();
+            let (ready, wrq) = owner.ipa_wrq_timing();
+            let close = owner.init_close_fifo().bounds;
+            display.replace_line(1, "WRQ PREFIX AND CLOSE");
+            for (index, (label, value)) in [
+                ("RUNTIME ERROR", self.error),
+                ("FIRST PEER", first.map_or(u32::MAX, |t| t.peer.port)),
+                ("ENDPT READY US", age(ready)),
+                ("WRQ VISIBLE US", age(wrq.and_then(|t| t.first_visible))),
+                ("WRQ BYTES AHEAD", wrq.and_then(|t| t.bytes_ahead).unwrap_or(u32::MAX)),
+                ("FIRST WRQ US", age(first.and_then(|t| t.wrq_at))),
+                ("PREFIX COMPLETE", u32::from(prefix.complete)),
+                ("PREFIX RECORDS", prefix.records),
+                ("PREFIX BYTES", prefix.bytes),
+                ("OACK QUEUE US", age(gates.queued_at)),
+                ("REG PUB US", age(reg.and_then(|r| r.published_at))),
+                ("OACK HEAD US", age(prefix.oack_head)),
+                ("INIT HEAD US", age(prefix.init_head)),
+                ("CLOSE ABSENT US", age(close.and_then(|c| c.last_absent))),
+                ("CLOSE VIS US", age(close.and_then(|c| c.first_visible))),
+                ("FIRST CLOSE US", age(first.and_then(|t| t.first_close_at))),
+            ].into_iter().enumerate() { display.hex(index + 2, label, value); }
+            display.replace_line(18, "CMD LEN ARG K SRC DST X");
+            for i in 0..12 {
+                let row = 19 + i / 2;
+                if let Some(h) = prefix.headers().get(i) {
+                    let [kind, src, dst] = h.qrtr.unwrap_or([u32::MAX; 3]);
+                    display.header_row(row, i % 2 != 0, &[(h.command.into(),2), (h.bytes.into(),4),
+                        (h.parameter,8), (kind,2), (src,8), (dst,8), (h.extra,8)]);
+                } else { display.header_row(row, i % 2 != 0, &[]); }
+            }
+            display.hex(25, "FIRST DATA US", age(first.and_then(|t| t.first_data_at)));
+            display.hex(26, "IPA COMPLETE", u32::from(self.ipa_complete_seen));
+            display.hex(27, "WLAN RRQ RX", owner.tftp_wire_counts()[2]);
+            display.hex(28, "WLFW SERVERS", query[7]);
+        }
+        #[cfg(all(feature = "sunfish-ipa-ingress-work", not(feature = "sunfish-wrq-prefix-close")))]
         {
             let work = owner.ipa_ingress_work();
             let bounds = owner.ipa_announcement_rx();

@@ -290,6 +290,61 @@ impl IpaIngressWork {
     }
 }
 
+#[cfg(feature = "sunfish-wrq-prefix-close")]
+#[derive(Clone, Copy, Default)]
+pub struct WrqPrefixHeader {
+    pub command: u16,
+    pub bytes: u16,
+    pub parameter: u32,
+    pub extra: u32,
+    pub qrtr: Option<[u32; 3]>,
+}
+
+#[cfg(feature = "sunfish-wrq-prefix-close")]
+#[derive(Default)]
+pub struct WrqPrefix {
+    active: bool,
+    pub complete: bool,
+    pub records: u32,
+    pub bytes: u32,
+    entries: [WrqPrefixHeader; 12],
+    watch_head: bool,
+    last_data_head: Option<u64>,
+    pub init_head: Option<u64>,
+    pub oack_head: Option<u64>,
+}
+
+#[cfg(feature = "sunfish-wrq-prefix-close")]
+impl WrqPrefix {
+    pub fn headers(&self) -> &[WrqPrefixHeader] {
+        &self.entries[..(self.records as usize).min(self.entries.len())]
+    }
+
+    fn consumed(&mut self, record: &[u8]) {
+        if let Some(entry) = self.entries.get_mut(self.records as usize) {
+            let header = RegistrationHeader::read(record, false, None);
+            *entry = WrqPrefixHeader {
+                command: header.command, bytes: header.bytes, parameter: header.parameter,
+                qrtr: header.qrtr,
+                extra: if header.command == 5 && record.len() >= 16 {
+                    word(record, 8)
+                } else if let Some([_, port]) = header.del_client {
+                    port
+                } else if let Some([kind @ (4 | 5), _, _]) = header.qrtr
+                    && word(record, 8) == 52 && word(record, 12) == 0
+                    && word(record, 36) == 20 && word(record, 48) == kind
+                {
+                    word(record, 52) // NEW_SERVER or DEL_SERVER service ID
+                } else {
+                    header.qmi.map_or(u32::MAX, |(_, txn, id)| u32::from(txn) << 16 | u32::from(id))
+                },
+            };
+        }
+        self.records = self.records.saturating_add(1);
+        self.bytes = self.bytes.saturating_add(record.len() as u32);
+    }
+}
+
 #[cfg(feature = "sunfish-wlan-first-oack-rx-fifo")]
 const RX_HEAD_HISTORY: usize = 32;
 
@@ -1064,6 +1119,8 @@ struct Ring<I> {
     registration_rx: Option<ServerCheckRxWindow>,
     #[cfg(feature = "sunfish-ipa-ingress-work")]
     ipa_ingress_work: IpaIngressWork,
+    #[cfg(feature = "sunfish-wrq-prefix-close")]
+    wrq_prefix: WrqPrefix,
     #[cfg(feature = "sunfish-ipa-announcement-fifo")]
     ipa_announcement_rx: Option<ServerCheckRxDone>,
     #[cfg(feature = "sunfish-ipa-announcement-fifo")]
@@ -1481,6 +1538,11 @@ impl<I: Io> Ring<I> {
         #[cfg(feature = "sunfish-ipa-reg-close-fifo")]
         { self.reg_pre_unread = self.rx_bytes.map(|length| ring_distance(self.words[2], self.words[3], length) as u32); }
         self.io.store_tx_head(next)?;
+        #[cfg(feature = "sunfish-wrq-prefix-close")]
+        if self.wrq_prefix.watch_head && matches!(record[0], 9 | 12)
+        {
+            self.wrq_prefix.last_data_head = self.first_server_check_clock.map(|now| now());
+        }
         self.words[1] = next;
         self.io.barrier(Barrier::Complete)?;
         self.sample()?;
@@ -1665,6 +1727,8 @@ impl<I: Io> Adapter<I> {
                 ipa_announcement_rx: None,
                 #[cfg(feature = "sunfish-ipa-ingress-work")]
                 ipa_ingress_work: Default::default(),
+                #[cfg(feature = "sunfish-wrq-prefix-close")]
+                wrq_prefix: Default::default(),
                 #[cfg(feature = "sunfish-ipa-announcement-fifo")]
                 track_ipa_announcement: false,
                 #[cfg(feature = "sunfish-ipa-wrq-ready-fifo")]
@@ -2560,9 +2624,18 @@ impl<I: Io> Adapter<I> {
                 trace.finish(unread, size);
             }
         }
+        #[cfg(feature = "sunfish-wrq-prefix-close")]
+        let mut closes_prefix = false;
         #[cfg(feature = "sunfish-ipa-wrq-ready-fifo")]
         if self.ring.track_first_wrq && let Some(first) = self.session.original_server_check() {
             self.ring.track_first_wrq = false;
+            #[cfg(feature = "sunfish-wrq-prefix-close")]
+            {
+                closes_prefix = self.ring.wrq_prefix.active
+                    && matches!(event, Receive::Session(Event::TftpRequest(handle)) if first == (handle, true))
+                    && self.session.original_1f_close_count() == Some(0);
+                self.ring.wrq_prefix.active = false;
+            }
             if let Receive::Session(Event::TftpRequest(handle)) = event
                 && first == (handle, true)
                 && matches!(self.ring.record[0], 9 | 12) && word(&self.ring.record, 12) == 0
@@ -2671,6 +2744,12 @@ impl<I: Io> Adapter<I> {
                 cmd: self.ring.record[0], position }
         });
         self.consume_received(size, notification)?;
+        #[cfg(feature = "sunfish-wrq-prefix-close")]
+        if closes_prefix {
+            self.ring.wrq_prefix.complete = true;
+        } else if awaiting_announcement && !self.ring.track_ipa_announcement && self.ring.track_first_wrq {
+            self.ring.wrq_prefix.active = true;
+        }
         #[cfg(feature = "sunfish-ipa-ingress-work")]
         if let Some(mut record) = ingress && let Some(clock) = self.ring.first_server_check_clock {
             record.end = clock();
@@ -2699,6 +2778,10 @@ impl<I: Io> Adapter<I> {
         #[cfg(feature = "sunfish-first-oack-yield-rx")]
         let start = self.ring.words[2];
         self.ring.consume(size, notification)?;
+        #[cfg(feature = "sunfish-wrq-prefix-close")]
+        if self.ring.wrq_prefix.active {
+            self.ring.wrq_prefix.consumed(&self.ring.record[..size]);
+        }
         #[cfg(feature = "sunfish-ipa-reg-close-fifo")]
         if let Some(trace) = self.ring.reg_close.as_mut().filter(|t| t.end.is_none() && !t.already_closed) {
             trace.consumed = trace.consumed.saturating_add(size as u32);
@@ -2907,10 +2990,18 @@ impl<I: Io> Adapter<I> {
         let init_pending = self.ring.init_close.fresh_unread.is_none()
             && self.session.ipa_init_transport_trace().is_some_and(|t| t.published_at.is_none());
         let mut receive_arrived = false;
+        #[cfg(feature = "sunfish-wrq-prefix-close")]
+        let oack_pending = self.ring.wrq_prefix.oack_head.is_none()
+            && self.session.first_server_check().is_some_and(|t| t.exact_wrq && t.peer.node == 0
+                && t.peer.port == 0x1f && t.oack.phase == 2);
         let writer = |record: &[u8]| {
             #[cfg(feature = "sunfish-tftp-reserved-writer-io")]
             let before = watch_reserved.then(|| self.ring.io.reserved_io_totals()).flatten();
+            #[cfg(feature = "sunfish-wrq-prefix-close")]
+            { self.ring.wrq_prefix.watch_head = oack_pending || init_pending; }
             let result = self.ring.write_checked(record, TX_RESERVE, first_grant);
+            #[cfg(feature = "sunfish-wrq-prefix-close")]
+            { self.ring.wrq_prefix.watch_head = false; }
             #[cfg(feature = "sunfish-tftp-reserved-writer-io")]
             if watch_reserved {
                 let after = self.ring.io.reserved_io_totals();
@@ -2945,6 +3036,17 @@ impl<I: Io> Adapter<I> {
         let result = self.session.publish_next(generation, writer);
         if let Some(error) = failure {
             return Err(error);
+        }
+        #[cfg(feature = "sunfish-wrq-prefix-close")]
+        if matches!(result, Ok(Some(core::Published::Data { last_fragment: true, .. }))) {
+            // Bind the head-store clock only after normal publication identifies this transaction.
+            let head = self.ring.wrq_prefix.last_data_head;
+            if oack_pending && self.session.first_server_check().is_some_and(|t| t.oack.phase == 3) {
+                self.ring.wrq_prefix.oack_head = head;
+            }
+            if init_pending && self.session.ipa_init_transport_trace().is_some_and(|t| t.published_at.is_some()) {
+                self.ring.wrq_prefix.init_head = head;
+            }
         }
         // A receive-priority yield can move this exact advertisement to a later writer pass.
         #[cfg(feature = "sunfish-grant-ad-writer-trace")]
@@ -3248,6 +3350,8 @@ impl<I: Io> Adapter<I> {
 
     #[cfg(feature = "sunfish-ipa-ingress-work")]
     pub(crate) fn ipa_ingress_work(&self) -> &IpaIngressWork { &self.ring.ipa_ingress_work }
+    #[cfg(feature = "sunfish-wrq-prefix-close")]
+    pub(crate) fn wrq_prefix(&self) -> &WrqPrefix { &self.ring.wrq_prefix }
 
     #[cfg(feature = "sunfish-ipa-announcement-fifo")]
     pub(crate) fn ipa_announcement_rx(&self) -> Option<ServerCheckRxDone> {
@@ -3337,6 +3441,8 @@ impl<I: Io> Adapter<I> {
         { self.ring.ipa_announcement_rx = None; self.ring.track_ipa_announcement = false; }
         #[cfg(feature = "sunfish-ipa-ingress-work")]
         { self.ring.ipa_ingress_work = Default::default(); }
+        #[cfg(feature = "sunfish-wrq-prefix-close")]
+        { self.ring.wrq_prefix = Default::default(); }
         #[cfg(feature = "sunfish-ipa-registration-reply-path")]
         { self.ring.registration_reply = None; }
         #[cfg(feature = "sunfish-ipa-reply-fifo-visibility")]

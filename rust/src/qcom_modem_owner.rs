@@ -2127,6 +2127,8 @@ impl<I: Io> Owner<I> {
     }
     #[cfg(feature = "sunfish-ipa-ingress-work")]
     pub fn ipa_ingress_work(&self) -> &fifo::IpaIngressWork { self.adapter.ipa_ingress_work() }
+    #[cfg(feature = "sunfish-wrq-prefix-close")]
+    pub fn wrq_prefix(&self) -> &fifo::WrqPrefix { self.adapter.wrq_prefix() }
 
     #[cfg(feature = "sunfish-ipa-announcement-fifo")]
     pub fn ipa_announcement_rx(&self) -> Option<fifo::ServerCheckRxDone> {
