@@ -74,6 +74,7 @@ sunfish-tftp-barrier-domain-observer = ["sunfish-tftp-publish-op-observer", "sun
 sunfish-smmu-root-unique-fast-check = []
 # Reuse only the immutable canonical expectation; still read every live word.
 sunfish-smmu-retained-table-expectation = []
+sunfish-smmu-grouped-table-check = ["sunfish-smmu-retained-table-expectation"]
 # Pre-auth target work only; changes guard/service spacing, not scalar barriers.
 sunfish-mpss-target-chunk-64k = []
 sunfish-tftp-peer-close-observer = ["sunfish-tftp-timing-observer"]

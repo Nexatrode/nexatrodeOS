@@ -3691,7 +3691,11 @@ impl RuntimeDomain {
             let prefix = owner.wrq_prefix();
             let (ready, wrq) = owner.ipa_wrq_timing();
             let close = owner.init_close_fifo().bounds;
-            display.replace_line(1, "WRQ PREFIX AND CLOSE");
+            display.replace_line(1, if cfg!(feature = "sunfish-smmu-grouped-table-check") {
+                "WRQ CHECKED TABLES"
+            } else {
+                "WRQ PREFIX AND CLOSE"
+            });
             for (index, (label, value)) in [
                 ("RUNTIME ERROR", self.error),
                 ("FIRST PEER", first.map_or(u32::MAX, |t| t.peer.port)),
