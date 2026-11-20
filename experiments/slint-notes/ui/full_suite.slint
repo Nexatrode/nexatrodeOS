@@ -1,3 +1,9 @@
+// Slint recognizes ListView and instantiates only the visible repeated rows.
+component ListView inherits Flickable {
+    out property <length> visible-width <=> self.width;
+    out property <length> visible-height <=> self.height;
+    @children
+}
 // Eight-workspace, touch-first Slint shell for the iPhone 7 Plus. Data in this
 // image is volatile until the phone has a storage and service bridge.
 component AppCard inherits Rectangle {
@@ -1631,34 +1637,33 @@ export component NotesWindow inherits Window {
                     color: #e8f5fb; font-size: 13px; wrap: word-wrap; }
                 Text { x: parent.width - 58px; y: 32px; text: "09:14  ✓✓"; color: #28d8e8; font-size: 11px; }
             }
-            if root.message-service-ready: chat-scroll := Flickable {
+            if root.message-service-ready && root.message-bubbles.length == 0: Text {
+                x: 12px; y: 72px; width: parent.width - 24px;
+                text: "No messages yet"; color: #e8f5fb; font-size: 16px;
+                horizontal-alignment: center;
+            }
+            if root.message-service-ready && root.message-bubbles.length == 0: Text {
+                x: 16px; y: 100px; width: parent.width - 32px;
+                text: "Tap the compose field below to write";
+                color: #8299a7; font-size: 13px; horizontal-alignment: center;
+            }
+            if root.message-service-ready: chat-scroll := ListView {
                 x: 8px; y: 64px;
                 width: parent.width - 16px;
                 height: parent.height - 64px - (root.message-group-invite ? 148px : 108px);
-                interactive: true;
                 mouse-drag-pan-enabled: true;
-                content-width: self.width;
-                content-height: max(self.height, bubbles.preferred-height);
-                        property <string> watched: root.message-transcript;
-                        property <length> tall: bubbles.preferred-height;
-                        init => { self.content-y = self.height - self.content-height; }
-                        changed watched => { self.content-y = self.height - self.content-height; }
-                        changed tall => { self.content-y = self.height - self.content-height; }
-                bubbles := VerticalLayout {
-                    width: parent.width;
-                    spacing: 8px;
-                    if root.message-bubbles.length == 0: Text {
-                        x: 4px; width: parent.width - 8px;
-                        text: "No messages yet";
-                        color: #e8f5fb; font-size: 16px;
-                        horizontal-alignment: center;
-                    }
-                    if root.message-bubbles.length == 0: Text {
-                        x: 8px; width: parent.width - 16px;
-                        text: "Tap the compose field below to write";
-                        color: #8299a7; font-size: 13px;
-                        horizontal-alignment: center;
-                    }
+                interactive: true;
+                property <string> watched: root.message-transcript;
+                property <bool> follow-latest: true;
+                init => { self.content-y = self.height - self.content-height; }
+                changed watched => {
+                    self.follow-latest = true;
+                    self.content-y = self.height - self.content-height;
+                }
+                changed content-height => {
+                    if self.follow-latest { self.content-y = self.height - self.content-height; }
+                }
+                flicked => { self.follow-latest = false; }
                     for bubble[index] in root.message-bubbles: Rectangle {
                         // Every sent Photo is the same bundled JPEG. A later text
                         // line must not turn the picture back into the word Photo.
@@ -1666,13 +1671,13 @@ export component NotesWindow inherits Window {
                         property <bool> incoming-photo: root.message-incoming-image-visible && index == root.message-incoming-photo-index;
                         property <bool> saved-photo: index < root.message-bubble-photo-ready.length && root.message-bubble-photo-ready[index];
                         property <bool> pending-photo: index < root.message-bubble-photo-pending.length && root.message-bubble-photo-pending[index];
-                        property <bool> visible-photo: pending-photo && self.y + chat-scroll.content-y < chat-scroll.height && self.y + self.height + chat-scroll.content-y > 0px;
-                        init => { if self.visible-photo { root.set-chat-photo-visibility(index, true); } }
-                        changed visible-photo => { root.set-chat-photo-visibility(index, self.visible-photo); }
                         property <bool> has-photo-id: index < root.message-bubble-photo-ids.length && root.message-bubble-photo-ids[index] != "";
+                        // ListView materializes only rows intersecting the viewport.
+                        init => { if self.has-photo-id { root.set-chat-photo-visibility(index, true); } }
+                        changed has-photo-id => { if self.has-photo-id { root.set-chat-photo-visibility(index, true); } }
                         property <bool> has-file-id: index < root.message-bubble-files.length && root.message-bubble-files[index] != "";
                         property <bool> retryable: (has-photo-id || has-file-id) && index < root.message-bubble-upload-failed.length && root.message-bubble-upload-failed[index];
-                        property <bool> show-photo: photo-here || incoming-photo || saved-photo || pending-photo;
+                        property <bool> show-photo: photo-here || incoming-photo || saved-photo || pending-photo || has-photo-id;
                         property <bool> show-caption: show-photo && bubble != "" && bubble != "Photo";
                         property <length> content-h: show-photo ? 148px + (show-caption ? msg.preferred-height : 0px) : msg.preferred-height;
                         property <bool> has-quote: index < root.message-bubble-quotes.length && root.message-bubble-quotes[index] != "";
@@ -1681,8 +1686,8 @@ export component NotesWindow inherits Window {
                         // A hidden Image still reports the JPEG's intrinsic size, and
                         // one copy on every row scrolls the thread into empty space.
                         property <length> quote-h: has-quote ? 28px : 0px;
-                        height: card.height;
-                        preferred-height: card.height;
+                        height: card.height + 8px;
+                        preferred-height: card.height + 8px;
                         card := Rectangle {
                             x: root.message-bubble-side[index] == 1 ? parent.width - self.width - 4px : 4px;
                             width: show-photo || has-photo-id ? 220px : min(parent.width * 74%, max(retryable ? 140px : 0px, msg.preferred-width + 16px));
@@ -1788,7 +1793,6 @@ export component NotesWindow inherits Window {
                             }
                         }
                     }
-                }
             }
             if root.message-group-invite: Rectangle {
                 x: 8px; y: parent.height - 140px; width: parent.width - 16px; height: 32px;

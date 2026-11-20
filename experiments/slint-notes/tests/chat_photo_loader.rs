@@ -3,6 +3,31 @@ mod chat_photo_loader;
 use chat_photo_loader::{PHOTO_CHUNK, PHOTO_MAX, PhotoLoader, PhotoOutcome};
 
 #[test]
+fn a_claimed_photo_can_be_requested_again_after_leaving_and_returning() {
+    let mut loader = PhotoLoader::default();
+    loader.reset(1, 7, &[(4, 99)]);
+    loader.set_visible(4, true);
+    assert_eq!(loader.claim_visible(), Some((7, 99, 4)));
+    assert_eq!(loader.claim_visible(), None);
+    loader.set_visible(4, false);
+    loader.set_visible(4, true);
+    assert_eq!(loader.claim_visible(), Some((7, 99, 4)));
+}
+
+#[test]
+fn completing_an_inflight_photo_clears_a_duplicate_return_request() {
+    let mut loader = PhotoLoader::default();
+    loader.reset(1, 7, &[(4, 99)]);
+    loader.set_visible(4, true);
+    assert_eq!(loader.claim_visible(), Some((7, 99, 4)));
+    loader.set_visible(4, true); // row returned while the worker was busy
+    loader.complete(4);
+    assert_eq!(loader.claim_visible(), None);
+    loader.set_visible(4, true);
+    assert_eq!(loader.claim_visible(), Some((7, 99, 4)));
+}
+
+#[test]
 fn large_photo_is_loaded_one_bounded_chunk_at_a_time() {
     let mut loader = PhotoLoader::default();
     loader.reset(7, 42, &[(3, 90)]);

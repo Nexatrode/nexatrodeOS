@@ -2583,10 +2583,29 @@ fn split_quote_display(body: &str) -> (String, &str) {
     (String::new(), body)
 }
 
+#[cfg(feature = "utm-photo-worker")]
+struct CachedPhotoModel {
+    rows: personal_os_slint_notes_spike::photo_rows::PhotoRows<slint::Image>,
+    notify: slint::ModelNotify,
+}
+
+#[cfg(feature = "utm-photo-worker")]
+impl slint::Model for CachedPhotoModel {
+    type Data = slint::Image;
+    fn row_count(&self) -> usize { self.rows.len() }
+    fn row_data(&self, row: usize) -> Option<Self::Data> {
+        (row < self.rows.len()).then(|| self.rows.get(row).unwrap_or_default())
+    }
+    fn set_row_data(&self, row: usize, _image: Self::Data) {
+        if row < self.rows.len() { self.notify.row_changed(row); }
+    }
+    fn model_tracker(&self) -> &dyn slint::ModelTracker { &self.notify }
+}
+
 fn sync_message_bubbles(
     ui: &NotesWindow,
     loader: &RefCell<personal_os_slint_notes_spike::chat_photo_loader::PhotoLoader>,
-    #[cfg(feature = "utm-photo-worker")] cache: &RefCell<personal_os_slint_notes_spike::photo_cache::PhotoCache<slint::Image>>,
+    #[cfg(feature = "utm-photo-worker")] cache: &Rc<RefCell<personal_os_slint_notes_spike::photo_cache::PhotoCache<slint::Image>>>,
     #[cfg(feature = "utm-photo-worker")] owner: Option<u64>,
 ) {
     static STAMP: AtomicU64 = AtomicU64::new(0);
@@ -2605,6 +2624,8 @@ fn sync_message_bubbles(
     let mut ids = Vec::new();
     let mut reacts = Vec::new();
     let mut photos = Vec::new();
+    #[cfg(feature = "utm-photo-worker")]
+    let mut display_ids = Vec::new();
     let mut photo_ready = Vec::new();
     let mut photo_pending = Vec::new();
     let mut photo_jobs = Vec::new();
@@ -2634,16 +2655,13 @@ fn sync_message_bubbles(
         let body = if failed { body.trim_end_matches(personal_os_rust_server::messages::UPLOAD_FAILED_SUFFIX) } else { body };
         failed_uploads.push(failed);
         let indexed_photo = photo_reference(body);
+        #[cfg(feature = "utm-photo-worker")]
+        display_ids.push(indexed_photo.map(|photo| photo.display_id).unwrap_or(0));
         photo_ids.push(slint::SharedString::from(indexed_photo.map(|r| r.save_id.to_string()).unwrap_or_default()));
         let (image, body) = match indexed_photo {
             Some(photo) => {
                 let id = photo.display_id;
-                #[cfg(feature = "utm-photo-worker")]
-                let image = owner.and_then(|owner| cache.borrow_mut().get(owner, id));
-                #[cfg(not(feature = "utm-photo-worker"))]
                 let image: Option<slint::Image> = None;
-                #[cfg(all(feature = "utm-photo-worker", feature = "utm-perf-trace"))]
-                if image.is_some() { debug_println!("PERF|PHOTO_CACHE_HIT|{}|{}", perf_time_us(), id); }
                 if id != 0 && image.is_none() { photo_jobs.push((bodies.len(), id)); }
                 photo_pending.push(id != 0 && image.is_none());
                 (image, photo.caption)
@@ -2702,6 +2720,12 @@ fn sync_message_bubbles(
     ui.set_message_bubble_side(ModelRc::new(VecModel::from(sides)));
     ui.set_message_bubble_ids(ModelRc::new(VecModel::from(ids)));
     ui.set_message_bubble_reacts(ModelRc::new(VecModel::from(reacts)));
+    #[cfg(feature = "utm-photo-worker")]
+    ui.set_message_bubble_photos(ModelRc::new(CachedPhotoModel {
+        rows: personal_os_slint_notes_spike::photo_rows::PhotoRows::new(cache.clone(), owner, display_ids),
+        notify: slint::ModelNotify::default(),
+    }));
+    #[cfg(not(feature = "utm-photo-worker"))]
     ui.set_message_bubble_photos(ModelRc::new(VecModel::from(photos)));
     ui.set_message_bubble_photo_ready(ModelRc::new(VecModel::from(photo_ready)));
     ui.set_message_bubble_photo_pending(ModelRc::new(VecModel::from(photo_pending)));
@@ -5732,7 +5756,8 @@ impl SlintService {
             debug_println!("SLINT SIMPLEX PHOTO OWNER UNAVAILABLE");
             return;
         };
-        if let Some(image) = self.photo_cache.borrow_mut().get(owner, id) {
+        let cached = self.photo_cache.borrow_mut().get(owner, id);
+        if let Some(image) = cached {
             self._ui.get_message_bubble_photos().set_row_data(row, image);
             self._ui.get_message_bubble_photo_ready().set_row_data(row, true);
             self._ui.get_message_bubble_photo_pending().set_row_data(row, false);
@@ -5740,6 +5765,8 @@ impl SlintService {
             debug_println!("PERF|PHOTO_CACHE_HIT|{}|{}", perf_time_us(), id);
             return;
         }
+        self._ui.get_message_bubble_photo_ready().set_row_data(row, false);
+        self._ui.get_message_bubble_photo_pending().set_row_data(row, true);
         let request = personal_os_slint_notes_spike::photo_reader_ipc::request(owner, id);
         if self.photo_read_mailbox.submit(|bytes| { bytes[..request.len()].copy_from_slice(&request); Some(request.len()) }) {
             let cache_generation = self.photo_cache.borrow().generation();
@@ -5787,6 +5814,7 @@ impl SlintService {
             self.pending_photo = Some(ticket);
             PHOTO_WORKER.notify();
         } else if current {
+            self.chat_photo_loader.borrow_mut().complete(ticket.row);
             self._ui.get_message_bubble_photo_pending().set_row_data(ticket.row, false);
         }
     }
@@ -5812,6 +5840,7 @@ impl SlintService {
         #[cfg(feature = "utm-perf-trace")]
         debug_println!("PERF|PHOTO_READY|{}|{}", perf_time_us(), ticket.id);
         if !current { return; }
+        self.chat_photo_loader.borrow_mut().complete(ticket.row);
         if let Some((image, bytes)) = image {
             self.photo_cache.borrow_mut().insert(ticket.owner, ticket.id, bytes, image.clone());
             self._ui.get_message_bubble_photos().set_row_data(ticket.row, image);

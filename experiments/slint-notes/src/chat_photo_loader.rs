@@ -23,6 +23,7 @@ struct PhotoJob {
     row: usize,
     id: u64,
     visible: bool,
+    claimed: bool,
     total: Option<usize>,
     bytes: Vec<u8>,
 }
@@ -30,11 +31,13 @@ struct PhotoJob {
 impl PhotoLoader {
     pub fn set_visible(&mut self, row: usize, visible: bool) {
         if let Some(job) = self.jobs.iter_mut().find(|job| job.row == row) {
+            if visible { job.claimed = false; }
             if job.visible && !visible {
                 // A long chat must not retain a partial megabyte for every
                 // photo the user briefly scrolled past.
                 job.bytes = Vec::new();
                 job.total = None;
+                job.claimed = false;
             }
             job.visible = visible;
         }
@@ -52,6 +55,7 @@ impl PhotoLoader {
                     row,
                     id,
                     visible: false,
+                    claimed: false,
                     total: None,
                     bytes: Vec::new(),
                 }),
@@ -64,16 +68,24 @@ impl PhotoLoader {
 
     /// Transfer one visible job to the background reader.
     pub fn claim_visible(&mut self) -> Option<(u64, u64, usize)> {
-        let index = self.jobs.iter().position(|job| job.visible)?;
-        let job = self.jobs.remove(index)?;
+        let job = self.jobs.iter_mut().find(|job| job.visible && !job.claimed)?;
+        job.claimed = true;
+        job.visible = false;
         Some((self.chat, job.id, job.row))
+    }
+
+    pub fn complete(&mut self, row: usize) {
+        if let Some(job) = self.jobs.iter_mut().find(|job| job.row == row) {
+            job.visible = false;
+            job.claimed = true;
+        }
     }
 
     /// At most one bounded vault request is needed before returning to input.
     pub fn next_request(&self) -> Option<(u64, u64, usize)> {
         self.jobs
             .iter()
-            .find(|job| job.visible)
+            .find(|job| job.visible && !job.claimed)
             .map(|job| (self.chat, job.id, job.bytes.len() / PHOTO_CHUNK))
     }
 

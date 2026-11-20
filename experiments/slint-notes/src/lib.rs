@@ -12,6 +12,8 @@ pub mod photo_preview;
 #[cfg(feature = "utm-photo-worker")]
 pub mod photo_cache;
 #[cfg(feature = "utm-photo-worker")]
+pub mod photo_rows;
+#[cfg(feature = "utm-photo-worker")]
 pub mod photo_read;
 #[cfg(feature = "utm-photo-worker")]
 pub mod photo_reader_ipc;
