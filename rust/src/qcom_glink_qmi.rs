@@ -775,6 +775,8 @@ pub struct Session {
     first_oack_after_ipa_publish: bool,
     #[cfg(feature = "sunfish-first-oack-after-ipa-publish")]
     first_oack_eligibility: FirstOackEligibility,
+    #[cfg(feature = "sunfish-post-reg-oack-turn")]
+    post_reg_turns: PostRegOackTurns,
     #[cfg(feature = "sunfish-tftp-first-oack-unheld")]
     first_tftp_unheld: bool,
     #[cfg(feature = "sunfish-wlan-elf-exchange-trace")]
@@ -1413,6 +1415,46 @@ pub struct OackSlotPacket {
     pub opcode: Option<u32>,
 }
 
+/// One arbitration sample for the original OACK. The timestamp uses the same
+/// counter as the FIFO close bounds. Commands 0x109 and 0x209 distinguish the
+/// original OACK and QRTR credit from other GLINK DATA.
+#[cfg(feature = "sunfish-post-reg-oack-turn")]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PostRegOackTurn {
+    pub at: u64,
+    pub mask: u16,
+    pub command: u16,
+    pub path: u8,
+    // 0 no selection, 1 selected without a write, 2 committed,
+    // 3 known blocked write, 4 uncertain write.
+    pub result: u8,
+}
+
+#[cfg(feature = "sunfish-post-reg-oack-turn")]
+impl PostRegOackTurn {
+    fn written(&mut self, wire_command: u16, result: Result<(), WriteError>) {
+        self.command = (self.command & 0xff00) | wire_command;
+        self.result = match result {
+            Ok(()) => 2,
+            Err(WriteError::WouldBlock) => 3,
+            Err(WriteError::Uncertain) => 4,
+        };
+    }
+}
+
+#[cfg(feature = "sunfish-post-reg-oack-turn")]
+#[derive(Default)]
+pub struct PostRegOackTurns {
+    turns: [PostRegOackTurn; 12],
+    len: usize,
+    pub omitted: u32,
+}
+
+#[cfg(feature = "sunfish-post-reg-oack-turn")]
+impl PostRegOackTurns {
+    pub fn entries(&self) -> &[PostRegOackTurn] { &self.turns[..self.len] }
+}
+
 /// Ordinary writer opportunities for the first accepted WRQ. Masks contain
 /// simultaneous blockers. Only passes with the exact IPA reply in flight
 /// contribute to the union and intersection.
@@ -1702,6 +1744,8 @@ impl Session {
             first_oack_after_ipa_publish: false,
             #[cfg(feature = "sunfish-first-oack-after-ipa-publish")]
             first_oack_eligibility: FirstOackEligibility::default(),
+            #[cfg(feature = "sunfish-post-reg-oack-turn")]
+            post_reg_turns: PostRegOackTurns::default(),
             #[cfg(feature = "sunfish-tftp-first-oack-unheld")]
             first_tftp_unheld: false,
             #[cfg(feature = "sunfish-wlan-elf-host-credit-trace")]
@@ -2619,6 +2663,8 @@ impl Session {
         { self.ipa_endpoint_ready_at = None; }
         #[cfg(feature = "sunfish-first-oack-after-ipa-publish")]
         { self.first_oack_eligibility = FirstOackEligibility::default(); }
+        #[cfg(feature = "sunfish-post-reg-oack-turn")]
+        { self.post_reg_turns = PostRegOackTurns::default(); }
         #[cfg(feature = "sunfish-wlan-tftp-oack-compare")]
         {
             self.server_check_transfers = [None; crate::qcom_tftp_server_check::TRANSFER_COUNT];
@@ -7063,6 +7109,8 @@ impl Session {
         self.stage_wlfw_dynamic_feature_mask()?;
         #[cfg(feature = "sunfish-first-oack-after-ipa-publish")]
         let first_oack_ready = ordinary && self.observe_first_oack_pass();
+        #[cfg(feature = "sunfish-post-reg-oack-turn")]
+        let post_reg_turn = self.start_post_reg_oack_turn(followup);
         #[cfg(feature = "sunfish-glink-tftp-control-fairness-experiment")]
         if !self.transmit.iter().any(|tx| matches!(tx.kind, TxKind::TftpReply { .. }) && tx.len != 0 && tx.sent < tx.len) {
             self.tftp_control_turn_due = false;
@@ -7327,6 +7375,10 @@ impl Session {
                 #[cfg(feature = "sunfish-ipa-registration-tx-trace")]
                 let registration_writer = registration_target.and(self.intent_ack_clock).map(|clock| clock());
                 let result = writer(&record[..8]);
+                #[cfg(feature = "sunfish-post-reg-oack-turn")]
+                if let Some(i) = post_reg_turn {
+                    self.post_reg_turns.turns[i].written(7, result);
+                }
                 #[cfg(feature = "sunfish-ipa-registration-rxdone-trace")]
                 self.observe_registration_done_turn(6, result);
                 #[cfg(feature = "sunfish-ipa-registration-tx-trace")]
@@ -7589,6 +7641,17 @@ impl Session {
                 Ok(None)
             };
         };
+        #[cfg(feature = "sunfish-post-reg-oack-turn")]
+        if let Some(i) = post_reg_turn {
+            let tag = match &commit {
+                Commit::Data(slot, ..) if self.is_unpublished_first_oack(&self.transmit[*slot]) => 0x100,
+                Commit::Data(slot, ..) if matches!(self.transmit[*slot].kind, TxKind::Resume) => 0x200,
+                _ => 0,
+            };
+            let turn = &mut self.post_reg_turns.turns[i];
+            turn.command = tag | u16::from_le_bytes([record[0], record[1]]);
+            turn.result = 1;
+        }
         // These extra attempts may only publish the exact pair selected
         // by the ordinary arbiter. Pending grants and other work keep
         // their normal priority on the next receive/write iteration.
@@ -7838,6 +7901,10 @@ impl Session {
             self.first_oack_eligibility.ready_command = Some(u16::from_le_bytes([record[0], record[1]]));
         }
         let result = writer(&record[..size]);
+        #[cfg(feature = "sunfish-post-reg-oack-turn")]
+        if let Some(i) = post_reg_turn {
+            self.post_reg_turns.turns[i].written(u16::from_le_bytes([record[0], record[1]]), result);
+        }
         #[cfg(feature = "sunfish-tftp-oack-credit-retry")]
         if ordinary && let Some(oack) = self.reserved_oack.as_mut() && oack.retry_state == 2 {
             let category = match &commit {
@@ -8414,6 +8481,38 @@ impl Session {
         }
         self.forget_qrtr_flow_if_idle(source, destination);
         Ok(())
+    }
+
+    #[cfg(feature = "sunfish-post-reg-oack-turn")]
+    pub(crate) fn post_reg_oack_turns(&self) -> &PostRegOackTurns { &self.post_reg_turns }
+
+    #[cfg(feature = "sunfish-post-reg-oack-turn")]
+    fn start_post_reg_oack_turn(&mut self, followup: Option<OackFollowup>) -> Option<usize> {
+        self.first_oack_eligibility.queued_at?;
+        self.ipa_registration_trace()?.published_at?;
+        let first = self.first_oack_transfer()?;
+        if first.peer != (Address { node: 0, port: 0x1f })
+            || first.first_close_at.is_some() || first.oack_at.is_some() {
+            return None;
+        }
+        let i = self.post_reg_turns.len;
+        if i == self.post_reg_turns.turns.len() {
+            self.post_reg_turns.omitted = self.post_reg_turns.omitted.saturating_add(1);
+            return None;
+        }
+        let at = (self.intent_ack_clock?)();
+        let mask = self.first_oack_blockers(first);
+        let path = match followup {
+            None => 0,
+            Some(OackFollowup::FirstGrantAd) => 1,
+            Some(OackFollowup::FirstGrantAck) => 2,
+            Some(OackFollowup::FirstGrantReply) => 3,
+            Some(OackFollowup::FirstGrantInit) => 4,
+            Some(_) => 5,
+        };
+        self.post_reg_turns.turns[i] = PostRegOackTurn { at, mask, path, ..Default::default() };
+        self.post_reg_turns.len += 1;
+        Some(i)
     }
 
     #[cfg(feature = "sunfish-first-oack-after-ipa-publish")]

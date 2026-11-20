@@ -2100,6 +2100,11 @@ impl<I: Io> Owner<I> {
     #[cfg(feature = "sunfish-first-oack-grant-window")]
     pub fn first_oack_tail(&self) -> fifo::ServerCheckTail { self.adapter.first_server_check_tail() }
 
+    #[cfg(feature = "sunfish-post-reg-oack-turn")]
+    pub fn post_reg_oack_turns(&self) -> &crate::qcom_glink_qmi::PostRegOackTurns {
+        self.adapter.post_reg_oack_turns()
+    }
+
     #[cfg(feature = "sunfish-first-oack-after-ipa-publish")]
     pub fn first_oack_eligibility(&self) -> crate::qcom_glink_qmi::FirstOackEligibility {
         self.adapter.first_oack_eligibility()

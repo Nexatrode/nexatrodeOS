@@ -2334,6 +2334,8 @@ fn first_oack_borrows_one_fitting_intent_after_exact_ipa_publication() {
             &ipa_frame[48..48 + prepared.bytes().len()],
             prepared.bytes()
         );
+        #[cfg(feature = "sunfish-post-reg-oack-turn")]
+        assert!(rig.link.post_reg_oack_turns().entries().is_empty());
         if close_before_pass {
             // IPA was published by the preceding turn. Closing immediately
             // distinguishes a missing writer opportunity from a missing intent.
@@ -2345,6 +2347,8 @@ fn first_oack_borrows_one_fitting_intent_after_exact_ipa_publication() {
             rig.link.ingest(1, &control(14, ipa_id)).unwrap();
             let _ = publish(&mut rig.link);
             assert_eq!(rig.link.first_oack_eligibility(), gates);
+            #[cfg(feature = "sunfish-post-reg-oack-turn")]
+            assert!(rig.link.post_reg_oack_turns().entries().is_empty());
             continue;
         }
         if blocked {
@@ -2402,6 +2406,20 @@ fn first_oack_borrows_one_fitting_intent_after_exact_ipa_publication() {
             }
         }
         assert_eq!(attempts, usize::from(!scarce));
+        #[cfg(feature = "sunfish-post-reg-oack-turn")]
+        {
+            let turns = rig.link.post_reg_oack_turns().entries();
+            assert!(!turns.is_empty());
+            assert!(turns.windows(2).all(|pair| pair[0].at <= pair[1].at));
+            assert!(turns.iter().all(|turn| turn.at >= rig.link.ipa_registration_trace().unwrap().published_at.unwrap()));
+            if scarce {
+                assert!(turns.iter().all(|turn| turn.mask & 0x40 != 0));
+            } else {
+                let exact = turns.iter().find(|turn| turn.command == 0x109).unwrap();
+                assert_eq!(exact.mask, 0);
+                assert_eq!(exact.result, if blocked { 3 } else { 2 });
+            }
+        }
         assert!(
             rig.link
                 .ipa_registration_trace()
@@ -2410,6 +2428,18 @@ fn first_oack_borrows_one_fitting_intent_after_exact_ipa_publication() {
                 .is_none()
         );
         let gates = rig.link.first_oack_eligibility();
+        #[cfg(feature = "sunfish-post-reg-oack-turn")]
+        if scarce && close {
+            let initial = rig.link.post_reg_oack_turns().entries()[0].at;
+            for _ in 0..20 {
+                assert_eq!(rig.link.publish_next(1, |_| panic!("unexpected write without a fitting intent")),
+                    Err(Error::NoRemoteIntent));
+            }
+            let trace = rig.link.post_reg_oack_turns();
+            assert_eq!(trace.entries().len(), 12);
+            assert!(trace.omitted > 0);
+            assert_eq!(trace.entries()[0].at, initial);
+        }
         assert!(gates.queued_at.is_some() && gates.ipa_passes > 0);
         assert_eq!(gates.ready_passes > 0, !scarce);
         assert_eq!(gates.common & 0x40 != 0, scarce);

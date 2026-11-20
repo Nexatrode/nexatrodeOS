@@ -3686,7 +3686,48 @@ impl RuntimeDomain {
             (28, "IPA COMPLETE", u32::from(self.ipa_complete_seen)),
         ] { display.hex(row, label, value); }
         }
-        #[cfg(feature = "sunfish-wrq-prefix-close")]
+        #[cfg(feature = "sunfish-post-reg-oack-turn")]
+        {
+            let turns = owner.post_reg_oack_turns();
+            let entries = turns.entries();
+            let initial = entries.first();
+            let close = owner.init_close_fifo().bounds;
+            let visible = close.and_then(|bounds| bounds.first_visible);
+            let prefix = owner.wrq_prefix();
+            display.replace_line(1, "POST REG OACK TURNS");
+            for (index, (label, value)) in [
+                ("RUNTIME ERROR", self.error),
+                ("FIRST PEER", first.map_or(u32::MAX, |t| t.peer.port)),
+                ("OACK QUEUE US", age(gates.queued_at)),
+                ("REG PUB US", age(reg.and_then(|r| r.published_at))),
+                ("CLOSE ABSENT US", age(close.and_then(|bounds| bounds.last_absent))),
+                ("CLOSE VIS US", age(visible)),
+                ("FIRST CLOSE US", age(first.and_then(|t| t.first_close_at))),
+                ("FIRST TURN US", age(initial.map(|turn| turn.at))),
+                ("FIRST MASK", initial.map_or(u32::MAX, |turn| u32::from(turn.mask))),
+                ("SAVED PRE VIS", visible.map_or(u32::MAX, |at| entries.iter().filter(|t| t.at < at).count() as u32)),
+                ("TURNS OMITTED", turns.omitted),
+                ("BACKING AD US", age(grant.backing.advertised_at)),
+                ("GRANT ACK US", age(grant.ack_at)),
+                ("OACK HEAD US", age(prefix.oack_head)),
+                ("INIT HEAD US", age(prefix.init_head)),
+            ].into_iter().enumerate() { display.hex(index + 2, label, value); }
+            display.replace_line(17, "US PATH MASK CMD RESULT");
+            for i in 0..12 {
+                let row = 18 + i / 2;
+                if let Some(turn) = entries.get(i) {
+                    display.header_row(row, i % 2 != 0, &[(age(Some(turn.at)), 8),
+                        (turn.path.into(), 1), (turn.mask.into(), 3), (turn.command.into(), 3),
+                        (turn.result.into(), 1)]);
+                } else { display.header_row(row, i % 2 != 0, &[]); }
+            }
+            display.hex(24, "FIRST DATA US", age(first.and_then(|t| t.first_data_at)));
+            display.hex(25, "REG DONE US", age(reg.and_then(|r| r.completed_at)));
+            display.hex(26, "IPA COMPLETE", u32::from(self.ipa_complete_seen));
+            display.hex(27, "WLAN RRQ RX", owner.tftp_wire_counts()[2]);
+            display.hex(28, "WLFW SERVERS", query[7]);
+        }
+        #[cfg(all(feature = "sunfish-wrq-prefix-close", not(feature = "sunfish-post-reg-oack-turn")))]
         {
             let prefix = owner.wrq_prefix();
             let (ready, wrq) = owner.ipa_wrq_timing();

@@ -1868,6 +1868,11 @@ impl<I: Io> Adapter<I> {
         self.session.server_check_49()
     }
 
+    #[cfg(feature = "sunfish-post-reg-oack-turn")]
+    pub(crate) fn post_reg_oack_turns(&self) -> &core::PostRegOackTurns {
+        self.session.post_reg_oack_turns()
+    }
+
     #[cfg(feature = "sunfish-first-oack-after-ipa-publish")]
     pub(crate) fn first_oack_eligibility(&self) -> core::FirstOackEligibility {
         self.session.first_oack_eligibility()
