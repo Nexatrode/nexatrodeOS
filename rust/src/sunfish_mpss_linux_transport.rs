@@ -239,6 +239,10 @@ impl<I: BootIo> BootTransport<I> {
                 server_check_rx: None,
                 #[cfg(feature = "sunfish-ipa-registration-rx-visibility")]
                 registration_rx: None,
+                #[cfg(feature = "sunfish-grant-buffer-reads")]
+                grant_reads: Default::default(),
+                #[cfg(feature = "sunfish-grant-buffer-reads")]
+                grant_session_write: false,
                 #[cfg(feature = "sunfish-ipa-wrq-ready-fifo")]
                 first_wrq_rx: None,
                 #[cfg(feature = "sunfish-ipa-announcement-fifo")]

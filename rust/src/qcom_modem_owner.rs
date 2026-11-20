@@ -2094,6 +2094,9 @@ impl<I: Io> Owner<I> {
         self.adapter.server_check_49()
     }
 
+    #[cfg(feature = "sunfish-grant-buffer-reads")]
+    pub fn grant_buffer_reads(&self) -> &fifo::GrantBufferReads { self.adapter.grant_buffer_reads() }
+
     #[cfg(feature = "sunfish-first-oack-grant-window")]
     pub fn first_grant_trace(&self) -> fifo::FirstGrantTrace { self.adapter.first_grant_trace() }
 

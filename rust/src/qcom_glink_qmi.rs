@@ -2820,6 +2820,11 @@ impl Session {
         Some(RoutingDiagnostic { service, source: word(&rx.bytes, 12), destination: port, body_bytes: body_bytes as u32,
             kind: u32::from(rx.bytes[32]), message_id, transaction, tlvs })
     }
+    #[cfg(feature = "sunfish-grant-buffer-reads")]
+    pub(crate) fn grant_available_ids(&self) -> [Option<u32>; RX_SLOTS] {
+        ::core::array::from_fn(|i| (self.receive[i].state == RxState::Available).then_some(self.receive[i].id))
+    }
+
     pub fn receive_snapshot(&self) -> ReceiveSnapshot {
         let mut result = ReceiveSnapshot { states: 0, services: 0, replies: 0 };
         for (index, rx) in self.receive[..RX_SLOTS].iter().enumerate() {

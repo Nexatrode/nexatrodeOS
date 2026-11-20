@@ -3686,7 +3686,46 @@ impl RuntimeDomain {
             (28, "IPA COMPLETE", u32::from(self.ipa_complete_seen)),
         ] { display.hex(row, label, value); }
         }
-        #[cfg(feature = "sunfish-post-reg-oack-turn")]
+        #[cfg(feature = "sunfish-grant-buffer-reads")]
+        {
+            let pool = owner.grant_buffer_reads();
+            let close = owner.init_close_fifo().bounds;
+            let prefix = owner.wrq_prefix();
+            display.replace_line(1, "GRANT BUFFER READS");
+            for (index, (label, value)) in [
+                ("RUNTIME ERROR", self.error),
+                ("FIRST PEER", first.map_or(u32::MAX, |t| t.peer.port)),
+                ("GRANT MATCH", u32::from(pool.matched)),
+                ("REQUEST BYTES", pool.requested.unwrap_or(u32::MAX)),
+                ("BACKING ID", pool.backing_id.unwrap_or(u32::MAX)),
+                ("REQ ABSENT US", age(pool.absent)),
+                ("REQ VISIBLE US", age(pool.visible)),
+                ("REQ DECODE US", age(pool.decoded)),
+                ("FIT AT DECODE", pool.fits.iter().flatten().count() as u32),
+                ("BACKING AD US", age(grant.backing.advertised_at)),
+                ("OACK HEAD US", age(prefix.oack_head)),
+                ("CLOSE VIS US", age(close.and_then(|b| b.first_visible))),
+            ].into_iter().enumerate() { display.hex(index + 2, label, value); }
+            display.replace_line(14, "ID SIZE OP AD US");
+            for (i, entry) in pool.fits.iter().enumerate() {
+                if let Some(row) = entry {
+                    display.header_row(15+i, false, &[(row.id,8), (row.size,4),
+                        (u32::from(row.command),2), (age(row.published),8)]);
+                    display.header_row(15+i, true, &[(age(row.last_short),8),
+                        (age(row.first_read),8), (row.order(pool.absent, pool.visible),1)]);
+                } else {
+                    display.header_row(15+i, false, &[]);
+                    display.header_row(15+i, true, &[]);
+                }
+            }
+            display.replace_line(23, "SHORT US READ US ORDER");
+            display.hex(24, "FIRST DATA US", age(first.and_then(|t| t.first_data_at)));
+            display.hex(25, "INIT HEAD US", age(prefix.init_head));
+            display.hex(26, "IPA COMPLETE", u32::from(self.ipa_complete_seen));
+            display.hex(27, "WLAN RRQ RX", owner.tftp_wire_counts()[2]);
+            display.hex(28, "WLFW SERVERS", query[7]);
+        }
+        #[cfg(all(feature = "sunfish-post-reg-oack-turn", not(feature = "sunfish-grant-buffer-reads")))]
         {
             let turns = owner.post_reg_oack_turns();
             let entries = turns.entries();

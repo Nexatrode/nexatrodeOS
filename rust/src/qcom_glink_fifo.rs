@@ -15,6 +15,12 @@ mod linux_ipa_fifo;
 #[cfg(feature = "sunfish-linux-mpss-glink")]
 pub use boot::{BootDrive, BootIo, BootPhase, BootReport, BootTransport};
 
+#[cfg(feature = "sunfish-grant-buffer-reads")]
+#[path = "qcom_glink_grant_reads.rs"]
+mod grant_reads;
+#[cfg(feature = "sunfish-grant-buffer-reads")]
+pub use grant_reads::GrantBufferReads;
+
 use crate::qcom_glink_qmi::{
     self as core, Event, Published, Reply, RequestHandle, Session, TftpHandle, WriteError,
 };
@@ -1078,6 +1084,10 @@ impl RegistrationCloseFifo {
 }
 
 struct Ring<I> {
+    #[cfg(feature = "sunfish-grant-buffer-reads")]
+    grant_reads: grant_reads::GrantReadLedger,
+    #[cfg(feature = "sunfish-grant-buffer-reads")]
+    grant_session_write: bool,
     io: I,
     generation: u64,
     identity: u64,
@@ -1286,6 +1296,8 @@ impl<I: Io> Ring<I> {
         self.words = new;
         self.rx_bytes = rx;
         self.barrier_observation(Barrier::Acquire)?;
+        #[cfg(feature = "sunfish-grant-buffer-reads")]
+        self.grant_reads.sample(consumed, registration_start, self.first_server_check_clock);
         #[cfg(feature = "sunfish-ipa-registration-reply-path")]
         if let Some(trace) = self.registration_reply.as_mut().filter(|trace| !trace.finished) {
             if trace.remaining != 0 {
@@ -1537,7 +1549,16 @@ impl<I: Io> Ring<I> {
         let next = advance(self.words[1], record.len());
         #[cfg(feature = "sunfish-ipa-reg-close-fifo")]
         { self.reg_pre_unread = self.rx_bytes.map(|length| ring_distance(self.words[2], self.words[3], length) as u32); }
+        #[cfg(feature = "sunfish-grant-buffer-reads")]
+        let offer = self.grant_session_write && matches!(record[0], 5 | 14);
+        #[cfg(feature = "sunfish-grant-buffer-reads")]
+        let before_head = (offer && self.grant_reads.clock_armed).then_some(self.first_server_check_clock).flatten().map(|now| now());
         self.io.store_tx_head(next)?;
+        #[cfg(feature = "sunfish-grant-buffer-reads")]
+        if offer {
+            let end = self.grant_reads.clock_armed.then_some(self.first_server_check_clock).flatten().map(|now| now());
+            self.grant_reads.offer(record, distance(self.words[0], next), before_head, end);
+        }
         #[cfg(feature = "sunfish-wrq-prefix-close")]
         if self.wrq_prefix.watch_head && matches!(record[0], 9 | 12)
         {
@@ -1721,6 +1742,10 @@ impl<I: Io> Adapter<I> {
                 server_check_rx: None,
                 #[cfg(feature = "sunfish-ipa-registration-rx-visibility")]
                 registration_rx: None,
+                #[cfg(feature = "sunfish-grant-buffer-reads")]
+                grant_reads: Default::default(),
+                #[cfg(feature = "sunfish-grant-buffer-reads")]
+                grant_session_write: false,
                 #[cfg(feature = "sunfish-ipa-wrq-ready-fifo")]
                 first_wrq_rx: None,
                 #[cfg(feature = "sunfish-ipa-announcement-fifo")]
@@ -2496,6 +2521,8 @@ impl<I: Io> Adapter<I> {
                     return Err(error.into());
                 }
             };
+            #[cfg(feature = "sunfish-grant-buffer-reads")]
+            if first.bytes[0] == 9 { self.ring.grant_reads.release(word(&first.bytes, 4)); }
             let queue = &mut self.ring.control.as_mut().unwrap().early;
             queue.rotate_left(1);
             queue[7] = None;
@@ -2586,6 +2613,18 @@ impl<I: Io> Adapter<I> {
                 }
             }
         };
+        #[cfg(feature = "sunfish-grant-buffer-reads")]
+        if self.ring.record[0] == 9 {
+            self.ring.grant_reads.release(word(&self.ring.record, 4));
+        } else if matches!(event, Receive::Session(core::Event::ReceiveIntentRequest { .. }))
+            && self.ring.grant_reads.clock_armed && self.ring.init_close.close_end.is_none()
+            && !self.ring.grant_reads.request.matched {
+            let bounds = self.ring.registration_rx.as_ref().and_then(|history|
+                history.bounds(ring_distance(self.ring.words[2], self.ring.words[3], self.ring.rx_bytes?), size));
+            self.ring.grant_reads.capture(word(&self.ring.record, 4), self.session.grant_backing.intent,
+                self.session.grant_available_ids(), bounds.and_then(|b| b.last_absent),
+                bounds.and_then(|b| b.first_visible), self.ring.first_server_check_clock.map(|now| now()));
+        }
         #[cfg(feature = "sunfish-ipa-tftp-slot-snapshot")]
         self.observe_tftp_slot_release(occupied_before);
         #[cfg(feature = "sunfish-ipa-tftp-original-trace")]
@@ -2831,6 +2870,9 @@ impl<I: Io> Adapter<I> {
     #[cfg(feature = "sunfish-first-oack-grant-window")]
     pub(crate) fn first_grant_trace(&self) -> FirstGrantTrace { self.first_grant }
 
+    #[cfg(feature = "sunfish-grant-buffer-reads")]
+    pub(crate) fn grant_buffer_reads(&self) -> &GrantBufferReads { &self.ring.grant_reads.request }
+
     /// The ordinary writer must commit the exact grant's advertisement or ACK.
     /// Only its remaining positive ACK and original OACK may borrow turns.
     #[cfg(feature = "sunfish-first-oack-grant-window")]
@@ -2868,6 +2910,8 @@ impl<I: Io> Adapter<I> {
         if extra == 0 && ordinary != Transmit::Session(event) { return Ok((ordinary, 0)); }
         #[cfg(feature = "sunfish-grant-ad-writer-trace")]
         { self.first_grant.backing = self.session.grant_backing; }
+        #[cfg(feature = "sunfish-grant-buffer-reads")]
+        self.ring.grant_reads.match_backing(self.session.grant_backing.requested, self.session.grant_backing.intent);
         let clock = self.ring.first_server_check_clock;
         if matches!(event, Published::ReceiveIntent(_)) {
             self.first_grant.trigger = 5;
@@ -3004,7 +3048,11 @@ impl<I: Io> Adapter<I> {
             let before = watch_reserved.then(|| self.ring.io.reserved_io_totals()).flatten();
             #[cfg(feature = "sunfish-wrq-prefix-close")]
             { self.ring.wrq_prefix.watch_head = oack_pending || init_pending; }
+            #[cfg(feature = "sunfish-grant-buffer-reads")]
+            { self.ring.grant_session_write = true; }
             let result = self.ring.write_checked(record, TX_RESERVE, first_grant);
+            #[cfg(feature = "sunfish-grant-buffer-reads")]
+            { self.ring.grant_session_write = false; }
             #[cfg(feature = "sunfish-wrq-prefix-close")]
             { self.ring.wrq_prefix.watch_head = false; }
             #[cfg(feature = "sunfish-tftp-reserved-writer-io")]
@@ -3060,6 +3108,8 @@ impl<I: Io> Adapter<I> {
             && self.session.grant_backing.intent == Some(id)
         {
             self.first_grant.backing = self.session.grant_backing;
+            #[cfg(feature = "sunfish-grant-buffer-reads")]
+            self.ring.grant_reads.match_backing(self.session.grant_backing.requested, Some(id));
         }
         #[cfg(feature = "sunfish-ipa-tftp-original-trace")]
         if let Ok(Some(core::Published::Data { remote_intent, last_fragment: true })) = result
@@ -3348,6 +3398,8 @@ impl<I: Io> Adapter<I> {
 
     #[cfg(feature = "sunfish-ipa-wrq-ready-fifo")]
     pub(crate) fn track_first_wrq(&mut self) {
+        #[cfg(feature = "sunfish-grant-buffer-reads")]
+        { self.ring.grant_reads.clock_armed = true; }
         self.ring.track_first_wrq = self.session.first_server_check().is_none();
         #[cfg(feature = "sunfish-ipa-announcement-fifo")]
         { self.ring.track_ipa_announcement = self.session.first_ipa_announcement().is_none(); }
@@ -3416,6 +3468,8 @@ impl<I: Io> Adapter<I> {
         self.session.reset_after_transport_reset(generation)?;
         #[cfg(feature = "sunfish-first-oack-grant-window")]
         { self.first_grant = FirstGrantTrace::default(); }
+        #[cfg(feature = "sunfish-grant-buffer-reads")]
+        { self.ring.grant_reads = Default::default(); }
         self.ring.generation = generation;
         self.ring.words = words;
         self.ring.read_notification_end = None;
