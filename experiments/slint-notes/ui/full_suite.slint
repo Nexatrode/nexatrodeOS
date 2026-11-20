@@ -320,6 +320,7 @@ export component NotesWindow inherits Window {
     in-out property <int> message-incoming-photo-index: -1;
     in-out property <[image]> message-bubble-photos;
     in-out property <[bool]> message-bubble-photo-ready;
+    in-out property <[bool]> message-bubble-photo-pending;
     in-out property <[string]> message-bubble-photo-ids;
     in-out property <[bool]> message-bubble-upload-failed;
     in-out property <[string]> message-bubble-files;
@@ -449,7 +450,7 @@ export component NotesWindow inherits Window {
     property <bool> receive-idle: root.message-incoming-body == "" && (root.message-receive-status == "" || root.message-receive-status == "NO INCOMING MESSAGE CHECKED" || root.message-receive-status == "NO NEW MESSAGE" || root.message-receive-status == "LIVE" || root.message-receive-status == "Up to date" || root.message-receive-status == "Listening");
     property <bool> send-idle: root.message-send-status == "" || root.message-send-status == "NO MESSAGE SENT" || root.message-send-status == "Ready" || root.message-send-status == "Sent" || root.message-send-status == "Delivered" || root.message-send-status == "SENT THROUGH SIMPLEX";
     // Keep the composer above the keyboard in the same frame as the keys.
-    property <length> keyboard-travel: root.message-keyboard ? root.chat-dock-height : 0px;
+    out property <length> keyboard-travel: root.message-keyboard ? root.chat-dock-height : 0px;
     in property <length> top-inset: 0px;
     callback save-note(string);
     callback save-contact(string, string);
@@ -480,6 +481,7 @@ export component NotesWindow inherits Window {
     callback check-message-send-status();
     callback receive-next-message();
     callback open-chat(int) -> bool;
+    callback set-chat-photo-visibility(int, bool);
     callback check-message-receive-status();
     callback acknowledge-incoming-message();
     callback check-message-ack-status();
@@ -1663,10 +1665,14 @@ export component NotesWindow inherits Window {
                         property <bool> photo-here: root.message-image-visible && bubble == "Photo" && index < root.message-bubble-side.length && root.message-bubble-side[index] == 1;
                         property <bool> incoming-photo: root.message-incoming-image-visible && index == root.message-incoming-photo-index;
                         property <bool> saved-photo: index < root.message-bubble-photo-ready.length && root.message-bubble-photo-ready[index];
+                        property <bool> pending-photo: index < root.message-bubble-photo-pending.length && root.message-bubble-photo-pending[index];
+                        property <bool> visible-photo: pending-photo && self.y + chat-scroll.content-y < chat-scroll.height && self.y + self.height + chat-scroll.content-y > 0px;
+                        init => { if self.visible-photo { root.set-chat-photo-visibility(index, true); } }
+                        changed visible-photo => { root.set-chat-photo-visibility(index, self.visible-photo); }
                         property <bool> has-photo-id: index < root.message-bubble-photo-ids.length && root.message-bubble-photo-ids[index] != "";
                         property <bool> has-file-id: index < root.message-bubble-files.length && root.message-bubble-files[index] != "";
                         property <bool> retryable: (has-photo-id || has-file-id) && index < root.message-bubble-upload-failed.length && root.message-bubble-upload-failed[index];
-                        property <bool> show-photo: photo-here || incoming-photo || saved-photo;
+                        property <bool> show-photo: photo-here || incoming-photo || saved-photo || pending-photo;
                         property <bool> show-caption: show-photo && bubble != "" && bubble != "Photo";
                         property <length> content-h: show-photo ? 148px + (show-caption ? msg.preferred-height : 0px) : msg.preferred-height;
                         property <bool> has-quote: index < root.message-bubble-quotes.length && root.message-bubble-quotes[index] != "";
@@ -1697,6 +1703,11 @@ export component NotesWindow inherits Window {
                                 height: 140px;
                                 source: saved-photo ? root.message-bubble-photos[index] : root.message-incoming-image;
                                 image-fit: cover;
+                            }
+                            if pending-photo && !saved-photo: Text {
+                                x: 8px; y: 8px + quote-h; width: parent.width - 16px; height: 132px;
+                                text: "Loading photo…"; color: #8299a7; font-size: 12px;
+                                vertical-alignment: center; horizontal-alignment: center;
                             }
                             if has-quote: Rectangle {
                                 x: 8px; y: 8px; width: 3px; height: 20px;

@@ -2,6 +2,8 @@
 #![no_main]
 
 mod vault_protocol;
+#[cfg(feature = "utm-photo-reader")]
+mod vault_photo_access;
 
 use core::{
     ptr,
@@ -301,6 +303,8 @@ fn init() -> Vault {
     let messages_transfer =
         memory_region_symbol!(messages_transfer: *mut BlobTransferPage).as_ptr();
     let wallet_transfer = memory_region_symbol!(wallet_transfer: *mut BlobTransferPage).as_ptr();
+    #[cfg(feature = "utm-photo-reader")]
+    let photo_read_transfer = memory_region_symbol!(photo_read_transfer: *mut BlobTransferPage).as_ptr();
     let wallet_identity_transfer =
         *sel4_microkit::var!(wallet_identity_transfer: usize = 0) as *mut BlobTransferPage;
     #[cfg(feature = "simplex-agent-vault")]
@@ -332,6 +336,8 @@ fn init() -> Vault {
             messages_transfer,
         ],
         wallet_transfer,
+        #[cfg(feature = "utm-photo-reader")]
+        photo_read_transfer,
         wallet_identity_transfer,
         #[cfg(feature = "simplex-agent-vault")]
         simplex_agent_transfer,
@@ -347,6 +353,8 @@ struct Vault {
     crypto: DevelopmentCryptoProvider,
     blob_transfer: [*mut BlobTransferPage; NAMESPACE_COUNT],
     wallet_transfer: *mut BlobTransferPage,
+    #[cfg(feature = "utm-photo-reader")]
+    photo_read_transfer: *mut BlobTransferPage,
     wallet_identity_transfer: *mut BlobTransferPage,
     #[cfg(feature = "simplex-agent-vault")]
     simplex_agent_transfer: *mut BlobTransferPage,
@@ -1315,11 +1323,15 @@ impl Vault {
     }
 
     fn photo_request(&mut self, request: MessageInfo) -> Result<MessageInfo, MessageLabel> {
+        let page = self.transfer_page(MESSAGES_NAMESPACE)?;
+        self.photo_request_on_page(request, page, None)
+    }
+
+    fn photo_request_on_page(&mut self, request: MessageInfo, page: *mut BlobTransferPage, expected_owner: Option<u64>) -> Result<MessageInfo, MessageLabel> {
         use vault_protocol::{PHOTO_CHUNK, PHOTO_MAX, REQUEST_PHOTO_COMMIT, REQUEST_PHOTO_READ, REQUEST_PHOTO_STAGE};
         if self.block.capacity_blocks()? < PHOTO_SEQUENCE_BLOCK + 2 {
             return Err(REPLY_STORAGE);
         }
-        let page = self.transfer_page(MESSAGES_NAMESPACE)?;
         match (request.label(), request.count()) {
             (vault_protocol::REQUEST_PHOTO_PURGE_CHAT, 1) => {
                 let handle = get_mr(0);
@@ -1420,6 +1432,12 @@ impl Vault {
                 if owner == 0 || total == 0 || total > PHOTO_MAX || part >= total.div_ceil(PHOTO_CHUNK) {
                     return Err(REPLY_CORRUPT);
                 }
+                #[cfg(feature = "utm-photo-reader")]
+                if expected_owner.is_some_and(|expected| !vault_photo_access::permits(id, expected, owner)) {
+                    return Err(REPLY_DENIED);
+                }
+                #[cfg(not(feature = "utm-photo-reader"))]
+                let _ = expected_owner;
                 let _ = base_record;
                 let (first_block, generation) = if id == 0 {
                     if part >= PHOTO_BLOCKS { return Err(REPLY_BAD_REQUEST); }
@@ -2163,6 +2181,27 @@ impl Handler for Vault {
         channel: Channel,
         request: MessageInfo,
     ) -> Result<MessageInfo, Self::Error> {
+        #[cfg(feature = "utm-photo-reader")]
+        if channel == vault_protocol::PHOTO_READER_CHANNEL {
+            if request.label() != vault_protocol::REQUEST_PHOTO_READ || request.count() != 3 {
+                return Ok(MessageInfo::new(REPLY_DENIED, 0));
+            }
+            let id = get_mr(0);
+            let part = get_mr(1);
+            let owner = get_mr(2);
+            if id == 0 || owner == 0 || owner == vault_protocol::LIBRARY_OWNER || self.photo_read_transfer.is_null() {
+                return Ok(MessageInfo::new(REPLY_DENIED, 0));
+            }
+            if let Err(label) = self.load_from_disk() {
+                return Ok(MessageInfo::new(label, 0));
+            }
+            unsafe { (&mut *self.photo_read_transfer).set_payload(&[]); }
+            set_mr(0, id);
+            set_mr(1, part);
+            return Ok(self.photo_request_on_page(
+                MessageInfo::new(vault_protocol::REQUEST_PHOTO_READ, 2), self.photo_read_transfer, Some(owner),
+            ).unwrap_or_else(|label| MessageInfo::new(label, 0)));
+        }
         if request.label() == REQUEST_FILE_READ {
             debug_println!("VAULT|FILE_READ|channel={:?} file={}", channel, get_mr(0));
         }

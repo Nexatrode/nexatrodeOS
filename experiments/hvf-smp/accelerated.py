@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import plistlib
 import re
+import shutil
 import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
@@ -24,7 +25,93 @@ def digest(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def build(bundle, inputs, stage, rebuild_wallet):
+def vault_source_required(pds):
+    vault = pds / "rust_vault_disk.elf"
+    return not (vault.is_file() and b"photo_read_transfer" in vault.read_bytes())
+
+
+def ui_source_required(pds):
+    ui = pds / "slint_notes_utm.elf"
+    worker = pds / "slint_photo_worker.elf"
+    reader = pds / "slint_photo_reader.elf"
+    if not (ui.is_file() and worker.is_file() and reader.is_file()):
+        return True
+    binary = ui.read_bytes()
+    return b"photo_mailbox_region" not in binary or b"photo_read_mailbox" not in binary
+
+
+def build_ui_from_source(inputs, stage):
+    target = Path(os.environ.get("NEXATRODE_UI_TARGET_DIR", str(ROOT / "build/utm-accelerated-ui-cargo"))).resolve()
+    env = dict(os.environ, SEL4_PREFIX=str(inputs / "sel4-install"), CARGO_TARGET_DIR=str(target),
+               SEL4_INCLUDE_DIRS=str(inputs / "sdk/board" / BOARD / CONFIG / "include"))
+    env.setdefault("CARGO_BUILD_JOBS", "2")
+    subprocess.run([
+        "cargo", "+nightly-2026-09-25", "build", "--locked", "--offline", "--release",
+        "-Zjson-target-spec", "--config", ROOT / "rust/.cargo/config.toml",
+        "--manifest-path", ROOT / "experiments/slint-notes/Cargo.toml",
+        "--target", ROOT / "rust/targets/aarch64-sel4-microkit.json",
+        "--features", "utm-pd,full-suite-ui,simplex-agent-ui,utm-photo-worker",
+        "--bin", "slint_notes_utm", "--bin", "slint_photo_worker", "--bin", "slint_photo_reader",
+    ], cwd=ROOT, env=env, check=True)
+    subprocess.run([
+        "cargo", "+nightly-2026-09-25", "build", "--locked", "--offline", "--release",
+        "-Zjson-target-spec", "--config", ROOT / "rust/.cargo/config.toml",
+        "--manifest-path", ROOT / "rust/Cargo.toml",
+        "--target", ROOT / "rust/targets/aarch64-sel4-microkit.json",
+        "--features", "utm-slint-input", "--bin", "rust_input_service",
+    ], cwd=ROOT, env=env, check=True)
+    output = stage / "ui"
+    output.mkdir()
+    release = target / "aarch64-sel4-microkit/release"
+    for name in ("slint_notes_utm.elf", "slint_photo_worker.elf", "slint_photo_reader.elf"):
+        shutil.copyfile(release / name, output / name)
+    shutil.copyfile(release / "rust_input_service.elf", output / "input_service.elf")
+    return output
+
+
+def build_vault_from_source(inputs, stage):
+    target = Path(os.environ.get("NEXATRODE_UI_TARGET_DIR", str(ROOT / "build/utm-accelerated-ui-cargo"))).resolve()
+    env = dict(os.environ, SEL4_PREFIX=str(inputs / "sel4-install"), CARGO_TARGET_DIR=str(target),
+               SEL4_INCLUDE_DIRS=str(inputs / "sdk/board" / BOARD / CONFIG / "include"))
+    env.setdefault("CARGO_BUILD_JOBS", "2")
+    subprocess.run([
+        "cargo", "+nightly-2026-09-25", "build", "--locked", "--offline", "--release",
+        "-Zjson-target-spec", "--config", ROOT / "rust/.cargo/config.toml",
+        "--manifest-path", ROOT / "rust/Cargo.toml",
+        "--target", ROOT / "rust/targets/aarch64-sel4-microkit.json",
+        "--features", "utm-installation-vault-key,simplex-agent-vault,utm-photo-reader",
+        "--bin", "rust_vault_disk",
+    ], cwd=ROOT, env=env, check=True)
+    objcopy = os.environ.get("NEXATRODE_LLVM_OBJCOPY") or shutil.which("llvm-objcopy")
+    if not objcopy and Path("/opt/homebrew/opt/llvm/bin/llvm-objcopy").is_file():
+        objcopy = "/opt/homebrew/opt/llvm/bin/llvm-objcopy"
+    if not objcopy:
+        raise FileNotFoundError("llvm-objcopy is required to preserve the UTM vault configuration")
+    old = inputs / "pds/rust_vault_disk.elf"
+    compiled = target / "aarch64-sel4-microkit/release/rust_vault_disk.elf"
+    output = stage / "vault"
+    output.mkdir(mode=0o700)
+    with tempfile.TemporaryDirectory(dir=stage) as tmp:
+        tmp = Path(tmp)
+        keyed, config = tmp / "keyed.elf", tmp / "block-config"
+        old_key, new_key = tmp / "old-key", tmp / "new-key"
+        new_config = tmp / "new-block-config"
+        subprocess.run(["python3", ROOT / "experiments/ghc-microkit/provision_utm_vault.py",
+                        "--objcopy", objcopy, "--source", old, "--input", compiled, "--output", keyed], check=True)
+        subprocess.run([objcopy, "--dump-section", f".blk_client_config={config}", old], check=True)
+        result = output / "rust_vault_disk.elf"
+        subprocess.run([objcopy, "--update-section", f".blk_client_config={config}", keyed, result], check=True)
+        subprocess.run([objcopy, "--dump-section", f".blk_client_config={new_config}", result], check=True)
+        if config.read_bytes() != new_config.read_bytes():
+            raise ValueError("rebuilt vault does not contain the original block configuration")
+        subprocess.run([objcopy, "--dump-section", f".utm_vault_key={old_key}", old], check=True)
+        subprocess.run([objcopy, "--dump-section", f".utm_vault_key={new_key}", result], check=True)
+        if len(old_key.read_bytes()) != 32 or old_key.read_bytes() != new_key.read_bytes():
+            raise ValueError("rebuilt vault does not contain the original installation key")
+    return output
+
+
+def build(bundle, inputs, stage, rebuild_wallet, rebuild_ui=False):
     private = json.loads((inputs / "installation.json").read_text())
     template = bundle / "config.plist"
     if not template.exists() and bundle == Path(private["bundle"]):
@@ -54,6 +141,10 @@ def build(bundle, inputs, stage, rebuild_wallet):
         raise ValueError("scan worker affinities disagree with the UTM profile")
 
     search = []
+    if rebuild_ui or ui_source_required(pds):
+        search.extend(["--search-path", build_ui_from_source(inputs, stage)])
+    if rebuild_ui or vault_source_required(pds):
+        search.extend(["--search-path", build_vault_from_source(inputs, stage)])
     if rebuild_wallet:
         wallet = stage / "wallet"
         env = dict(os.environ, CARGO_TARGET_DIR=os.environ.get("CARGO_TARGET_DIR", str(ROOT / "build/utm-accelerated-cargo")))
@@ -85,6 +176,7 @@ def main():
     parser.add_argument("--inputs", type=Path, default=INPUTS)
     parser.add_argument("--output", type=Path, default=ROOT / "build/utm-accelerated", help="staging directory")
     parser.add_argument("--rebuild-wallet", action="store_true", help="compile current wallet sources using the selected release settings")
+    parser.add_argument("--rebuild-ui", action="store_true", help="compile the current UI and background photo worker")
     args = parser.parse_args()
     os.umask(0o077)
     inputs, out = args.inputs.resolve(), args.output.resolve()
@@ -96,7 +188,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=out) as tmp:
         stage = Path(tmp)
-        build(bundle, inputs, stage, args.rebuild_wallet)
+        build(bundle, inputs, stage, args.rebuild_wallet, args.rebuild_ui)
         with (out / ".publish.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             for name in ("loader.img", "config.plist"):

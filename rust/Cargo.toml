@@ -11,6 +11,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mpss_smp2p_tests)', 'cfg(m
 wallet-wide-rx = []
 iphone-shell = []
 utm-slint-input = []
+utm-photo-reader = []
 simplex-agent = []
 simplex-agent-qemu-join-test = ["simplex-agent"]
 simplex-agent-qemu-external-cli-test = ["simplex-agent"]

@@ -19,6 +19,7 @@ utm-chat-sync-selftest = []
 utm-keyboard-selftest = []
 utm-clock-selftest = []
 utm-perf-trace = []
+utm-photo-worker = ["simplex-agent-ui"]
 utm-pd = []
 utm-nexawal-rpc-bridge = []
 full-suite-profile = ["full-suite-ui", "frame-timing"]
@@ -46,6 +47,16 @@ required-features = ["iphone-pd"]
 name = "slint_notes_pixel"
 path = "src/pixel.rs"
 required-features = ["pixel-pd"]
+
+[[bin]]
+name = "slint_photo_reader"
+path = "src/photo_reader.rs"
+required-features = ["utm-photo-worker"]
+
+[[bin]]
+name = "slint_photo_worker"
+path = "src/photo_worker.rs"
+required-features = ["utm-photo-worker"]
 
 [[bin]]
 name = "slint_notes_utm"

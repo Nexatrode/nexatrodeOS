@@ -17,6 +17,8 @@ pub const MESSAGES_APP_CHANNEL: Channel = Channel::new(6);
 pub const SIMPLEX_AGENT_CHANNEL: Channel = Channel::new(7);
 /// NexaWal wallet app — vault file I/O for WalletState (not a legacy namespace slot).
 pub const WALLET_APP_CHANNEL: Channel = Channel::new(8);
+/// Read-only preview worker endpoint; uses its own transfer page.
+pub const PHOTO_READER_CHANNEL: Channel = Channel::new(9);
 // Local app endpoint shared by the supervisor's explicit namespace test calls.
 pub const APP_TEST_SUPERVISOR_CHANNEL: Channel = Channel::new(1);
 pub const NAMESPACE_COUNT: usize = 5;

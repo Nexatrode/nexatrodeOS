@@ -4697,6 +4697,8 @@ def main():
                         help="UTM bundle for graphics exports, Pixel probes, or an existing accelerated install")
     parser.add_argument("--rebuild-wallet", action="store_true",
                         help="compile wallet and workers from source for utm-accelerated")
+    parser.add_argument("--rebuild-ui", action="store_true",
+                        help="compile the UI, input, photo workers and vault for utm-accelerated")
     parser.add_argument("--allow-rollback", action="store_true",
                         help="explicitly restore generations older than the selected source disk")
     parser.add_argument("--budget-pressure", action="store_true",
@@ -4704,6 +4706,8 @@ def main():
     args = parser.parse_args()
     if args.rebuild_wallet and args.command != "utm-accelerated":
         parser.error("--rebuild-wallet is only valid with utm-accelerated")
+    if args.rebuild_ui and args.command != "utm-accelerated":
+        parser.error("--rebuild-ui is only valid with utm-accelerated")
     if args.command == "setup":
         setup()
         print(f"Ready: {SDK}")
@@ -4720,6 +4724,8 @@ def main():
             options.extend(["--output", args.output])
         if args.rebuild_wallet:
             options.append("--rebuild-wallet")
+        if args.rebuild_ui:
+            options.append("--rebuild-ui")
         run([sys.executable, ROOT / "experiments/hvf-smp/accelerated.py", *options])
         return
     if args.command == "test-storage":

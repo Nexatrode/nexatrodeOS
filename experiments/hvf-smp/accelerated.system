@@ -40,6 +40,7 @@
         <map mr="contacts_transfer" vaddr="0x46000000" perms="rw" cached="true" setvar_vaddr="contacts_transfer" />
         <map mr="calendar_transfer" vaddr="0x47000000" perms="rw" cached="true" setvar_vaddr="calendar_transfer" />
         <map mr="messages_transfer" vaddr="0x48000000" perms="rw" cached="true" setvar_vaddr="messages_transfer" />
+        <map mr="photo_read_transfer" vaddr="0x4d000000" perms="rw" cached="true" setvar_vaddr="photo_read_transfer" />
         <map mr="blk_client_vault_storage_info" vaddr="0x48001000" perms="r" />
         <map mr="blk_client_vault_request" vaddr="0x48002000" perms="rw" />
         <map mr="blk_client_vault_response" vaddr="0x48003000" perms="rw" />
@@ -468,6 +469,11 @@
     <memory_region name="calculator_view" size="0x1_000" page_size="0x1_000" />
     <memory_region name="slint_frame" size="0x800000" page_size="0x200000" />
     <memory_region name="slint_heap" size="0x2000000" page_size="0x200000" />
+    <memory_region name="photo_heap" size="0x4000000" page_size="0x200000" />
+    <memory_region name="photo_mailbox" size="0x200000" page_size="0x200000" />
+    <memory_region name="photo_read_mailbox" size="0x200000" page_size="0x200000" />
+    <memory_region name="photo_read_heap" size="0x200000" page_size="0x200000" />
+    <memory_region name="photo_read_transfer" size="0x1000" />
     <memory_region name="page_pictures" size="0xD200000" page_size="0x200000" />
     <protection_domain name="input_driver" priority="254" budget="1_000" period="10_000" stack_size="0x10000">
         <program_image path="input_driver.elf" />
@@ -492,6 +498,8 @@
     <protection_domain name="slint_ui" priority="99" budget="2500" period="10000" stack_size="0x20000">
         <program_image path="slint_notes_utm.elf" />
         <map mr="slint_heap" vaddr="0x48_000_000" perms="rw" cached="true" setvar_vaddr="slint_heap" />
+        <map mr="photo_mailbox" vaddr="0x5e_000_000" perms="rw" cached="true" setvar_vaddr="photo_mailbox_region" />
+        <map mr="photo_read_mailbox" vaddr="0x60_000_000" perms="rw" cached="true" setvar_vaddr="photo_read_mailbox" />
         <map mr="ui_focus" vaddr="0x42_000_000" perms="rw" cached="true" setvar_vaddr="ui_focus" />
         <map mr="ui_pointer" vaddr="0x47_000_000" perms="r" cached="true" setvar_vaddr="ui_pointer" />
         <map mr="slint_frame" vaddr="0x4d_000_000" perms="rw" cached="true" setvar_vaddr="slint_frame" />
@@ -503,6 +511,29 @@
         <map mr="wallet_transfer" vaddr="0x4e_000_000" perms="rw" cached="true" setvar_vaddr="wallet_transfer" />
         <map mr="haskell_tcp_io" vaddr="0x4f_000_000" perms="rw" cached="true" setvar_vaddr="haskell_tcp_page" />
     </protection_domain>
+    <protection_domain name="photo_reader" priority="98" budget="2500" period="10000" stack_size="0x20000">
+        <program_image path="slint_photo_reader.elf" />
+        <map mr="photo_read_mailbox" vaddr="0x60_000_000" perms="rw" cached="true" setvar_vaddr="photo_read_mailbox" />
+        <map mr="photo_read_transfer" vaddr="0x62_000_000" perms="rw" cached="true" setvar_vaddr="photo_read_transfer" />
+        <map mr="photo_read_heap" vaddr="0x64_000_000" perms="rw" cached="true" setvar_vaddr="photo_read_heap" />
+    </protection_domain>
+    <channel>
+        <end pd="slint_ui" id="10" notify="true" />
+        <end pd="photo_reader" id="0" notify="true" />
+    </channel>
+    <channel>
+        <end pd="vault" id="9" notify="false" />
+        <end pd="photo_reader" id="1" pp="true" notify="false" />
+    </channel>
+    <protection_domain name="photo_worker" cpu="3" priority="101" budget="2500" period="10000" stack_size="0x20000">
+        <program_image path="slint_photo_worker.elf" />
+        <map mr="photo_heap" vaddr="0x50_000_000" perms="rw" cached="true" setvar_vaddr="photo_heap" />
+        <map mr="photo_mailbox" vaddr="0x60_000_000" perms="rw" cached="true" setvar_vaddr="photo_mailbox_region" />
+    </protection_domain>
+    <channel>
+        <end pd="slint_ui" id="9" notify="true" />
+        <end pd="photo_worker" id="0" notify="true" />
+    </channel>
     <channel>
         <end pd="input_driver" id="2" />
         <end pd="input_service" id="0" />

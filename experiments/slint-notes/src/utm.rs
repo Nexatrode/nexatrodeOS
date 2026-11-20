@@ -55,6 +55,10 @@ const CONTACTS_SERVICE: Channel = Channel::new(3);
 const CALENDAR_SERVICE: Channel = Channel::new(4);
 const MESSAGES_SERVICE: Channel = Channel::new(5);
 const WALLET_SERVICE: Channel = Channel::new(6);
+#[cfg(feature = "utm-photo-worker")]
+const PHOTO_WORKER: Channel = Channel::new(9);
+#[cfg(feature = "utm-photo-worker")]
+const PHOTO_READER: Channel = Channel::new(10);
 /// Diagnostic: shell→dhcp STATUS (channel 7). Proves whether dhcp PPC replies to anyone.
 const DHCP_TCP_PROBE: Channel = Channel::new(7);
 const REQUEST_WALLET_STATUS: u64 = 0x501;
@@ -244,6 +248,17 @@ impl LineBufferProvider for RgbLines {
     }
 }
 
+#[cfg(feature = "utm-photo-worker")]
+#[derive(Clone, Copy)]
+struct PhotoTicket {
+    stamp: u64,
+    chat: u64,
+    row: usize,
+    id: u64,
+    owner: u64,
+    cache_generation: u64,
+}
+
 struct SlintService {
     frame_timer: Option<Channel>,
     frame_deadline: Option<core::time::Duration>,
@@ -265,6 +280,18 @@ struct SlintService {
     chat_transcripts: Rc<RefCell<[String; CHAT_SLOTS]>>,
     #[cfg(feature = "simplex-agent-ui")]
     chat_drafts: Rc<RefCell<[String; CHAT_SLOTS]>>,
+    #[cfg(feature = "simplex-agent-ui")]
+    chat_photo_loader: Rc<RefCell<personal_os_slint_notes_spike::chat_photo_loader::PhotoLoader>>,
+    #[cfg(feature = "utm-photo-worker")]
+    photo_mailbox: &'static personal_os_slint_notes_spike::photo_ipc::PhotoMailbox,
+    #[cfg(feature = "utm-photo-worker")]
+    pending_photo: Option<PhotoTicket>,
+    #[cfg(feature = "utm-photo-worker")]
+    pending_photo_read: Option<PhotoTicket>,
+    #[cfg(feature = "utm-photo-worker")]
+    photo_read_mailbox: &'static personal_os_slint_notes_spike::photo_reader_ipc::PhotoReadMailbox,
+    #[cfg(feature = "utm-photo-worker")]
+    photo_cache: Rc<RefCell<personal_os_slint_notes_spike::photo_cache::PhotoCache<slint::Image>>>,
     shown_view: i32,
     shown_stamp: u64,
     pictures_prepared: bool,
@@ -2556,7 +2583,12 @@ fn split_quote_display(body: &str) -> (String, &str) {
     (String::new(), body)
 }
 
-fn sync_message_bubbles(ui: &NotesWindow, service: &MessagesServiceClient) {
+fn sync_message_bubbles(
+    ui: &NotesWindow,
+    loader: &RefCell<personal_os_slint_notes_spike::chat_photo_loader::PhotoLoader>,
+    #[cfg(feature = "utm-photo-worker")] cache: &RefCell<personal_os_slint_notes_spike::photo_cache::PhotoCache<slint::Image>>,
+    #[cfg(feature = "utm-photo-worker")] owner: Option<u64>,
+) {
     static STAMP: AtomicU64 = AtomicU64::new(0);
     let transcript = ui.get_message_transcript();
     let chat = ui.get_message_chat_index().max(0) as u64;
@@ -2564,6 +2596,8 @@ fn sync_message_bubbles(ui: &NotesWindow, service: &MessagesServiceClient) {
     if STAMP.swap(stamp, Ordering::Relaxed) == stamp {
         return;
     }
+    #[cfg(feature = "utm-perf-trace")]
+    let trace_bubbles_start = perf_time_us();
     let mut bodies = Vec::new();
     let mut quotes = Vec::new();
     let mut times = Vec::new();
@@ -2572,6 +2606,8 @@ fn sync_message_bubbles(ui: &NotesWindow, service: &MessagesServiceClient) {
     let mut reacts = Vec::new();
     let mut photos = Vec::new();
     let mut photo_ready = Vec::new();
+    let mut photo_pending = Vec::new();
+    let mut photo_jobs = Vec::new();
     let mut photo_ids = Vec::new();
     let mut files = Vec::new();
     let mut failed_uploads = Vec::new();
@@ -2602,14 +2638,17 @@ fn sync_message_bubbles(ui: &NotesWindow, service: &MessagesServiceClient) {
         let (image, body) = match indexed_photo {
             Some(photo) => {
                 let id = photo.display_id;
-                let image = service.message_attachment(chat, id).and_then(|bytes| {
-                    let image = decode_jpeg_preview(&bytes)?;
-                    debug_println!("SLINT SIMPLEX MESSAGE PHOTO {} {}", id, bytes.len());
-                    Some(image)
-                });
+                #[cfg(feature = "utm-photo-worker")]
+                let image = owner.and_then(|owner| cache.borrow_mut().get(owner, id));
+                #[cfg(not(feature = "utm-photo-worker"))]
+                let image: Option<slint::Image> = None;
+                #[cfg(all(feature = "utm-photo-worker", feature = "utm-perf-trace"))]
+                if image.is_some() { debug_println!("PERF|PHOTO_CACHE_HIT|{}|{}", perf_time_us(), id); }
+                if id != 0 && image.is_none() { photo_jobs.push((bodies.len(), id)); }
+                photo_pending.push(id != 0 && image.is_none());
                 (image, photo.caption)
             }
-            None => (None, body),
+            None => { photo_pending.push(false); (None, body) },
         };
         let (file, body) = match split_file_reference(body) {
             Some((_, id, name)) => (slint::SharedString::from(id.to_string()), name),
@@ -2652,6 +2691,11 @@ fn sync_message_bubbles(ui: &NotesWindow, service: &MessagesServiceClient) {
         reacts.push(slint::SharedString::from(visible_react(&react)));
     }
     let count = bodies.len();
+    // Conversations open at the newest messages; prefer those visible previews.
+    photo_jobs.reverse();
+    loader.borrow_mut().reset(stamp, chat, &photo_jobs);
+    #[cfg(feature = "utm-perf-trace")]
+    debug_println!("PERF|BUBBLES|{}|{}|{}", trace_bubbles_start, perf_time_us(), count);
     ui.set_message_bubbles(ModelRc::new(VecModel::from(bodies)));
     ui.set_message_bubble_quotes(ModelRc::new(VecModel::from(quotes)));
     ui.set_message_bubble_time(ModelRc::new(VecModel::from(times)));
@@ -2660,6 +2704,7 @@ fn sync_message_bubbles(ui: &NotesWindow, service: &MessagesServiceClient) {
     ui.set_message_bubble_reacts(ModelRc::new(VecModel::from(reacts)));
     ui.set_message_bubble_photos(ModelRc::new(VecModel::from(photos)));
     ui.set_message_bubble_photo_ready(ModelRc::new(VecModel::from(photo_ready)));
+    ui.set_message_bubble_photo_pending(ModelRc::new(VecModel::from(photo_pending)));
     ui.set_message_bubble_photo_ids(ModelRc::new(VecModel::from(photo_ids)));
     ui.set_message_bubble_files(ModelRc::new(VecModel::from(files)));
     ui.set_message_bubble_upload_failed(ModelRc::new(VecModel::from(failed_uploads)));
@@ -3270,10 +3315,18 @@ impl SlintService {
             // titles (e.g. PRIVATE NOTES) would otherwise flash through on page 16.
             self.rendered.fill(0x05);
         }
-        #[cfg(feature = "simplex-agent-ui")]
-        if let Ok(service) = self.messages_service.try_borrow() {
-            sync_message_bubbles(&self._ui, &service);
+        #[cfg(all(feature = "simplex-agent-ui", feature = "utm-photo-worker"))]
+        {
+            let chat = self._ui.get_message_chat_index().max(0) as usize;
+            let owner = {
+                let service = self.messages_service.borrow();
+                let history = service.history_cache.borrow();
+                history.get(chat).and_then(|entry| entry.as_ref().map(|entry| entry.0))
+            };
+            sync_message_bubbles(&self._ui, &self.chat_photo_loader, &self.photo_cache, owner);
         }
+        #[cfg(all(feature = "simplex-agent-ui", not(feature = "utm-photo-worker")))]
+        sync_message_bubbles(&self._ui, &self.chat_photo_loader);
         let mut band = DamageBand::new();
         let mut slint_y = 0i32;
         let mut slint_bottom = 0i32;
@@ -3299,7 +3352,11 @@ impl SlintService {
         let dirty_chats = skia_guest::chat_dirty_mask();
         skia_guest::flush_chat_sprites();
         let page = self._ui.get_page();
-        if skia_guest::take_chrome_page(page) {
+        let (chrome_y, chrome_height) = skia_guest::page_chrome_band(page);
+        if skia_guest::take_chrome_page(page)
+            || full
+            || personal_os_slint_notes_spike::frame::bands_intersect(slint_y, slint_bottom, chrome_y, chrome_height)
+        {
             if skia_guest::blit_skia_chrome(&mut self.rendered, page) {
                 let (y, height) = skia_guest::page_chrome_band(page);
                 band.cover(y, height);
@@ -3331,7 +3388,12 @@ impl SlintService {
         } else {
             -1
         };
-        if skia_guest::take_open_chat(open_chat) && open_chat >= 0 {
+        let (badge_y, badge_height) = skia_guest::open_chat_badge_band();
+        let open_chat_changed = skia_guest::take_open_chat(open_chat);
+        if open_chat >= 0 && (open_chat_changed
+            || full
+            || personal_os_slint_notes_spike::frame::bands_intersect(slint_y, slint_bottom, badge_y, badge_height))
+        {
             skia_guest::blit_open_chat_initial(&mut self.rendered, open_chat as usize);
             let (y, height) = skia_guest::open_chat_badge_band();
             band.cover(y, height);
@@ -3762,6 +3824,21 @@ fn init() -> SlintService {
     ui.set_message_service_ready(false);
     let chat_drafts: Rc<RefCell<[String; CHAT_SLOTS]>> =
         Rc::new(RefCell::new(core::array::from_fn(|_| String::new())));
+    #[cfg(feature = "simplex-agent-ui")]
+    let chat_photo_loader = Rc::new(RefCell::new(personal_os_slint_notes_spike::chat_photo_loader::PhotoLoader::default()));
+    #[cfg(feature = "utm-photo-worker")]
+    let photo_cache = Rc::new(RefCell::new(personal_os_slint_notes_spike::photo_cache::PhotoCache::<slint::Image>::new(4 * 1024 * 1024)));
+    #[cfg(feature = "simplex-agent-ui")]
+    {
+        let loader = chat_photo_loader.clone();
+        ui.on_set_chat_photo_visibility(move |row, visible| {
+            if row >= 0 {
+                loader.borrow_mut().set_visible(row as usize, visible);
+                #[cfg(feature = "utm-perf-trace")]
+                debug_println!("PERF|PHOTO_VIS|{}|{}|{}", perf_time_us(), row, u8::from(visible));
+            }
+        });
+    }
     let weak_ui = ui.as_weak();
     let close_drafts = chat_drafts.clone();
     ui.on_close_chat(move || {
@@ -4011,12 +4088,16 @@ fn init() -> SlintService {
     let select_transcripts = chat_transcripts.clone();
     let select_drafts = chat_drafts.clone();
     ui.on_open_chat(move |index| {
+        #[cfg(feature = "utm-perf-trace")]
+        let trace_open_start = perf_time_us();
         let index = index as u64;
         if let Err(error) = select_service.borrow().select_chat(index) {
             debug_println!("SLINT SIMPLEX SELECT CHAT FAIL {} {}", index, error);
             return false;
         }
         debug_println!("SLINT SIMPLEX SELECT CHAT {}", index);
+        #[cfg(feature = "utm-perf-trace")]
+        let trace_selected = perf_time_us();
         if let Some(ui) = weak_ui.upgrade() {
             if ui.get_message_view() {
                 let previous = ui.get_message_chat_index().max(0) as usize;
@@ -4027,6 +4108,8 @@ fn init() -> SlintService {
                 Ok(saved) => saved,
                 Err(_) => select_transcripts.borrow()[(index as usize).min(CHAT_SLOTS - 1)].clone(),
             };
+            #[cfg(feature = "utm-perf-trace")]
+            let trace_transcript = perf_time_us();
             select_transcripts.borrow_mut()[(index as usize).min(CHAT_SLOTS - 1)] = saved.clone();
             let draft = select_drafts.borrow()[(index as usize).min(CHAT_SLOTS - 1)].clone();
             ui.set_message_chat_index(index as i32);
@@ -4035,12 +4118,16 @@ fn init() -> SlintService {
             ui.set_message_body(draft.into());
             present_message_image(&ui, &select_service.borrow());
             present_group_invite(&ui, &select_service.borrow());
+            #[cfg(feature = "utm-perf-trace")]
+            debug_println!("PERF|CHAT_OPEN|{}|{}|{}|{}|{}", index, trace_open_start, trace_selected, trace_transcript, perf_time_us());
         }
         true
     });
     let weak_ui = ui.as_weak();
     let delete_service = messages_service.clone();
     let delete_transcripts = chat_transcripts.clone();
+    #[cfg(feature = "utm-photo-worker")]
+    let deleted_photo_cache = photo_cache.clone();
     ui.on_delete_chat(move |index| {
         let index = if index < 0 { 0 } else { index as u64 };
         debug_println!("SLINT SIMPLEX DELETE TRY {}", index);
@@ -4048,6 +4135,11 @@ fn init() -> SlintService {
         if let Some(ui) = weak_ui.upgrade() {
             match deleted {
                 Ok(()) => {
+                    #[cfg(feature = "utm-photo-worker")]
+                    deleted_photo_cache.borrow_mut().clear();
+                    if ui.get_message_chat_index() == index as i32 {
+                        ui.set_message_transcript("".into());
+                    }
                     delete_transcripts.borrow_mut()[(index as usize).min(CHAT_SLOTS - 1)].clear();
                     if let Ok(snapshot) = delete_service.borrow().load() {
                         ui.set_message_has_connections(has_simplex_connection(&snapshot));
@@ -4864,6 +4956,16 @@ fn init() -> SlintService {
     CATCH_UP_FLAG.store(unsafe { focus.as_ptr().add(1) }, Ordering::Release);
     let timer_id = *sel4_microkit::var!(slint_timer_channel: usize = usize::MAX);
     let mut service = SlintService {
+        #[cfg(feature = "utm-photo-worker")]
+        photo_mailbox: unsafe { memory_region_symbol!(photo_mailbox_region: *mut personal_os_slint_notes_spike::photo_ipc::PhotoMailbox).as_ref() },
+        #[cfg(feature = "utm-photo-worker")]
+        pending_photo: None,
+        #[cfg(feature = "utm-photo-worker")]
+        pending_photo_read: None,
+        #[cfg(feature = "utm-photo-worker")]
+        photo_read_mailbox: unsafe { memory_region_symbol!(photo_read_mailbox: *mut personal_os_slint_notes_spike::photo_reader_ipc::PhotoReadMailbox).as_ref() },
+        #[cfg(feature = "utm-photo-worker")]
+        photo_cache,
         frame_timer: (timer_id < 64).then(|| Channel::new(timer_id)),
         frame_deadline: None,
         _ui: ui,
@@ -4884,6 +4986,8 @@ fn init() -> SlintService {
         chat_transcripts,
         #[cfg(feature = "simplex-agent-ui")]
         chat_drafts,
+        #[cfg(feature = "simplex-agent-ui")]
+        chat_photo_loader,
         shown_view: -1,
         shown_stamp: 0,
         pictures_prepared: false,
@@ -5544,9 +5648,194 @@ impl SlintService {
 }
 
 impl SlintService {
+    #[cfg(all(feature = "simplex-agent-ui", not(feature = "utm-photo-worker")))]
+    fn load_visible_chat_photo_chunk(&mut self) {
+        use personal_os_slint_notes_spike::chat_photo_loader::PhotoOutcome;
+        #[cfg(feature = "utm-photo-worker")]
+        if self.pending_photo.is_some() { return; }
+        if self._ui.get_page() != 6 || !self._ui.get_message_view() { return; }
+        let chat = self._ui.get_message_chat_index().max(0) as u64;
+        let transcript = self._ui.get_message_transcript();
+        let stamp = transcript_stamp(transcript.as_str()).rotate_left(8) ^ chat;
+        let request = {
+            let loader = self.chat_photo_loader.borrow();
+            if !loader.matches(stamp, chat) { return; }
+            loader.next_request()
+        };
+        let Some((chat, id, part)) = request else { return };
+        #[cfg(feature = "utm-perf-trace")]
+        let started = perf_time_us();
+        let chunk = {
+            let service = self.messages_service.borrow();
+            service.read_attachment_part(chat, id, part).and_then(|total| {
+                unsafe { service.transfer.as_ref() }.payload().map(|bytes| (total, bytes.to_vec()))
+            })
+        };
+        let result = self.chat_photo_loader.borrow_mut().accept(
+            chunk.as_ref().map(|(total, bytes)| (*total, bytes.as_slice())),
+        );
+        #[cfg(feature = "utm-perf-trace")]
+        debug_println!("PERF|PHOTO_CHUNK|{}|{}|{}", started, perf_time_us(), part);
+        let (row, image) = match result {
+            PhotoOutcome::Pending => return,
+            PhotoOutcome::Complete { row, bytes } => {
+                #[cfg(feature = "utm-photo-worker")]
+                {
+                    if self.photo_mailbox.submit(|output| {
+                        if bytes.len() > output.len() { return None; }
+                        output[..bytes.len()].copy_from_slice(&bytes);
+                        Some(bytes.len())
+                    }) {
+                        self.pending_photo = Some((stamp, chat, row, id));
+                        #[cfg(feature = "utm-perf-trace")]
+                        debug_println!("PERF|PHOTO_SUBMIT|{}|{}", perf_time_us(), id);
+                        PHOTO_WORKER.notify();
+                        return;
+                    }
+                    (row, None)
+                }
+                #[cfg(not(feature = "utm-photo-worker"))]
+                {
+                    let image = decode_jpeg_preview(&bytes);
+                    if image.is_some() { debug_println!("SLINT SIMPLEX MESSAGE PHOTO {} {}", id, bytes.len()); }
+                    (row, image)
+                }
+            },
+            PhotoOutcome::Failed { row } => (row, None),
+        };
+        if let Some(image) = image {
+            self._ui.get_message_bubble_photos().set_row_data(row, image);
+            self._ui.get_message_bubble_photo_ready().set_row_data(row, true);
+        }
+        self._ui.get_message_bubble_photo_pending().set_row_data(row, false);
+    }
+
+    #[cfg(feature = "utm-photo-worker")]
+    fn load_visible_chat_photo_chunk(&mut self) {
+        if self.pending_photo.is_some() || self.pending_photo_read.is_some()
+            || self._ui.get_page() != 6 || !self._ui.get_message_view() { return; }
+        let chat = self._ui.get_message_chat_index().max(0) as u64;
+        let stamp = transcript_stamp(self._ui.get_message_transcript().as_str()).rotate_left(8) ^ chat;
+        let owner = {
+            let service = self.messages_service.borrow();
+            let history = service.history_cache.borrow();
+            history.get(chat as usize).and_then(|entry| entry.as_ref().map(|entry| entry.0))
+        };
+        let job = {
+            let mut loader = self.chat_photo_loader.borrow_mut();
+            if !loader.matches(stamp, chat) { return; }
+            loader.claim_visible()
+        };
+        let Some((_, id, row)) = job else { return; };
+        let Some(owner) = owner.filter(|owner| *owner != 0 && *owner != u64::MAX) else {
+            self._ui.get_message_bubble_photo_pending().set_row_data(row, false);
+            debug_println!("SLINT SIMPLEX PHOTO OWNER UNAVAILABLE");
+            return;
+        };
+        if let Some(image) = self.photo_cache.borrow_mut().get(owner, id) {
+            self._ui.get_message_bubble_photos().set_row_data(row, image);
+            self._ui.get_message_bubble_photo_ready().set_row_data(row, true);
+            self._ui.get_message_bubble_photo_pending().set_row_data(row, false);
+            #[cfg(feature = "utm-perf-trace")]
+            debug_println!("PERF|PHOTO_CACHE_HIT|{}|{}", perf_time_us(), id);
+            return;
+        }
+        let request = personal_os_slint_notes_spike::photo_reader_ipc::request(owner, id);
+        if self.photo_read_mailbox.submit(|bytes| { bytes[..request.len()].copy_from_slice(&request); Some(request.len()) }) {
+            let cache_generation = self.photo_cache.borrow().generation();
+            self.pending_photo_read = Some(PhotoTicket { stamp, chat, row, id, owner, cache_generation });
+            #[cfg(feature = "utm-perf-trace")]
+            debug_println!("PERF|PHOTO_READ_SUBMIT|{}|{}", perf_time_us(), id);
+            PHOTO_READER.notify();
+        } else {
+            self._ui.get_message_bubble_photo_pending().set_row_data(row, false);
+        }
+    }
+
+    #[cfg(feature = "utm-photo-worker")]
+    fn photo_ticket_current(&self, ticket: PhotoTicket) -> bool {
+        let chat = self._ui.get_message_chat_index().max(0) as u64;
+        let stamp = transcript_stamp(self._ui.get_message_transcript().as_str()).rotate_left(8) ^ chat;
+        self.photo_cache.borrow().generation() == ticket.cache_generation
+            && personal_os_slint_notes_spike::photo_ipc::preview_matches(
+                ticket.stamp, ticket.chat, stamp, chat,
+                self.chat_photo_loader.borrow().matches(ticket.stamp, ticket.chat),
+            )
+    }
+
+    #[cfg(feature = "utm-photo-worker")]
+    fn finish_photo_read(&mut self) {
+        use personal_os_slint_notes_spike::photo_mailbox::Completion;
+        let Some(ticket) = self.pending_photo_read else { return; };
+        let current = self.photo_ticket_current(ticket);
+        let result = self.photo_read_mailbox.take(|bytes| {
+            current && self.photo_mailbox.submit(|out| {
+                if bytes.len() > out.len() { return None; }
+                out[..bytes.len()].copy_from_slice(bytes);
+                Some(bytes.len())
+            })
+        });
+        let submitted = match result {
+            Completion::Waiting => return,
+            Completion::Failed => false,
+            Completion::Ready(submitted) => submitted,
+        };
+        self.pending_photo_read = None;
+        #[cfg(feature = "utm-perf-trace")]
+        debug_println!("PERF|PHOTO_READ_READY|{}|{}|{}", perf_time_us(), ticket.id, u8::from(submitted));
+        if submitted {
+            self.pending_photo = Some(ticket);
+            PHOTO_WORKER.notify();
+        } else if current {
+            self._ui.get_message_bubble_photo_pending().set_row_data(ticket.row, false);
+        }
+    }
+
+    #[cfg(feature = "utm-photo-worker")]
+    fn finish_photo_preview(&mut self) {
+        use personal_os_slint_notes_spike::photo_mailbox::Completion;
+        let Some(ticket) = self.pending_photo else { return; };
+        let current = self.photo_ticket_current(ticket);
+        let result = self.photo_mailbox.take(|data| {
+            if !current { return None; }
+            let (width, height, pixels) = personal_os_slint_notes_spike::photo_ipc::preview_parts(data)?;
+            let mut buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(width as u32, height as u32);
+            buffer.make_mut_bytes().copy_from_slice(pixels);
+            Some((slint::Image::from_rgba8(buffer), pixels.len()))
+        });
+        let image = match result {
+            Completion::Waiting => return,
+            Completion::Failed => None,
+            Completion::Ready(image) => image,
+        };
+        self.pending_photo = None;
+        #[cfg(feature = "utm-perf-trace")]
+        debug_println!("PERF|PHOTO_READY|{}|{}", perf_time_us(), ticket.id);
+        if !current { return; }
+        if let Some((image, bytes)) = image {
+            self.photo_cache.borrow_mut().insert(ticket.owner, ticket.id, bytes, image.clone());
+            self._ui.get_message_bubble_photos().set_row_data(ticket.row, image);
+            self._ui.get_message_bubble_photo_ready().set_row_data(ticket.row, true);
+            debug_println!("SLINT SIMPLEX MESSAGE PHOTO {} worker", ticket.id);
+        }
+        self._ui.get_message_bubble_photo_pending().set_row_data(ticket.row, false);
+    }
+
     fn arm_frame_timer(&mut self) {
         let Some(channel) = self.frame_timer else { return };
-        let Some(delay) = personal_os_slint_notes_spike::guest_platform::next_wake(&self.window) else {
+        let mut delay = personal_os_slint_notes_spike::guest_platform::next_wake(&self.window);
+        #[cfg(feature = "utm-photo-worker")]
+        let photo_worker_idle = self.pending_photo.is_none() && self.pending_photo_read.is_none();
+        #[cfg(all(feature = "simplex-agent-ui", not(feature = "utm-photo-worker")))]
+        let photo_worker_idle = true;
+        #[cfg(feature = "simplex-agent-ui")]
+        if photo_worker_idle && self._ui.get_page() == 6 && self._ui.get_message_view()
+            && self.chat_photo_loader.borrow().next_request().is_some()
+        {
+            let photo_delay = core::time::Duration::from_millis(50);
+            delay = Some(delay.map_or(photo_delay, |wake| wake.min(photo_delay)));
+        }
+        let Some(delay) = delay else {
             // The timer API has no cancellation; a stale one-shot can wake us once.
             return;
         };
@@ -6078,6 +6367,10 @@ impl SlintService {
         let event_type = if posted { POSTED_KIND.load(Ordering::Relaxed) } else { kind_and_code >> 32 };
         let code = if posted { POSTED_CODE.load(Ordering::Relaxed) } else { kind_and_code as u32 as u64 };
         let value = if posted { POSTED_VALUE.load(Ordering::Relaxed) } else { get_mr(2) as u64 };
+        #[cfg(feature = "utm-perf-trace")]
+        if device == DEVICE_TABLET && event_type == EVENT_KEY && code == BTN_LEFT {
+            debug_println!("PERF|POINTER|{}|{}", perf_time_us(), value);
+        }
         // Timer callbacks and wallet IPC may reuse the message registers.
         // Capture the input packet above before invoking either.
         slint::platform::update_timers_and_animations();
@@ -6109,7 +6402,12 @@ impl SlintService {
             // nav over a Slint click when the gesture qualifies.
             self.gesture_move(position.x, position.y);
             let deferred = self.nav_gesture.defer_press;
-            let navigated = self.gesture_end();
+            let navigated = if deferred {
+                self.gesture_end()
+            } else {
+                self.nav_gesture.active = false;
+                false
+            };
             if navigated {
                 self.publish_frame();
                 return Ok(MessageInfo::new(REPLY_SLINT_EVENT_OK, 0));
@@ -6577,10 +6875,28 @@ impl SlintService {
             }
         } else if device == DEVICE_TABLET && (event_type == EVENT_SYN || event_type == EVENT_ABS) {
             let ptr = self.pointer.as_ptr();
-            let x = unsafe { core::ptr::addr_of!((*ptr).x).read_volatile() };
-            let y = unsafe { core::ptr::addr_of!((*ptr).y).read_volatile() };
+            let position = POSTED_POSITION.load(Ordering::Relaxed);
+            let x = if posted { (position & 0xffff) as u32 } else { unsafe { core::ptr::addr_of!((*ptr).x).read_volatile() } };
+            let y = if posted { (position >> 16) as u32 } else { unsafe { core::ptr::addr_of!((*ptr).y).read_volatile() } };
+            #[cfg(feature = "utm-perf-trace")]
+            if posted { debug_println!("PERF|MOVE|{}|{}|{}", perf_time_us(), x, y); }
             let position = slint::LogicalPosition::new(x as f32 / SCALE, y as f32 / SCALE);
             self.gesture_move(position.x, position.y);
+            if self.nav_gesture.active && self.nav_gesture.defer_press
+                && self._ui.get_page() == 6 && self._ui.get_message_view()
+            {
+                let (width, height) = logical_screen();
+                if personal_os_slint_notes_spike::chat_drag::starts_chat_scroll(
+                    self.nav_gesture.start_x, self.nav_gesture.start_y, position.x, position.y,
+                    width, height, self._ui.get_top_inset(), self._ui.get_keyboard_travel(),
+                ) {
+                    self.nav_gesture.defer_press = false;
+                    let start = slint::LogicalPosition::new(self.nav_gesture.start_x, self.nav_gesture.start_y);
+                    self.window.window().dispatch_event(slint::platform::WindowEvent::PointerPressed {
+                        position: start, button: slint::platform::PointerEventButton::Left,
+                    });
+                }
+            }
             if !(self.nav_gesture.active && self.nav_gesture.defer_press) {
                 self.window
                     .window()
@@ -6658,7 +6974,21 @@ impl Handler for SlintService {
             self.frame_deadline = None;
         }
         self.handle_notification(channels)?;
-        if timer_fired {
+        #[cfg(feature = "utm-photo-worker")]
+        let photo_read_finished = channels.contains(PHOTO_READER);
+        #[cfg(not(feature = "utm-photo-worker"))]
+        let photo_read_finished = false;
+        #[cfg(feature = "utm-photo-worker")]
+        if photo_read_finished { self.finish_photo_read(); }
+        #[cfg(feature = "utm-photo-worker")]
+        let photo_finished = channels.contains(PHOTO_WORKER);
+        #[cfg(not(feature = "utm-photo-worker"))]
+        let photo_finished = false;
+        #[cfg(feature = "utm-photo-worker")]
+        if photo_finished { self.finish_photo_preview(); }
+        if timer_fired || photo_finished || photo_read_finished {
+            #[cfg(feature = "simplex-agent-ui")]
+            if timer_fired { self.load_visible_chat_photo_chunk(); }
             let revision = unsafe { self.header.as_ref() }.revision.load(Ordering::Acquire);
             self.publish_frame();
             if unsafe { self.header.as_ref() }.revision.load(Ordering::Acquire) != revision {

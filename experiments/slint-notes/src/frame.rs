@@ -9,6 +9,13 @@ pub const FRAME_STRIDE_BYTES: u32 = FRAME_WIDTH * FRAME_BYTES_PER_PIXEL;
 pub const FRAME_PIXEL_BYTES: usize = FRAME_STRIDE_BYTES as usize * FRAME_HEIGHT as usize;
 pub const FRAME_FORMAT_RGB8: u32 = 1;
 
+/// Whether a Slint damage interval overlaps an independently drawn overlay.
+pub fn bands_intersect(top: i32, bottom: i32, band_y: u32, band_height: u32) -> bool {
+    let start = i64::from(band_y);
+    let end = start + i64::from(band_height);
+    bottom > top && band_height > 0 && i64::from(top) < end && i64::from(bottom) > start
+}
+
 /// Header followed immediately by `FRAME_PIXEL_BYTES` RGB bytes.
 ///
 /// The producer uses an odd revision while updating the pixels, then publishes

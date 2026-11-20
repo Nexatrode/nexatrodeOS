@@ -232,6 +232,10 @@ impl InputService {
                         if pixel_x != self.last_drag_x || pixel_y != self.last_drag_y {
                             self.last_drag_x = pixel_x;
                             self.last_drag_y = pixel_y;
+                            // The cursor alone is not a Slint pointer move.
+                            // Preserve this position in the queued event so a
+                            // drag can pan content while the button is held.
+                            self.post_slint_event(event);
                         }
                     }
                 }
