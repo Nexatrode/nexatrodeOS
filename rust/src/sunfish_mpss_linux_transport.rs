@@ -243,6 +243,8 @@ impl<I: BootIo> BootTransport<I> {
                 first_wrq_rx: None,
                 #[cfg(feature = "sunfish-ipa-announcement-fifo")]
                 ipa_announcement_rx: None,
+                #[cfg(feature = "sunfish-ipa-ingress-work")]
+                ipa_ingress_work: Default::default(),
                 #[cfg(feature = "sunfish-ipa-announcement-fifo")]
                 track_ipa_announcement: false,
                 #[cfg(feature = "sunfish-ipa-wrq-ready-fifo")]

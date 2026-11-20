@@ -243,6 +243,53 @@ pub struct ServerCheckRxDone {
     pub bytes_ahead: Option<u32>,
 }
 
+#[cfg(feature = "sunfish-ipa-ingress-work")]
+#[derive(Clone, Copy)]
+/// A checked receive or writer operation. Kinds encode RX (0), committed TX
+/// (1), yielded TX (2), full TX (3), server add/remove (4/5), TX error (6),
+/// writer with no FIFO write (7), empty/incomplete RX (8/9), and QRTR close (A).
+pub struct IpaIngressRecord {
+    pub start: u64,
+    pub end: u64,
+    position: Option<u64>,
+    pub detail: u32,
+    pub size: u16,
+    pub cmd: u8,
+    pub kind: u8,
+}
+
+#[cfg(feature = "sunfish-ipa-ingress-work")]
+#[derive(Default)]
+pub struct IpaIngressWork {
+    entries: [Option<IpaIngressRecord>; 24],
+    next: usize,
+    evicted_end: Option<u64>,
+    target: Option<u64>,
+}
+
+#[cfg(feature = "sunfish-ipa-ingress-work")]
+impl IpaIngressWork {
+    fn push(&mut self, record: IpaIngressRecord) {
+        if let Some(old) = self.entries[self.next].replace(record) {
+            self.evicted_end = Some(old.end);
+        }
+        self.next = (self.next + 1) % self.entries.len();
+    }
+
+    pub fn records(&self, visible: u64, accepted: u64) -> impl Iterator<Item = &IpaIngressRecord> {
+        self.entries[self.next..].iter().chain(&self.entries[..self.next]).flatten()
+            .filter(move |e| e.end >= visible && e.start <= accepted)
+    }
+
+    pub fn lost(&self, visible: u64) -> bool {
+        self.evicted_end.is_some_and(|end| end >= visible)
+    }
+
+    pub fn distance(&self, record: &IpaIngressRecord) -> Option<u64> {
+        self.target?.checked_sub(record.position?)
+    }
+}
+
 #[cfg(feature = "sunfish-wlan-first-oack-rx-fifo")]
 const RX_HEAD_HISTORY: usize = 32;
 
@@ -1015,6 +1062,8 @@ struct Ring<I> {
     server_check_rx: Option<ServerCheckRxWindow>,
     #[cfg(feature = "sunfish-ipa-registration-rx-visibility")]
     registration_rx: Option<ServerCheckRxWindow>,
+    #[cfg(feature = "sunfish-ipa-ingress-work")]
+    ipa_ingress_work: IpaIngressWork,
     #[cfg(feature = "sunfish-ipa-announcement-fifo")]
     ipa_announcement_rx: Option<ServerCheckRxDone>,
     #[cfg(feature = "sunfish-ipa-announcement-fifo")]
@@ -1381,6 +1430,26 @@ impl<I: Io> Ring<I> {
     // False leaves AP TX head untouched. Bytes staged for readback are
     // private to the writer until that head is published.
     fn write_checked(&mut self, record: &[u8], reserve: usize, yield_to_rx: bool) -> Result<bool, Error> {
+        #[cfg(feature = "sunfish-ipa-ingress-work")]
+        let start = self.ingress_clock();
+        let result = self.write_checked_inner(record, reserve, yield_to_rx);
+        #[cfg(feature = "sunfish-ipa-ingress-work")]
+        if let (Some(start), Some(end)) = (start, self.ingress_clock()) && record.len() >= 8 {
+            let kind = match result {
+                Ok(true) => 1, Ok(false) => 2, Err(Error::WouldBlock) => 3, Err(_) => 6,
+            };
+            self.ipa_ingress_work.push(IpaIngressRecord { start, end, position: None,
+                kind, cmd: record[0], size: record.len() as u16, detail: word(record, 4) });
+        }
+        result
+    }
+
+    #[cfg(feature = "sunfish-ipa-ingress-work")]
+    fn ingress_clock(&self) -> Option<u64> {
+        self.track_ipa_announcement.then_some(self.first_server_check_clock).flatten().map(|clock| clock())
+    }
+
+    fn write_checked_inner(&mut self, record: &[u8], reserve: usize, yield_to_rx: bool) -> Result<bool, Error> {
         if record.is_empty() || record.len() % 8 != 0 || record.len() > core::MAX_TX_RECORD_BYTES {
             return Err(Error::InvalidRecord);
         }
@@ -1594,6 +1663,8 @@ impl<I: Io> Adapter<I> {
                 first_wrq_rx: None,
                 #[cfg(feature = "sunfish-ipa-announcement-fifo")]
                 ipa_announcement_rx: None,
+                #[cfg(feature = "sunfish-ipa-ingress-work")]
+                ipa_ingress_work: Default::default(),
                 #[cfg(feature = "sunfish-ipa-announcement-fifo")]
                 track_ipa_announcement: false,
                 #[cfg(feature = "sunfish-ipa-wrq-ready-fifo")]
@@ -2362,9 +2433,20 @@ impl<I: Io> Adapter<I> {
             self.quarantined = false;
             return Ok(Receive::Session(event));
         }
+        #[cfg(feature = "sunfish-ipa-ingress-work")]
+        let ingress_start = self.ring.ingress_clock();
         let size = match self.ring.peek()? {
             Ok(size) => size,
             Err(state) => {
+                #[cfg(feature = "sunfish-ipa-ingress-work")]
+                if let (Some(start), Some(end)) = (ingress_start, self.ring.ingress_clock()) {
+                    let (kind, size, detail) = match state {
+                        Receive::Pending { available, needed } => (9, available as u16, needed as u32),
+                        _ => (8, 0, 0),
+                    };
+                    self.ring.ipa_ingress_work.push(IpaIngressRecord {
+                        start, end, kind, cmd: 0xff, detail, size, position: None });
+                }
                 self.quarantined = false;
                 return Ok(state);
             }
@@ -2573,7 +2655,30 @@ impl<I: Io> Adapter<I> {
                 Some((end, history.bounds(unread, size)?))
             })
         } else { None };
+        #[cfg(feature = "sunfish-ipa-ingress-work")]
+        let ingress = ingress_start.map(|start| {
+            let position = self.ring.rx_bytes.zip(self.ring.registration_rx.as_ref())
+                .and_then(|(length, history)| history.head.checked_sub(
+                    ring_distance(self.ring.words[2], self.ring.words[3], length) as u64));
+            let (kind, detail) = match event {
+                Receive::Session(core::Event::QrtrControl(crate::qcom_qrtr_control::Event::Server { server, added, .. })) =>
+                    (if added { 4 } else { 5 }, server.service),
+                Receive::Session(core::Event::QrtrControl(crate::qcom_qrtr_control::Event::ClientRemoved(port))) =>
+                    (0xa, port),
+                _ => (0, word(&self.ring.record, 4)),
+            };
+            IpaIngressRecord { start, end: start, kind, detail, size: size as u16,
+                cmd: self.ring.record[0], position }
+        });
         self.consume_received(size, notification)?;
+        #[cfg(feature = "sunfish-ipa-ingress-work")]
+        if let Some(mut record) = ingress && let Some(clock) = self.ring.first_server_check_clock {
+            record.end = clock();
+            if awaiting_announcement && self.ring.ipa_announcement_rx.is_some() {
+                self.ring.ipa_ingress_work.target = record.position;
+            }
+            self.ring.ipa_ingress_work.push(record);
+        }
         #[cfg(feature = "sunfish-ipa-init-close-visibility")]
         if let Some((end, bounds)) = init_close_match {
             self.ring.init_close.close_end = Some(end);
@@ -2618,7 +2723,21 @@ impl<I: Io> Adapter<I> {
     /// READ_NOTIF while blocked. A READ_NOTIF never commits the waiting session
     /// record; successful retry publishes that record once after peer progress.
     pub fn publish_next(&mut self, generation: u64) -> Result<Transmit, Error> {
-        self.publish_inner(generation, #[cfg(feature = "sunfish-tftp-oack-followup")] None)
+        #[cfg(feature = "sunfish-ipa-ingress-work")]
+        let before = self.ring.ingress_clock().map(|at| (at, self.ring.ipa_ingress_work.next));
+        let result = self.publish_inner(generation, #[cfg(feature = "sunfish-tftp-oack-followup")] None);
+        #[cfg(feature = "sunfish-ipa-ingress-work")]
+        if let Some((start, previous)) = before && self.ring.ipa_ingress_work.next == previous
+            && let Some(end) = self.ring.ingress_clock()
+        {
+            let detail = match result {
+                Ok(Transmit::Idle) => 0, Ok(Transmit::AwaitingIntent) => 1,
+                Ok(Transmit::Blocked { .. }) => 2, Ok(Transmit::Session(_)) => 3, Err(_) => 4,
+            };
+            self.ring.ipa_ingress_work.push(IpaIngressRecord {
+                start, end, kind: 7, cmd: 0xff, detail, size: 0, position: None });
+        }
+        result
     }
 
     #[cfg(feature = "sunfish-first-oack-grant-window")]
@@ -3127,6 +3246,9 @@ impl<I: Io> Adapter<I> {
         { self.ring.track_ipa_announcement = self.session.first_ipa_announcement().is_none(); }
     }
 
+    #[cfg(feature = "sunfish-ipa-ingress-work")]
+    pub(crate) fn ipa_ingress_work(&self) -> &IpaIngressWork { &self.ring.ipa_ingress_work }
+
     #[cfg(feature = "sunfish-ipa-announcement-fifo")]
     pub(crate) fn ipa_announcement_rx(&self) -> Option<ServerCheckRxDone> {
         self.ring.ipa_announcement_rx
@@ -3213,6 +3335,8 @@ impl<I: Io> Adapter<I> {
         { self.ring.first_wrq_rx = None; self.ring.track_first_wrq = false; }
         #[cfg(feature = "sunfish-ipa-announcement-fifo")]
         { self.ring.ipa_announcement_rx = None; self.ring.track_ipa_announcement = false; }
+        #[cfg(feature = "sunfish-ipa-ingress-work")]
+        { self.ring.ipa_ingress_work = Default::default(); }
         #[cfg(feature = "sunfish-ipa-registration-reply-path")]
         { self.ring.registration_reply = None; }
         #[cfg(feature = "sunfish-ipa-reply-fifo-visibility")]

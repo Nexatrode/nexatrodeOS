@@ -2125,6 +2125,9 @@ impl<I: Io> Owner<I> {
     pub fn registration_rx_visibility(&self) -> Option<fifo::ServerCheckRxDone> {
         self.adapter.registration_rx_visibility()
     }
+    #[cfg(feature = "sunfish-ipa-ingress-work")]
+    pub fn ipa_ingress_work(&self) -> &fifo::IpaIngressWork { self.adapter.ipa_ingress_work() }
+
     #[cfg(feature = "sunfish-ipa-announcement-fifo")]
     pub fn ipa_announcement_rx(&self) -> Option<fifo::ServerCheckRxDone> {
         self.adapter.ipa_announcement_rx()

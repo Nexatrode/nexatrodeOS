@@ -3686,7 +3686,42 @@ impl RuntimeDomain {
             (28, "IPA COMPLETE", u32::from(self.ipa_complete_seen)),
         ] { display.hex(row, label, value); }
         }
-        #[cfg(feature = "sunfish-ipa-announcement-fifo")]
+        #[cfg(feature = "sunfish-ipa-ingress-work")]
+        {
+            let work = owner.ipa_ingress_work();
+            let bounds = owner.ipa_announcement_rx();
+            let visible = bounds.and_then(|b| b.first_visible);
+            let accepted = owner.first_ipa_announcement().and_then(|a| a.1);
+            let (ready, wrq) = owner.ipa_wrq_timing();
+            display.replace_line(1, "IPA INGRESS WORK");
+            for (index, (label, value)) in [
+                ("RUNTIME ERROR", self.error),
+                ("IPA VISIBLE US", age(visible)),
+                ("IPA BYTES AHEAD", bounds.and_then(|b| b.bytes_ahead).unwrap_or(u32::MAX)),
+                ("NEW SERVER US", age(accepted)),
+                ("ENDPT READY US", age(ready)),
+                ("WRQ ABSENT US", age(wrq.and_then(|b| b.last_absent))),
+                ("WRQ VISIBLE US", age(wrq.and_then(|b| b.first_visible))),
+                ("WRQ BYTES AHEAD", wrq.and_then(|b| b.bytes_ahead).unwrap_or(u32::MAX)),
+                ("INIT PUB US", age(owner.ipa_init_trace().1.and_then(|t| t.published_at))),
+                ("FIRST CLOSE US", age(first.and_then(|t| t.first_close_at))),
+                ("FIRST DATA US", age(first.and_then(|t| t.first_data_at))),
+                ("HISTORY LOST", visible.map_or(u32::MAX, |t| u32::from(work.lost(t)))),
+            ].into_iter().enumerate() { display.hex(index + 2, label, value); }
+            display.replace_line(14, "K CMD LEN ID DIST FROM TO");
+            let mut records = visible.zip(accepted).into_iter().flat_map(|(lo, hi)| work.records(lo, hi));
+            for i in 0..24 {
+                let row = 15 + i / 2;
+                if let Some(e) = records.next() {
+                    display.header_row(row, i % 2 != 0, &[(e.kind.into(),1), (e.cmd.into(),2),
+                        (e.size.into(),4), (e.detail,8), (work.distance(e).unwrap_or(0xffff) as u32,4),
+                        (age(Some(e.start)),8), (age(Some(e.end)),8)]);
+                } else { display.header_row(row, i % 2 != 0, &[]); }
+            }
+            display.hex(27, "WLAN RRQ RX", owner.tftp_wire_counts()[2]);
+            display.hex(28, "WLFW SERVERS", query[7]);
+        }
+        #[cfg(all(feature = "sunfish-ipa-announcement-fifo", not(feature = "sunfish-ipa-ingress-work")))]
         {
             let announcement = owner.first_ipa_announcement();
             let bounds = owner.ipa_announcement_rx();

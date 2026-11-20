@@ -1563,3 +1563,56 @@ fn announcement_after_wrq_needs_the_complete_glink_record() {
     assert_eq!(Some(0), bounds.bytes_ahead);
     assert_eq!(rig.owner.ipa_wrq_timing().1, Some(wrq));
 }
+
+#[cfg(feature = "sunfish-ipa-ingress-work")]
+#[test]
+fn announcement_work_uses_validated_records_and_freezes_at_acceptance() {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    static CLOCK: AtomicU64 = AtomicU64::new(1);
+    let mut rig = LoRig::from_session_with_modem(0, false, lo_session(), false, false);
+    while rig.available.len() < 3 {
+        rig.owner.offer_receive().unwrap();
+        rig.drive().unwrap();
+    }
+    rig.owner.set_rmtfs_event_clock(|| CLOCK.fetch_add(1, Relaxed));
+    rig.peer.push(&control(7, 2, 52));
+    rig.enqueue(&owner_control_frame(4, [36, 1, 0, 26]));
+    rig.enqueue(&owner_control_frame(4, [0x31, 0x201, 0, LO_MODEM]));
+    rig.drive().unwrap();
+    let bounds = rig.owner.ipa_announcement_rx().unwrap();
+    let visible = bounds.first_visible.unwrap();
+    let accepted = rig.owner.first_ipa_announcement().unwrap().1.unwrap();
+    let collect = |r: &LoRig| {
+        let work = r.owner.ipa_ingress_work();
+        work.records(visible, accepted).map(|e| (e.kind, e.cmd, e.detail, work.distance(e))).collect::<Vec<_>>()
+    };
+    let expected = [(0,7,52,Some(80)), (1,5,1,None), (4,9,36,Some(72)),
+                    (1,8,1,None), (4,9,0x31,Some(0))];
+    assert_eq!(bounds.bytes_ahead, Some(80));
+    assert_eq!(collect(&rig), expected);
+    assert!(!rig.owner.ipa_ingress_work().lost(visible));
+    rig.input(&owner_control_frame(4, [0x31, 0x201, 0, LO_MODEM])).unwrap();
+    assert_eq!(collect(&rig), expected);
+}
+
+#[cfg(feature = "sunfish-ipa-ingress-work")]
+#[test]
+fn announcement_work_marks_overwritten_intervals() {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    static CLOCK: AtomicU64 = AtomicU64::new(1);
+    let mut rig = LoRig::from_session_with_modem(0, false, lo_session(), false, false);
+    rig.owner.set_rmtfs_event_clock(|| CLOCK.fetch_add(1, Relaxed));
+    rig.peer.push(&control(13, 0, 0).repeat(16));
+    rig.enqueue(&owner_control_frame(4, [0x31, 0x201, 0, LO_MODEM]));
+    rig.drive().unwrap();
+    let bounds = rig.owner.ipa_announcement_rx().unwrap();
+    assert_eq!(bounds.bytes_ahead, Some(128));
+    let visible = bounds.first_visible.unwrap();
+    let accepted = rig.owner.first_ipa_announcement().unwrap().1.unwrap();
+    let work = rig.owner.ipa_ingress_work();
+    let retained: Vec<_> = work.records(visible, accepted).collect();
+    assert!(work.lost(visible));
+    assert_eq!(retained.len(), 24);
+    assert!(retained.windows(2).all(|w| w[0].end <= w[1].start));
+    assert_eq!(retained.last().and_then(|e| work.distance(e)), Some(0));
+}
