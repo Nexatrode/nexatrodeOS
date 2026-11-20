@@ -1607,6 +1607,10 @@ pub struct SessionFailureDiagnostic {
 #[cfg(feature = "sunfish-first-oack-grant-window")]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FirstGrantTrace {
+    #[cfg(feature = "sunfish-first-wrq-spare-oack")]
+    pub direct_turn: u32,
+    #[cfg(feature = "sunfish-first-wrq-spare-oack")]
+    pub request_108_at: Option<u64>,
     #[cfg(feature = "sunfish-grant-ad-writer-trace")]
     pub backing: core::GrantBackingTrace,
     pub trigger: u32,
@@ -2613,6 +2617,13 @@ impl<I: Io> Adapter<I> {
                 }
             }
         };
+        #[cfg(feature = "sunfish-first-wrq-spare-oack")]
+        if matches!(event, Receive::Session(core::Event::ReceiveIntentRequest { .. }))
+            && word(&self.ring.record, 4) == 108 && self.first_grant.request_108_at.is_none()
+            && self.session.original_1f_close_count() == Some(0)
+        {
+            self.first_grant.request_108_at = self.ring.first_server_check_clock.map(|now| now());
+        }
         #[cfg(feature = "sunfish-grant-buffer-reads")]
         if self.ring.record[0] == 9 {
             self.ring.grant_reads.release(word(&self.ring.record, 4));
@@ -2894,6 +2905,15 @@ impl<I: Io> Adapter<I> {
             && self.first_grant.trigger == 0 && self.ready_for_init_at_registration()
         {
             let candidate = self.session.first_oack_grant_trigger();
+            #[cfg(feature = "sunfish-first-wrq-spare-oack")]
+            if candidate.is_none() && self.session.first_oack_ready_without_grant() {
+                // The registration head transition opens this path only once.
+                // Keep receive priority and the exact-transfer checks in publish_inner.
+                let tx = self.publish_inner(generation, Some(FirstGrantReply))?;
+                let sent = matches!(tx, Transmit::Session(Published::Data { last_fragment: true, .. }));
+                self.first_grant.direct_turn = if sent { 1 } else { 2 };
+                return Ok((ordinary, u32::from(sent)));
+            }
             if let Some(ad @ Published::ReceiveIntent(_)) = candidate {
                 #[cfg(feature = "sunfish-grant-ad-writer-trace")]
                 { self.first_grant.backing = self.session.grant_backing; }

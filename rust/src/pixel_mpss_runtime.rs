@@ -154,6 +154,8 @@ impl RuntimeDomain {
             session.enable_ipa_before_first_oack();
             #[cfg(feature = "sunfish-first-oack-after-ipa-publish")]
             session.enable_first_oack_after_ipa_publish();
+            #[cfg(feature = "sunfish-first-wrq-spare-oack")]
+            session.enable_first_wrq_spare_oack();
             #[cfg(all(feature = "sunfish-tftp-first-oack-unheld", not(feature = "sunfish-ipa-reply-before-oack")))]
             session.observe_first_tftp_without_oack_hold();
             session
@@ -3686,7 +3688,44 @@ impl RuntimeDomain {
             (28, "IPA COMPLETE", u32::from(self.ipa_complete_seen)),
         ] { display.hex(row, label, value); }
         }
-        #[cfg(feature = "sunfish-grant-buffer-reads")]
+        #[cfg(feature = "sunfish-first-wrq-spare-oack")]
+        {
+            let prefix = owner.wrq_prefix();
+            let close = owner.init_close_fifo().bounds;
+            let ack = owner.tftp_final_ack_trace().filter(|ack| first.is_some_and(|t|
+                ack.destination == t.peer && ack.source.port == t.transfer_port && ack.block == 1));
+            display.replace_line(1, "FIRST WRQ SPARE OACK");
+            for (index, (label, value)) in [
+                ("RUNTIME ERROR", self.error),
+                ("ERROR DETAIL", self.detail),
+                ("FIRST PEER", first.map_or(u32::MAX, |t| t.peer.port)),
+                ("FIRST WRQ US", age(first.and_then(|t| t.wrq_at))),
+                ("OACK QUEUE US", age(gates.queued_at)),
+                ("REQ108 RX US", age(grant.request_108_at)),
+                ("GRANT MATCH", u32::from(owner.grant_buffer_reads().matched)),
+                ("REQ BYTES", owner.grant_buffer_reads().requested.unwrap_or(u32::MAX)),
+                ("BACKING AD US", age(grant.backing.advertised_at)),
+                ("GRANT ACK US", age(grant.ack_at)),
+                ("REG PUB US", age(reg.and_then(|t| t.published_at))),
+                ("DIRECT TURN", grant.direct_turn),
+                ("OACK HEAD US", age(prefix.oack_head)),
+                ("OACK TAIL US", age(tail)),
+                ("OACK DONE US", age(first.and_then(|t| t.oack_done_at))),
+                ("CLOSE ABSENT US", age(close.and_then(|b| b.last_absent))),
+                ("CLOSE VIS US", age(close.and_then(|b| b.first_visible))),
+                ("FIRST CLOSE US", age(first.and_then(|t| t.first_close_at))),
+                ("FIRST DATA US", age(first.and_then(|t| t.first_data_at))),
+                ("FINAL ACK US", age(ack.and_then(|t| t.published_at))),
+                ("ACK DONE US", age(ack.and_then(|t| t.done_at))),
+                ("INIT HEAD US", age(prefix.init_head)),
+                ("WRITES COMPLETE", self.server_check.completed_count() as u32),
+                ("IPA COMPLETE", u32::from(self.ipa_complete_seen)),
+                ("PD QUERY STATE", query[1]),
+                ("WLAN RRQ RX", owner.tftp_wire_counts()[2]),
+                ("WLFW SERVERS", query[7]),
+            ].into_iter().enumerate() { display.hex(index + 2, label, value); }
+        }
+        #[cfg(all(feature = "sunfish-grant-buffer-reads", not(feature = "sunfish-first-wrq-spare-oack")))]
         {
             let pool = owner.grant_buffer_reads();
             let close = owner.init_close_fifo().bounds;

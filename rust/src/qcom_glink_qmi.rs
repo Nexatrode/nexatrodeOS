@@ -773,6 +773,8 @@ pub struct Session {
     ipa_before_first_oack: bool,
     #[cfg(feature = "sunfish-first-oack-after-ipa-publish")]
     first_oack_after_ipa_publish: bool,
+    #[cfg(feature = "sunfish-first-wrq-spare-oack")]
+    first_wrq_spare_oack: bool,
     #[cfg(feature = "sunfish-first-oack-after-ipa-publish")]
     first_oack_eligibility: FirstOackEligibility,
     #[cfg(feature = "sunfish-post-reg-oack-turn")]
@@ -1742,6 +1744,8 @@ impl Session {
             ipa_before_first_oack: false,
             #[cfg(feature = "sunfish-first-oack-after-ipa-publish")]
             first_oack_after_ipa_publish: false,
+            #[cfg(feature = "sunfish-first-wrq-spare-oack")]
+            first_wrq_spare_oack: false,
             #[cfg(feature = "sunfish-first-oack-after-ipa-publish")]
             first_oack_eligibility: FirstOackEligibility::default(),
             #[cfg(feature = "sunfish-post-reg-oack-turn")]
@@ -5434,6 +5438,14 @@ impl Session {
         Ok(())
     }
 
+    pub(crate) fn receive_target(&self) -> usize {
+        #[cfg(feature = "sunfish-first-wrq-spare-oack")]
+        if self.first_wrq_spare_oack && self.first_server_check.is_none() {
+            return control::RECEIVE_TARGET + 1;
+        }
+        control::RECEIVE_TARGET
+    }
+
     fn maintain_receives(&mut self, generation: u64) -> Result<(), Error> {
         let available = self
             .receive
@@ -5445,7 +5457,7 @@ impl Session {
                 )
             })
             .count();
-        if available < control::RECEIVE_TARGET
+        if available < self.receive_target()
             && self.receive[..RX_SLOTS].iter().any(|rx| rx.state == RxState::Free)
         {
             self.offer_receive(generation)?;
@@ -8554,6 +8566,19 @@ impl Session {
             mask |= 0x01;
         }
         mask
+    }
+
+    #[cfg(feature = "sunfish-first-wrq-spare-oack")]
+    pub fn enable_first_wrq_spare_oack(&mut self) {
+        self.first_wrq_spare_oack = true;
+    }
+
+    #[cfg(feature = "sunfish-first-wrq-spare-oack")]
+    pub(crate) fn first_oack_ready_without_grant(&self) -> bool {
+        self.first_wrq_spare_oack && self.first_oack_after_ipa_publish
+            && self.original_1f_close_count() == Some(0)
+            && self.first_oack_transfer().is_some_and(|first|
+                first.oack_at.is_none() && self.first_oack_blockers(first) == 0)
     }
 
     /// Match the ordinary commit that may open a bounded follow-up. The
