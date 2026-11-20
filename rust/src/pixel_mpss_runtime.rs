@@ -3686,7 +3686,46 @@ impl RuntimeDomain {
             (28, "IPA COMPLETE", u32::from(self.ipa_complete_seen)),
         ] { display.hex(row, label, value); }
         }
-        #[cfg(feature = "sunfish-reg-writer-timeline")]
+        #[cfg(feature = "sunfish-ipa-announcement-fifo")]
+        {
+            let announcement = owner.first_ipa_announcement();
+            let bounds = owner.ipa_announcement_rx();
+            let (ready, wrq) = owner.ipa_wrq_timing();
+            let (init, tx) = owner.ipa_init_trace();
+            display.replace_line(1, "IPA ANNOUNCEMENT FIFO");
+            for (index, (label, value)) in [
+                ("RUNTIME ERROR", self.error),
+                ("ERROR DETAIL", self.detail),
+                ("IPA MODEM PORT", announcement.map_or(u32::MAX, |a| a.0)),
+                ("IPA ABSENT US", age(bounds.and_then(|b| b.last_absent))),
+                ("IPA VISIBLE US", age(bounds.and_then(|b| b.first_visible))),
+                ("IPA BYTES AHEAD", bounds.and_then(|b| b.bytes_ahead).unwrap_or(u32::MAX)),
+                ("NEW SERVER US", age(announcement.and_then(|a| a.1))),
+                ("ENDPT READY US", age(ready)),
+                ("SVC PASS US", age(self.ipa_ready_service_at)),
+                ("IPA DISC US", age(init.and_then(|t| t.discovered_at))),
+                ("INIT PREP US", age(init.and_then(|t| t.prepared_at))),
+                ("INIT QUEUE US", age(tx.and_then(|t| t.queued_at))),
+                ("INIT PUB US", age(tx.and_then(|t| t.published_at))),
+                ("FIRST WRQ PEER", first.map_or(u32::MAX, |t| t.peer.port)),
+                ("WRQ ABSENT US", age(wrq.and_then(|b| b.last_absent))),
+                ("WRQ VISIBLE US", age(wrq.and_then(|b| b.first_visible))),
+                ("WRQ BYTES AHEAD", wrq.and_then(|b| b.bytes_ahead).unwrap_or(u32::MAX)),
+                ("FIRST WRQ US", age(first.and_then(|t| t.wrq_at))),
+                ("FIRST OACK US", age(first.and_then(|t| t.oack_at))),
+                ("FIRST DATA US", age(first.and_then(|t| t.first_data_at))),
+                ("FIRST CLOSE US", age(first.and_then(|t| t.first_close_at))),
+                ("REG PUB US", age(reg.and_then(|t| t.published_at))),
+                ("INIT RETIRE US", age(tx.and_then(|t| t.retired_at))),
+                ("IPA COMPLETE", u32::from(self.ipa_complete_seen)),
+                ("PD QUERY STATE", query[1]),
+                ("WLAN RRQ RX", owner.tftp_wire_counts()[2]),
+                ("WLFW SERVERS", query[7]),
+            ].into_iter().enumerate() {
+                display.hex(index + 2, label, value);
+            }
+        }
+        #[cfg(all(feature = "sunfish-reg-writer-timeline", not(feature = "sunfish-ipa-announcement-fifo")))]
         {
             let close = owner.init_close_fifo();
             let (_, init) = owner.ipa_init_trace();

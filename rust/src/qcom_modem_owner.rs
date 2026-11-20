@@ -2125,6 +2125,11 @@ impl<I: Io> Owner<I> {
     pub fn registration_rx_visibility(&self) -> Option<fifo::ServerCheckRxDone> {
         self.adapter.registration_rx_visibility()
     }
+    #[cfg(feature = "sunfish-ipa-announcement-fifo")]
+    pub fn ipa_announcement_rx(&self) -> Option<fifo::ServerCheckRxDone> {
+        self.adapter.ipa_announcement_rx()
+    }
+
     #[cfg(feature = "sunfish-ipa-wrq-ready-fifo")]
     pub fn ipa_wrq_timing(&self) -> (Option<u64>, Option<fifo::ServerCheckRxDone>) {
         self.adapter.ipa_wrq_timing()

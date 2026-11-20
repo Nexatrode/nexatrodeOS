@@ -1015,6 +1015,10 @@ struct Ring<I> {
     server_check_rx: Option<ServerCheckRxWindow>,
     #[cfg(feature = "sunfish-ipa-registration-rx-visibility")]
     registration_rx: Option<ServerCheckRxWindow>,
+    #[cfg(feature = "sunfish-ipa-announcement-fifo")]
+    ipa_announcement_rx: Option<ServerCheckRxDone>,
+    #[cfg(feature = "sunfish-ipa-announcement-fifo")]
+    track_ipa_announcement: bool,
     #[cfg(feature = "sunfish-ipa-wrq-ready-fifo")]
     first_wrq_rx: Option<ServerCheckRxDone>,
     #[cfg(feature = "sunfish-ipa-wrq-ready-fifo")]
@@ -1119,6 +1123,8 @@ impl<I: Io> Ring<I> {
         let track_registration = self.registration_rx.as_ref().is_some_and(|trace| trace.done.is_none());
         #[cfg(feature = "sunfish-ipa-wrq-ready-fifo")]
         let track_registration = track_registration || self.track_first_wrq;
+        #[cfg(feature = "sunfish-ipa-announcement-fifo")]
+        let track_registration = track_registration || self.track_ipa_announcement;
         // Keep the shared RX-head history alive until normal ingress identifies
         // the first close of the original writer. Earlier snapshots stay frozen.
         #[cfg(feature = "sunfish-ipa-init-close-visibility")]
@@ -1586,6 +1592,10 @@ impl<I: Io> Adapter<I> {
                 registration_rx: None,
                 #[cfg(feature = "sunfish-ipa-wrq-ready-fifo")]
                 first_wrq_rx: None,
+                #[cfg(feature = "sunfish-ipa-announcement-fifo")]
+                ipa_announcement_rx: None,
+                #[cfg(feature = "sunfish-ipa-announcement-fifo")]
+                track_ipa_announcement: false,
                 #[cfg(feature = "sunfish-ipa-wrq-ready-fifo")]
                 track_first_wrq: false,
                 #[cfg(feature = "sunfish-linux-mpss-glink")]
@@ -2408,6 +2418,9 @@ impl<I: Io> Adapter<I> {
         #[cfg(feature = "sunfish-ipa-init-close-visibility")]
         let first_1f_open = self.ring.init_close.close_end.is_none()
             && self.session.original_1f_close_count() == Some(0);
+        #[cfg(feature = "sunfish-ipa-announcement-fifo")]
+        let awaiting_announcement = self.ring.track_ipa_announcement
+            && self.session.first_ipa_announcement().is_none();
         let event = if notification {
             Receive::ReadNotification
         } else {
@@ -2429,6 +2442,20 @@ impl<I: Io> Adapter<I> {
             && matches!(event, Receive::Session(core::Event::TransmitDone))
         {
             self.observe_registration_tftp_oack_progress(handle, 4);
+        }
+        #[cfg(feature = "sunfish-ipa-announcement-fifo")]
+        if self.ring.track_ipa_announcement && self.session.first_ipa_announcement().is_some() {
+            self.ring.track_ipa_announcement = false;
+            // The normal decoder latched the first accepted modem IPA NEW_SERVER
+            // during this ingest. Correlate its final record before moving the tail.
+            if awaiting_announcement && matches!(event, Receive::Session(core::Event::QrtrControl(_)))
+                && matches!(self.ring.record[0], 9 | 12) && word(&self.ring.record, 12) == 0
+                && let Some(length) = self.ring.rx_bytes
+                && let Some(history) = self.ring.registration_rx.as_ref()
+            {
+                let unread = ring_distance(self.ring.words[2], self.ring.words[3], length);
+                self.ring.ipa_announcement_rx = history.bounds(unread, size);
+            }
         }
         #[cfg(feature = "sunfish-tftp-first-oack-headers")]
         self.ring.capture_first_oack_rx(size, before.is_some_and(|trace| trace.oack.phase == 3)
@@ -3096,6 +3123,13 @@ impl<I: Io> Adapter<I> {
     #[cfg(feature = "sunfish-ipa-wrq-ready-fifo")]
     pub(crate) fn track_first_wrq(&mut self) {
         self.ring.track_first_wrq = self.session.first_server_check().is_none();
+        #[cfg(feature = "sunfish-ipa-announcement-fifo")]
+        { self.ring.track_ipa_announcement = self.session.first_ipa_announcement().is_none(); }
+    }
+
+    #[cfg(feature = "sunfish-ipa-announcement-fifo")]
+    pub(crate) fn ipa_announcement_rx(&self) -> Option<ServerCheckRxDone> {
+        self.ring.ipa_announcement_rx
     }
 
     #[cfg(feature = "sunfish-ipa-wrq-ready-fifo")]
@@ -3177,6 +3211,8 @@ impl<I: Io> Adapter<I> {
         { self.ring.registration_rx = None; }
         #[cfg(feature = "sunfish-ipa-wrq-ready-fifo")]
         { self.ring.first_wrq_rx = None; self.ring.track_first_wrq = false; }
+        #[cfg(feature = "sunfish-ipa-announcement-fifo")]
+        { self.ring.ipa_announcement_rx = None; self.ring.track_ipa_announcement = false; }
         #[cfg(feature = "sunfish-ipa-registration-reply-path")]
         { self.ring.registration_reply = None; }
         #[cfg(feature = "sunfish-ipa-reply-fifo-visibility")]
