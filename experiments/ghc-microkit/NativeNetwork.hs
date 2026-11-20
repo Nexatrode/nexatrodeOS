@@ -12,6 +12,7 @@ module NativeNetwork
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar (MVar, modifyMVar, newMVar, putMVar, readMVar, takeMVar, tryTakeMVar, withMVar)
+import Control.Exception (mask, onException)
 import Control.Monad (when)
 import System.IO.Unsafe (unsafePerformIO)
 import qualified Data.ByteString as B
@@ -197,27 +198,34 @@ connectEphemeralSession address port timeoutMs = do
 connectSlot :: Word8 -> IPv4 -> Word16 -> Int -> IO (Either NetworkError Word8)
 connectSlot slot (IPv4 a b c d) port timeoutMs
   | port == 0 = pure (Left InvalidInput)
-  | otherwise = do
+  | otherwise = mask $ \restore -> do
       deadline <- deadlineAfter timeoutMs
-      started <- retryPending deadline $ do
-        result <- locked $ tcpOpen a b c d port slot
-        pure $ case result of
-          1 -> Right ()
-          0 -> Left TimedOut
-          2 -> Left Busy
-          -2 -> Left Unavailable
-          _ -> Left TransportError
+      started <- retryPending deadline $ locked $ do
+        result <- tcpOpen a b c d port slot
+        case result of
+          1 -> Right <$> bumpEpoch slot
+          0 -> pure (Left TimedOut)
+          2 -> pure (Left Busy)
+          -2 -> pure (Left Unavailable)
+          _ -> pure (Left TransportError)
       case started of
         Left err -> pure (Left err)
-        Right () -> do
-          epoch <- bumpEpoch slot
-          retryPending deadline $ do
-            result <- locked $ tcpStatus slot
-            pure $ case result of
-              1 -> Right epoch
-              0 -> Left TimedOut
-              -2 -> Left Closed
-              _ -> Left TransportError
+        Right epoch -> do
+          let waitForConnection = retryPending deadline $ locked $ do
+                alive <- guardEpoch slot epoch
+                case alive of
+                  Left err -> pure (Left err)
+                  Right () -> do
+                    result <- tcpStatus slot
+                    pure $ case result of
+                      1 -> Right epoch
+                      0 -> Left TimedOut
+                      -2 -> Left Closed
+                      _ -> Left TransportError
+          connected <- restore waitForConnection `onException` cancelSessionEpoch slot epoch
+          case connected of
+            Right _ -> pure connected
+            Left _ -> cancelSessionEpoch slot epoch >> pure connected
 
 guardEpoch :: Word8 -> Word8 -> IO (Either NetworkError ())
 guardEpoch slot epoch = do
@@ -355,12 +363,12 @@ closeSession = closeSessionOn 0 0
 closeSessionOn :: Word8 -> Word8 -> Int -> IO (Either NetworkError ())
 closeSessionOn slot epoch timeoutMs = do
   deadline <- deadlineAfter timeoutMs
-  retryPending deadline $ do
+  retryPending deadline $ locked $ do
     alive <- guardEpoch slot epoch
     case alive of
       Left err -> pure (Left err)
       Right () -> do
-        result <- locked $ tcpClose slot
+        result <- tcpClose slot
         case result of
           1 -> bumpEpoch slot >> pure (Right ())
           0 -> pure (Left TimedOut)
@@ -371,15 +379,18 @@ cancelSession = cancelSessionOn 0
 
 -- | Unconditional abort used when reclaiming the ephemeral slot for XFTP.
 cancelSessionOn :: Word8 -> IO ()
-cancelSessionOn slot = do
-  locked (tcpCancel slot)
+cancelSessionOn slot = locked $ do
+  tcpCancel slot
   _ <- bumpEpoch slot
   pure ()
 
 -- | Abort only if this backend still owns the slot generation.
 cancelSessionEpoch :: Word8 -> Word8 -> IO ()
-cancelSessionEpoch slot epoch = do
+cancelSessionEpoch slot epoch = locked $ do
   alive <- guardEpoch slot epoch
   case alive of
     Left _ -> pure ()
-    Right () -> cancelSessionOn slot
+    Right () -> do
+      tcpCancel slot
+      _ <- bumpEpoch slot
+      pure ()

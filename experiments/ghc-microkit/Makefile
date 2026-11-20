@@ -113,7 +113,14 @@ COMPILER_RT_QUAD_DIR := $(BUILD_DIR)/compiler-rt-quad
 COMPILER_RT_QUAD_ARCHIVE := $(COMPILER_RT_QUAD_DIR)/libquad-builtins.a
 
 .PHONY: all clean osmem-adapter-probe rts-adapter-compile rts-utils-compile timer-service-probe scheduler-wait-probe autoapply-probe hadrian-rts hadrian-bytestring hadrian-tls-core guest-tls-deps guest-tls-backend-compile guest-tls-link-inventory guest-tls-qemu-image guest-tls-qemu-smoke guest-tls-net-qemu-image guest-tls-net-qemu-smoke guest-smp-fixture guest-smp-encoding-deps guest-smp-link-inventory guest-smp-net-qemu-image guest-smp-net-qemu-smoke host-simplexmq-backend-typecheck host-simplexmq-sqlite-vfs-typecheck guest-simplex-portable-deps guest-simplex-json-prereqs guest-simplex-shared-compile guest-simplex-client-inventory guest-simplex-http2-deps guest-simplex-http2-client-check guest-simplex-sqlite-core-compile guest-simplex-sqlcipher-core-compile guest-simplex-sqlcipher-crypto-compile guest-simplex-sqlcipher-link-inventory guest-simplex-sqlcipher-host-test guest-simplex-sqlcipher-rng-compile guest-simplex-sqlcipher-qemu-image guest-simplex-sqlcipher-qemu-smoke guest-simplex-sqlcipher-vault-client guest-simplex-agentstore-link guest-simplex-agentstore-qemu-image guest-simplex-agentstore-qemu-smoke guest-simplex-agent-runtime-objects guest-simplex-agent-runtime-link guest-simplex-agent-runtime-qemu-image guest-simplex-agent-runtime-qemu-smoke guest-simplex-agent-cli-interop-qemu-smoke sqlcipher-freestanding-test calendar-utc-test native-tls-backend-typecheck rts-trial-link haskell-compile-probe haskell-libc-compile haskell-microkit-entry-compile haskell-link-inventory haskell-link-gc-inventory haskell-openlibm-inventory haskell-openlibm-gc-inventory haskell-platform-inventory haskell-qemu-image haskell-qemu-run haskell-qemu-smoke haskell-net-qemu-image haskell-net-qemu-smoke
-.PHONY: simplex-ipc-host-test simplex-attachment-host-test simplex-direct-host-test
+.PHONY: simplex-ipc-host-test simplex-attachment-host-test simplex-direct-host-test native-network-host-test
+
+native-network-host-test:
+	mkdir -p $(BUILD_DIR)/native-network-host
+	$(HOST_GHC) -threaded -Wall -Werror -i. \
+		-outputdir $(BUILD_DIR)/native-network-host NativeNetworkTest.hs \
+		native_network_test_stubs.c -o $(BUILD_DIR)/native-network-host/test
+	$(BUILD_DIR)/native-network-host/test
 
 simplex-ipc-host-test: simplex-attachment-host-test simplex-direct-host-test
 	mkdir -p $(BUILD_DIR)/simplex-ipc-host
