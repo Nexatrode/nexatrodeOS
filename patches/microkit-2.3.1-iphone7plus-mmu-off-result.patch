@@ -1,0 +1,51 @@
+--- a/loader/src/loader.c
++++ b/loader/src/loader.c
+@@ -43,6 +43,9 @@
+ static int pongo_framebuffer_mapped;
+ void pongo_draw_loader_marker(uintptr_t boot_args, uint64_t y_offset,
+                               uint32_t first_color, uint32_t second_color);
++#if defined(BOARD_iphone7plus)
++void el1_mmu_disable(void);
++#endif
+ 
+ /*
+  * Print out the loader data structure.
+@@ -124,6 +127,17 @@
+ 
+     LDR_PRINT("INFO", logical_cpu, "enabling MMU\n");
+     int r = arch_mmu_enable(logical_cpu);
++#if defined(BOARD_iphone7plus)
++    if (r == 0) {
++        /* Return to identity access before using the screen as a success
++         * channel. This keeps the final signal independent of new mappings. */
++        el1_mmu_disable();
++        pongo_draw_loader_marker(0, 280, 0u, 0u);
++        for (;;) {
++            asm volatile("wfe");
++        }
++    }
++#endif
+     pongo_mmu_stage(9);
+ #if defined(BOARD_iphone7plus)
+ #endif
+--- a/loader/src/aarch64/exceptions.c
++++ b/loader/src/aarch64/exceptions.c
+@@ -16,6 +16,7 @@
+ #include "../uart.h"
+ 
+ extern char arm_vector_table[1];
++void el1_mmu_disable(void);
+ 
+ 
+ void arch_set_exception_handler(void)
+@@ -54,7 +55,9 @@
+ 
+     uintptr_t ec = (esr >> 26) & 0x3f;
+ #if defined(BOARD_iphone7plus)
+-    /* Red on the known-visible stage-2 band signals the exception path. */
++    /* The fault may be a post-MMU framebuffer translation fault. Drop back
++     * to identity access before drawing any exception marker. */
++    el1_mmu_disable();
+     pongo_draw_loader_marker(0, 280, 0xffff0000u, 0xffff0000u);
+     /* Show whether the MMU transition reached the loader's exception vector.
+      * Abort classes get distinct colors; other synchronous faults are pink. */

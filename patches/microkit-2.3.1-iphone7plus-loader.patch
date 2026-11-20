@@ -1,0 +1,728 @@
+diff --git a/build_sdk.py b/build_sdk.py
+index e6d3e38..6d10d01 100644
+--- a/build_sdk.py
++++ b/build_sdk.py
+@@ -308,6 +308,19 @@ SUPPORTED_BOARDS = (
+             "KernelArmExportPTMRUser": True,
+         },
+     ),
++    BoardInfo(
++        name="iphone7plus",
++        arch=KernelArch.AARCH64,
++        gcc_cpu="generic",
++        # Candidate inside the observed Pongo-free window; not a boot address
++        # until the current upload's complete reservation map is known.
++        loader_link_address=0x810000000,
++        kernel_options={
++            "KernelPlatform": "iphone7plus",
++            # This first target has no UART, so do not emit console calls.
++            "KernelPrinting": False,
++        },
++    ),
+     BoardInfo(
+         name="qemu_virt_aarch64_el1",
+         arch=KernelArch.AARCH64,
+diff --git a/loader/src/aarch64/cpus.c b/loader/src/aarch64/cpus.c
+index 327ab9b..158d0a7 100644
+--- a/loader/src/aarch64/cpus.c
++++ b/loader/src/aarch64/cpus.c
+@@ -81,13 +81,15 @@ _Static_assert(!is_set(CONFIG_ENABLE_SMP_SUPPORT),
+                "unknown board fallback not allowed for smp targets; " \
+                "please define psci_target_cpus");
+ 
++#if !defined(ARM_PSCI_UNAVAILABLE)
+ static const size_t psci_target_cpus[1] = {0x00};
+ #endif
++#endif
+ 
+ #if defined(SMP_USE_SPIN_TABLE)
+ _Static_assert(NUM_ACTIVE_CPUS <= ARRAY_SIZE(cpus_release_addr),
+                "active CPUs cannot be more than available CPUs");
+-#else
++#elif !defined(ARM_PSCI_UNAVAILABLE)
+ _Static_assert(NUM_ACTIVE_CPUS <= ARRAY_SIZE(psci_target_cpus),
+                "active CPUs cannot be more than available CPUs");
+ #endif
+diff --git a/loader/src/aarch64/crt0.S b/loader/src/aarch64/crt0.S
+index 4cb59b9..eabc711 100644
+--- a/loader/src/aarch64/crt0.S
++++ b/loader/src/aarch64/crt0.S
+@@ -12,6 +12,14 @@
+ .global _start;
+ .type _start, %function;
+ _start:
++    /* PongoOS enters bootr with Apple's boot_args in x0. Preserve it across
++     * the possible self-relocation; x20 and x21 are callee-saved registers. */
++    ldr     x10, =0x4e5854524f444531
++    cmp     x21, x10
++    beq     2f
++    mov     x20, x0
++    mov     x21, x10
++2:
+     /* This assumes that the entry CPU is logical CPU0, the base of the stack*/
+     adrp    x1, _stack
+     add     x1, x1, STACK_SIZE
+@@ -25,6 +33,7 @@ _start:
+     /* Otherwise, jump to the start of the new loader */
+     br      x0
+ 1:
++    mov     x0, x20
+     b       main
+ 
+ relocate:
+diff --git a/loader/src/aarch64/el.c b/loader/src/aarch64/el.c
+index 23f5c3e..47bf80b 100644
+--- a/loader/src/aarch64/el.c
++++ b/loader/src/aarch64/el.c
+@@ -13,6 +13,17 @@
+ #include "../loader.h"
+ #include "../uart.h"
+ 
++#if defined(BOARD_iphone7plus)
++static void pongo_draw_el_failure_marker(uint64_t row)
++{
++    static const uint64_t rows[] = {560, 616, 672, 728};
++    for (uint64_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
++        pongo_draw_loader_marker(0, rows[i], 0xffffffffu, 0xffffffffu);
++    }
++    pongo_draw_loader_marker(0, row, 0xffff0000u, 0xffff0000u);
++}
++#endif
++
+ void switch_to_el1(void);
+ void switch_to_el2(void);
+ 
+@@ -36,6 +47,9 @@ int ensure_correct_el(int logical_cpu)
+     puts("\n");
+ 
+     if (el == EL0) {
++#if defined(BOARD_iphone7plus)
++        pongo_draw_el_failure_marker(728);
++#endif
+         LDR_PRINT("ERROR", logical_cpu, "Unsupported initial exception level\n");
+         return 1;
+     }
+@@ -49,6 +63,9 @@ int ensure_correct_el(int logical_cpu)
+ 
+     if (is_set(CONFIG_ARM_HYPERVISOR_SUPPORT)) {
+         if (el != EL2) {
++#if defined(BOARD_iphone7plus)
++            pongo_draw_el_failure_marker(672);
++#endif
+             LDR_PRINT("ERROR", logical_cpu, "seL4 configured as a hypervisor, but not in EL2\n");
+             return 1;
+         } else {
+@@ -71,6 +88,9 @@ int ensure_correct_el(int logical_cpu)
+             if (el == EL1) {
+                 LDR_PRINT("INFO", logical_cpu, "Dropped to EL1 successfully\n");
+             } else {
++#if defined(BOARD_iphone7plus)
++                pongo_draw_el_failure_marker(616);
++#endif
+                 LDR_PRINT("ERROR", logical_cpu, "Failed to switch to EL1\n");
+                 return 1;
+             }
+diff --git a/loader/src/aarch64/exceptions.c b/loader/src/aarch64/exceptions.c
+index 78fc300..fa47025 100644
+--- a/loader/src/aarch64/exceptions.c
++++ b/loader/src/aarch64/exceptions.c
+@@ -53,6 +53,17 @@ void exception_handler(uintptr_t ex)
+     }
+ 
+     uintptr_t ec = (esr >> 26) & 0x3f;
++#if defined(BOARD_iphone7plus)
++    /* Show whether the MMU transition reached the loader's exception vector.
++     * Abort classes get distinct colors; other synchronous faults are pink. */
++    if (ec == 0x20 || ec == 0x21) {
++        pongo_draw_loader_marker(0, 1176, 0xff0000ffu, 0xffffffffu);
++    } else if (ec == 0x24 || ec == 0x25) {
++        pongo_draw_loader_marker(0, 1176, 0xffff0000u, 0xffffffffu);
++    } else {
++        pongo_draw_loader_marker(0, 1176, 0xffff00ffu, 0xffffffffu);
++    }
++#endif
+     puts("\nLDR|ERROR: loader trapped exception: ");
+     puts(ex_to_string(ex));
+     if (is_set(CONFIG_ARM_HYPERVISOR_SUPPORT)) {
+diff --git a/loader/src/aarch64/init.c b/loader/src/aarch64/init.c
+index 4f39df2..1f44caa 100644
+--- a/loader/src/aarch64/init.c
++++ b/loader/src/aarch64/init.c
+@@ -140,10 +140,18 @@ typedef void (*sel4_entry)(
+ 
+ void arch_jump_to_kernel(int logical_cpu)
+ {
++#if defined(BOARD_iphone7plus)
++    pongo_draw_loader_marker(0, 952, 0xffff00ffu, 0xffff00ffu);
++#endif
+     /* seL4 always expects the current logical CPU number in TPIDR_EL1 */
+     asm volatile("msr TPIDR_EL1, %0" :: "r"((uint64_t) logical_cpu));
+     asm volatile("isb" ::: "memory");
+ 
++#if defined(BOARD_iphone7plus)
++    /* Confirms TPIDR_EL1 setup before the indirect kernel branch. */
++    pongo_draw_loader_marker(0, 1008, 0xffff0000u, 0xffff0000u);
++#endif
++
+     ((sel4_entry)(loader_data->kernel_entry))(
+         loader_data->ui_p_reg_start,
+         loader_data->ui_p_reg_end,
+diff --git a/loader/src/aarch64/mmu.c b/loader/src/aarch64/mmu.c
+index 8ef6427..fc15763 100644
+--- a/loader/src/aarch64/mmu.c
++++ b/loader/src/aarch64/mmu.c
+@@ -10,6 +10,7 @@
+ #include "el.h"
+ #include "../arch.h"
+ #include "../cutil.h"
++#include "../loader.h"
+ #include "../uart.h"
+ 
+ void el1_mmu_enable(void);
+@@ -27,15 +28,18 @@ uint64_t boot_lvl2_lower[1 << 9] ALIGN(1 << 12);
+ 
+ int arch_mmu_enable(int logical_cpu)
+ {
++    pongo_mmu_stage(1);
+     int r;
+     enum el el;
+     r = ensure_correct_el(logical_cpu);
+     if (r != 0) {
+         return r;
+     }
++    pongo_mmu_stage(2);
+ 
+     LDR_PRINT("INFO", logical_cpu, "enabling MMU\n");
+     el = current_el();
++    pongo_mmu_stage(3);
+     if (el == EL1) {
+         el1_mmu_enable();
+     } else if (el == EL2) {
+@@ -43,6 +47,7 @@ int arch_mmu_enable(int logical_cpu)
+     } else {
+         LDR_PRINT("ERROR", logical_cpu, "unknown EL for MMU enable\n");
+     }
++    pongo_mmu_stage(8);
+ 
+     return 0;
+ }
+diff --git a/loader/src/aarch64/util64.S b/loader/src/aarch64/util64.S
+index ccf1889..2e15aaf 100644
+--- a/loader/src/aarch64/util64.S
++++ b/loader/src/aarch64/util64.S
+@@ -161,10 +161,17 @@ finished_\op:
+  * bits.
+  */
+ .macro enable_mmu sctlr tmp
++#if defined(CONFIG_PLAT_IPHONE7PLUS)
++    /* Start from seL4's SCTLR_EL1 RES1 baseline instead of preserving
++     * controls left behind by Pongo. Enable translation only for this probe. */
++    movz    \tmp, #0x0801
++    movk    \tmp, #0x30d0, lsl #16
++#else
+     mrs     \tmp, \sctlr
+     orr     \tmp, \tmp, #(1 << 0)
+     orr     \tmp, \tmp, #(1 << 2)
+     orr     \tmp, \tmp, #(1 << 12)
++#endif
+     msr     \sctlr, \tmp
+     isb
+ .endm
+@@ -334,9 +341,13 @@ BEGIN_FUNC(el1_mmu_enable)
+     mov     x29, sp
+     mov     x27, x0
+     mov     x28, x1
++    mov     x0, #4
++    bl      pongo_mmu_stage
+ 
+     /* Disable the MMU */
+     bl      el1_mmu_disable
++    mov     x0, #5
++    bl      pongo_mmu_stage
+ 
+     /*
+      *   DEVICE_nGnRnE      000     00000000
+@@ -352,13 +363,23 @@ BEGIN_FUNC(el1_mmu_enable)
+                  MAIR(0xff, MT_NORMAL)
+     msr     mair_el1, x5
+ 
+-    ldr     x10, =TCR_TxSZ(48) | TCR_IRGN_WBWA | TCR_ORGN_WBWA | TCR_TG0_4K | TCR_TG1_4K | TCR_ASID16 /*| TCR_SHARED*/
++#if defined(CONFIG_PLAT_IPHONE7PLUS)
++    /* Use a 39-bit low VA rooted at L1 and non-cacheable table walks. */
++    ldr     x10, =TCR_T0SZ(39) | TCR_T1SZ(48) | (1 << 23) | TCR_IRGN_NC | TCR_ORGN_NC | TCR_TG0_4K | TCR_TG1_4K | TCR_ASID16 | TCR_SHARED
++#else
++    ldr     x10, =TCR_TxSZ(48) | TCR_IRGN_WBWA | TCR_ORGN_WBWA | TCR_TG0_4K | TCR_TG1_4K | TCR_ASID16
++#endif
+     mrs     x9, ID_AA64MMFR0_EL1
+     bfi     x10, x9, #32, #3
+     msr     tcr_el1, x10
+ 
+     /* Setup page tables */
++#if defined(CONFIG_PLAT_IPHONE7PLUS)
++    /* T0SZ=25 selects a level-1 root for the 39-bit low VA range. */
++    adrp    x8, boot_lvl1_lower
++#else
+     adrp    x8, boot_lvl0_lower
++#endif
+     msr     ttbr0_el1, x8
+     adrp    x8, boot_lvl0_upper
+     msr     ttbr1_el1, x8
+@@ -368,6 +389,8 @@ BEGIN_FUNC(el1_mmu_enable)
+     tlbi    vmalle1is
+     dsb     ish
+     isb
++    mov     x0, #6
++    bl      pongo_mmu_stage
+ 
+     enable_mmu sctlr_el1, x8
+ 
+@@ -377,6 +400,33 @@ BEGIN_FUNC(el1_mmu_enable)
+ 
+ END_FUNC(el1_mmu_enable)
+ 
++#if defined(CONFIG_PLAT_IPHONE7PLUS)
++/* Register-only row-560 marker called after el1_mmu_enable() returns. This
++ * mirrors the proven caller-side marker in the standalone MMU control. */
++BEGIN_FUNC(pongo_mmu_return_marker)
++    cbz     x0, 9f
++    mov     x10, x1
++    mov     x11, #560
++    madd    x9, x11, x10, x0
++    movz    w15, #0x00ff
++    movk    w15, #0xffff, lsl #16
++    mov     x12, #48
++1:
++    mov     x13, #128
++2:
++    str     w15, [x9], #4
++    subs    x13, x13, #1
++    b.ne    2b
++    add     x9, x9, x10
++    sub     x9, x9, #512
++    subs    x12, x12, #1
++    b.ne    1b
++    dsb     sy
++9:
++    ret
++END_FUNC(pongo_mmu_return_marker)
++#endif
++
+ BEGIN_FUNC(el2_mmu_enable)
+     stp     x29, x30, [sp, #-16]!
+     mov     x29, sp
+@@ -465,6 +515,35 @@ END_FUNC(arm_spin_table_secondary_cpu_entry_asm)
+ 
+ .macro ventry id
+ .align 7
++#if defined(BOARD_iphone7plus)
++    /* Paint before touching SP so a fault during the MMU transition can be
++     * seen even if the exception stack is not translated. The measured
++     * iPhone9,2 framebuffer base/stride are 0x8BB80C000 / 0x1100. */
++    ldr     x15, =0x8BB80C000
++    mov     x16, #900
++    mov     x17, #0x1100
++    madd    x15, x16, x17, x15
++    mov     x16, #48
++1:
++    cmp     x16, #24
++    b.gt    2f
++    movz    w17, #0xffff
++    movk    w17, #0xff00, lsl #16
++    b       3f
++2:
++    mov     w17, #-1
++3:
++    mov     x18, #128
++4:
++    str     w17, [x15], #4
++    subs    x18, x18, #1
++    b.ne    4b
++    add     x15, x15, #0x1100
++    sub     x15, x15, #512
++    subs    x16, x16, #1
++    b.ne    1b
++    dsb     sy
++#endif
+     /* push some temp registers on the stack */
+     stp     x2, x3, [sp, #-16]
+     adrp    x2, exception_register_state
+@@ -508,4 +587,3 @@ BEGIN_FUNC(arm_vector_table)
+     ventry  #14    // FIQ 32-bit EL0
+     ventry  #15    // SError 32-bit EL0
+ END_FUNC(arm_vector_table)
+-
+diff --git a/loader/src/cpus.h b/loader/src/cpus.h
+index d01f888..d54d863 100644
+--- a/loader/src/cpus.h
++++ b/loader/src/cpus.h
+@@ -11,7 +11,7 @@
+ 
+ #include <kernel/gen_config.h>
+ 
+-#if defined(CONFIG_PLAT_BCM2711) || defined(BOARD_kria_k26)
++#if defined(CONFIG_PLAT_BCM2711) || defined(BOARD_kria_k26) || defined(BOARD_iphone7plus)
+ /* There are a couple of cases where we cannot rely on having ARM PSCI available. */
+ #define ARM_PSCI_UNAVAILABLE
+ #endif
+diff --git a/loader/src/loader.c b/loader/src/loader.c
+index 67c09b1..fac67d2 100644
+--- a/loader/src/loader.c
++++ b/loader/src/loader.c
+@@ -32,6 +32,21 @@ const struct loader_data *loader_data = (void *) &_bss_end;
+ 
+ uint64_t _stack[NUM_ACTIVE_CPUS][STACK_SIZE / sizeof(uint64_t)] ALIGN(16);
+ 
++extern uint64_t boot_lvl1_lower[1 << 9];
++
++#if defined(BOARD_iphone7plus)
++/* Build-time marker read by Microkit when choosing the loader's executable
++ * identity-map memory type. */
++__attribute__((used)) const uint64_t iphone7plus_loader_normal_mapping = 1;
++#endif
++
++static int pongo_framebuffer_mapped;
++#if defined(BOARD_iphone7plus)
++extern void pongo_mmu_return_marker(uint64_t framebuffer, uint64_t stride_bytes);
++#endif
++void pongo_draw_loader_marker(uintptr_t boot_args, uint64_t y_offset,
++                              uint32_t first_color, uint32_t second_color);
++
+ /*
+  * Print out the loader data structure.
+  *
+@@ -100,14 +115,36 @@ static int print_lock = 0;
+ 
+ void start_kernel(int logical_cpu)
+ {
++    /* Visible checkpoint immediately before changing translation state. */
++    if (pongo_framebuffer_mapped) {
++#if defined(BOARD_iphone7plus)
++        /* Violet marks the rebuilt runtime L1 and is just before MMU setup. */
++        pongo_draw_loader_marker(0, 168, 0xffff00ffu, 0xffffffffu);
++#else
++        pongo_draw_loader_marker(0, 168, 0xff00ff00u, 0xffffffffu);
++#endif
++    }
++
+     LDR_PRINT("INFO", logical_cpu, "enabling MMU\n");
+     int r = arch_mmu_enable(logical_cpu);
++    pongo_mmu_stage(9);
++#if defined(BOARD_iphone7plus)
++#endif
+     if (r != 0) {
++#if defined(BOARD_iphone7plus)
++        /* A marker at 784 now means the MMU routine returned an error.
++         * The successful path leaves this row untouched. */
++        pongo_draw_loader_marker(0, 784, 0xffff0000u, 0xffff0000u);
++#endif
+         LDR_PRINT("ERROR", logical_cpu, "failed to enable MMU: ");
+         puthex32(r);
+         puts("\n");
+         for (;;) {}
+     }
++#if defined(BOARD_iphone7plus)
++    /* Position, rather than color, identifies a successful MMU return. */
++    pongo_draw_loader_marker(0, 840, 0xff00ffffu, 0xff00ffffu);
++#endif
+ 
+     LDR_PRINT("INFO", logical_cpu, "jumping to kernel\n");
+ 
+@@ -115,6 +152,10 @@ void start_kernel(int logical_cpu)
+     __atomic_store_n(&print_lock, 1, __ATOMIC_RELEASE);
+ #endif
+ 
++#if defined(BOARD_iphone7plus)
++    pongo_draw_loader_marker(0, 896, 0xffffff00u, 0xffffff00u);
++#endif
++
+     arch_jump_to_kernel(logical_cpu);
+ 
+     LDR_PRINT("ERROR", logical_cpu, "seL4 kernel entry returned\n");
+@@ -146,10 +187,177 @@ _Noreturn void fail(void)
+     while (1) {}
+ }
+ 
+-int main(void)
++static struct {
++    volatile uint32_t *framebuffer;
++    uint64_t stride_pixels;
++    uint64_t width;
++    uint64_t height;
++} pongo_display;
++
++/* Pongo's display buffer is outside reported RAM on this device. Add a
++ * temporary 1 GiB device block to TTBR0 so the post-MMU diagnostic marker can
++ * be written. Refuse to replace any existing translation. */
++static int pongo_map_framebuffer_for_mmu(void)
++{
++#if defined(BOARD_iphone7plus)
++    if (pongo_display.framebuffer == NULL || pongo_display.stride_pixels == 0 ||
++        pongo_display.height == 0) {
++        return 0;
++    }
++
++    const uint64_t fb = (uint64_t)(uintptr_t)pongo_display.framebuffer;
++    const uint64_t bytes = pongo_display.stride_pixels * sizeof(uint32_t) *
++                           pongo_display.height;
++    const uint64_t block_size = 1ULL << 30;
++    if (bytes == 0 || fb >= (1ULL << 48) || bytes > block_size ||
++        fb > (1ULL << 48) - bytes ||
++        (fb & ~(block_size - 1)) != ((fb + bytes - 1) & ~(block_size - 1))) {
++        return 0;
++    }
++
++    const uint64_t index = (fb >> 30) & 0x1ff;
++    if (boot_lvl1_lower[index] != 0) {
++        return 0;
++    }
++
++    /* Valid level-1 block, AF=1, Outer Shareable, RW at the current EL,
++     * AttrIndx=0 (MAIR Device-nGnRnE), output address rounded down to 1 GiB. */
++    boot_lvl1_lower[index] = (fb & ~(block_size - 1)) | (1ULL << 10) |
++                             (2ULL << 8) | 1ULL;
++    asm volatile("dsb sy" ::: "memory");
++    pongo_framebuffer_mapped = 1;
++    return 1;
++#else
++    return 0;
++#endif
++}
++
++/* Rebuild just the two identity blocks needed by this single-core bring-up:
++ * the loader/kernel RAM block as Normal WB and Pongo's display block as
++ * Device-nGnRnE. This bypasses the Microkit tool's pre-generated L1 contents
++ * while keeping the same addresses and descriptor semantics. */
++static void pongo_build_minimal_l1(void)
++{
++#if defined(BOARD_iphone7plus)
++    const uint64_t block_size = 1ULL << 30;
++    const uint64_t loader = (uint64_t)(uintptr_t)&_text;
++    const uint64_t index = (loader >> 30) & 0x1ff;
++
++    for (uint64_t i = 0; i < 512; i++) {
++        boot_lvl1_lower[i] = 0;
++    }
++
++    /* L1 block: valid, AF=1, inner-shareable, AttrIdx4 (Normal WB), EL1 RW. */
++    boot_lvl1_lower[index] = (loader & ~(block_size - 1)) | 0x711;
++    asm volatile("dsb sy" ::: "memory");
++#endif
++}
++
++void pongo_draw_loader_marker(uintptr_t boot_args, uint64_t y_offset,
++                              uint32_t first_color, uint32_t second_color)
++{
++#if defined(BOARD_iphone7plus)
++    if (pongo_display.framebuffer == NULL) {
++        if (boot_args == 0) {
++            return;
++        }
++
++        const volatile uint8_t *args = (const volatile uint8_t *)boot_args;
++        volatile uint32_t *framebuffer = (volatile uint32_t *)(uintptr_t)
++            *(const volatile uint64_t *)(args + 0x28);
++        uint64_t stride_bytes = *(const volatile uint64_t *)(args + 0x38);
++        uint64_t width = *(const volatile uint64_t *)(args + 0x40);
++        uint64_t height = *(const volatile uint64_t *)(args + 0x48);
++
++        if (framebuffer == NULL || ((uintptr_t)framebuffer & 3) ||
++            stride_bytes < 512 || stride_bytes > 32768 || (stride_bytes & 3) ||
++            width < 128 || height < 48 || width > 4096 || height > 4096) {
++            return;
++        }
++
++        pongo_display.framebuffer = framebuffer;
++        pongo_display.stride_pixels = stride_bytes / sizeof(uint32_t);
++        pongo_display.width = width;
++        pongo_display.height = height;
++    }
++
++    if (y_offset > pongo_display.height || pongo_display.height - y_offset < 48) {
++        return;
++    }
++
++    for (uint64_t y = 0; y < 48; y++) {
++        uint32_t color = y < 24 ? first_color : second_color;
++        for (uint64_t x = 0; x < 128; x++) {
++            pongo_display.framebuffer[(y_offset + y) * pongo_display.stride_pixels + x] = color;
++        }
++    }
++    asm volatile("dsb sy" ::: "memory");
++#else
++    (void)boot_args;
++    (void)y_offset;
++    (void)first_color;
++    (void)second_color;
++#endif
++}
++
++void pongo_mmu_stage(uintptr_t stage)
++{
++#if defined(BOARD_iphone7plus)
++    static const uint32_t colors[] = {
++        0xff00ff00u, 0xff0000ffu, 0xff00ffffu, 0xffff0000u, 0xffff00ffu,
++        0xff0000ffu,
++    };
++    /* Stages 1–6 are pre-MMU. Stage 8 is called only after the EL-specific
++     * MMU routine returns; row 560 is reserved for that post-return signal. */
++    if (!pongo_framebuffer_mapped) {
++        return;
++    }
++    if (stage == 8) {
++        if (pongo_display.framebuffer != NULL && pongo_display.stride_pixels != 0) {
++            pongo_mmu_return_marker((uint64_t)(uintptr_t)pongo_display.framebuffer,
++                                    pongo_display.stride_pixels * sizeof(uint32_t));
++        }
++        return;
++    }
++    if (stage < 1 || stage > 6) {
++        return;
++    }
++
++    uint64_t y_offset = 224 + (stage - 1) * 56;
++    pongo_draw_loader_marker(0, y_offset, colors[stage - 1], 0xffffffffu);
++#else
++    (void)stage;
++#endif
++}
++
++static void pongo_clear_loader_result_rows(void)
++{
++#if defined(BOARD_iphone7plus)
++    if (pongo_display.framebuffer == NULL) {
++        return;
++    }
++
++    /* Clear old run results before arch_init(), which can itself fail. */
++    static const uint64_t rows[] = {560, 616, 672, 728, 784, 840, 896, 952, 1008, 1176, 1240};
++    for (uint64_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
++        pongo_draw_loader_marker(0, rows[i], 0xffffffffu, 0xffffffffu);
++    }
++    asm volatile("dsb sy" ::: "memory");
++#endif
++}
++
++
++int main(uintptr_t boot_args)
+ {
+     int r;
+ 
++#if defined(BOARD_iphone7plus)
++    /* Solid black at row 0 is the unmistakable current-payload entry sentinel. */
++    pongo_draw_loader_marker(boot_args, 0, 0xff000000u, 0xff000000u);
++#else
++    pongo_draw_loader_marker(boot_args, 0, 0xff00ff00u, 0xffffff00u);
++#endif
++    pongo_clear_loader_result_rows();
+     uart_init();
+     /* After any UART initialisation is complete, setup an arch-specific exception
+      * handler in case we fault somewhere in the loader. */
+@@ -170,6 +378,11 @@ int main(void)
+      * fail label; it's not possible to return to U-boot
+      */
+     copy_data();
++    pongo_draw_loader_marker(0, 56, 0xff0000ffu, 0xffff00ffu);
++    pongo_build_minimal_l1();
++    if (pongo_map_framebuffer_for_mmu()) {
++        pongo_draw_loader_marker(0, 112, 0xffff0000u, 0xffffffffu);
++    }
+ 
+     LDR_PRINT("INFO", 0, "active CPUs to start: ");
+     puthex32(plat_get_active_cpus());
+diff --git a/loader/src/loader.h b/loader/src/loader.h
+index c144381..b900bef 100644
+--- a/loader/src/loader.h
++++ b/loader/src/loader.h
+@@ -52,5 +52,8 @@ extern uint64_t _stack[NUM_ACTIVE_CPUS][STACK_SIZE / sizeof(uint64_t)];
+ void fail(void);
+ 
+ void start_kernel(int logical_cpu);
++void pongo_draw_loader_marker(uintptr_t boot_args, uint64_t y_offset,
++                              uint32_t first_color, uint32_t second_color);
++void pongo_mmu_stage(uintptr_t stage);
+ 
+ #endif
+diff --git a/loader/src/uart.c b/loader/src/uart.c
+index 890d0b0..7d6b74d 100644
+--- a/loader/src/uart.c
++++ b/loader/src/uart.c
+@@ -13,7 +13,15 @@
+ 
+ static void putc(uint8_t ch);
+ 
+-#if defined(CONFIG_PLAT_TQMA8XQP1GB)
++#if defined(BOARD_iphone7plus)
++/* No serial console is available in the first Pongo boot target. */
++void uart_init(void) {}
++
++void putc(uint8_t ch)
++{
++    (void)ch;
++}
++#elif defined(CONFIG_PLAT_TQMA8XQP1GB)
+ #define UART_BASE 0x5a070000
+ #define STAT 0x14
+ #define TRANSMIT 0x1c
+diff --git a/tool/microkit/src/loader.rs b/tool/microkit/src/loader.rs
+index 53a2597..e947d97 100644
+--- a/tool/microkit/src/loader.rs
++++ b/tool/microkit/src/loader.rs
+@@ -835,25 +835,45 @@ impl<'a> Loader<'a> {
+ 
+         let mut boot_lvl2_lower: [u8; PAGE_TABLE_SIZE] = [0; PAGE_TABLE_SIZE];
+ 
+-        // 1GB lvl1 Table entry
+-        let pt_entry = aarch64::table_descriptor(boot_lvl2_lower_addr);
++        // The iPhone 7 Plus probe executes from this identity map immediately
++        // after enabling translation. Use the standard cacheable Normal
++        // attribute for code and stack, even while this diagnostic build keeps
++        // SCTLR.C and SCTLR.I disabled.
++        let loader_attr = if elf.find_symbol("iphone7plus_loader_normal_mapping").is_ok() {
++            MT_NORMAL
++        } else {
++            MT_DEVICE_nGnRnE
++        };
++
+         let lvl1_idx = aarch64::lvl1_index(loader_start_addr);
+         let start = 8 * lvl1_idx;
+         let end = 8 * (lvl1_idx + 1);
+-        boot_lvl1_lower[start..end].copy_from_slice(&pt_entry.to_le_bytes());
++        if elf.find_symbol("iphone7plus_loader_normal_mapping").is_ok() {
++            // Keep the iPhone bring-up identity map to a single 1 GiB L1
++            // block. This removes the L2 table walk from the first MMU-on
++            // instruction fetch and provides a focused mapping-level test.
++            assert!(boot_lvl1_lower[start..end].iter().all(|byte| *byte == 0));
++            let pt_entry = aarch64::block_descriptor(1, loader_start_addr, loader_attr);
++            boot_lvl1_lower[start..end].copy_from_slice(&pt_entry.to_le_bytes());
++        } else {
++            // 1 GiB L1 table entry, followed by 2 MiB identity blocks for the
++            // loader's executable and writable image.
++            let pt_entry = aarch64::table_descriptor(boot_lvl2_lower_addr);
++            boot_lvl1_lower[start..end].copy_from_slice(&pt_entry.to_le_bytes());
+ 
+-        // map the loader 1:1 access into 2MB lvl2 Block entries for a 4KB granule
+-        let lvl2_idx = aarch64::lvl2_index(loader_start_addr);
+-        for i in lvl2_idx..=aarch64::lvl2_index(loader_end_addr) {
+-            let entry_idx: u64 =
+-                ((i - aarch64::lvl2_index(loader_start_addr)) << aarch64::BLOCK_BITS_2MB) as u64;
++            let lvl2_idx = aarch64::lvl2_index(loader_start_addr);
++            for i in lvl2_idx..=aarch64::lvl2_index(loader_end_addr) {
++                let entry_idx: u64 = ((i - aarch64::lvl2_index(loader_start_addr))
++                    << aarch64::BLOCK_BITS_2MB)
++                    as u64;
+ 
+-            let pt_entry =
+-                aarch64::block_descriptor(2, loader_start_addr + entry_idx, MT_DEVICE_nGnRnE);
++                let pt_entry =
++                    aarch64::block_descriptor(2, loader_start_addr + entry_idx, loader_attr);
+ 
+-            let start = 8 * i;
+-            let end = 8 * (i + 1);
+-            boot_lvl2_lower[start..end].copy_from_slice(&pt_entry.to_le_bytes());
++                let start = 8 * i;
++                let end = 8 * (i + 1);
++                boot_lvl2_lower[start..end].copy_from_slice(&pt_entry.to_le_bytes());
++            }
+         }
+ 
+         // TODO: this is a complete hack specific to BCM2711/Raspberry Pi 4B and

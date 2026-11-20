@@ -1,0 +1,14 @@
+diff --git a/loader/src/loader.c b/loader/src/loader.c
+--- a/loader/src/loader.c
++++ b/loader/src/loader.c
+@@ -312,8 +312,6 @@ void pongo_mmu_stage(uintptr_t stage)
+     }
+     if (stage == 8) {
+-        if (pongo_display.framebuffer != NULL && pongo_display.stride_pixels != 0) {
+-            pongo_mmu_return_marker((uint64_t)(uintptr_t)pongo_display.framebuffer,
+-                                    pongo_display.stride_pixels * sizeof(uint32_t));
+-        }
++        /* Green marks that the EL routine returned, at the known-visible row. */
++        pongo_draw_loader_marker(0, 280, 0xff00ff00u, 0xff00ff00u);
+         return;
+     }

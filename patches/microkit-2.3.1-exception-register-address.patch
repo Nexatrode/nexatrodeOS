@@ -1,0 +1,10 @@
+--- a/loader/src/aarch64/util64.S
++++ b/loader/src/aarch64/util64.S
+@@ -532,6 +532,7 @@
+     /* push some temp registers on the stack */
+     stp     x2, x3, [sp, #-16]
+     adrp    x2, exception_register_state
++    add     x2, x2, #:lo12:exception_register_state
+     stp     x0, x1, [x2]
+     mov     x0, x2
+     ldp     x2, x3, [sp, #-16]
