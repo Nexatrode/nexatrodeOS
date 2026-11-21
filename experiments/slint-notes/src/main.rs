@@ -2,8 +2,10 @@ use std::{
     env, fs,
     path::PathBuf,
     rc::Rc,
-    time::{Duration, Instant},
+    time::Duration,
 };
+#[cfg(feature = "full-suite-ui")]
+use std::time::Instant;
 
 use slint::{
     ComponentHandle, LogicalPosition, PhysicalSize,
@@ -104,6 +106,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .filter(|inset| inset.is_finite() && *inset >= 0.0)
         .unwrap_or(0.0);
+    #[cfg(feature = "full-suite-ui")]
     let top_inset = args
         .iter()
         .find_map(|value| {
@@ -149,6 +152,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app = NotesWindow::new().map_err(|error| format!("create Slint component: {error:?}"))?;
     app.set_keyboard_inset(keyboard_inset);
+    #[cfg(feature = "full-suite-ui")]
     app.set_top_inset(top_inset);
     #[cfg(any(feature = "workspace-ui", feature = "full-suite-ui"))]
     if let Some(name) = page_name.as_deref() {
