@@ -15,7 +15,7 @@ component AppCard inherits Rectangle {
     in property <color> accent;
     in property <bool> skia-label: false;
     callback chosen();
-    background: glyph == "" ? #0b1825 : #102333;
+    background: hit.pressed ? #1c4052 : (glyph == "" ? #0b1825 : #102333);
     border-color: accent;
     border-width: glyph == "" ? 1px : 2px;
     if glyph != "": Rectangle {
@@ -45,7 +45,7 @@ component AppCard inherits Rectangle {
         x: 58px; y: parent.height - 34px; width: parent.width - 68px;
         text: "TAP TO OPEN"; color: accent; font-size: 12px;
     }
-    TouchArea { width: parent.width; height: parent.height; clicked => { chosen(); } }
+    hit := TouchArea { width: parent.width; height: parent.height; clicked => { chosen(); } }
 }
 
 component SimplexChatRow inherits Rectangle {
@@ -55,7 +55,7 @@ component SimplexChatRow inherits Rectangle {
     in property <bool> skia-text: false;
     callback chosen();
     height: 72px;
-    background: #050a12;
+    background: hit.pressed ? #173544 : #050a12;
     border-width: 0px;
     Rectangle {
         x: 4px; y: 14px; width: 42px; height: 42px;
@@ -78,7 +78,7 @@ component SimplexChatRow inherits Rectangle {
         font-size: 13px;
     }
     Rectangle { x: 56px; y: 71px; width: parent.width - 56px; height: 1px; background: #17303c; }
-    TouchArea { width: parent.width; height: parent.height; clicked => { chosen(); } }
+    hit := TouchArea { width: parent.width; height: parent.height; clicked => { chosen(); } }
 }
 
 component SoftKey inherits Rectangle {

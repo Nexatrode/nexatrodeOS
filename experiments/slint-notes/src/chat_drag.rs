@@ -1,4 +1,14 @@
 //! Decide when a deferred chat tap becomes a vertical scroll gesture.
+/// Resolve a press in the visible chat-list viewport to its displayed row.
+pub fn pressed_chat_row(x: f32, y: f32, width: f32, top_inset: f32, viewport_height: f32, scroll: f32, count: usize) -> Option<usize> {
+    let top = top_inset + 258.0;
+    if x < 25.0 || x >= width - 25.0 || y < top || y >= top + viewport_height || scroll < 0.0 {
+        return None;
+    }
+    let row = ((y - top + scroll) / 72.0) as usize;
+    (row < count).then_some(row)
+}
+
 pub fn starts_chat_scroll(
     x: f32,
     y: f32,

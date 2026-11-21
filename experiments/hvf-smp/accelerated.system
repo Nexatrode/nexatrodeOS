@@ -25,6 +25,7 @@
     <memory_region name="messages_vault_transfer" size="0x1000" />
     <memory_region name="messages_worker_transfer" size="0x1000" />
     <memory_region name="transcript_mailbox" size="0x200000" page_size="0x200000" />
+    <memory_region name="live_receive_mailbox" size="0x2000" />
     <memory_region name="messages_net_tx" size="0x1000" />
     <memory_region name="settings_view" size="0x1000" />
     <memory_region name="phone_view" size="0x1000" />
@@ -506,6 +507,7 @@
         <map mr="photo_mailbox" vaddr="0x5e_000_000" perms="rw" cached="true" setvar_vaddr="photo_mailbox_region" />
         <map mr="photo_read_mailbox" vaddr="0x60_000_000" perms="rw" cached="true" setvar_vaddr="photo_read_mailbox" />
         <map mr="transcript_mailbox" vaddr="0x66_000_000" perms="rw" cached="true" setvar_vaddr="transcript_mailbox" />
+        <map mr="live_receive_mailbox" vaddr="0x68_000_000" perms="rw" cached="true" setvar_vaddr="live_receive_mailbox" />
         <map mr="ui_focus" vaddr="0x42_000_000" perms="rw" cached="true" setvar_vaddr="ui_focus" />
         <map mr="ui_pointer" vaddr="0x47_000_000" perms="r" cached="true" setvar_vaddr="ui_pointer" />
         <map mr="slint_frame" vaddr="0x4d_000_000" perms="rw" cached="true" setvar_vaddr="slint_frame" />
@@ -530,11 +532,16 @@
     <protection_domain name="transcript_worker" priority="98" budget="2500" period="10000" stack_size="0x20000">
         <program_image path="slint_transcript_worker.elf" />
         <map mr="transcript_mailbox" vaddr="0x60_000_000" perms="rw" cached="true" setvar_vaddr="transcript_mailbox" />
+        <map mr="live_receive_mailbox" vaddr="0x64_000_000" perms="rw" cached="true" setvar_vaddr="live_receive_mailbox" />
         <map mr="messages_worker_transfer" vaddr="0x62_000_000" perms="rw" cached="true" setvar_vaddr="messages_worker_transfer" />
     </protection_domain>
     <channel>
         <end pd="slint_ui" id="11" notify="true" />
         <end pd="transcript_worker" id="0" notify="true" />
+    </channel>
+    <channel>
+        <end pd="slint_ui" id="12" notify="true" />
+        <end pd="transcript_worker" id="2" notify="true" />
     </channel>
     <channel>
         <end pd="messages_app" id="7" notify="false" />

@@ -783,6 +783,7 @@ pub fn chat_dirty_mask() -> u16 {
 
 static mut LAST_CHROME_PAGE: i32 = -1;
 static mut LAST_OPEN_CHAT: i32 = -2;
+static mut LAST_PRESSED_CHAT: Option<usize> = None;
 
 pub fn take_chrome_page(page: i32) -> bool {
     unsafe {
@@ -828,6 +829,7 @@ pub fn blit_chat_rows(
     dirty_mask: u16,
     damage_y: i32,
     damage_bottom: i32,
+    pressed_row: Option<usize>,
 ) -> (i32, i32) {
     // The chat list is nested at y=210 with its viewport at y=48.
     // Clip every sprite and its background to the visible Slint rows.
@@ -835,6 +837,11 @@ pub fn blit_chat_rows(
     let viewport_bottom = px_i(258.0 + viewport_height);
     let mut painted_top = 0i32;
     let mut painted_bottom = 0i32;
+    let previous_pressed = unsafe {
+        let previous = LAST_PRESSED_CHAT;
+        LAST_PRESSED_CHAT = pressed_row;
+        previous
+    };
     for index in 0..count.min(CHAT_SLOTS) {
         let row_top = px_i(258.0 + index as f32 * 72.0 - scroll_logical);
         let row_bottom = row_top + px_i(72.0);
@@ -842,7 +849,8 @@ pub fn blit_chat_rows(
             continue;
         }
         let overlaps = damage_bottom > damage_y && row_bottom > damage_y && row_top < damage_bottom;
-        let dirty = dirty_mask & (1u16 << index) != 0;
+        let dirty = dirty_mask & (1u16 << index) != 0
+            || pressed_row == Some(index) || previous_pressed == Some(index);
         if !overlaps && !dirty {
             continue;
         }
@@ -854,9 +862,16 @@ pub fn blit_chat_rows(
         let preview_y = row_top + px_i(36.0);
         let time_x = px_i(340.0);
         let time_y = row_top + px_i(10.0);
-        fill_clipped(frame, name_x, name_y, CHAT_NAME_WIDTH, CHAT_NAME_HEIGHT, viewport_top, viewport_bottom, 0x05, 0x0a, 0x12);
-        fill_clipped(frame, name_x, preview_y, CHAT_PREVIEW_WIDTH, CHAT_PREVIEW_HEIGHT, viewport_top, viewport_bottom, 0x05, 0x0a, 0x12);
-        fill_clipped(frame, time_x, time_y, CHAT_TIME_WIDTH, CHAT_TIME_HEIGHT, viewport_top, viewport_bottom, 0x05, 0x0a, 0x12);
+        let (r, g, b) = if pressed_row == Some(index) { (0x17, 0x35, 0x44) } else { (0x05, 0x0a, 0x12) };
+        if pressed_row == Some(index) || previous_pressed == Some(index) {
+            // Slint can reuse a cached list frame; paint one continuous
+            // feedback panel under the separately rendered text sprites.
+            let left = px_i(75.0);
+            fill_clipped(frame, left, row_top, super::WIDTH as i32 - left - px_i(25.0), px_i(71.0), viewport_top, viewport_bottom, r, g, b);
+        }
+        fill_clipped(frame, name_x, name_y, CHAT_NAME_WIDTH, CHAT_NAME_HEIGHT, viewport_top, viewport_bottom, r, g, b);
+        fill_clipped(frame, name_x, preview_y, CHAT_PREVIEW_WIDTH, CHAT_PREVIEW_HEIGHT, viewport_top, viewport_bottom, r, g, b);
+        fill_clipped(frame, time_x, time_y, CHAT_TIME_WIDTH, CHAT_TIME_HEIGHT, viewport_top, viewport_bottom, r, g, b);
         blit_sprite_clipped(
             frame,
             unsafe { core::ptr::addr_of!(CHAT_INITIAL_PIXELS).cast::<u8>().add(index * CHAT_INITIAL_BYTES) },
@@ -911,9 +926,9 @@ pub fn blit_chat_rows(
             px_i(24.0),
             viewport_top,
             viewport_bottom,
-            0x05,
-            0x0a,
-            0x12,
+            r,
+            g,
+            b,
         );
         blit_sprite_clipped(
             frame,

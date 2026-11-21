@@ -48,6 +48,18 @@ fn perf_time_us() -> u64 {
     }
     ticks / (frequency / 1_000_000).max(1)
 }
+
+#[cfg(feature = "simplex-agent-ui")]
+macro_rules! profile_live_call {
+    ($name:literal, $operation:expr) => {{
+        #[cfg(feature = "utm-perf-trace")]
+        let started = perf_time_us();
+        let result = $operation;
+        #[cfg(feature = "utm-perf-trace")]
+        debug_println!("PERF|LIVE_STAGE|{}|{}|{}", $name, started, perf_time_us());
+        result
+    }};
+}
 const CHAT_SLOTS: usize = personal_os_rust_server::messages::CHAT_SLOT_COUNT;
 const SLINT_INPUT: Channel = Channel::new(1);
 const NOTES_SERVICE: Channel = Channel::new(2);
@@ -61,6 +73,10 @@ const PHOTO_WORKER: Channel = Channel::new(9);
 const PHOTO_READER: Channel = Channel::new(10);
 #[cfg(feature = "utm-transcript-worker")]
 const TRANSCRIPT_WORKER: Channel = Channel::new(11);
+#[cfg(feature = "utm-transcript-worker")]
+const LIVE_RECEIVE_WORKER: Channel = Channel::new(12);
+#[cfg(feature = "utm-transcript-worker")]
+const _: () = assert!(core::mem::size_of::<personal_os_slint_notes_spike::photo_mailbox::Mailbox<1, 4096>>() <= 0x2000);
 /// Diagnostic: shell→dhcp STATUS (channel 7). Proves whether dhcp PPC replies to anyone.
 const DHCP_TCP_PROBE: Channel = Channel::new(7);
 const REQUEST_WALLET_STATUS: u64 = 0x501;
@@ -192,6 +208,7 @@ struct NavGesture {
     /// Press started in an edge/home zone — hold Slint press until release
     /// so a swipe can become system nav instead of a UI drag.
     defer_press: bool,
+    feedback_press: bool,
     start_x: f32,
     start_y: f32,
     last_x: f32,
@@ -331,6 +348,7 @@ struct SlintService {
     /// paint once at the end. A full frame per character overflows the queue.
     defer_frame: bool,
     frame_dirty: bool,
+    feedback_frame_dirty: bool,
     #[cfg(feature = "simplex-agent-ui")]
     chat_refresh: personal_os_slint_notes_spike::chat_refresh::ChatRefresh,
     /// CONNECT KEEP cycles with no progress. After many, soft-rearm OPEN once
@@ -633,6 +651,16 @@ struct MessagesServiceClient {
     transcript_owners: RefCell<[u64; CHAT_SLOTS]>,
     #[cfg(feature = "utm-transcript-worker")]
     force_chat_refresh: Cell<bool>,
+    #[cfg(feature = "utm-transcript-worker")]
+    live_receive_mailbox: &'static personal_os_slint_notes_spike::photo_mailbox::Mailbox<1, 4096>,
+    #[cfg(feature = "utm-transcript-worker")]
+    pending_live_receive: RefCell<Option<(u64, u64, String)>>,
+    #[cfg(feature = "utm-transcript-worker")]
+    live_receive_requested: Cell<bool>,
+    #[cfg(feature = "utm-transcript-worker")]
+    live_receive_start_requested: Cell<bool>,
+    #[cfg(feature = "utm-transcript-worker")]
+    live_receive_inflight_start: Cell<bool>,
 }
 
 #[cfg(feature = "utm-transcript-worker")]
@@ -642,6 +670,63 @@ enum TranscriptCompletion {
 }
 
 impl MessagesServiceClient {
+    #[cfg(feature = "utm-transcript-worker")]
+    fn request_live_receive(&self, start: bool) {
+        if start { self.live_receive_start_requested.set(true); }
+        self.live_receive_requested.set(true);
+        self.start_live_receive();
+    }
+
+    #[cfg(feature = "utm-transcript-worker")]
+    fn start_live_receive(&self) {
+        if !self.live_receive_requested.get() { return; }
+        if self.pending_live_receive.borrow().is_some() { return; }
+        let start = self.live_receive_start_requested.get();
+        if self.live_receive_mailbox.submit(|out| { out[0] = u8::from(start); Some(1) }) {
+            self.live_receive_requested.set(false);
+            self.live_receive_start_requested.set(false);
+            self.live_receive_inflight_start.set(start);
+            LIVE_RECEIVE_WORKER.notify();
+        }
+    }
+
+    #[cfg(feature = "utm-transcript-worker")]
+    fn take_live_receive(&self) -> Option<Result<(u64, String, usize), &'static str>> {
+        use personal_os_slint_notes_spike::photo_mailbox::Completion;
+        if self.pending_live_receive.borrow().is_none() {
+            match self.live_receive_mailbox.take(|bytes| {
+                personal_os_slint_notes_spike::live_receive::decode(bytes)
+                    .map(|event| (event.status, event.owner, event.text.to_string()))
+            }) {
+                Completion::Waiting => return None,
+                Completion::Failed | Completion::Ready(None) => {
+                    // Retry on the next poll, rather than spinning if the
+                    // service is persistently unavailable.
+                    self.live_receive_requested.set(false);
+                    if self.live_receive_inflight_start.replace(false) { self.live_receive_start_requested.set(true); }
+                    return Some(Err("Messages receive status is unavailable"));
+                }
+                Completion::Ready(Some(event)) => {
+                    self.live_receive_inflight_start.set(false);
+                    *self.pending_live_receive.borrow_mut() = Some(event);
+                }
+            }
+        }
+        let pending = self.pending_live_receive.borrow();
+        let (status, owner, _) = pending.as_ref()?;
+        let index = if *status == 2 {
+            personal_os_slint_notes_spike::live_receive::chat_for_owner(&*self.transcript_owners.borrow(), *owner)?
+        } else if *status == 6 {
+            match personal_os_slint_notes_spike::live_receive::chat_for_owner(&*self.transcript_owners.borrow(), *owner) {
+                Some(index) => index,
+                None => { drop(pending); self.pending_live_receive.borrow_mut().take(); return Some(Ok((0, String::new(), 0))); }
+            }
+        } else { 0 };
+        drop(pending);
+        let (status, _, text) = self.pending_live_receive.borrow_mut().take()?;
+        Some(Ok((status, text, index)))
+    }
+
     fn load(&self) -> Result<String, &'static str> {
         let reply = MESSAGES_SERVICE.pp_call(MessageInfo::new(REQUEST_MESSAGES_LOAD, 0));
         if reply.label() != REPLY_MESSAGES_LOAD || reply.count() != 1 {
@@ -935,6 +1020,16 @@ impl MessagesServiceClient {
         } else {
             Err("Messages service rejected the acknowledge request")
         }
+    }
+
+    #[cfg(feature = "utm-transcript-worker")]
+    fn acknowledge_worker_received(&mut self, index: usize) -> Result<(), &'static str> {
+        let owner = self.transcript_owners.borrow().get(index).copied().filter(|&owner| owner != 0)
+            .ok_or("Unknown incoming chat")?;
+        set_mr(0, owner);
+        let reply = MESSAGES_SERVICE.pp_call(MessageInfo::new(REQUEST_MESSAGES_ACK, 1));
+        if reply.label() == REPLY_MESSAGES_ACK && reply.count() == 0 { Ok(()) }
+        else { Err("Messages service rejected the acknowledge request") }
     }
 
     fn acknowledge_status(&self) -> Result<u64, &'static str> {
@@ -2918,6 +3013,9 @@ fn keep_received_message(
     ui.set_message_incoming_body("".into());
     ui.set_message_receive_status(alloc::format!("From {speaker}").into());
     debug_println!("SLINT SIMPLEX RECEIVE PASS LEN {} CHAT {}", text.len(), index);
+    #[cfg(feature = "utm-transcript-worker")]
+    let acknowledged = service.borrow_mut().acknowledge_worker_received(index);
+    #[cfg(not(feature = "utm-transcript-worker"))]
     let acknowledged = service.borrow_mut().acknowledge_received();
     match acknowledged {
         Ok(()) => match service.borrow().acknowledge_status() {
@@ -3215,6 +3313,12 @@ impl SlintService {
     }
 
     fn archive_shown_picture(&mut self) {
+        if self.feedback_frame_dirty {
+            // A pressed card or row is transient. Keep the last clean cached
+            // picture rather than archiving that visual state as the page.
+            self.feedback_frame_dirty = false;
+            return;
+        }
         // Join always opens on the empty form, so keep that prepared picture.
         if self.shown_view == 61 {
             return;
@@ -3349,6 +3453,7 @@ impl SlintService {
             return;
         }
         skia_guest::flush_chat_sprites();
+        let pressed_row = self.pressed_chat_row(chat_rows);
         skia_guest::blit_chat_rows(
             &mut self.rendered,
             self._ui.get_message_list_scroll(),
@@ -3357,7 +3462,18 @@ impl SlintService {
             0xffff,
             0,
             FRAME_HEIGHT as i32,
+            pressed_row,
         );
+    }
+
+    fn pressed_chat_row(&self, count: usize) -> Option<usize> {
+        if !self.nav_gesture.active || !self.nav_gesture.feedback_press { return None; }
+        let (width, _) = logical_screen();
+        personal_os_slint_notes_spike::chat_drag::pressed_chat_row(
+            self.nav_gesture.start_x, self.nav_gesture.start_y, width,
+            self._ui.get_top_inset(), self._ui.get_chat_list_rows_height(),
+            self._ui.get_message_list_scroll(), count,
+        )
     }
 
     fn publish_copied_frame(&mut self) {
@@ -3488,6 +3604,7 @@ impl SlintService {
             && !self._ui.get_message_invitation_view()
             && self._ui.get_message_list_tab() == 0
         {
+            let pressed_row = self.pressed_chat_row(chat_rows);
             let (top, bottom) = skia_guest::blit_chat_rows(
                 &mut self.rendered,
                 self._ui.get_message_list_scroll(),
@@ -3496,6 +3613,7 @@ impl SlintService {
                 dirty_chats,
                 slint_y,
                 slint_bottom,
+                pressed_row,
             );
             if bottom > top {
                 band.cover(top as u32, (bottom - top) as u32);
@@ -3755,6 +3873,7 @@ impl SlintService {
         #[cfg(feature = "utm-perf-trace")]
         let perf_before_paint = perf_time_us();
         let mut band = self.paint_rendered(force_full);
+        if !self.nav_gesture.active { self.feedback_frame_dirty = false; }
         #[cfg(feature = "utm-perf-trace")]
         let perf_painted = perf_time_us();
         static FIRST_FRAME: AtomicBool = AtomicBool::new(true);
@@ -3956,6 +4075,16 @@ fn init() -> SlintService {
         transcript_owners: RefCell::new([0; CHAT_SLOTS]),
         #[cfg(feature = "utm-transcript-worker")]
         force_chat_refresh: Cell::new(false),
+        #[cfg(feature = "utm-transcript-worker")]
+        live_receive_mailbox: unsafe { memory_region_symbol!(live_receive_mailbox: *mut personal_os_slint_notes_spike::photo_mailbox::Mailbox<1, 4096>).as_ref() },
+        #[cfg(feature = "utm-transcript-worker")]
+        pending_live_receive: RefCell::new(None),
+        #[cfg(feature = "utm-transcript-worker")]
+        live_receive_requested: Cell::new(false),
+        #[cfg(feature = "utm-transcript-worker")]
+        live_receive_start_requested: Cell::new(false),
+        #[cfg(feature = "utm-transcript-worker")]
+        live_receive_inflight_start: Cell::new(false),
     }));
     let chat_transcripts: Rc<RefCell<[String; CHAT_SLOTS]>> =
         Rc::new(RefCell::new(core::array::from_fn(|_| String::new())));
@@ -4681,6 +4810,10 @@ fn init() -> SlintService {
         if let Some(ui) = weak_ui.upgrade() {
             debug_println!("SLINT SIMPLEX INBOX POLL REQUEST");
             ui.set_message_receive_status("Listening".into());
+            #[cfg(feature = "utm-transcript-worker")]
+            receive_service.borrow().request_live_receive(true);
+            #[cfg(not(feature = "utm-transcript-worker"))]
+            {
             let requested = receive_service.borrow_mut().receive_next();
             match requested {
                 Ok(()) => {
@@ -4704,6 +4837,7 @@ fn init() -> SlintService {
                     ui.set_message_receive_status("Receive request failed".into());
                 }
             }
+            }
         }
     });
     let weak_ui = ui.as_weak();
@@ -4711,6 +4845,13 @@ fn init() -> SlintService {
     let receive_status_transcripts = chat_transcripts.clone();
     ui.on_check_message_receive_status(move || {
         if let Some(ui) = weak_ui.upgrade() {
+            #[cfg(feature = "utm-transcript-worker")]
+            {
+                receive_service.borrow().request_live_receive(false);
+                ui.set_message_receive_status("Listening".into());
+            }
+            #[cfg(not(feature = "utm-transcript-worker"))]
+            {
             let status = receive_service.borrow().receive_status();
             match status {
                 Ok((1, _, _)) => ui.set_message_receive_status("Listening".into()),
@@ -4724,6 +4865,7 @@ fn init() -> SlintService {
                 Ok((3, _, _)) => ui.set_message_receive_status("Up to date".into()),
                 Ok((_, _, _)) => ui.set_message_receive_status("Receive failed".into()),
                 Err(_) => ui.set_message_receive_status("Receive status unknown".into()),
+            }
             }
         }
     });
@@ -5174,12 +5316,14 @@ fn init() -> SlintService {
         scanout_hold: 0,
         defer_frame: false,
         frame_dirty: false,
+        feedback_frame_dirty: false,
         #[cfg(feature = "simplex-agent-ui")]
         chat_refresh: personal_os_slint_notes_spike::chat_refresh::ChatRefresh::default(),
         wallet_connect_keep_cycles: 0,
         nav_gesture: NavGesture {
             active: false,
             defer_press: false,
+            feedback_press: false,
             start_x: 0.0,
             start_y: 0.0,
             last_x: 0.0,
@@ -5616,6 +5760,11 @@ impl SlintService {
             // Always defer the Slint press until release so a swipe can become
             // system nav without the UI consuming a drag first.
             defer_press: true,
+            // Home cards and the chat list have release-driven actions. Give
+            // them a cancellable visual press while retaining swipe detection.
+            feedback_press: self._ui.get_page() == 0 || (self._ui.get_page() == 6
+                && !self._ui.get_message_view() && !self._ui.get_message_join_view()
+                && !self._ui.get_message_invitation_view()),
             start_x: x,
             start_y: y,
             last_x: x,
@@ -5667,6 +5816,16 @@ impl SlintService {
 
     #[cfg(feature = "simplex-agent-ui")]
     fn refresh_live_chat(&mut self) {
+        #[cfg(feature = "utm-transcript-worker")]
+        {
+            let service = self.messages_service.borrow();
+            if !service.live_receive_mailbox.available() && !service.live_receive_mailbox.finished() {
+                // The Messages PD is serving the worker. Avoid a competing
+                // synchronous call from the UI and coalesce a follow-up poll.
+                service.request_live_receive(false);
+                return;
+            }
+        }
         // Agent LIST finishes after the first Slint load. Pull CHAT rows once
         // the vault snapshot has names so unread badges have real slots.
         let listed = self._ui.get_message_chats().row_count()
@@ -5676,7 +5835,7 @@ impl SlintService {
         let previous_owners = personal_os_slint_notes_spike::transcript_queue::owners_from_snapshot(
             self._ui.get_message_service_state().as_str(),
         );
-        if let Ok(snapshot) = self.messages_service.borrow().load() {
+        if let Ok(snapshot) = profile_live_call!("load", self.messages_service.borrow().load()) {
             #[cfg(feature = "utm-transcript-worker")]
             let forced = self.messages_service.borrow().force_chat_refresh.replace(false);
             #[cfg(not(feature = "utm-transcript-worker"))]
@@ -5714,7 +5873,7 @@ impl SlintService {
                 // The first vault load can fail while the agent is still
                 // starting. A later snapshot must leave the placeholder list.
                 self._ui.set_message_service_ready(true);
-                let mask = self.messages_service.borrow().archived_mask().unwrap_or(0);
+                let mask = profile_live_call!("archive", self.messages_service.borrow().archived_mask()).unwrap_or(0);
                 apply_message_chats(
                     &self._ui,
                     &snapshot,
@@ -5730,14 +5889,26 @@ impl SlintService {
                     self._ui.set_message_profile_name(profile.into());
                 }
                 self.transcripts_loaded = false;
-                present_peer_photos(
+                profile_live_call!("peer_photos_changed", present_peer_photos(
                     &self.messages_service.borrow(),
                     photo_mask_from_snapshot(&snapshot),
-                );
+                ));
                 self._ui.set_message_service_state(snapshot.into());
             }
         }
-        let incoming = self.messages_service.borrow().receive_status();
+        #[cfg(not(feature = "utm-transcript-worker"))]
+        let incoming = profile_live_call!("receive", self.messages_service.borrow().receive_status());
+        #[cfg(feature = "utm-transcript-worker")]
+        let incoming = {
+            let service = self.messages_service.borrow();
+            match service.take_live_receive() {
+                Some(result) => result,
+                None => {
+                    service.request_live_receive(false);
+                    Ok((0, String::new(), 0))
+                }
+            }
+        };
         match incoming {
             Ok((2, text, chat_index)) => {
                 keep_received_message(
@@ -5763,7 +5934,7 @@ impl SlintService {
                     }
                     self.messages_service.borrow().history_changed(index);
                 }
-                if let Ok(saved) = self.messages_service.borrow().transcript(index as u64) {
+                if let Ok(saved) = profile_live_call!("incoming_transcript", self.messages_service.borrow().transcript(index as u64)) {
                     let slot = &mut self.chat_transcripts.borrow_mut()[index];
                     if saved.as_str() != slot.as_str() {
                         *slot = saved;
@@ -5781,11 +5952,11 @@ impl SlintService {
         let snapshot = self._ui.get_message_service_state();
         let photo_mask = photo_mask_from_snapshot(snapshot.as_str());
         if photo_mask != 0 {
-            present_peer_photos(&self.messages_service.borrow(), photo_mask);
+            profile_live_call!("peer_photos", present_peer_photos(&self.messages_service.borrow(), photo_mask));
         }
         if self._ui.get_page() == 6 && self._ui.get_message_view() {
-            present_group_invite(&self._ui, &self.messages_service.borrow());
-            let send_status = self.messages_service.borrow().send_status();
+            profile_live_call!("group_invite", present_group_invite(&self._ui, &self.messages_service.borrow()));
+            let send_status = profile_live_call!("send", self.messages_service.borrow().send_status());
             match send_status {
                 Ok((2, _)) => self._ui.set_message_send_status("Sent".into()),
                 Ok((5, _)) => self._ui.set_message_send_status("Photo transfer unverified".into()),
@@ -5795,7 +5966,7 @@ impl SlintService {
                 _ => {}
             }
             let index = self._ui.get_message_chat_index().max(0) as usize;
-            let saved = self.messages_service.borrow().transcript(index as u64).ok();
+            let saved = profile_live_call!("transcript", self.messages_service.borrow().transcript(index as u64)).ok();
             if let Some(saved) = saved {
                 if saved.as_str() != self._ui.get_message_transcript().as_str() {
                     self.chat_transcripts.borrow_mut()[index.min(CHAT_SLOTS - 1)] = saved.clone();
@@ -6629,7 +6800,8 @@ impl SlintService {
             let position = slint::LogicalPosition::new(x as f32 / SCALE, y as f32 / SCALE);
             if value != 0 {
                 self.gesture_begin(position.x, position.y);
-                if !self.nav_gesture.defer_press {
+                if !self.nav_gesture.defer_press || self.nav_gesture.feedback_press {
+                    if self.nav_gesture.feedback_press { self.feedback_frame_dirty = true; }
                     self.window.window().dispatch_event(
                         slint::platform::WindowEvent::PointerPressed {
                             position,
@@ -6645,6 +6817,17 @@ impl SlintService {
             // nav over a Slint click when the gesture qualifies.
             self.gesture_move(position.x, position.y);
             let deferred = self.nav_gesture.defer_press;
+            let feedback_press = self.nav_gesture.feedback_press;
+            if deferred && feedback_press {
+                // Cancel the visual press before deciding whether this was a
+                // system swipe. A real click is synthesized only below.
+                self.window.window().dispatch_event(slint::platform::WindowEvent::PointerExited);
+                self.window.window().dispatch_event(slint::platform::WindowEvent::PointerReleased {
+                    position: slint::LogicalPosition::new(-1.0, -1.0),
+                    button: slint::platform::PointerEventButton::Left,
+                });
+                self.window.window().request_redraw();
+            }
             let navigated = if deferred {
                 self.gesture_end()
             } else {
@@ -6657,6 +6840,9 @@ impl SlintService {
             }
             if deferred {
                 // Not a swipe — synthesize the click Slint never saw.
+                if feedback_press {
+                    self.window.window().dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
+                }
                 self.window.window().dispatch_event(
                     slint::platform::WindowEvent::PointerPressed {
                         position,
@@ -7242,6 +7428,15 @@ impl Handler for SlintService {
         #[cfg(not(feature = "utm-transcript-worker"))]
         let transcript_finished = false;
         #[cfg(feature = "utm-transcript-worker")]
+        let live_receive_finished = channels.contains(LIVE_RECEIVE_WORKER);
+        #[cfg(not(feature = "utm-transcript-worker"))]
+        let live_receive_finished = false;
+        #[cfg(feature = "utm-transcript-worker")]
+        if live_receive_finished {
+            self.poll_live_chat();
+            self.messages_service.borrow().start_live_receive();
+        }
+        #[cfg(feature = "utm-transcript-worker")]
         if transcript_finished {
             let completed = self.messages_service.borrow().finish_transcript();
             match completed {
@@ -7277,7 +7472,7 @@ impl Handler for SlintService {
             None => {}
             }
         }
-        if timer_fired || photo_finished || photo_read_finished || transcript_finished {
+        if timer_fired || photo_finished || photo_read_finished || transcript_finished || live_receive_finished {
             #[cfg(feature = "simplex-agent-ui")]
             if timer_fired { self.load_visible_chat_photo_chunk(); }
             let revision = unsafe { self.header.as_ref() }.revision.load(Ordering::Acquire);

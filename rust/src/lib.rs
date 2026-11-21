@@ -246,6 +246,7 @@ pub mod vault_crypto;
 pub mod vault_file;
 pub mod vault_history;
 pub mod history_batch;
+pub mod receive_handoff;
 pub mod vault_record;
 pub mod wlan_key_confirmation;
 pub mod wlan_protocol_probe_ipa;

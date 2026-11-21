@@ -8,6 +8,8 @@ mod photo_mailbox;
 #[cfg(target_os = "none")]
 mod transcript_ipc;
 #[cfg(target_os = "none")]
+mod live_receive;
+#[cfg(target_os = "none")]
 use personal_os_rust_server::vault_blob_transfer::BlobTransferPage;
 #[cfg(target_os = "none")]
 use transcript_ipc::{TranscriptMailbox, HEADER};
@@ -19,6 +21,7 @@ use sel4_microkit::debug_println;
 #[cfg(target_os = "none")]
 struct Worker {
     mailbox: &'static TranscriptMailbox,
+    live_mailbox: &'static photo_mailbox::Mailbox<1, 4096>,
     transfer: *mut BlobTransferPage,
 }
 
@@ -27,7 +30,8 @@ struct Worker {
 fn init() -> Worker {
     let mailbox = memory_region_symbol!(transcript_mailbox: *mut TranscriptMailbox);
     let transfer = memory_region_symbol!(messages_worker_transfer: *mut BlobTransferPage);
-    Worker { mailbox: unsafe { mailbox.as_ref() }, transfer: transfer.as_ptr() }
+    let live = memory_region_symbol!(live_receive_mailbox: *mut photo_mailbox::Mailbox<1, 4096>);
+    Worker { mailbox: unsafe { mailbox.as_ref() }, live_mailbox: unsafe { live.as_ref() }, transfer: transfer.as_ptr() }
 }
 
 #[cfg(target_os = "none")]
@@ -35,6 +39,36 @@ impl Handler for Worker {
     type Error = Infallible;
     fn notified(&mut self, channels: ChannelSet) -> Result<(), Self::Error> {
         let ui = Channel::new(0);
+        let live_ui = Channel::new(2);
+        if channels.contains(live_ui) {
+            let transfer = self.transfer;
+            #[cfg(feature = "utm-perf-trace")]
+            let started = trace_time_us();
+            let executed = self.live_mailbox.execute(|request, output| {
+                if request.len() != 1 || request[0] > 1 { return None; }
+                let page = unsafe { &mut *transfer };
+                if !page.set_payload(&[]) { return None; }
+                if request[0] == 1 {
+                    let reply = Channel::new(1).pp_call(MessageInfo::new(0x35f, 0));
+                    #[cfg(feature = "utm-perf-trace")]
+                    debug_println!("PERF|LIVE_RECEIVE_START_REPLY|{}|{}", reply.label(), reply.count());
+                    if reply.label() != 0x360 || reply.count() != 0 { return None; }
+                    if !page.set_payload(&[]) { return None; }
+                }
+                let reply = Channel::new(1).pp_call(MessageInfo::new(0x399, 0));
+                #[cfg(feature = "utm-perf-trace")]
+                debug_println!("PERF|LIVE_RECEIVE_REPLY|{}|{}", reply.label(), reply.count());
+                if reply.label() != 0x362 || reply.count() != 4 { return None; }
+                let status = get_mr(0);
+                let length = usize::try_from(get_mr(1)).ok()?;
+                let owner = get_mr(3);
+                let body = page.payload().filter(|body| body.len() == length)?;
+                live_receive::encode(output, status, owner, core::str::from_utf8(body).ok()?)
+            });
+            #[cfg(feature = "utm-perf-trace")]
+            debug_println!("PERF|LIVE_RECEIVE_WORKER|{}|{}|{}", started, trace_time_us(), u8::from(executed));
+            if executed { live_ui.notify(); }
+        }
         if !channels.contains(ui) { return Ok(()); }
         let transfer = self.transfer;
         if self.mailbox.execute(|request, output| {
@@ -83,3 +117,14 @@ impl Handler for Worker {
 
 #[cfg(not(target_os = "none"))]
 fn main() {}
+
+#[cfg(all(target_os = "none", feature = "utm-perf-trace"))]
+fn trace_time_us() -> u64 {
+    let ticks: u64;
+    let frequency: u64;
+    unsafe {
+        core::arch::asm!("isb", "mrs {v}, cntpct_el0", v = out(reg) ticks, options(nostack, preserves_flags));
+        core::arch::asm!("mrs {v}, cntfrq_el0", v = out(reg) frequency, options(nostack, preserves_flags));
+    }
+    ticks / (frequency / 1_000_000).max(1)
+}

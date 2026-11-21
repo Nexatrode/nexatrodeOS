@@ -3,6 +3,15 @@ mod chat_drag;
 use chat_drag::starts_chat_scroll;
 
 #[test]
+fn pressed_row_uses_visible_position_and_scroll_offset() {
+    assert_eq!(chat_drag::pressed_chat_row(200.0, 350.0, 414.0, 0.0, 260.0, 0.0, 4), Some(1));
+    assert_eq!(chat_drag::pressed_chat_row(200.0, 278.0, 414.0, 0.0, 260.0, 72.0, 4), Some(1));
+    assert_eq!(chat_drag::pressed_chat_row(200.0, 250.0, 414.0, 0.0, 260.0, 0.0, 4), None);
+    assert_eq!(chat_drag::pressed_chat_row(5.0, 350.0, 414.0, 0.0, 260.0, 0.0, 4), None);
+    assert_eq!(chat_drag::pressed_chat_row(200.0, 350.0, 414.0, 0.0, 260.0, 0.0, 1), None);
+}
+
+#[test]
 fn vertical_drag_in_chat_starts_scrolling() {
     assert!(starts_chat_scroll(
         353.0, 273.0, 353.0, 320.0, 414.0, 897.0, 0.0, 0.0

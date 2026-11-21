@@ -14,6 +14,8 @@ pub mod chat_unread;
 pub mod transcript_queue;
 #[cfg(feature = "utm-transcript-worker")]
 pub mod transcript_ipc;
+#[cfg(feature = "utm-transcript-worker")]
+pub mod live_receive;
 pub mod photo_preview;
 #[cfg(feature = "utm-photo-worker")]
 pub mod photo_cache;

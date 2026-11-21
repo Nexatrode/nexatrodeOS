@@ -117,6 +117,7 @@ const REQUEST_SLINT_MESSAGES_RECEIVE: MessageLabel = 0x35f;
 const REPLY_SLINT_MESSAGES_RECEIVE: MessageLabel = 0x360;
 const REQUEST_SLINT_MESSAGES_RECEIVE_STATUS: MessageLabel = 0x361;
 const REPLY_SLINT_MESSAGES_RECEIVE_STATUS: MessageLabel = 0x362;
+const REQUEST_WORKER_RECEIVE_STATUS: MessageLabel = 0x399;
 const REQUEST_SLINT_MESSAGES_ACK: MessageLabel = 0x363;
 const REPLY_SLINT_MESSAGES_ACK: MessageLabel = 0x364;
 const REQUEST_SLINT_MESSAGES_ACK_STATUS: MessageLabel = 0x365;
@@ -328,6 +329,8 @@ pub struct NamespaceTest {
     #[cfg(feature = "simplex-agent")]
     simplex_agent_receive_status: u64,
     #[cfg(feature = "simplex-agent")]
+    worker_receive_pending: personal_os_rust_server::receive_handoff::ReceiveHandoff,
+    #[cfg(feature = "simplex-agent")]
     simplex_agent_receive_handle: u64,
     #[cfg(feature = "simplex-agent")]
     simplex_agent_receive_chat_handle: u64,
@@ -504,6 +507,8 @@ impl NamespaceTest {
             simplex_agent_receive_started: false,
             #[cfg(feature = "simplex-agent")]
             simplex_agent_receive_status: 0,
+            #[cfg(feature = "simplex-agent")]
+            worker_receive_pending: personal_os_rust_server::receive_handoff::ReceiveHandoff::new(),
             #[cfg(feature = "simplex-agent")]
             simplex_agent_receive_handle: 0,
             #[cfg(feature = "simplex-agent")]
@@ -2068,7 +2073,7 @@ impl NamespaceTest {
             if wake_ui { self.notify_chat_ui(); }
             return;
         }
-        if self.simplex_agent_receive_status == 6 && !self.agent_busy() {
+        if self.simplex_agent_receive_status == 6 && self.worker_receive_pending.may_auto_ack() && !self.agent_busy() {
             self.request_agent_acknowledge();
             if self.simplex_agent_ack_started {
                 if wake_ui {
@@ -2597,7 +2602,7 @@ impl Handler for NamespaceTest {
         }
         #[cfg(feature = "utm-transcript-worker")]
         if channel == Channel::new(7) && self.name == "MESSAGES" {
-            if !matches!(request.label(), REQUEST_SLINT_HISTORY_ADVANCE | REQUEST_SLINT_HISTORY_PAGE_STEP) {
+            if !matches!(request.label(), REQUEST_SLINT_HISTORY_ADVANCE | REQUEST_SLINT_HISTORY_PAGE_STEP | REQUEST_WORKER_RECEIVE_STATUS | REQUEST_SLINT_MESSAGES_RECEIVE) {
                 return Ok(MessageInfo::new(REPLY_DENIED, 0));
             }
             return Ok(match self.transcript_transfer {
@@ -2941,13 +2946,33 @@ impl NamespaceTest {
                 #[cfg(not(feature = "simplex-agent"))]
                 return MessageInfo::new(REPLY_DENIED, 0);
             }
-            (REQUEST_SLINT_MESSAGES_RECEIVE_STATUS, 0) => {
+            (REQUEST_SLINT_MESSAGES_RECEIVE_STATUS | REQUEST_WORKER_RECEIVE_STATUS, 0) => {
                 #[cfg(feature = "simplex-agent")]
                 {
                     let length = self.simplex_agent_receive_length;
                     let status = self.simplex_agent_receive_status;
                     let chat =
                         self.chat_index_for_handle(self.simplex_agent_receive_chat_handle);
+                    let worker = request.label() == REQUEST_WORKER_RECEIVE_STATUS;
+                    let owner = self.simplex_agent_connection_handles
+                        .get(chat as usize).copied().unwrap_or(0);
+                    if worker && status == 6 && self.worker_receive_pending.retry_owner().is_some() {
+                        let owner = self.worker_receive_pending.retry_owner().unwrap();
+                        if !unsafe { self.blob_transfer.as_mut() }.set_payload(&self.simplex_agent_receive_body[..length]) {
+                            return MessageInfo::new(REPLY_ROUTED_EVENT_BAD, 0);
+                        }
+                        set_mr(0, 2); set_mr(1, length as MessageRegisterValue);
+                        set_mr(2, chat); set_mr(3, owner);
+                        return MessageInfo::new(REPLY_SLINT_MESSAGES_RECEIVE_STATUS, 4);
+                    }
+                    if worker && status == 2 && owner == 0 {
+                        self.request_agent_connection_snapshot();
+                        if !unsafe { self.blob_transfer.as_mut() }.set_payload(&[]) {
+                            return MessageInfo::new(REPLY_ROUTED_EVENT_BAD, 0);
+                        }
+                        set_mr(0, 1); set_mr(1, 0); set_mr(2, chat); set_mr(3, 0);
+                        return MessageInfo::new(REPLY_SLINT_MESSAGES_RECEIVE_STATUS, 4);
+                    }
                     if status == 2 {
                         // The UI has this body. Keep the real handle for the
                         // acknowledge. A group member uses the host chat.
@@ -2959,7 +2984,11 @@ impl NamespaceTest {
                             set_mr(0, 1);
                             set_mr(1, 0);
                             set_mr(2, chat);
-                            return MessageInfo::new(REPLY_SLINT_MESSAGES_RECEIVE_STATUS, 3);
+                            if worker { set_mr(3, owner); }
+                            return MessageInfo::new(REPLY_SLINT_MESSAGES_RECEIVE_STATUS, if worker { 4 } else { 3 });
+                        }
+                        if worker && !self.worker_receive_pending.hold(owner) {
+                            return MessageInfo::new(REPLY_ROUTED_EVENT_BAD, 0);
                         }
                         let chat_index = chat as usize;
                         let name_len = self.simplex_agent_chat_name_lengths[chat_index];
@@ -2988,13 +3017,15 @@ impl NamespaceTest {
                             self.record_chat_line(chat_index, &speaker[..speaker_len], &body[..length])
                         };
                         if !recorded {
+                            if worker { self.worker_receive_pending.accept(owner); }
                             if !unsafe { self.blob_transfer.as_mut() }.set_payload(&[]) {
                                 return MessageInfo::new(REPLY_ROUTED_EVENT_BAD, 0);
                             }
                             set_mr(0, 7);
                             set_mr(1, 0);
                             set_mr(2, chat);
-                            return MessageInfo::new(REPLY_SLINT_MESSAGES_RECEIVE_STATUS, 3);
+                            if worker { set_mr(3, owner); }
+                            return MessageInfo::new(REPLY_SLINT_MESSAGES_RECEIVE_STATUS, if worker { 4 } else { 3 });
                         }
                         self.simplex_agent_receive_status = 6;
                         if !unsafe { self.blob_transfer.as_mut() }.set_payload(&body[..length]) {
@@ -3003,7 +3034,8 @@ impl NamespaceTest {
                         set_mr(0, 2);
                         set_mr(1, length as MessageRegisterValue);
                         set_mr(2, chat);
-                        return MessageInfo::new(REPLY_SLINT_MESSAGES_RECEIVE_STATUS, 3);
+                        if worker { set_mr(3, owner); }
+                        return MessageInfo::new(REPLY_SLINT_MESSAGES_RECEIVE_STATUS, if worker { 4 } else { 3 });
                     }
                     if !unsafe { self.blob_transfer.as_mut() }
                         .set_payload(&self.simplex_agent_receive_body[..length])
@@ -3013,7 +3045,8 @@ impl NamespaceTest {
                     set_mr(0, status);
                     set_mr(1, length as MessageRegisterValue);
                     set_mr(2, chat);
-                    return MessageInfo::new(REPLY_SLINT_MESSAGES_RECEIVE_STATUS, 3);
+                    if worker { set_mr(3, owner); }
+                    return MessageInfo::new(REPLY_SLINT_MESSAGES_RECEIVE_STATUS, if worker { 4 } else { 3 });
                 }
                 #[cfg(not(feature = "simplex-agent"))]
                 return MessageInfo::new(REPLY_DENIED, 0);
@@ -3021,11 +3054,20 @@ impl NamespaceTest {
             (REQUEST_SLINT_MESSAGES_ACK, 0) => {
                 #[cfg(feature = "simplex-agent")]
                 {
+                    if !self.worker_receive_pending.may_auto_ack() { return MessageInfo::new(REPLY_DENIED, 0); }
                     self.request_agent_acknowledge();
                     return MessageInfo::new(REPLY_SLINT_MESSAGES_ACK, 0);
                 }
                 #[cfg(not(feature = "simplex-agent"))]
                 return MessageInfo::new(REPLY_DENIED, 0);
+            }
+            #[cfg(feature = "utm-transcript-worker")]
+            (REQUEST_SLINT_MESSAGES_ACK, 1) => {
+                if !self.worker_receive_pending.accept(get_mr(0)) {
+                    return MessageInfo::new(REPLY_DENIED, 0);
+                }
+                self.request_agent_acknowledge();
+                return MessageInfo::new(REPLY_SLINT_MESSAGES_ACK, 0);
             }
             (REQUEST_SLINT_MESSAGES_ACK_STATUS, 0) => {
                 #[cfg(feature = "simplex-agent")]

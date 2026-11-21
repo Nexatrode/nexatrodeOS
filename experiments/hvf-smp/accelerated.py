@@ -40,7 +40,9 @@ def ui_source_required(pds):
         return True
     binary = ui.read_bytes()
     return (b"photo_mailbox_region" not in binary or b"photo_read_mailbox" not in binary
-            or b"transcript_mailbox" not in binary or b"messages_worker_transfer" not in messages.read_bytes())
+            or b"transcript_mailbox" not in binary or b"messages_worker_transfer" not in messages.read_bytes()
+            or b"LIVE_RECEIVE_WORKER_ABI_V1" not in messages.read_bytes()
+            or b"live_receive_mailbox" not in binary or b"live_receive_mailbox" not in transcript.read_bytes())
 
 
 def build_ui_from_source(inputs, stage):

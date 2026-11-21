@@ -25,6 +25,15 @@ class PhotoBuildTest(unittest.TestCase):
             ui.write_bytes(b"elf with photo_mailbox_region and photo_read_mailbox")
             self.assertTrue(accelerated.ui_source_required(pds))
             reader.write_bytes(b"reader")
+            transcript = pds / "slint_transcript_worker.elf"
+            messages = pds / "rust_messages_agent_app.elf"
+            transcript.write_bytes(b"transcript_mailbox")
+            messages.write_bytes(b"messages_worker_transfer LIVE_RECEIVE_WORKER_ABI_V1")
+            ui.write_bytes(b"photo_mailbox_region photo_read_mailbox transcript_mailbox")
+            self.assertTrue(accelerated.ui_source_required(pds))
+            ui.write_bytes(b"photo_mailbox_region photo_read_mailbox transcript_mailbox live_receive_mailbox")
+            self.assertTrue(accelerated.ui_source_required(pds))
+            transcript.write_bytes(b"transcript_mailbox live_receive_mailbox")
             self.assertFalse(accelerated.ui_source_required(pds))
             reader.unlink()
             self.assertTrue(accelerated.ui_source_required(pds))
