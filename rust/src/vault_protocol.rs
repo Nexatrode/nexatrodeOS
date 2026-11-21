@@ -94,6 +94,9 @@ pub const REQUEST_LIBRARY_DELETE: MessageLabel = 0x44b;
 pub const REQUEST_LIBRARY_IMPORT: MessageLabel = 0x44c;
 /// Copy a library file to a chat-owned attachment. MR0=file ID, MR1=chat owner.
 pub const REQUEST_LIBRARY_COPY_TO_CHAT: MessageLabel = 0x44d;
+/// Read a bounded range of authenticated history records. MR0=start, MR1=end
+/// from a prior HISTORY_END; reply MR0=record count, MR1=payload length.
+pub const REQUEST_HISTORY_READ_BATCH: MessageLabel = 0x44e;
 pub const LIBRARY_OWNER: u64 = u64::MAX;
 pub const WALLET_TX_CHUNK: usize = 3072;
 pub const WALLET_TX_MAX: usize = 4 * WALLET_TX_CHUNK;

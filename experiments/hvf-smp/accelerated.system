@@ -22,6 +22,9 @@
     <memory_region name="contacts_transfer" size="0x1000" />
     <memory_region name="calendar_transfer" size="0x1000" />
     <memory_region name="messages_transfer" size="0x1000" />
+    <memory_region name="messages_vault_transfer" size="0x1000" />
+    <memory_region name="messages_worker_transfer" size="0x1000" />
+    <memory_region name="transcript_mailbox" size="0x200000" page_size="0x200000" />
     <memory_region name="messages_net_tx" size="0x1000" />
     <memory_region name="settings_view" size="0x1000" />
     <memory_region name="phone_view" size="0x1000" />
@@ -39,7 +42,7 @@
         <map mr="notes_transfer" vaddr="0x45000000" perms="rw" cached="true" setvar_vaddr="notes_transfer" />
         <map mr="contacts_transfer" vaddr="0x46000000" perms="rw" cached="true" setvar_vaddr="contacts_transfer" />
         <map mr="calendar_transfer" vaddr="0x47000000" perms="rw" cached="true" setvar_vaddr="calendar_transfer" />
-        <map mr="messages_transfer" vaddr="0x48000000" perms="rw" cached="true" setvar_vaddr="messages_transfer" />
+        <map mr="messages_vault_transfer" vaddr="0x48000000" perms="rw" cached="true" setvar_vaddr="messages_transfer" />
         <map mr="photo_read_transfer" vaddr="0x4d000000" perms="rw" cached="true" setvar_vaddr="photo_read_transfer" />
         <map mr="blk_client_vault_storage_info" vaddr="0x48001000" perms="r" />
         <map mr="blk_client_vault_request" vaddr="0x48002000" perms="rw" />
@@ -68,7 +71,9 @@
     <protection_domain name="messages_app" priority="100" passive="true" stack_size="0x40000">
         <program_image path="rust_messages_agent_app.elf" />
         <map mr="messages_view" vaddr="0x43_000_000" perms="rw" cached="true" setvar_vaddr="messages_view" />
-        <map mr="messages_transfer" vaddr="0x44_000_000" perms="rw" cached="true" setvar_vaddr="blob_transfer" />
+        <map mr="messages_vault_transfer" vaddr="0x44_000_000" perms="rw" cached="true" setvar_vaddr="blob_transfer" />
+        <map mr="messages_transfer" vaddr="0x44_001_000" perms="rw" cached="true" setvar_vaddr="messages_ui_transfer" />
+        <map mr="messages_worker_transfer" vaddr="0x44_002_000" perms="rw" cached="true" setvar_vaddr="messages_worker_transfer" />
         <map mr="messages_net_tx" vaddr="0x49_000_000" perms="rw" setvar_vaddr="messages_net_tx" />
         <map mr="simplex_ipc_page" vaddr="0x4a000000" perms="rw" cached="true" setvar_vaddr="simplex_ipc_page" />
     </protection_domain>
@@ -500,6 +505,7 @@
         <map mr="slint_heap" vaddr="0x48_000_000" perms="rw" cached="true" setvar_vaddr="slint_heap" />
         <map mr="photo_mailbox" vaddr="0x5e_000_000" perms="rw" cached="true" setvar_vaddr="photo_mailbox_region" />
         <map mr="photo_read_mailbox" vaddr="0x60_000_000" perms="rw" cached="true" setvar_vaddr="photo_read_mailbox" />
+        <map mr="transcript_mailbox" vaddr="0x66_000_000" perms="rw" cached="true" setvar_vaddr="transcript_mailbox" />
         <map mr="ui_focus" vaddr="0x42_000_000" perms="rw" cached="true" setvar_vaddr="ui_focus" />
         <map mr="ui_pointer" vaddr="0x47_000_000" perms="r" cached="true" setvar_vaddr="ui_pointer" />
         <map mr="slint_frame" vaddr="0x4d_000_000" perms="rw" cached="true" setvar_vaddr="slint_frame" />
@@ -520,6 +526,19 @@
     <channel>
         <end pd="slint_ui" id="10" notify="true" />
         <end pd="photo_reader" id="0" notify="true" />
+    </channel>
+    <protection_domain name="transcript_worker" priority="98" budget="2500" period="10000" stack_size="0x20000">
+        <program_image path="slint_transcript_worker.elf" />
+        <map mr="transcript_mailbox" vaddr="0x60_000_000" perms="rw" cached="true" setvar_vaddr="transcript_mailbox" />
+        <map mr="messages_worker_transfer" vaddr="0x62_000_000" perms="rw" cached="true" setvar_vaddr="messages_worker_transfer" />
+    </protection_domain>
+    <channel>
+        <end pd="slint_ui" id="11" notify="true" />
+        <end pd="transcript_worker" id="0" notify="true" />
+    </channel>
+    <channel>
+        <end pd="messages_app" id="7" notify="false" />
+        <end pd="transcript_worker" id="1" pp="true" notify="false" />
     </channel>
     <channel>
         <end pd="vault" id="9" notify="false" />

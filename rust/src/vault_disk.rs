@@ -1671,7 +1671,7 @@ impl Vault {
     }
 
     fn history_request(&mut self, request: MessageInfo) -> Result<MessageInfo, MessageLabel> {
-        use vault_protocol::{REQUEST_HISTORY_APPEND, REQUEST_HISTORY_END, REQUEST_HISTORY_READ};
+        use vault_protocol::{REQUEST_HISTORY_APPEND, REQUEST_HISTORY_END, REQUEST_HISTORY_READ, REQUEST_HISTORY_READ_BATCH};
         let blocks = self.block.capacity_blocks()?;
         if blocks <= MESSAGE_PHOTO_FIRST_BLOCK + 2 {
             return Err(REPLY_STORAGE);
@@ -1756,6 +1756,41 @@ impl Vault {
                 }
                 set_mr(0, owner);
                 set_mr(1, event.len() as u64);
+                Ok(MessageInfo::new(REPLY_OK, 2))
+            }
+            (REQUEST_HISTORY_READ_BATCH, 2) => {
+                let requested_end = get_mr(1);
+                if input == 0 || input > requested_end || requested_end > end {
+                    return Err(REPLY_BAD_REQUEST);
+                }
+                let mut bytes = [0; vault_blob_record::MAX_PAYLOAD_SIZE];
+                let mut writer = personal_os_rust_server::history_batch::Writer::new(&mut bytes);
+                let last = requested_end.min(input.saturating_add(personal_os_rust_server::history_batch::MAX_ENTRIES as u64 - 1));
+                for id in input..=last {
+                    let block = vault_history::record_block(blocks, id, MESSAGE_PHOTO_FIRST_BLOCK).ok_or(REPLY_CORRUPT)?;
+                    let mut raw = self.read_disk_block(block)?;
+                    let record = vault_blob_record::decode(&self.crypto, vault_history::RECORD_NAMESPACE, &mut raw)
+                        .map_err(|_| REPLY_STORAGE)?;
+                    let fits = match record {
+                        None => writer.push(0, None),
+                        Some(record) => {
+                            if record.generation != id { return Err(REPLY_CORRUPT); }
+                            let offset = vault_blob_record::CIPHERTEXT_OFFSET;
+                            let (owner, event) = vault_history::split_event(&raw[offset..offset + record.payload_length])
+                                .ok_or(REPLY_CORRUPT)?;
+                            if owner == 0 || event.is_empty() { return Err(REPLY_CORRUPT); }
+                            writer.push(owner, Some(event))
+                        }
+                    };
+                    if !fits { break; }
+                }
+                let count = writer.count();
+                let payload = writer.bytes();
+                let length = payload.len();
+                let page = self.transfer_page(MESSAGES_NAMESPACE)?;
+                if !(unsafe { &mut *page }).set_payload(payload) { return Err(REPLY_CORRUPT); }
+                set_mr(0, count as u64);
+                set_mr(1, length as u64);
                 Ok(MessageInfo::new(REPLY_OK, 2))
             }
             _ => Err(REPLY_BAD_REQUEST),
@@ -2258,7 +2293,8 @@ impl Handler for Vault {
 
         if channel == MESSAGES_APP_CHANNEL
             && matches!(request.label(), vault_protocol::REQUEST_HISTORY_APPEND
-                | vault_protocol::REQUEST_HISTORY_READ | vault_protocol::REQUEST_HISTORY_END)
+                | vault_protocol::REQUEST_HISTORY_READ | vault_protocol::REQUEST_HISTORY_END
+                | vault_protocol::REQUEST_HISTORY_READ_BATCH)
         {
             if request.label() == vault_protocol::REQUEST_HISTORY_APPEND && get_mr(0) == vault_protocol::LIBRARY_OWNER {
                 return Ok(MessageInfo::new(REPLY_DENIED, 0));

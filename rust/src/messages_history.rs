@@ -8,7 +8,7 @@ use personal_os_rust_server::{
 use sel4_microkit::{MessageInfo, get_mr, set_mr};
 
 use crate::vault_protocol::{
-    REPLY_NO_BLOB, REPLY_OK, REQUEST_HISTORY_APPEND, REQUEST_HISTORY_END, REQUEST_HISTORY_READ,
+    REPLY_BAD_REQUEST, REPLY_DENIED, REPLY_NO_BLOB, REPLY_OK, REQUEST_HISTORY_APPEND, REQUEST_HISTORY_END, REQUEST_HISTORY_READ, REQUEST_HISTORY_READ_BATCH,
     REQUEST_PHOTO_PURGE_CHAT,
 };
 
@@ -142,7 +142,12 @@ impl History {
 
     pub fn row_count(&self) -> usize { self.used }
 
-    pub fn refresh(&mut self, mut page: NonNull<BlobTransferPage>) -> Result<(), ()> {
+    pub fn refresh(&mut self, page: NonNull<BlobTransferPage>) -> Result<(), ()> {
+        self.refresh_step(page, usize::MAX).and_then(|done| if done { Ok(()) } else { Err(()) })
+    }
+
+    /// Advance a bounded number of authenticated records so callers can yield.
+    pub fn refresh_step(&mut self, mut page: NonNull<BlobTransferPage>, budget: usize) -> Result<bool, ()> {
         let reply = VAULT.pp_call(MessageInfo::new(REQUEST_HISTORY_END, 0));
         if reply.label() != REPLY_OK || reply.count() != 1 {
             return Err(());
@@ -151,19 +156,62 @@ impl History {
         if end < self.scanned || end > MAX_RECORDS {
             return Err(());
         }
-        for id in self.scanned + 1..=end {
-            if let Some((owner, event)) = read(id as u64, unsafe { page.as_mut() })? {
-                if matches!(event, Event::Cleared) {
-                    set_mr(0, owner);
-                    let reply = VAULT.pp_call(MessageInfo::new(REQUEST_PHOTO_PURGE_CHAT, 1));
-                    if reply.label() != REPLY_OK || reply.count() != 0 {
-                        return Err(());
+        let target = personal_os_rust_server::history_batch::scan_step_end(self.scanned, end, budget).ok_or(())?;
+        let mut batch_supported = true;
+        while self.scanned < target {
+            let id = self.scanned + 1;
+            let mut copied = [0; personal_os_rust_server::vault_blob_record::MAX_PAYLOAD_SIZE];
+            let mut count = 0;
+            let mut len = 0;
+            if batch_supported {
+                set_mr(0, id as u64);
+                set_mr(1, target as u64);
+                let reply = VAULT.pp_call(MessageInfo::new(REQUEST_HISTORY_READ_BATCH, 2));
+                if matches!(reply.label(), REPLY_BAD_REQUEST | REPLY_DENIED) && reply.count() == 0 {
+                    batch_supported = false;
+                } else {
+                    if reply.label() != REPLY_OK || reply.count() != 2 { return Err(()); }
+                    count = usize::try_from(get_mr(0)).map_err(|_| ())?;
+                    len = usize::try_from(get_mr(1)).map_err(|_| ())?;
+                    if count > target - self.scanned || count > personal_os_rust_server::history_batch::MAX_ENTRIES { return Err(()); }
+                    let bytes = unsafe { page.as_mut() }.payload().filter(|bytes| bytes.len() == len).ok_or(())?;
+                    copied[..len].copy_from_slice(bytes);
+                    // Validate the whole frame before changing the index.
+                    let entries = personal_os_rust_server::history_batch::decode(&copied[..len], count).ok_or(())?;
+                    for entry in entries {
+                        if entry.owner != crate::vault_protocol::LIBRARY_OWNER {
+                            if let Some(bytes) = entry.event { vault_history::decode_event(bytes).ok_or(())?; }
+                        }
                     }
                 }
-                self.apply(id as u64, owner, event);
             }
-            self.scanned = id;
+            if count == 0 {
+                if let Some((owner, event)) = read(id as u64, unsafe { page.as_mut() })? {
+                    self.apply_read(id, owner, event)?;
+                }
+                self.scanned = id;
+                continue;
+            }
+            for (offset, entry) in personal_os_rust_server::history_batch::decode(&copied[..len], count).ok_or(())?.enumerate() {
+                let id = id + offset;
+                if entry.owner != crate::vault_protocol::LIBRARY_OWNER {
+                    if let Some(bytes) = entry.event {
+                        self.apply_read(id, entry.owner, vault_history::decode_event(bytes).ok_or(())?)?;
+                    }
+                }
+                self.scanned = id;
+            }
         }
+        Ok(self.scanned == end)
+    }
+
+    fn apply_read(&mut self, id: usize, owner: u64, event: Event<'_>) -> Result<(), ()> {
+        if matches!(event, Event::Cleared) {
+            set_mr(0, owner);
+            let reply = VAULT.pp_call(MessageInfo::new(REQUEST_PHOTO_PURGE_CHAT, 1));
+            if reply.label() != REPLY_OK || reply.count() != 0 { return Err(()); }
+        }
+        self.apply(id as u64, owner, event);
         Ok(())
     }
 
@@ -206,10 +254,17 @@ impl History {
         legacy: &str,
         page: NonNull<BlobTransferPage>,
     ) -> Result<(), ()> {
-        if self.migrated(owner) {
-            return Ok(());
-        }
+        self.migrate_step(owner, legacy, page, usize::MAX).and_then(|done| if done { Ok(()) } else { Err(()) })
+    }
+
+    /// Persist at most `budget` legacy rows before returning to the caller.
+    pub fn migrate_step(
+        &mut self, owner: u64, legacy: &str, page: NonNull<BlobTransferPage>, budget: usize,
+    ) -> Result<bool, ()> {
+        if budget == 0 { return Err(()); }
+        if self.migrated(owner) { return Ok(true); }
         let mut encoded = [0; vault_history::MAX_EVENT_SIZE];
+        let mut appended = 0;
         for (index, line) in legacy.lines().enumerate() {
             let mut key = MessageKey {
                 source: 0,
@@ -235,8 +290,11 @@ impl History {
             }
             let len = vault_history::encode_row(key, line, &mut encoded).ok_or(())?;
             self.append(owner, &encoded[..len], page)?;
+            appended += 1;
+            if appended >= budget { return Ok(false); }
         }
-        self.append(owner, vault_history::MIGRATED, page)
+        self.append(owner, vault_history::MIGRATED, page)?;
+        Ok(true)
     }
 }
 

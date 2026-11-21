@@ -19,7 +19,7 @@ use vault_protocol::{
     PHOTO_CHUNK, PHOTO_MAX, REPLY_NO_BLOB, REPLY_OK, REPLY_DENIED, LIBRARY_OWNER,
     REQUEST_LIBRARY_CLONE, REQUEST_LIBRARY_NEXT, REQUEST_LIBRARY_DELETE, REQUEST_LIBRARY_IMPORT, REQUEST_LIBRARY_COPY_TO_CHAT, REQUEST_ATTACHMENT_COMMIT,
     REQUEST_FILE_DELETE, REQUEST_FILE_READ, REQUEST_FILE_SIZE, REQUEST_FILE_SYNC, REQUEST_FILE_WRITE,
-    REQUEST_HISTORY_APPEND, REQUEST_HISTORY_END, REQUEST_HISTORY_READ, REQUEST_PHOTO_COMMIT,
+    REQUEST_HISTORY_APPEND, REQUEST_HISTORY_END, REQUEST_HISTORY_READ, REQUEST_HISTORY_READ_BATCH, REQUEST_PHOTO_COMMIT,
     REQUEST_PHOTO_PURGE_CHAT, REQUEST_PHOTO_READ,
     REQUEST_PHOTO_STAGE, REQUEST_READ, REQUEST_READ_BLOB, REQUEST_TEST_ADVANCE,
     REQUEST_WRITE, REQUEST_WRITE_BLOB, TEST_VALUE, REPLY_CONFLICT,
@@ -372,6 +372,29 @@ fn run_history_smoke(transfer: &mut BlobTransferPage) {
             fail("history event did not reopen with its owner and original bytes");
         }
     }
+    set_mr(0, 1);
+    set_mr(1, 2);
+    let reply = MESSAGES_ENDPOINT.pp_call(MessageInfo::new(REQUEST_HISTORY_READ_BATCH, 2));
+    if reply.label() != REPLY_OK || reply.count() != 2 || get_mr(0) != 2 {
+        fail("batched history read failed");
+    }
+    let length = get_mr(1) as usize;
+    let payload = transfer.payload().filter(|payload| payload.len() == length)
+        .unwrap_or_else(|| fail("batched history payload is invalid"));
+    let mut entries = personal_os_rust_server::history_batch::decode(payload, 2)
+        .unwrap_or_else(|| fail("batched history framing is invalid"));
+    if entries.next() != Some(personal_os_rust_server::history_batch::Entry { owner: CHAT, event: Some(&FIRST[..]) })
+        || entries.next() != Some(personal_os_rust_server::history_batch::Entry { owner: CHAT, event: Some(&SECOND[..]) })
+        || entries.next().is_some() {
+        fail("batched history did not preserve owners and event bytes");
+    }
+    drop(entries);
+    set_mr(0, 0);
+    set_mr(1, 2);
+    if MESSAGES_ENDPOINT.pp_call(MessageInfo::new(REQUEST_HISTORY_READ_BATCH, 2)).label() == REPLY_OK {
+        fail("batched history accepted an invalid range");
+    }
+    debug_println!("STORAGE|HISTORY_BATCH_OK");
     run_photo_reuse_smoke(transfer, last == 0);
     run_library_smoke(transfer, last == 0);
     if last == 6 {

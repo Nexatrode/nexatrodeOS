@@ -59,6 +59,8 @@ const WALLET_SERVICE: Channel = Channel::new(6);
 const PHOTO_WORKER: Channel = Channel::new(9);
 #[cfg(feature = "utm-photo-worker")]
 const PHOTO_READER: Channel = Channel::new(10);
+#[cfg(feature = "utm-transcript-worker")]
+const TRANSCRIPT_WORKER: Channel = Channel::new(11);
 /// Diagnostic: shell→dhcp STATUS (channel 7). Proves whether dhcp PPC replies to anyone.
 const DHCP_TCP_PROBE: Channel = Channel::new(7);
 const REQUEST_WALLET_STATUS: u64 = 0x501;
@@ -301,6 +303,10 @@ struct SlintService {
     transcripts_loaded: bool,
     #[cfg(feature = "simplex-agent-ui")]
     chat_read_len: [usize; CHAT_SLOTS],
+    #[cfg(feature = "utm-transcript-worker")]
+    history_baselined: [bool; CHAT_SLOTS],
+    #[cfg(feature = "utm-transcript-worker")]
+    initial_unread: [usize; CHAT_SLOTS],
     #[cfg(feature = "simplex-agent-ui")]
     last_unread: [usize; CHAT_SLOTS],
     wallet_service: WalletServiceClient,
@@ -325,6 +331,8 @@ struct SlintService {
     /// paint once at the end. A full frame per character overflows the queue.
     defer_frame: bool,
     frame_dirty: bool,
+    #[cfg(feature = "simplex-agent-ui")]
+    chat_refresh: personal_os_slint_notes_spike::chat_refresh::ChatRefresh,
     /// CONNECT KEEP cycles with no progress. After many, soft-rearm OPEN once
     /// — notify-only can leave WaitConnect PENDING forever with no SYN on TCG.
     wallet_connect_keep_cycles: u8,
@@ -615,6 +623,22 @@ struct MessagesServiceClient {
     showing_address: Cell<bool>,
     #[cfg(feature = "simplex-agent-ui")]
     history_cache: RefCell<[Option<(u64, u64, String)>; CHAT_SLOTS]>,
+    #[cfg(feature = "utm-transcript-worker")]
+    transcript_mailbox: &'static personal_os_slint_notes_spike::transcript_ipc::TranscriptMailbox,
+    #[cfg(feature = "utm-transcript-worker")]
+    transcript_queue: RefCell<personal_os_slint_notes_spike::transcript_queue::Queue>,
+    #[cfg(feature = "utm-transcript-worker")]
+    transcript_ticket: Cell<Option<personal_os_slint_notes_spike::transcript_queue::Ticket>>,
+    #[cfg(feature = "utm-transcript-worker")]
+    transcript_owners: RefCell<[u64; CHAT_SLOTS]>,
+    #[cfg(feature = "utm-transcript-worker")]
+    force_chat_refresh: Cell<bool>,
+}
+
+#[cfg(feature = "utm-transcript-worker")]
+enum TranscriptCompletion {
+    Loaded(usize, String),
+    Failed(usize),
 }
 
 impl MessagesServiceClient {
@@ -624,7 +648,11 @@ impl MessagesServiceClient {
             return Err("Messages service load failed");
         }
         let length = get_mr(0) as usize;
-        if length > 1024 {
+        #[cfg(feature = "utm-transcript-worker")]
+        let limit = personal_os_rust_server::vault_blob_record::MAX_PAYLOAD_SIZE;
+        #[cfg(not(feature = "utm-transcript-worker"))]
+        let limit = 1024;
+        if length > limit {
             return Err("Messages service returned an invalid snapshot length");
         }
         let payload = unsafe { self.transfer.as_ref() }
@@ -633,7 +661,18 @@ impl MessagesServiceClient {
         if payload.len() != length {
             return Err("invalid Messages service payload");
         }
-        String::from_utf8(payload.into()).map_err(|_| "Messages snapshot is not UTF-8")
+        let text = String::from_utf8(payload.into()).map_err(|_| "Messages snapshot is not UTF-8")?;
+        #[cfg(feature = "utm-transcript-worker")]
+        {
+            let owners = personal_os_slint_notes_spike::transcript_queue::owners_from_snapshot(&text);
+            let changed = *self.transcript_owners.borrow() != owners;
+            if changed {
+                *self.transcript_owners.borrow_mut() = owners;
+                self.transcript_queue.borrow_mut().invalidate();
+                *self.history_cache.borrow_mut() = core::array::from_fn(|_| None);
+            }
+        }
+        Ok(text)
     }
 
     fn set_profile(&mut self, name: &str) -> Result<(), &'static str> {
@@ -936,7 +975,7 @@ impl MessagesServiceClient {
         String::from_utf8(payload.into()).map_err(|_| "Messages transcript is not UTF-8")
     }
 
-    #[cfg(feature = "simplex-agent-ui")]
+    #[cfg(all(feature = "simplex-agent-ui", not(feature = "utm-transcript-worker")))]
     fn transcript(&self, index: u64) -> Result<String, &'static str> {
         let index = usize::try_from(index).ok().filter(|&index| index < CHAT_SLOTS)
             .ok_or("Unknown Messages chat")?;
@@ -980,6 +1019,72 @@ impl MessagesServiceClient {
         debug_println!("SLINT SIMPLEX HISTORY_LOADED {} {}", index, text.len());
         cache[index] = Some((owner, revision, text.clone()));
         Ok(text)
+    }
+
+    #[cfg(feature = "utm-transcript-worker")]
+    fn transcript(&self, index: u64) -> Result<String, &'static str> {
+        let index = usize::try_from(index).ok().filter(|&i| i < CHAT_SLOTS).ok_or("Unknown Messages chat")?;
+        self.transcript_queue.borrow_mut().request(index);
+        self.start_transcript();
+        self.history_cache.borrow()[index].as_ref().map(|(_, _, text)| text.clone())
+            .ok_or("Messages history is loading")
+    }
+
+    #[cfg(feature = "utm-transcript-worker")]
+    fn history_changed(&self, index: usize) {
+        let changed = self.transcript_queue.borrow_mut().changed(index);
+        if changed {
+            self.history_cache.borrow_mut()[index] = None;
+            self.start_transcript();
+        }
+    }
+
+    #[cfg(feature = "utm-transcript-worker")]
+    fn start_transcript(&self) {
+        if self.transcript_ticket.get().is_some() || !self.transcript_mailbox.available() { return; }
+        let Some(ticket) = self.transcript_queue.borrow_mut().start() else { return; };
+        let request = personal_os_slint_notes_spike::transcript_ipc::request(ticket.index()).unwrap();
+        if self.transcript_mailbox.submit(|out| { out[..request.len()].copy_from_slice(&request); Some(request.len()) }) {
+            self.transcript_ticket.set(Some(ticket));
+            TRANSCRIPT_WORKER.notify();
+        } else {
+            self.transcript_queue.borrow_mut().finish(ticket);
+            self.transcript_queue.borrow_mut().request(ticket.index());
+        }
+    }
+
+    #[cfg(feature = "utm-transcript-worker")]
+    fn finish_transcript(&self) -> Option<TranscriptCompletion> {
+        use personal_os_slint_notes_spike::photo_mailbox::Completion;
+        let ticket = self.transcript_ticket.get()?;
+        let result = self.transcript_mailbox.take(|bytes| {
+            personal_os_slint_notes_spike::transcript_ipc::parse_response(bytes)
+                .map(|(owner, revision, text)| (owner, revision, text.to_string()))
+        });
+        if matches!(result, Completion::Waiting) { return None; }
+        self.transcript_ticket.set(None);
+        let current = self.transcript_queue.borrow_mut().finish(ticket);
+        let result = match result {
+            Completion::Ready(Some((owner, revision, text))) if current && self.transcript_owners.borrow()[ticket.index()] == owner => {
+                #[cfg(feature = "utm-perf-trace")]
+                debug_println!("PERF|TRANSCRIPT_RESULT|{}|{}|{}", ticket.index(), text.len(), perf_time_us());
+                self.history_cache.borrow_mut()[ticket.index()] = Some((owner, revision, text.clone()));
+                Some(TranscriptCompletion::Loaded(ticket.index(), text))
+            }
+            Completion::Failed | Completion::Ready(None) if current => {
+                Some(TranscriptCompletion::Failed(ticket.index()))
+            }
+            Completion::Ready(Some(_)) if current => {
+                Some(TranscriptCompletion::Failed(ticket.index()))
+            }
+            _ => {
+                #[cfg(feature = "utm-perf-trace")]
+                debug_println!("PERF|TRANSCRIPT_REJECT|{}|{}", ticket.index(), perf_time_us());
+                None
+            },
+        };
+        self.start_transcript();
+        result
     }
 
     fn image_meta(&self) -> Result<(u64, usize), &'static str> {
@@ -2768,35 +2873,7 @@ fn chat_preview(transcript: &str) -> alloc::borrow::Cow<'_, str> {
     strip_reaction_suffix(strip_shared_msg_id(body).1).0.into()
 }
 
-fn unread_incoming(transcript: &str, seen: usize) -> usize {
-    let bytes = transcript.as_bytes();
-    let seen = seen.min(bytes.len());
-    let mut start = if seen == 0 || bytes.get(seen.saturating_sub(1)) == Some(&b'\n') {
-        seen
-    } else {
-        match bytes[seen..].iter().position(|byte| *byte == b'\n') {
-            Some(offset) => seen + offset + 1,
-            None => bytes.len(),
-        }
-    };
-    let mut count = 0usize;
-    while start < bytes.len() {
-        let end = bytes[start..]
-            .iter()
-            .position(|byte| *byte == b'\n')
-            .map(|offset| start + offset)
-            .unwrap_or(bytes.len());
-        let line = &bytes[start..end];
-        if !line.is_empty() && !line.starts_with(b"NexatrodeOS: ") {
-            count += 1;
-        }
-        if end == bytes.len() {
-            break;
-        }
-        start = end + 1;
-    }
-    count
-}
+use personal_os_slint_notes_spike::chat_unread::unread_incoming;
 
 fn chat_clock(transcript: &str) -> &str {
     let Some(line) = transcript.lines().rev().find(|line| !line.is_empty()) else {
@@ -2826,6 +2903,8 @@ fn keep_received_message(
         ui.get_message_chat_index().max(0) as usize
     };
     let speaker = chat_name_at(ui, index);
+    #[cfg(feature = "utm-transcript-worker")]
+    service.borrow().history_changed(index);
     match service.borrow().transcript(index as u64) {
         Ok(saved) => {
             transcripts.borrow_mut()[index.min(CHAT_SLOTS - 1)] = saved.clone();
@@ -2882,9 +2961,13 @@ impl SlintService {
                     let slot = &slots[index.min(CHAT_SLOTS - 1)];
                     if reading && index == open_index {
                         next_read[index] = slot.len();
+                        #[cfg(feature = "utm-transcript-worker")]
+                        { self.initial_unread[index] = 0; }
                     }
                     let slot_i = index.min(CHAT_SLOTS - 1);
                     let unread = unread_incoming(slot, next_read[slot_i]);
+                    #[cfg(feature = "utm-transcript-worker")]
+                    let unread = unread.saturating_add(self.initial_unread[slot_i]);
                     let prev = self.last_unread[slot_i];
                     if unread != prev {
                         if unread > 0 {
@@ -3318,7 +3401,12 @@ impl SlintService {
         self.transcripts_loaded = true;
         let count = self._ui.get_message_chats().row_count();
         for index in 0..count.min(CHAT_SLOTS) {
-            if let Ok(saved) = self.messages_service.borrow().transcript(index as u64) {
+            #[cfg(feature = "utm-perf-trace")]
+            let started = perf_time_us();
+            let transcript = self.messages_service.borrow().transcript(index as u64);
+            #[cfg(feature = "utm-perf-trace")]
+            debug_println!("PERF|TRANSCRIPT_LOAD|{}|{}|{}|{}", index, started, perf_time_us(), u8::from(transcript.is_ok()));
+            if let Ok(saved) = transcript {
                 self.chat_transcripts.borrow_mut()[index] = saved;
             }
         }
@@ -3333,6 +3421,8 @@ impl SlintService {
     }
 
     fn paint_rendered(&mut self, full: bool) -> DamageBand {
+        #[cfg(feature = "utm-perf-trace")]
+        let trace_paint_start = perf_time_us();
         if full {
             self.window.request_redraw();
             // NewBuffer does not guarantee every line is rewritten; leftover Skia
@@ -3351,6 +3441,8 @@ impl SlintService {
         }
         #[cfg(all(feature = "simplex-agent-ui", not(feature = "utm-photo-worker")))]
         sync_message_bubbles(&self._ui, &self.chat_photo_loader);
+        #[cfg(feature = "utm-perf-trace")]
+        let trace_before_draw = perf_time_us();
         let mut band = DamageBand::new();
         let mut slint_y = 0i32;
         let mut slint_bottom = 0i32;
@@ -3372,6 +3464,8 @@ impl SlintService {
                 band.cover(origin_y as u32, height);
             }
         });
+        #[cfg(feature = "utm-perf-trace")]
+        let trace_after_draw = perf_time_us();
         let chat_rows = self.sync_chat_rows();
         let dirty_chats = skia_guest::chat_dirty_mask();
         skia_guest::flush_chat_sprites();
@@ -3425,6 +3519,8 @@ impl SlintService {
         if full {
             band.cover(0, FRAME_HEIGHT);
         }
+        #[cfg(feature = "utm-perf-trace")]
+        debug_println!("PERF|PAINT_STAGES|{}|{}|{}|{}|{}", self._ui.get_page(), trace_paint_start, trace_before_draw, trace_after_draw, perf_time_us());
         band
     }
 
@@ -3625,6 +3721,8 @@ impl SlintService {
         if view == 6 || view == 63 || view == 64 || (600..600 + CHAT_SLOTS as i32).contains(&view) {
             self.ensure_chat_transcripts();
         }
+        #[cfg(feature = "utm-perf-trace")]
+        let perf_after_transcripts = perf_time_us();
         let mut view_changed = false;
         if view != self.shown_view {
             view_changed = true;
@@ -3636,6 +3734,8 @@ impl SlintService {
                 }
                 self.publish_copied_frame();
                 self.arm_page_sync();
+                #[cfg(feature = "utm-perf-trace")]
+                debug_println!("PERF|CACHED_FRAME|{}|{}|{}|{}", view, perf_start, perf_after_transcripts, perf_time_us());
                 return;
             }
             // Uncached views (e.g. NexaWal): partial dirty bands would paint onto the prior page.
@@ -3652,6 +3752,8 @@ impl SlintService {
             || matches!(self.wallet_boot_phase, 1 | 2 | 3)
             || face_tab_dirty
             || font_prepared;
+        #[cfg(feature = "utm-perf-trace")]
+        let perf_before_paint = perf_time_us();
         let mut band = self.paint_rendered(force_full);
         #[cfg(feature = "utm-perf-trace")]
         let perf_painted = perf_time_us();
@@ -3676,6 +3778,8 @@ impl SlintService {
         self.shown_stamp = self.view_stamp();
         #[cfg(feature = "utm-perf-trace")]
         debug_println!("PERF|FRAME|{}|{}|{}|{}|{}", perf_start, perf_painted, perf_time_us(), height, u8::from(force_full));
+        #[cfg(feature = "utm-perf-trace")]
+        debug_println!("PERF|FRAME_PREP|{}|{}|{}|{}", view, perf_start, perf_after_transcripts, perf_before_paint);
     }
 }
 
@@ -3842,6 +3946,16 @@ fn init() -> SlintService {
         showing_address: Cell::new(false),
         #[cfg(feature = "simplex-agent-ui")]
         history_cache: RefCell::new(core::array::from_fn(|_| None)),
+        #[cfg(feature = "utm-transcript-worker")]
+        transcript_mailbox: unsafe { memory_region_symbol!(transcript_mailbox: *mut personal_os_slint_notes_spike::transcript_ipc::TranscriptMailbox).as_ref() },
+        #[cfg(feature = "utm-transcript-worker")]
+        transcript_queue: RefCell::new(personal_os_slint_notes_spike::transcript_queue::Queue::new()),
+        #[cfg(feature = "utm-transcript-worker")]
+        transcript_ticket: Cell::new(None),
+        #[cfg(feature = "utm-transcript-worker")]
+        transcript_owners: RefCell::new([0; CHAT_SLOTS]),
+        #[cfg(feature = "utm-transcript-worker")]
+        force_chat_refresh: Cell::new(false),
     }));
     let chat_transcripts: Rc<RefCell<[String; CHAT_SLOTS]>> =
         Rc::new(RefCell::new(core::array::from_fn(|_| String::new())));
@@ -4128,7 +4242,12 @@ fn init() -> SlintService {
                 select_drafts.borrow_mut()[previous.min(CHAT_SLOTS - 1)] =
                     ui.get_message_body().to_string();
             }
-            let saved = match select_service.borrow().transcript(index) {
+            #[cfg(feature = "utm-transcript-worker")]
+            select_service.borrow().transcript_queue.borrow_mut().prioritize(index as usize);
+            let result = select_service.borrow().transcript(index);
+            #[cfg(feature = "utm-transcript-worker")]
+            let loading = result.is_err();
+            let saved = match result {
                 Ok(saved) => saved,
                 Err(_) => select_transcripts.borrow()[(index as usize).min(CHAT_SLOTS - 1)].clone(),
             };
@@ -4139,6 +4258,8 @@ fn init() -> SlintService {
             ui.set_message_chat_index(index as i32);
             ui.set_message_view(true);
             ui.set_message_transcript(saved.into());
+            #[cfg(feature = "utm-transcript-worker")]
+            if loading { ui.set_message_receive_status("Loading conversation…".into()); }
             ui.set_message_body(draft.into());
             present_message_image(&ui, &select_service.borrow());
             present_group_invite(&ui, &select_service.borrow());
@@ -4166,10 +4287,15 @@ fn init() -> SlintService {
                     }
                     delete_transcripts.borrow_mut()[(index as usize).min(CHAT_SLOTS - 1)].clear();
                     if let Ok(snapshot) = delete_service.borrow().load() {
+                        #[cfg(not(feature = "utm-transcript-worker"))]
+                        {
                         ui.set_message_has_connections(has_simplex_connection(&snapshot));
                         let mask = delete_service.borrow().archived_mask().unwrap_or(0);
                         apply_message_chats(&ui, &snapshot, mask, Some(&delete_transcripts.borrow()));
                         ui.set_message_service_state(snapshot.into());
+                        }
+                        #[cfg(feature = "utm-transcript-worker")]
+                        { let _ = snapshot; delete_service.borrow().force_chat_refresh.set(true); }
                     }
                     ui.set_message_send_status("Contact deleted".into());
                     debug_println!("SLINT SIMPLEX DELETE {}", index);
@@ -4198,6 +4324,8 @@ fn init() -> SlintService {
             match archived_result {
                 Ok(mask) => {
                     if let Ok(snapshot) = archive_service.borrow().load() {
+                        #[cfg(not(feature = "utm-transcript-worker"))]
+                        {
                         apply_message_chats(
                             &ui,
                             &snapshot,
@@ -4205,6 +4333,9 @@ fn init() -> SlintService {
                             Some(&archive_transcripts.borrow()),
                         );
                         ui.set_message_service_state(snapshot.into());
+                        }
+                        #[cfg(feature = "utm-transcript-worker")]
+                        { let _ = snapshot; archive_service.borrow().force_chat_refresh.set(true); }
                     } else {
                         apply_message_chats(
                             &ui,
@@ -4471,6 +4602,8 @@ fn init() -> SlintService {
             match result {
                 Ok(()) => {
                     let index = ui.get_message_chat_index().max(0) as usize;
+                    #[cfg(feature = "utm-transcript-worker")]
+                    send_service.borrow().history_changed(index.min(CHAT_SLOTS - 1));
                     match send_service.borrow().transcript(index as u64) {
                         Ok(saved) => {
                             send_transcripts.borrow_mut()[index.min(CHAT_SLOTS - 1)] = saved.clone();
@@ -5021,6 +5154,10 @@ fn init() -> SlintService {
         transcripts_loaded: false,
         #[cfg(feature = "simplex-agent-ui")]
         chat_read_len: [0; CHAT_SLOTS],
+        #[cfg(feature = "utm-transcript-worker")]
+        history_baselined: [false; CHAT_SLOTS],
+        #[cfg(feature = "utm-transcript-worker")]
+        initial_unread: [0; CHAT_SLOTS],
         #[cfg(feature = "simplex-agent-ui")]
         last_unread: [0; CHAT_SLOTS],
         wallet_service: WalletServiceClient {
@@ -5037,6 +5174,8 @@ fn init() -> SlintService {
         scanout_hold: 0,
         defer_frame: false,
         frame_dirty: false,
+        #[cfg(feature = "simplex-agent-ui")]
+        chat_refresh: personal_os_slint_notes_spike::chat_refresh::ChatRefresh::default(),
         wallet_connect_keep_cycles: 0,
         nav_gesture: NavGesture {
             active: false,
@@ -5533,8 +5672,45 @@ impl SlintService {
         let listed = self._ui.get_message_chats().row_count()
             + self._ui.get_message_group_chats().row_count()
             + self._ui.get_message_archived_chats().row_count();
+        #[cfg(feature = "utm-transcript-worker")]
+        let previous_owners = personal_os_slint_notes_spike::transcript_queue::owners_from_snapshot(
+            self._ui.get_message_service_state().as_str(),
+        );
         if let Ok(snapshot) = self.messages_service.borrow().load() {
-            if listed == 0 || snapshot.as_str() != self._ui.get_message_service_state().as_str() {
+            #[cfg(feature = "utm-transcript-worker")]
+            let forced = self.messages_service.borrow().force_chat_refresh.replace(false);
+            #[cfg(not(feature = "utm-transcript-worker"))]
+            let forced = false;
+            if forced || listed == 0 || snapshot.as_str() != self._ui.get_message_service_state().as_str() {
+                #[cfg(feature = "utm-transcript-worker")]
+                {
+                    let current_owners = *self.messages_service.borrow().transcript_owners.borrow();
+                    if previous_owners != current_owners {
+                        let map = personal_os_slint_notes_spike::transcript_queue::remap_by_owner(&previous_owners, &current_owners);
+                        let previous = self.chat_transcripts.borrow().clone();
+                        *self.chat_transcripts.borrow_mut() = core::array::from_fn(|i| map[i].map_or_else(String::new, |old| previous[old].clone()));
+                        let drafts = self.chat_drafts.borrow().clone();
+                        *self.chat_drafts.borrow_mut() = core::array::from_fn(|i| map[i].map_or_else(String::new, |old| drafts[old].clone()));
+                        let read = self.chat_read_len;
+                        self.chat_read_len = core::array::from_fn(|i| map[i].map_or(0, |old| read[old]));
+                        let baselined = self.history_baselined;
+                        self.history_baselined = core::array::from_fn(|i| map[i].is_some_and(|old| baselined[old]));
+                        let initial_unread = self.initial_unread;
+                        self.initial_unread = core::array::from_fn(|i| map[i].map_or(0, |old| initial_unread[old]));
+                        let unread = self.last_unread;
+                        self.last_unread = core::array::from_fn(|i| map[i].map_or(0, |old| unread[old]));
+                        if self._ui.get_message_view() {
+                            let old_index = self._ui.get_message_chat_index().max(0) as usize;
+                            if let Some(index) = map.iter().position(|old| *old == Some(old_index)) {
+                                self._ui.set_message_chat_index(index as i32);
+                            } else {
+                                self._ui.set_message_view(false);
+                                self._ui.set_message_transcript("".into());
+                                self._ui.set_message_body("".into());
+                            }
+                        }
+                    }
+                }
                 // The first vault load can fail while the agent is still
                 // starting. A later snapshot must leave the placeholder list.
                 self._ui.set_message_service_ready(true);
@@ -5578,6 +5754,15 @@ impl SlintService {
                 // RECEIVE_STATUS already persisted the line; sync the Slint
                 // copy so unread badges still move when the UI missed status 2.
                 let index = chat_index.min(CHAT_SLOTS - 1);
+                #[cfg(feature = "utm-transcript-worker")]
+                {
+                    let reading = self._ui.get_page() == 6 && self._ui.get_message_view()
+                        && self._ui.get_message_chat_index().max(0) as usize == index;
+                    if !self.history_baselined[index] && !reading {
+                        self.initial_unread[index] = self.initial_unread[index].max(1);
+                    }
+                    self.messages_service.borrow().history_changed(index);
+                }
                 if let Ok(saved) = self.messages_service.borrow().transcript(index as u64) {
                     let slot = &mut self.chat_transcripts.borrow_mut()[index];
                     if saved.as_str() != slot.as_str() {
@@ -5624,6 +5809,15 @@ impl SlintService {
         }
     }
 
+    #[cfg(feature = "simplex-agent-ui")]
+    fn poll_live_chat(&mut self) {
+        #[cfg(feature = "utm-perf-trace")]
+        let started = perf_time_us();
+        self.refresh_live_chat();
+        #[cfg(feature = "utm-perf-trace")]
+        debug_println!("PERF|LIVE_POLL|{}|{}|{}", started, perf_time_us(), u8::from(self.defer_frame));
+    }
+
     /// Apply taps and keys the input PD queued in the focus page.
     /// A protected call cannot land while this handler is in the sync pump.
     fn drain_posted_input(&mut self) {
@@ -5666,6 +5860,16 @@ impl SlintService {
             self.publish_frame();
             // The input service may have woken the GPU before this queued
             // frame was published. Wake it again after the pixels are ready.
+            SLINT_INPUT.notify();
+        }
+        // Platforms without a frame timer still perform the refresh after the
+        // input frame rather than silently dropping incoming updates.
+        #[cfg(feature = "simplex-agent-ui")]
+        if self.frame_timer.is_none() && self.chat_refresh.take()
+            && self._ui.get_page() == 6 && self._ui.get_edit_target() == 0
+        {
+            self.poll_live_chat();
+            self.publish_frame();
             SLINT_INPUT.notify();
         }
     }
@@ -5853,6 +6057,13 @@ impl SlintService {
     fn arm_frame_timer(&mut self) {
         let Some(channel) = self.frame_timer else { return };
         let mut delay = personal_os_slint_notes_spike::guest_platform::next_wake(&self.window);
+        #[cfg(feature = "simplex-agent-ui")]
+        if self.chat_refresh.pending() {
+            // Give scanout a chance to show the input frame before the
+            // synchronous messages service calls begin.
+            let refresh_delay = core::time::Duration::from_millis(16);
+            delay = Some(delay.map_or(refresh_delay, |wake| wake.min(refresh_delay)));
+        }
         #[cfg(feature = "utm-photo-worker")]
         let photo_worker_idle = self.pending_photo.is_none() && self.pending_photo_read.is_none();
         #[cfg(all(feature = "simplex-agent-ui", not(feature = "utm-photo-worker")))]
@@ -6007,7 +6218,10 @@ impl SlintService {
         }
         #[cfg(feature = "simplex-agent-ui")]
         if channels.contains(MESSAGES_SERVICE) {
-            self.refresh_live_chat();
+            // A service notification already provides the pending refresh.
+            // Avoid repeating the same synchronous poll on the frame timer.
+            self.chat_refresh.take();
+            self.poll_live_chat();
             self.publish_frame();
             // Input owns the scanout. A message must show without another tap.
             SLINT_INPUT.notify();
@@ -6985,7 +7199,9 @@ impl SlintService {
                 && value == 0)
                 || (device == DEVICE_KEYBOARD && event_type == EVENT_KEY && value != 0))
         {
-            self.refresh_live_chat();
+            if self.chat_refresh.request(self.defer_frame) {
+                self.poll_live_chat();
+            }
         }
         Ok(MessageInfo::new(REPLY_SLINT_EVENT_OK, 0))
     }
@@ -7003,6 +7219,12 @@ impl Handler for SlintService {
             self.frame_deadline = None;
         }
         self.handle_notification(channels)?;
+        #[cfg(feature = "simplex-agent-ui")]
+        if timer_fired && self.chat_refresh.take()
+            && self._ui.get_page() == 6 && self._ui.get_edit_target() == 0
+        {
+            self.poll_live_chat();
+        }
         #[cfg(feature = "utm-photo-worker")]
         let photo_read_finished = channels.contains(PHOTO_READER);
         #[cfg(not(feature = "utm-photo-worker"))]
@@ -7015,7 +7237,47 @@ impl Handler for SlintService {
         let photo_finished = false;
         #[cfg(feature = "utm-photo-worker")]
         if photo_finished { self.finish_photo_preview(); }
-        if timer_fired || photo_finished || photo_read_finished {
+        #[cfg(feature = "utm-transcript-worker")]
+        let transcript_finished = channels.contains(TRANSCRIPT_WORKER);
+        #[cfg(not(feature = "utm-transcript-worker"))]
+        let transcript_finished = false;
+        #[cfg(feature = "utm-transcript-worker")]
+        if transcript_finished {
+            let completed = self.messages_service.borrow().finish_transcript();
+            match completed {
+            Some(TranscriptCompletion::Loaded(index, saved)) => {
+                if !self.history_baselined[index] {
+                    let reading = self._ui.get_page() == 6 && self._ui.get_message_view()
+                        && self._ui.get_message_chat_index().max(0) as usize == index;
+                    self.initial_unread[index] = if reading { 0 } else {
+                        self.initial_unread[index].max(personal_os_slint_notes_spike::chat_unread::pending_before_baseline(
+                            &self.chat_transcripts.borrow()[index], false,
+                        ))
+                    };
+                    self.chat_read_len[index] = saved.len();
+                    self.history_baselined[index] = true;
+                }
+                self.chat_transcripts.borrow_mut()[index] = saved.clone();
+                if self._ui.get_page() == 6 && self._ui.get_message_view()
+                    && self._ui.get_message_chat_index().max(0) as usize == index
+                {
+                    self._ui.set_message_transcript(saved.into());
+                    if matches!(self._ui.get_message_receive_status().as_str(), "Loading conversation…" | "Couldn’t load conversation. Tap to retry.") {
+                        self._ui.set_message_receive_status("".into());
+                    }
+                }
+            }
+            Some(TranscriptCompletion::Failed(index)) => {
+                if self._ui.get_page() == 6 && self._ui.get_message_view()
+                    && self._ui.get_message_chat_index().max(0) as usize == index
+                {
+                    self._ui.set_message_receive_status("Couldn’t load conversation. Tap to retry.".into());
+                }
+            }
+            None => {}
+            }
+        }
+        if timer_fired || photo_finished || photo_read_finished || transcript_finished {
             #[cfg(feature = "simplex-agent-ui")]
             if timer_fired { self.load_visible_chat_photo_chunk(); }
             let revision = unsafe { self.header.as_ref() }.revision.load(Ordering::Acquire);

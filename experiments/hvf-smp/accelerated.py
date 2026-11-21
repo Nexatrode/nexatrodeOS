@@ -34,10 +34,13 @@ def ui_source_required(pds):
     ui = pds / "slint_notes_utm.elf"
     worker = pds / "slint_photo_worker.elf"
     reader = pds / "slint_photo_reader.elf"
-    if not (ui.is_file() and worker.is_file() and reader.is_file()):
+    transcript = pds / "slint_transcript_worker.elf"
+    messages = pds / "rust_messages_agent_app.elf"
+    if not (ui.is_file() and worker.is_file() and reader.is_file() and transcript.is_file() and messages.is_file()):
         return True
     binary = ui.read_bytes()
-    return b"photo_mailbox_region" not in binary or b"photo_read_mailbox" not in binary
+    return (b"photo_mailbox_region" not in binary or b"photo_read_mailbox" not in binary
+            or b"transcript_mailbox" not in binary or b"messages_worker_transfer" not in messages.read_bytes())
 
 
 def build_ui_from_source(inputs, stage):
@@ -50,22 +53,24 @@ def build_ui_from_source(inputs, stage):
         "-Zjson-target-spec", "--config", ROOT / "rust/.cargo/config.toml",
         "--manifest-path", ROOT / "experiments/slint-notes/Cargo.toml",
         "--target", ROOT / "rust/targets/aarch64-sel4-microkit.json",
-        "--features", "utm-pd,full-suite-ui,simplex-agent-ui,utm-photo-worker",
-        "--bin", "slint_notes_utm", "--bin", "slint_photo_worker", "--bin", "slint_photo_reader",
+        "--features", "utm-pd,full-suite-ui,simplex-agent-ui,utm-photo-worker,utm-transcript-worker",
+        "--bin", "slint_notes_utm", "--bin", "slint_photo_worker", "--bin", "slint_photo_reader", "--bin", "slint_transcript_worker",
     ], cwd=ROOT, env=env, check=True)
     subprocess.run([
         "cargo", "+nightly-2026-09-25", "build", "--locked", "--offline", "--release",
         "-Zjson-target-spec", "--config", ROOT / "rust/.cargo/config.toml",
         "--manifest-path", ROOT / "rust/Cargo.toml",
         "--target", ROOT / "rust/targets/aarch64-sel4-microkit.json",
-        "--features", "utm-slint-input", "--bin", "rust_input_service",
+        "--features", "utm-slint-input,utm-transcript-worker", "--bin", "rust_input_service",
+        "--bin", "rust_messages_agent_app",
     ], cwd=ROOT, env=env, check=True)
     output = stage / "ui"
     output.mkdir()
     release = target / "aarch64-sel4-microkit/release"
-    for name in ("slint_notes_utm.elf", "slint_photo_worker.elf", "slint_photo_reader.elf"):
+    for name in ("slint_notes_utm.elf", "slint_photo_worker.elf", "slint_photo_reader.elf", "slint_transcript_worker.elf"):
         shutil.copyfile(release / name, output / name)
     shutil.copyfile(release / "rust_input_service.elf", output / "input_service.elf")
+    shutil.copyfile(release / "rust_messages_agent_app.elf", output / "rust_messages_agent_app.elf")
     return output
 
 

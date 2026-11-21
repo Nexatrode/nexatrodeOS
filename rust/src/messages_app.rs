@@ -40,5 +40,15 @@ fn init() -> NamespaceTest {
         let simplex_ipc_page = memory_region_symbol!(simplex_ipc_page: *mut simplex_ipc::AgentPage);
         app.set_simplex_agent_page(unsafe { NonNull::new_unchecked(simplex_ipc_page.as_ptr()) });
     }
+    #[cfg(feature = "utm-transcript-worker")]
+    {
+        let ui = memory_region_symbol!(messages_ui_transfer: *mut BlobTransferPage);
+        let worker = memory_region_symbol!(messages_worker_transfer: *mut BlobTransferPage);
+        unsafe {
+            ui.as_ptr().write(BlobTransferPage::new());
+            worker.as_ptr().write(BlobTransferPage::new());
+        }
+        app.set_message_client_pages(ui, worker);
+    }
     app
 }

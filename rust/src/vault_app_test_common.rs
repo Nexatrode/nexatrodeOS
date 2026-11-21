@@ -167,6 +167,11 @@ const REQUEST_SLINT_HISTORY_INFO: MessageLabel = 0x383;
 const REPLY_SLINT_HISTORY_INFO: MessageLabel = 0x384;
 const REQUEST_SLINT_HISTORY_PAGE: MessageLabel = 0x385;
 const REPLY_SLINT_HISTORY_PAGE: MessageLabel = 0x386;
+#[cfg(feature = "utm-transcript-worker")]
+const REQUEST_SLINT_HISTORY_ADVANCE: MessageLabel = 0x395;
+#[cfg(feature = "utm-transcript-worker")]
+const REPLY_SLINT_HISTORY_PENDING: MessageLabel = 0x396;
+const REQUEST_SLINT_HISTORY_PAGE_STEP: MessageLabel = 0x397;
 const REPLY_SLINT_MESSAGES_SELECT_CHAT: MessageLabel = 0x368;
 #[cfg(feature = "simplex-agent")]
 const SIMPLEX_INVITATION_URI_CAPACITY: usize = 2048;
@@ -212,6 +217,10 @@ pub struct NamespaceTest {
     app_view: NonNull<AppViewState>,
     notes_touch_mode: Option<NonNull<AtomicU32>>,
     blob_transfer: NonNull<BlobTransferPage>,
+    #[cfg(feature = "utm-transcript-worker")]
+    slint_transfer: Option<NonNull<BlobTransferPage>>,
+    #[cfg(feature = "utm-transcript-worker")]
+    transcript_transfer: Option<NonNull<BlobTransferPage>>,
     messages_net_tx: Option<NonNull<MessagesNetTxPage>>,
     vault_generation: Option<MessageRegisterValue>,
     contacts: ContactsApp,
@@ -385,6 +394,10 @@ impl NamespaceTest {
             app_view,
             notes_touch_mode,
             blob_transfer,
+            #[cfg(feature = "utm-transcript-worker")]
+            slint_transfer: None,
+            #[cfg(feature = "utm-transcript-worker")]
+            transcript_transfer: None,
             messages_net_tx,
             vault_generation: None,
             contacts: ContactsApp::new(),
@@ -2576,7 +2589,21 @@ impl Handler for NamespaceTest {
         request: MessageInfo,
     ) -> Result<MessageInfo, Self::Error> {
         if channel == SLINT_MESSAGES_SERVICE && self.name == "MESSAGES" {
+            #[cfg(feature = "utm-transcript-worker")]
+            if let Some(client) = self.slint_transfer {
+                return Ok(self.handle_isolated_messages(request, client));
+            }
             return Ok(self.handle_slint_messages(request));
+        }
+        #[cfg(feature = "utm-transcript-worker")]
+        if channel == Channel::new(7) && self.name == "MESSAGES" {
+            if !matches!(request.label(), REQUEST_SLINT_HISTORY_ADVANCE | REQUEST_SLINT_HISTORY_PAGE_STEP) {
+                return Ok(MessageInfo::new(REPLY_DENIED, 0));
+            }
+            return Ok(match self.transcript_transfer {
+                Some(client) => self.handle_isolated_messages(request, client),
+                None => MessageInfo::new(REPLY_DENIED, 0),
+            });
         }
         if channel == SLINT_APP_SERVICE {
             return Ok(match self.name {
@@ -2619,6 +2646,25 @@ impl Handler for NamespaceTest {
 }
 
 impl NamespaceTest {
+    #[cfg(feature = "utm-transcript-worker")]
+    pub fn set_message_client_pages(&mut self, ui: NonNull<BlobTransferPage>, worker: NonNull<BlobTransferPage>) {
+        self.slint_transfer = Some(ui);
+        self.transcript_transfer = Some(worker);
+    }
+
+    #[cfg(feature = "utm-transcript-worker")]
+    fn handle_isolated_messages(&mut self, request: MessageInfo, client: NonNull<BlobTransferPage>) -> MessageInfo {
+        let source = unsafe { client.as_ref() };
+        if !source.copy_to(unsafe { self.blob_transfer.as_mut() }) {
+            return MessageInfo::new(REPLY_BAD_REQUEST, 0);
+        }
+        let reply = self.handle_slint_messages(request);
+        if !unsafe { self.blob_transfer.as_ref() }.copy_to(unsafe { &mut *client.as_ptr() }) {
+            return MessageInfo::new(REPLY_BAD_REQUEST, 0);
+        }
+        reply
+    }
+
     /// Slint receives only Messages' current local peer/thread summary. The
     /// Messages PD remains the sole owner of its vault record and Agent state.
     fn handle_slint_messages(&mut self, request: MessageInfo) -> MessageInfo {
@@ -3027,7 +3073,32 @@ impl NamespaceTest {
                 #[cfg(not(feature = "simplex-agent"))]
                 return MessageInfo::new(REPLY_DENIED, 0);
             }
-            (REQUEST_SLINT_HISTORY_PAGE, 3) => {
+            #[cfg(feature = "utm-transcript-worker")]
+            (REQUEST_SLINT_HISTORY_ADVANCE, 1) => {
+                let chat = get_mr(0) as usize;
+                let Some(&owner) = self.simplex_agent_connection_handles.get(chat) else {
+                    return MessageInfo::new(REPLY_BAD_REQUEST, 0);
+                };
+                if owner == 0 || !self.ensure_messages_loaded() { return MessageInfo::new(REPLY_BAD_REQUEST, 0); }
+                let history = unsafe { messages_history::index() };
+                match history.refresh_step(self.blob_transfer, 4) {
+                    Ok(true) => {},
+                    Ok(false) => return MessageInfo::new(REPLY_SLINT_HISTORY_PENDING, 0),
+                    Err(()) => return MessageInfo::new(REPLY_BAD_REQUEST, 0),
+                }
+                let Ok(legacy) = core::str::from_utf8(self.chat_transcripts.text(chat)) else {
+                    return MessageInfo::new(REPLY_BAD_REQUEST, 0);
+                };
+                match history.migrate_step(owner, legacy, self.blob_transfer, 1) {
+                    Ok(true) => {},
+                    Ok(false) => return MessageInfo::new(REPLY_SLINT_HISTORY_PENDING, 0),
+                    Err(()) => return MessageInfo::new(REPLY_BAD_REQUEST, 0),
+                }
+                set_mr(0, owner);
+                set_mr(1, history.revision());
+                return MessageInfo::new(REPLY_SLINT_HISTORY_INFO, 2);
+            }
+            (REQUEST_SLINT_HISTORY_PAGE | REQUEST_SLINT_HISTORY_PAGE_STEP, 3) => {
                 #[cfg(feature = "simplex-agent")]
                 {
                     let owner = get_mr(0);
@@ -3041,12 +3112,18 @@ impl NamespaceTest {
                     let mut output = [0; personal_os_rust_server::vault_blob_record::MAX_PAYLOAD_SIZE];
                     let mut length = 0;
                     let mut next = 0;
+                    let max_parts = if request.label() == REQUEST_SLINT_HISTORY_PAGE_STEP { 4 } else { usize::MAX };
+                    let mut parts_read = 0;
                     // High bits select the row; the low byte advances inside
                     // one row. Each part is valid UTF-8 even across replies.
                     let start_row = start >> 8;
                     for (index, record) in history.records(owner).filter(|(index, _)| *index >= start_row) {
                         let mut part = if index == start_row { start & 255 } else { 0 };
                         loop {
+                            if parts_read >= max_parts {
+                                next = (index << 8) | part;
+                                break;
+                            }
                             let Ok((text, more)) = messages_history::read_row_part(owner, record, part, page) else {
                                 return MessageInfo::new(REPLY_BAD_REQUEST, 0);
                             };
@@ -3056,6 +3133,7 @@ impl NamespaceTest {
                             }
                             output[length..length + text.len()].copy_from_slice(text.as_bytes());
                             length += text.len();
+                            parts_read += 1;
                             if !more {
                                 output[length] = b'\n';
                                 length += 1;
@@ -3371,6 +3449,9 @@ impl NamespaceTest {
             debug_println!("SLINT MESSAGES SERVICE LOAD FAILED: transfer capacity");
             return MessageInfo::new(REPLY_ROUTED_EVENT_BAD, 0);
         }
+        #[cfg(feature = "utm-transcript-worker")]
+        let mut text = [0u8; personal_os_rust_server::vault_blob_record::MAX_PAYLOAD_SIZE];
+        #[cfg(not(feature = "utm-transcript-worker"))]
         let mut text = [0u8; 1024];
         let mut payload_length = displayed.len().min(text.len());
         text[..payload_length].copy_from_slice(&displayed[..payload_length]);
@@ -3436,6 +3517,17 @@ impl NamespaceTest {
                 payload_length += label.len();
                 text[payload_length..payload_length + chat_name.len()].copy_from_slice(chat_name);
                 payload_length += chat_name.len();
+            }
+            #[cfg(feature = "utm-transcript-worker")]
+            for index in 0..self.simplex_agent_chat_count.min(self.simplex_agent_connection_handles_length).min(CHAT_SLOT_COUNT) {
+                const HANDLE: &[u8] = b"\nCHAT_HANDLE ";
+                if payload_length + HANDLE.len() + 2 + 1 + 16 >= text.len() { break; }
+                text[payload_length..payload_length + HANDLE.len()].copy_from_slice(HANDLE);
+                payload_length += HANDLE.len();
+                payload_length += write_u16_decimal(&mut text[payload_length..], index as u16);
+                text[payload_length] = b' ';
+                payload_length += 1;
+                payload_length += write_u64_hex(&mut text[payload_length..], self.simplex_agent_connection_handles[index]);
             }
             const PHOTO_LABEL: &[u8] = b"\nPHOTO_MASK ";
             if payload_length + PHOTO_LABEL.len() + 5 < text.len() {

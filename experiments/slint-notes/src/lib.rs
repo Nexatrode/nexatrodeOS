@@ -8,6 +8,12 @@ slint::include_modules!();
 
 pub mod frame;
 pub mod chat_photo_loader;
+pub mod chat_refresh;
+pub mod chat_unread;
+#[cfg(feature = "utm-transcript-worker")]
+pub mod transcript_queue;
+#[cfg(feature = "utm-transcript-worker")]
+pub mod transcript_ipc;
 pub mod photo_preview;
 #[cfg(feature = "utm-photo-worker")]
 pub mod photo_cache;
@@ -17,7 +23,7 @@ pub mod photo_rows;
 pub mod photo_read;
 #[cfg(feature = "utm-photo-worker")]
 pub mod photo_reader_ipc;
-#[cfg(feature = "utm-photo-worker")]
+#[cfg(any(feature = "utm-photo-worker", feature = "utm-transcript-worker"))]
 #[allow(unexpected_cfgs)]
 #[path = "../../../rust/src/wallet_scan_mailbox.rs"]
 pub mod photo_mailbox;
