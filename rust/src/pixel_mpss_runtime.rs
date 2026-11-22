@@ -4054,7 +4054,10 @@ impl RuntimeDomain {
             }
             #[cfg(feature="sunfish-wrq-domain-costs")]
             {
+                #[cfg(not(feature="sunfish-wrq-table-normal-nc"))]
                 display.replace_line(1,"WRQ DOMAIN COSTS");
+                #[cfg(feature="sunfish-wrq-table-normal-nc")]
+                display.replace_line(1,"WRQ TABLE NORMAL NC");
                 display.replace_line(15,"FAULT ASID ROUTE REG");
                 display.replace_line(18,"DOMAIN PRE BODY POST");
                 for (i,(from,to)) in [(visible,returned),(returned,head)].into_iter().enumerate(){

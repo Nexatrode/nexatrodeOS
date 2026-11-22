@@ -1,0 +1,68 @@
+--- a/crates/sel4/src/arch/arm/vm_attributes.rs
++++ b/crates/sel4/src/arch/arm/vm_attributes.rs
+@@ -22,6 +22,7 @@
+         Self::from_inner(sys::seL4_ARM_VMAttributes::seL4_ARM_ParityEnabled);
+     pub const EXECUTE_NEVER: Self =
+         Self::from_inner(sys::seL4_ARM_VMAttributes::seL4_ARM_ExecuteNever);
++    pub const NORMAL_NON_CACHEABLE: Self = Self::from_inner(0x08);
+ 
+     newtype_methods!(pub sys::seL4_ARM_VMAttributes::Type);
+ 
+--- a/crates/sel4-capdl-initializer/types/src/spec.rs
++++ b/crates/sel4-capdl-initializer/types/src/spec.rs
+@@ -696,6 +696,7 @@
+         pub object: ObjectId,
+         pub rights: Rights,
+         pub cached: bool,
++        pub normal_nc: bool,
+         pub executable: bool,
+     }
+ 
+--- a/crates/sel4-capdl-initializer/types/src/when_sel4.rs
++++ b/crates/sel4-capdl-initializer/types/src/when_sel4.rs
+@@ -148,7 +148,7 @@
+ 
+ impl HasVmAttributes for cap::ArchivedFrame {
+     fn vm_attributes(&self, is_x86_ept: bool) -> VmAttributes {
+-        vm_attributes_from_whether_cached_and_exec(self.cached, self.executable, is_x86_ept)
++        vm_attributes_from_whether_cached_and_exec(self.cached, self.executable, self.normal_nc, is_x86_ept)
+     }
+ }
+ 
+@@ -185,6 +185,7 @@
+ pub fn vm_attributes_from_whether_cached_and_exec(
+     cached: bool,
+     executable: bool,
++    normal_nc: bool,
+     x86_ept: bool,
+ ) -> VmAttributes {
+     #[allow(unused_mut)]
+@@ -207,6 +208,17 @@
+     };
+ 
+     sel4::sel4_cfg_if! {
++        if #[sel4_cfg(ARCH_AARCH64)] {
++            if normal_nc {
++                assert!(!cached && !x86_ept);
++                vmattr |= VmAttributes::NORMAL_NON_CACHEABLE;
++            }
++        } else {
++            assert!(!normal_nc);
++        }
++    }
++
++    sel4::sel4_cfg_if! {
+         if #[sel4_cfg(any(ARCH_AARCH64, ARCH_AARCH32, ARCH_RISCV64, ARCH_RISCV32))] {
+             if !executable {
+                 vmattr |= NO_EXEC
+--- a/crates/sel4-capdl-initializer/src/initialize.rs
++++ b/crates/sel4-capdl-initializer/src/initialize.rs
+@@ -564,7 +564,7 @@
+             init_thread::slot::VSPACE.cap(),
+             self.copy_addrs.select(frame_object_type),
+             CapRights::read_write(),
+-            vm_attributes_from_whether_cached_and_exec(true, false, false),
++            vm_attributes_from_whether_cached_and_exec(true, false, false, false),
+         )?;
+         for entry in fill.iter() {
+             let range = try_into_usize_range(&archived_range_to_range(&entry.range)).unwrap();

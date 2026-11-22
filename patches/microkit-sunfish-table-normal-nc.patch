@@ -1,0 +1,499 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -12,12 +12,10 @@
+ ]
+ 
+ [workspace.dependencies.sel4-capdl-initializer]
+-git = "https://github.com/seL4/rust-sel4"
+-rev = "dbe6445d56059ed9a757e53c7137892aece1d179"
++path = "../rust-source/crates/sel4-capdl-initializer"
+ 
+ [workspace.dependencies.sel4-capdl-initializer-types]
+-git = "https://github.com/seL4/rust-sel4"
+-rev = "dbe6445d56059ed9a757e53c7137892aece1d179"
++path = "../rust-source/crates/sel4-capdl-initializer/types"
+ 
+ [profile.release.package.microkit-tool]
+ strip = true
+--- a/docs/manual.md
++++ b/docs/manual.md
+@@ -1020,6 +1020,7 @@
+ * `perms`: Identifies the permissions with which to map the memory region. Can be a combination of `r` (read), `w` (write), and `x` (eXecute), with the exception of a write-only mapping (just `w`).
+            Defaults to read-write.
+ * `cached`: (optional) Determines if mapped with caching enabled or disabled. Defaults to `true`.
++* `normal_nc`: (optional, experimental AArch64 EL1 build) Maps an uncached frame as Normal Non-cacheable rather than Device memory. Requires `cached="false"`; intended for a framebuffer, not MMIO.
+ * `setvar_vaddr`: (optional) Specifies a symbol in the program image. This symbol will be rewritten with the virtual address of the memory region.
+ * `setvar_size`: (optional) Specifies a symbol in the program image. This symbol will be rewritten with the size of the memory region.
+ * `setvar_prefill_size`: (optional) Specifies a symbol in the program image. This symbol will be rewritten with the size of the prefilled data.
+--- a/tool/microkit/src/sdf/memory_region.rs
++++ b/tool/microkit/src/sdf/memory_region.rs
+@@ -21,7 +21,7 @@
+ 
+ use crate::util::get_full_path;
+ use crate::util::round_up;
+-use crate::{Config, PageSize};
++use crate::{sel4::Arch, Config, PageSize};
+ 
+ // We do not include attributes (execute/cached) here since seL4 does not treat them like vm_rights.
+ // Note on seL4 you can't mint a write only frame. However you can request a write only mapping,
+@@ -113,6 +113,7 @@
+     pub vaddr: u64,
+     pub perms: SysMapPerms,
+     pub cached: bool,
++    pub normal_nc: bool,
+     /// Location in the parsed SDF file. Because this struct is
+     /// used in a non-XML context, we make the position optional.
+     pub text_pos: Option<SdfLocation>,
+@@ -128,6 +129,7 @@
+     fn addr_name(&self) -> &'static str;
+     fn range_name(&self) -> &'static str;
+     fn cached(&self) -> bool;
++    fn normal_nc(&self) -> bool;
+     fn perms(&self) -> Self::Perms;
+ 
+     fn read(&self) -> bool {
+@@ -176,6 +178,10 @@
+ 
+     fn cached(&self) -> bool {
+         self.cached
++    }
++
++    fn normal_nc(&self) -> bool {
++        self.normal_nc
+     }
+ }
+ 
+@@ -210,6 +216,10 @@
+     }
+ 
+     fn cached(&self) -> bool {
++        false
++    }
++
++    fn normal_nc(&self) -> bool {
+         false
+     }
+ }
+@@ -325,12 +335,13 @@
+ 
+ impl SysMap {
+     pub(super) fn from_xml(
++        config: &Config,
+         xml_sdf: &SystemDescriptionFile,
+         node: &dyn SdfNode,
+         allow_setvar: bool,
+         max_vaddr: u64,
+     ) -> Result<SysMap, String> {
+-        let mut attrs = vec!["mr", "vaddr", "perms", "cached"];
++        let mut attrs = vec!["mr", "vaddr", "perms", "cached", "normal_nc"];
+         if allow_setvar {
+             attrs.push("setvar_vaddr");
+             attrs.push("setvar_size");
+@@ -379,12 +390,21 @@
+         let cached = sdf_parse_attribute(xml_sdf, node, "cached")?
+             // Default to cached
+             .unwrap_or(true);
++        let normal_nc = sdf_parse_attribute(xml_sdf, node, "normal_nc")?.unwrap_or(false);
++        if normal_nc && (cached || config.arch != Arch::Aarch64 || config.hypervisor) {
++            return Err(value_error(
++                xml_sdf,
++                node,
++                "normal_nc requires cached='false' on AArch64 without hypervisor support".to_string(),
++            ));
++        }
+ 
+         Ok(SysMap {
+             mr,
+             vaddr,
+             perms,
+             cached,
++            normal_nc,
+             text_pos: Some(node.range().start),
+         })
+     }
+--- a/tool/microkit/src/sdf/pd_vm.rs
++++ b/tool/microkit/src/sdf/pd_vm.rs
+@@ -308,7 +308,7 @@
+                 }
+                 "map" => {
+                     let map_max_vaddr = config.pd_map_max_vaddr(stack_size);
+-                    let map = SysMap::from_xml(xml_sdf, &*child, true, map_max_vaddr)?;
++                    let map = SysMap::from_xml(config, xml_sdf, &*child, true, map_max_vaddr)?;
+ 
+                     if let Some(setvar_vaddr) = child.attribute("setvar_vaddr") {
+                         let setvar = SysSetVar {
+@@ -917,7 +917,7 @@
+                 "map" => {
+                     // Virtual machines do not have program images and so we do not allow
+                     // setvar_vaddr on SysMap
+-                    let map = SysMap::from_xml(xml_sdf, &*child, false, config.vm_map_max_vaddr())?;
++                    let map = SysMap::from_xml(config, xml_sdf, &*child, false, config.vm_map_max_vaddr())?;
+                     maps.push(map);
+                 }
+                 _ => {
+--- a/tool/microkit/src/capdl/util.rs
++++ b/tool/microkit/src/capdl/util.rs
+@@ -49,6 +49,7 @@
+     write: bool,
+     executable: bool,
+     cached: bool,
++    normal_nc: bool,
+ ) -> Cap {
+     Cap::Frame(cap::Frame {
+         object: frame_obj_id,
+@@ -60,6 +61,7 @@
+         },
+         // This is not used on RISC-V, PTEs have no cached bit, see seL4_RISCV_VMAttributes.
+         cached,
++        normal_nc,
+         // This is ignored on x86 by seL4. As the NX/XD bit that marks page as non-executable
+         // is unsupported on old hardware.
+         executable,
+--- a/tool/microkit/src/capdl/builder.rs
++++ b/tool/microkit/src/capdl/builder.rs
+@@ -349,6 +349,7 @@
+                     segment.is_writable(),
+                     segment.is_executable(),
+                     true,
++                    false,
+                 );
+ 
+                 match address_space.map_page(
+@@ -423,7 +424,7 @@
+     for frame_obj_id in frames.iter() {
+         // Make a cap for this frame.
+         let frame_cap =
+-            capdl_util_make_frame_cap(*frame_obj_id, read, write, execute, map.cached());
++            capdl_util_make_frame_cap(*frame_obj_id, read, write, execute, map.cached(), map.normal_nc());
+         // Map it into this PD address space.
+         target_address_space
+             .map_page(spec_container, sel4_config, frame_cap, page_sz, cur_vaddr)
+@@ -513,7 +514,7 @@
+         PageSize::Small.fixed_size_bits(kernel_config) as u8,
+     );
+     let mon_stack_frame_cap =
+-        capdl_util_make_frame_cap(mon_stack_frame_obj_id, true, true, false, true);
++        capdl_util_make_frame_cap(mon_stack_frame_obj_id, true, true, false, true, false);
+     monitor_elf_spec
+         .address_space
+         .map_page(
+@@ -534,7 +535,7 @@
+         PageSize::Small.fixed_size_bits(kernel_config) as u8,
+     );
+     let mon_ipcbuf_frame_cap =
+-        capdl_util_make_frame_cap(mon_ipcbuf_frame_obj_id, true, true, false, true);
++        capdl_util_make_frame_cap(mon_ipcbuf_frame_obj_id, true, true, false, true, false);
+     monitor_elf_spec
+         .address_space
+         .map_page(
+@@ -754,7 +755,7 @@
+             PageSize::Small.fixed_size_bits(kernel_config) as u8,
+         );
+         let ipcbuf_frame_cap =
+-            capdl_util_make_frame_cap(ipcbuf_frame_obj_id, true, true, false, true);
++            capdl_util_make_frame_cap(ipcbuf_frame_obj_id, true, true, false, true, false);
+         pd_elf_spec
+             .address_space
+             .map_page(
+@@ -785,7 +786,7 @@
+                 PageSize::Small.fixed_size_bits(kernel_config) as u8,
+             );
+             let stack_frame_cap =
+-                capdl_util_make_frame_cap(stack_frame_obj_id, true, true, false, true);
++                capdl_util_make_frame_cap(stack_frame_obj_id, true, true, false, true, false);
+             pd_elf_spec
+                 .address_space
+                 .map_page(
+@@ -978,7 +979,7 @@
+                         PageSize::Small.fixed_size_bits(kernel_config) as u8,
+                     );
+                     let vm_ipcbuf_frame_cap =
+-                        capdl_util_make_frame_cap(vm_ipcbuf_frame_obj_id, true, true, false, true);
++                        capdl_util_make_frame_cap(vm_ipcbuf_frame_obj_id, true, true, false, true, false);
+                     caps_to_bind_to_vm_tcbs.push(capdl_util_make_cte(
+                         TcbBoundSlot::IpcBuffer as u32,
+                         vm_ipcbuf_frame_cap,
+--- a/tool/microkit/tests/test.rs
++++ b/tool/microkit/tests/test.rs
+@@ -146,6 +146,44 @@
+     assert!(parse_err.starts_with(expected_err));
+ }
+ 
++#[test]
++fn normal_nc_requires_explicit_uncached_aarch64_mapping() {
++    let xml = |attrs: &str| format!(
++        "<system><memory_region name='screen' size='0x1000'/>\
++         <protection_domain name='test'><program_image path='test'/>\
++         <map mr='screen' vaddr='0x3000000' {attrs}/></protection_domain></system>"
++    );
++    let config = sel4::Config {
++        hypervisor: false,
++        ..DEFAULT_AARCH64_KERNEL_CONFIG
++    };
++    let parsed = sdf::parse_xml(
++        Path::new("normal_nc.system"),
++        &xml("cached='false' normal_nc='true'"),
++        &config,
++        &Vec::new(),
++    )
++    .unwrap();
++    let map = &parsed.protection_domains.get("test").unwrap().maps[0];
++    assert!(map.normal_nc);
++    assert!(!map.cached);
++
++    for (attrs, kernel_config) in [
++        ("normal_nc='true'", &config),
++        ("cached='false' normal_nc='true'", &DEFAULT_AARCH64_KERNEL_CONFIG),
++        ("cached='false' normal_nc='true'", &DEFAULT_X86_64_KERNEL_CONFIG),
++    ] {
++        let error = sdf::parse_xml(
++            Path::new("normal_nc.system"),
++            &xml(attrs),
++            kernel_config,
++            &Vec::new(),
++        )
++        .unwrap_err();
++        assert!(error.contains("normal_nc requires cached='false' on AArch64 without hypervisor support"));
++    }
++}
++
+ fn check_missing(kernel_config: &sel4::Config, test_name: &str, attr: &str, element: &str) {
+     let expected_error =
+         format!("Error: missing required attribute '{attr}' on element '{element}'");
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -439,7 +439,6 @@
+ [[package]]
+ name = "sel4"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "cfg-if",
+  "sel4-config",
+@@ -449,7 +448,6 @@
+ [[package]]
+ name = "sel4-alloca"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "cfg-if",
+ ]
+@@ -457,7 +455,6 @@
+ [[package]]
+ name = "sel4-bitfield-ops"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "rustversion",
+ ]
+@@ -465,12 +462,10 @@
+ [[package]]
+ name = "sel4-build-env"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ 
+ [[package]]
+ name = "sel4-capdl-initializer"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "log",
+  "rkyv",
+@@ -488,7 +483,6 @@
+ [[package]]
+ name = "sel4-capdl-initializer-types"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "miniz_oxide",
+  "rkyv",
+@@ -500,7 +494,6 @@
+ [[package]]
+ name = "sel4-capdl-initializer-types-derive"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "proc-macro2",
+  "quote",
+@@ -510,7 +503,6 @@
+ [[package]]
+ name = "sel4-config"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "prettyplease",
+  "proc-macro2",
+@@ -524,7 +516,6 @@
+ [[package]]
+ name = "sel4-config-data"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "sel4-build-env",
+  "sel4-config-types",
+@@ -534,7 +525,6 @@
+ [[package]]
+ name = "sel4-config-macros"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "fallible-iterator",
+  "proc-macro2",
+@@ -547,7 +537,6 @@
+ [[package]]
+ name = "sel4-config-types"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "serde",
+ ]
+@@ -555,12 +544,10 @@
+ [[package]]
+ name = "sel4-ctors-dtors"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ 
+ [[package]]
+ name = "sel4-dlmalloc"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "dlmalloc",
+  "lock_api",
+@@ -569,17 +556,14 @@
+ [[package]]
+ name = "sel4-immediate-sync-once-cell"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ 
+ [[package]]
+ name = "sel4-immutable-cell"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ 
+ [[package]]
+ name = "sel4-initialize-tls"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "cfg-if",
+  "sel4-alloca",
+@@ -588,7 +572,6 @@
+ [[package]]
+ name = "sel4-logging"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "lock_api",
+  "log",
+@@ -597,12 +580,10 @@
+ [[package]]
+ name = "sel4-no-allocator"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ 
+ [[package]]
+ name = "sel4-panicking"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "cfg-if",
+  "sel4-immediate-sync-once-cell",
+@@ -613,12 +594,10 @@
+ [[package]]
+ name = "sel4-panicking-env"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ 
+ [[package]]
+ name = "sel4-phdrs"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "sel4-phdrs-constants",
+ ]
+@@ -626,12 +605,10 @@
+ [[package]]
+ name = "sel4-phdrs-constants"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ 
+ [[package]]
+ name = "sel4-phdrs-patched"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "sel4-phdrs",
+  "sel4-rodata-static",
+@@ -640,12 +617,10 @@
+ [[package]]
+ name = "sel4-rodata-static"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ 
+ [[package]]
+ name = "sel4-root-task"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "sel4",
+  "sel4-dlmalloc",
+@@ -660,7 +635,6 @@
+ [[package]]
+ name = "sel4-root-task-macros"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "proc-macro2",
+  "quote",
+@@ -670,7 +644,6 @@
+ [[package]]
+ name = "sel4-runtime-common"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "cfg-if",
+  "sel4",
+@@ -686,12 +659,10 @@
+ [[package]]
+ name = "sel4-stack"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ 
+ [[package]]
+ name = "sel4-sync"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "lock_api",
+  "sel4",
+@@ -701,7 +672,6 @@
+ [[package]]
+ name = "sel4-sys"
+ version = "0.1.0"
+-source = "git+https://github.com/seL4/rust-sel4?rev=dbe6445d56059ed9a757e53c7137892aece1d179#dbe6445d56059ed9a757e53c7137892aece1d179"
+ dependencies = [
+  "bindgen",
+  "glob",
+--- a/build_sdk.py
++++ b/build_sdk.py
+@@ -176,8 +176,8 @@
+         kernel_options={
+             "KernelPlatform": "sunfish",
+             "KernelArmHypervisorSupport": False,
+-            "KernelCustomDTS": Path("/Users/steve/github/sel4-personal-os/.cache/pixel-sunfish/live-runtime.dts"),
+-            "KernelCustomDTSOverlay": Path("/Users/steve/github/sel4-personal-os/platforms/sunfish/sel4-overlay.dts"),
++            "KernelCustomDTS": Path(environ["SUNFISH_SOURCE_ROOT"]) / ".cache/pixel-sunfish/live-runtime.dts",
++            "KernelCustomDTSOverlay": Path(environ["SUNFISH_SOURCE_ROOT"]) / "platforms/sunfish/sel4-overlay.dts",
+         },
+     ),
+     BoardInfo(
+@@ -703,7 +703,7 @@
+         f"-S {sel4_dir.absolute()} -B {sel4_build_dir.absolute()}")
+ 
+     if llvm:
+-        cmd += f" -DTRIPLE={target_triple}"
++        cmd += f" -DTRIPLE={target_triple} -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld"
+     else:
+         cmd += f" -DCROSS_COMPILER_PREFIX={target_triple}-"
+ 

@@ -2,6 +2,7 @@
 """Audit the isolated post-ready root's actual CapDL, not a device result."""
 from pathlib import Path
 import argparse
+from contextlib import contextmanager
 import copy
 import hashlib
 import importlib.util
@@ -13,6 +14,9 @@ HERE = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location('runtime_auth_capdl', HERE / 'validate-native-mpss-auth.py')
 auth = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(auth)
+memory_spec = importlib.util.spec_from_file_location('runtime_table_memory', HERE / 'sunfish-table-memory-profile.py')
+table_memory = importlib.util.module_from_spec(memory_spec)
+memory_spec.loader.exec_module(table_memory)
 base = auth.base
 base.EXTRA_IRQS += ((481, 4, 'edge'),)
 IRQ_CHANNELS = {132: 0, 97: 1, 343: 2, 464: 3, 481: 4, 483: 5, 298: 6}
@@ -114,7 +118,42 @@ def audit_runtime_stack(system, model):
                      'runtime stack mappings must be cached RW and non-executable')
 
 
-def audit(system, model, report, dtbs=()):
+@contextmanager
+def canonical_memory_profile(system, model):
+    """After validating raw memory types, project onto the legacy authority schema.
+
+    No capability/right/address is changed. The optional memory-type field is
+    audited separately against the exact raw XML/CapDL before this projection.
+    """
+    tree = ET.parse(system)
+    for node in tree.getroot().iter('map'):
+        node.attrib.pop('normal_nc', None)
+    projected = copy.deepcopy(model)
+    def clean(value):
+        if isinstance(value, dict):
+            frame = value.get('Frame')
+            if isinstance(frame, dict) and 'object' in frame and 'rights' in frame:
+                frame.pop('normal_nc', None)
+            for child in value.values():
+                clean(child)
+        elif isinstance(value, list):
+            for child in value:
+                clean(child)
+    clean(projected)
+    with tempfile.NamedTemporaryFile(suffix='.system') as temporary:
+        tree.write(temporary.name)
+        yield Path(temporary.name), projected
+
+
+def audit(system, model, report, dtbs=(), table_normal_nc=False):
+    memory = table_memory.audit(system, model, experimental=table_normal_nc)
+    with canonical_memory_profile(system, model) as (proof_system, proof_model):
+        result = _audit_authority(proof_system, proof_model, report, dtbs)
+    result['table_memory_profile'] = memory
+    return result
+
+
+def _audit_authority(system, model, report, dtbs=()):
     audit_runtime_stack(system, model)
     result = auth.audit(system, model, report, dtbs)
     cnode_id, node = named(model, 'cnode_native_startup_preflight')
@@ -270,6 +309,8 @@ def main():
     p.add_argument('--output', type=Path, required=True)
     p.add_argument('--tftp-observer', action='store_true', help='report the optional metadata-only QRTR observer profile')
     p.add_argument('--tftp-server-check', action='store_true', help='report the optional RAM-only server-check profile')
+    p.add_argument('--smmu-table-normal-nc', action='store_true',
+                   help='explicit experiment: exactly eight uncached table RAM maps use Normal-NC')
     a = p.parse_args()
     if a.tftp_observer and a.tftp_server_check:
         p.error('TFTP profiles are mutually exclusive')
@@ -277,11 +318,11 @@ def main():
     paths = [a.system, a.capdl, a.report, Path(__file__).resolve(),
              auth.preauth.smem.rmtfs.REFERENCE] + a.dt
     paths += sorted(HERE.glob('validate-native-*.py'))
-    paths += [HERE / 'audit-capdl-memory.py']
+    paths += [HERE / 'audit-capdl-memory.py', HERE / 'sunfish-table-memory-profile.py']
     hashes = {str(q.resolve()): hashlib.sha256(q.read_bytes()).hexdigest() for q in paths}
     model = json.loads(a.capdl.read_text())
     report = a.report.read_text()
-    result = audit(a.system, model, report, a.dt)
+    result = audit(a.system, model, report, a.dt, table_normal_nc=a.smmu_table_normal_nc)
     if a.tftp_observer:
         result.pop('tftp_service_published', None)
         result.update(tftp_observer_configured=True, tftp_publication_not_proven=True,
@@ -290,14 +331,18 @@ def main():
         result.pop('tftp_service_published', None)
         result.update(tftp_server_check_configured=True, tftp_publication_not_proven=True,
                       scope='Offline capability audit for a RAM-only TFTP server-check profile; no device result.')
-    inherited, added = mutations(a.system, model, report)
+    with canonical_memory_profile(a.system, model) as (proof_system, proof_model):
+        inherited, added = mutations(proof_system, proof_model, report)
+    memory_mutations = table_memory.negative_controls(a.system, model, experimental=True) if a.smmu_table_normal_nc else []
+    rejected = inherited + len(added) + len(memory_mutations)
     result.update(inherited_mutations_rejected=inherited, added_mutations_rejected=added,
-                  mutations_rejected=inherited + len(added), device_actions=[])
+                  table_memory_mutations_rejected=memory_mutations,
+                  mutations_rejected=rejected, device_actions=[])
     for path, expected in hashes.items():
         base.require(hashlib.sha256(Path(path).read_bytes()).hexdigest() == expected, 'audit input changed')
     result['input_sha256'] = hashes
     a.output.write_text(json.dumps(result, indent=2) + '\n')
-    print('PASS: exact runtime CapDL authority, ' + str(inherited + len(added)) +
+    print('PASS: exact runtime CapDL authority, ' + str(rejected) +
           ' rejected mutations; no device result.')
 
 

@@ -1,6 +1,6 @@
 # Sunfish table memory-type review
 
-Status: offline review complete; optional experiment proposed, not implemented or approved for device use. No new image and no phone action. Source work remains directly on main.
+Status: user explicitly approved preparing the isolated experiment on2026-11-21. Implementation and verification follow the corresponding plan; no device action is authorized to the agent. Source work remains directly on main.
 
 IMG_9687 measured662.252ms in table comparisons and164.247ms in route scanning from original WRQ visibility through OACK publication. The modem-read marker was1,594.323ms after first WRQ visibility. Reaching the conditional1-second experiment target by optimizing table time alone would require about89.7% of that measured table cost to disappear. This is a budget, not a prediction or proof of the proprietary modem timer origin. Small private planner bookkeeping reductions cannot be represented as the required saving.
 
@@ -26,7 +26,9 @@ A small offline ordering model demonstrates the distinction: a permitted early N
 
 ## Concrete optional experiment
 
-If this memory-model change is explicitly accepted, prepare an isolated, opt-in SDK/image that sets normal_nc=true only on the eight allocated table RAM frames. Keep all register/SMEM/payload/ring mappings, rights, physical allocation, SMMU TCR, firmware, grants/credits, transport schedule, every table comparison and quarantine behavior unchanged. Resolve shareability using the CPU/SMMU memory contract rather than copying iPhone assumptions. Leave the baseline SDK and verified Device image intact.
+If this memory-model change is explicitly accepted, prepare an isolated, opt-in SDK/image that sets normal_nc=true only on the eight allocated table RAM frames. Keep register/SMEM/ring fixed physical mappings, all mapping rights, SMMU TCR, firmware, grants/credits, transport schedule, every table comparison and quarantine behavior unchanged. Resolve shareability using the CPU/SMMU memory contract rather than copying iPhone assumptions. Leave the baseline SDK and verified Device image intact.
+
+Implementation clarification: the original proposal said all physical allocation would stay unchanged. Rebuilding the kernel/initializer changes the boot allocation boundary. The generated `smmu_data` and `ipa_receive_data` empty-fill RAM pools consequently move by 8 KiB; the driver receives their actual addresses through its existing injected address cells. Their VAs, rights, Device memory type, sizes and ownership remain unchanged. SMMU leaf output addresses follow those generated PAs. All eight table PAs and other fixed MMIO/SMEM/ring mappings remain unchanged. This necessary generated-layout difference is explicitly measured in the implementation evidence; the candidate is not described as an identical physical-buffer layout.
 
 Before recommending a manual boot: audit exclusive runtime ownership and initialization aliases; validate ABI and parser/serializer/initializer round trips; reject cached+normal_nc and unsupported architectures/hypervisors; add exact final-map allowlisting and negative mutations for Normal-NC on MMIO, other RAM or another PD; preserve the full existing capability suite; rerun native corruption/fault and protocol I/O parity; inspect scalar load/comparison code and actual packaged mappings; verify the rebuilt kernel/initializer provenance, stack, loader, payload and boot layout. Hardware timing and transient/fault behavior remain experimental. Report that changed contract plainly before a user chooses to cold boot.
 

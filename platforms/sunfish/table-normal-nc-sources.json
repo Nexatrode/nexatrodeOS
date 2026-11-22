@@ -1,0 +1,107 @@
+{
+  "sources": {
+    "sel4": {
+      "base_head": "6e7c3b733d296cfd88d5fbf635c96e447a882374",
+      "patch": "patches/sel4-sunfish-table-normal-nc.patch",
+      "patch_sha256": "ba2ee9b96350cc371ea2c451a4b92ff7ea02307410c38bf1307d1ff014d38e2e",
+      "files": {
+        "include/arch/arm/arch/64/mode/object/structures.bf": {
+          "base_sha256": "0168dc3b3ebb4b49430fabf64ae32043939b231e1dd9a8d2a962f46b4dda468c",
+          "patched_sha256": "43e98c04df91ae2e67483a501727e2d3382e169c5c146152d58cd08fdfe72377"
+        },
+        "libsel4/arch_include/arm/sel4/arch/types.h": {
+          "base_sha256": "c969500ec59334a8bcb8ed7e552d5c2370f2f8224640d03c592f5462b4518dda",
+          "patched_sha256": "a8c36fb964b4386c480bbe5f3f2e3f11237518e886a430fa3befdb06265d0b8e"
+        },
+        "src/arch/arm/64/kernel/vspace.c": {
+          "base_sha256": "b1ea9e5f5665d18e75a0c057f53472641337ab2cccabb3eb0805ff88de88afc2",
+          "patched_sha256": "08d43062004dc719ce69ae9e1016a13c25e07fb59d2cc3d4761960136330eb61"
+        },
+        "src/arch/arm/machine/hardware.c": {
+          "base_sha256": "a67e148184d33d623073692d45075faa71cd8273a3a231bf365049c8c8233800",
+          "patched_sha256": "0398cd222542f9e3fdec49dc5480adea078542621b2b4985a69c741e92cca281"
+        },
+        "src/drivers/smmu/smmuv2.c": {
+          "base_sha256": "4572fdfeff97e8bbc9a1180e7a14b03c2a727b5b6e53f3c2200e9dccbdf4ebcf",
+          "patched_sha256": "809fe8a105d3f90864566098a095d108198d9643b4673330dc43e52543f33ecf"
+        }
+      },
+      "base_tree_sha256": "793bbf21cc80ec37d062135ff3ede9cf7c4263ddb29510d11d38ed2b180d4016",
+      "patched_tree_sha256": "5d3857456a14c353e3ff5e2de3a355f658ffb4a409f580aac7eff91e125a48e7"
+    },
+    "rust-sel4": {
+      "base_head": "dbe6445d56059ed9a757e53c7137892aece1d179",
+      "patch": "patches/rust-sel4-sunfish-table-normal-nc.patch",
+      "patch_sha256": "a05c4b779df575414615692f3540a3bc5c47f5771f2b94ec2e0b2d4371bee175",
+      "files": {
+        "crates/sel4/src/arch/arm/vm_attributes.rs": {
+          "base_sha256": "5d7c388698b50fed3f59d3db43859013c2aa55726258f48945d5312178ecdab0",
+          "patched_sha256": "7bb687f0b9826c7339acdbaeae5ad60bee25b0f6d62ff26ff63f9d803c1387c6"
+        },
+        "crates/sel4-capdl-initializer/types/src/spec.rs": {
+          "base_sha256": "1d762dfbe859dda90fd5da03f1eb8a5349a7abb567fd8f5f9497743a4a732b6f",
+          "patched_sha256": "742e60cdc349f92e05a96f4fceadb10da00982e7142b313f4252b31321c86d56"
+        },
+        "crates/sel4-capdl-initializer/types/src/when_sel4.rs": {
+          "base_sha256": "04d6d6b4317e8a7ebca648c30f006227d4f92a137891b2332884111105bcfd6b",
+          "patched_sha256": "51736fbf387880870dbcc29b27f72084bad296671dec83e01c6641253b47747e"
+        },
+        "crates/sel4-capdl-initializer/src/initialize.rs": {
+          "base_sha256": "e9fc75a7a6020b52870a5aa6a95d279317892ca1d6c53724e35ada52e26644f5",
+          "patched_sha256": "aeaefbd93741711ab8cf9b36823312264aa8105fad10488fa05719913469198f"
+        }
+      },
+      "base_tree_sha256": "bf987a6811e575cc54a8813dc696c11d55f37cf8911fdcbad01e5627c4fe7f34",
+      "patched_tree_sha256": "343fd31e8afd32fcbc4754b0f97d77f2a7763957c5c7a25604f80d8220dad3bd"
+    },
+    "microkit": {
+      "base_head": "ec86afdcd662b5976d11d4994acf1b11a2979882",
+      "patch": "patches/microkit-sunfish-table-normal-nc.patch",
+      "patch_sha256": "c466197f7233673cd6e9cc09bb16633adf1126f6c2666d51c32b459d093975aa",
+      "files": {
+        "Cargo.toml": {
+          "base_sha256": "66ef5b1c3bbc59af5340ebe408984023ec9fc9efbc3be150ad5f667fc4115b54",
+          "patched_sha256": "21bac52c48917ee5a9485ca8b723126abff534e9148d3e4ede34b9aae2046e63"
+        },
+        "docs/manual.md": {
+          "base_sha256": "95ee684b34452d78d56e0a96449f13cf8b49fd03b97f1d588e3e15be89baf1ea",
+          "patched_sha256": "c0538440f13c2e827bcb90737eb9e73e12d34679af78adbb785c6c74a441a579"
+        },
+        "tool/microkit/src/sdf/memory_region.rs": {
+          "base_sha256": "d7db64ea0b4611178774106c03b5485f738dd522638c291206c4168cee06f38e",
+          "patched_sha256": "f94305d2da21bbd557026099fff1391a17a9cb6a0eae0d02c9a82240c35747fe"
+        },
+        "tool/microkit/src/sdf/pd_vm.rs": {
+          "base_sha256": "03a209d5bdc2e667f7e4401d01a1fdb6662fc08d3edb8c0e57c67a5549338cd9",
+          "patched_sha256": "b63ce0fdba985c433c3bb730b2037c136603025fe6401036d811cf85a69018cf"
+        },
+        "tool/microkit/src/capdl/util.rs": {
+          "base_sha256": "a25358fe1f4de059d303fdc9fb5f2965cfa7fe8308234b8d7ad194c7836ee52f",
+          "patched_sha256": "f827e109e91eaaae3c5d7b689c6ed99717d76f73ad7ba081729609991e748e46"
+        },
+        "tool/microkit/src/capdl/builder.rs": {
+          "base_sha256": "469c5369fa2f63b121469080956e1b6f108ed6907217a586abd05fb6d79104b9",
+          "patched_sha256": "bfc7a1067fd28c27b4482fd4997055c36a52de893b20bd8e34f6ad95f1697efe"
+        },
+        "tool/microkit/tests/test.rs": {
+          "base_sha256": "b129d9ebc54f0973b7504d3a253c447db106caa03191c117945629e470870148",
+          "patched_sha256": "e6873adfde36cfb725ae35769be76e53cf5a349b5de6cc73397c1999faab38d8"
+        },
+        "Cargo.lock": {
+          "base_sha256": "3fba64e70688e6766f697499d3aad74474a8b99d3bef32f751c075e97e38b3e2",
+          "patched_sha256": "9219168a742c213cc8e84c683e44b8fd8ba9878d19e4a0e71ee7c559f440f79b"
+        },
+        "build_sdk.py": {
+          "base_sha256": "019bba48967a9dd4f1ff93c7207275d350b2ac475be05fb5cad14c5fc7bd64cd",
+          "patched_sha256": "19443d5e9fbd46fc6b0083cd8bf70ce113a9a28ba8639ad22e2001666bb4b861"
+        }
+      },
+      "base_tree_sha256": "590ecdbf6a75dc627cb78de7017c6397bd2578999e15f8372122ae92d1af79c4",
+      "patched_tree_sha256": "765fbd11b7d444ec9609818b7b4bdbd1edeac522eb85b0dbc8f502e3ab89075f"
+    }
+  },
+  "external_inputs": {
+    ".cache/pixel-sunfish/live-runtime.dts": "d181b7012ee24ad6bb950613233f026b7a7ac0fbe9f087b496cc6eae50378abf",
+    "platforms/sunfish/sel4-overlay.dts": "a1536c18149202aeb099cf31a0e41f69e564f500bc21d88f1fd2db23da20fec1"
+  }
+}
