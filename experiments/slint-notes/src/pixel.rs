@@ -371,7 +371,6 @@ impl PixelService {
             // The wallet buttons are fixed rectangles. A Slint miss leaves
             // the finger with no effect, which is what the Pixel showed.
             apply_wallet_tap(&self._ui, position.x, position.y);
-            debug_println!("SUNFISH SLINT TOUCH {} {}", x, y);
         }
     }
 }

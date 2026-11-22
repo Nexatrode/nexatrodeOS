@@ -27,7 +27,8 @@ def digest(path):
 
 def vault_source_required(pds):
     vault = pds / "rust_vault_disk.elf"
-    return not (vault.is_file() and b"photo_read_transfer" in vault.read_bytes())
+    return not (vault.is_file() and b"photo_read_transfer" in vault.read_bytes()
+                and b"device_lock_transfer" in vault.read_bytes())
 
 
 def ui_source_required(pds):
@@ -36,10 +37,12 @@ def ui_source_required(pds):
     reader = pds / "slint_photo_reader.elf"
     transcript = pds / "slint_transcript_worker.elf"
     messages = pds / "rust_messages_agent_app.elf"
-    if not (ui.is_file() and worker.is_file() and reader.is_file() and transcript.is_file() and messages.is_file()):
+    entropy = pds / "rust_entropy_rng.elf"
+    if not (ui.is_file() and worker.is_file() and reader.is_file() and transcript.is_file() and messages.is_file() and entropy.is_file()):
         return True
     binary = ui.read_bytes()
-    return (b"photo_mailbox_region" not in binary or b"photo_read_mailbox" not in binary
+    return (b"device_lock_transfer" not in binary or b"ENTROPY|DEVICE_LOCK_V1" not in entropy.read_bytes()
+            or b"photo_mailbox_region" not in binary or b"photo_read_mailbox" not in binary
             or b"transcript_mailbox" not in binary or b"messages_worker_transfer" not in messages.read_bytes()
             or b"LIVE_RECEIVE_WORKER_ABI_V1" not in messages.read_bytes()
             or b"live_receive_mailbox" not in binary or b"live_receive_mailbox" not in transcript.read_bytes())
@@ -55,7 +58,7 @@ def build_ui_from_source(inputs, stage):
         "-Zjson-target-spec", "--config", ROOT / "rust/.cargo/config.toml",
         "--manifest-path", ROOT / "experiments/slint-notes/Cargo.toml",
         "--target", ROOT / "rust/targets/aarch64-sel4-microkit.json",
-        "--features", "utm-pd,full-suite-ui,simplex-agent-ui,utm-photo-worker,utm-transcript-worker",
+        "--features", "utm-pd,full-suite-ui,simplex-agent-ui,utm-photo-worker,utm-transcript-worker,utm-device-lock",
         "--bin", "slint_notes_utm", "--bin", "slint_photo_worker", "--bin", "slint_photo_reader", "--bin", "slint_transcript_worker",
     ], cwd=ROOT, env=env, check=True)
     subprocess.run([
@@ -63,8 +66,8 @@ def build_ui_from_source(inputs, stage):
         "-Zjson-target-spec", "--config", ROOT / "rust/.cargo/config.toml",
         "--manifest-path", ROOT / "rust/Cargo.toml",
         "--target", ROOT / "rust/targets/aarch64-sel4-microkit.json",
-        "--features", "utm-slint-input,utm-transcript-worker", "--bin", "rust_input_service",
-        "--bin", "rust_messages_agent_app",
+        "--features", "utm-slint-input,utm-transcript-worker,utm-device-lock", "--bin", "rust_input_service",
+        "--bin", "rust_messages_agent_app", "--bin", "rust_entropy_rng",
     ], cwd=ROOT, env=env, check=True)
     output = stage / "ui"
     output.mkdir()
@@ -73,6 +76,7 @@ def build_ui_from_source(inputs, stage):
         shutil.copyfile(release / name, output / name)
     shutil.copyfile(release / "rust_input_service.elf", output / "input_service.elf")
     shutil.copyfile(release / "rust_messages_agent_app.elf", output / "rust_messages_agent_app.elf")
+    shutil.copyfile(release / "rust_entropy_rng.elf", output / "rust_entropy_rng.elf")
     return output
 
 
@@ -86,7 +90,7 @@ def build_vault_from_source(inputs, stage):
         "-Zjson-target-spec", "--config", ROOT / "rust/.cargo/config.toml",
         "--manifest-path", ROOT / "rust/Cargo.toml",
         "--target", ROOT / "rust/targets/aarch64-sel4-microkit.json",
-        "--features", "utm-installation-vault-key,simplex-agent-vault,utm-photo-reader",
+        "--features", "utm-installation-vault-key,simplex-agent-vault,utm-photo-reader,utm-device-lock",
         "--bin", "rust_vault_disk",
     ], cwd=ROOT, env=env, check=True)
     objcopy = os.environ.get("NEXATRODE_LLVM_OBJCOPY") or shutil.which("llvm-objcopy")

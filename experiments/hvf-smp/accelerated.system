@@ -14,6 +14,7 @@
     <memory_region name="wallet_view" size="0x1000" />
     <memory_region name="wallet_transfer" size="0x1000" />
     <memory_region name="wallet_identity_transfer" size="0x1000" />
+    <memory_region name="device_lock_transfer" size="0x1000" />
     <memory_region name="wallet_scan_job" size="0x1000" />
     <memory_region name="wallet_heap" size="0x2000000" page_size="0x200000" />
     <memory_region name="clock_view" size="0x1000" />
@@ -37,7 +38,7 @@
         <program_image path="c_server.elf" />
         <map mr="c_reference_private" vaddr="0x41000000" perms="rw" />
     </protection_domain>
-    <protection_domain name="vault" priority="101" passive="true" stack_size="0x20000">
+    <protection_domain name="vault" priority="101" passive="true" stack_size="0x80000">
         <program_image path="rust_vault_disk.elf" />
         <map mr="vault_private" vaddr="0x42000000" perms="rw" setvar_vaddr="vault_private_start" />
         <map mr="notes_transfer" vaddr="0x45000000" perms="rw" cached="true" setvar_vaddr="notes_transfer" />
@@ -52,6 +53,7 @@
         <map mr="simplex_agent_transfer" vaddr="0x4c_000_000" perms="rw" cached="true" setvar_vaddr="simplex_agent_transfer" />
         <map mr="wallet_transfer" vaddr="0x4e_000_000" perms="rw" cached="true" setvar_vaddr="wallet_transfer" />
         <map mr="wallet_identity_transfer" vaddr="0x4e_001_000" perms="rw" cached="true" setvar_vaddr="wallet_identity_transfer" />
+        <map mr="device_lock_transfer" vaddr="0x4f000000" perms="rw" cached="true" setvar_vaddr="device_lock_transfer" />
     </protection_domain>
     <protection_domain name="notes_app" priority="100" passive="true" stack_size="0x10000">
         <program_image path="rust_vault_notes_test.elf" />
@@ -517,6 +519,7 @@
         <map mr="calendar_transfer" vaddr="0x4a_000_000" perms="rw" cached="true" setvar_vaddr="calendar_transfer" />
         <map mr="messages_transfer" vaddr="0x4b_000_000" perms="rw" cached="true" setvar_vaddr="messages_transfer" />
         <map mr="wallet_transfer" vaddr="0x4e_000_000" perms="rw" cached="true" setvar_vaddr="wallet_transfer" />
+        <map mr="device_lock_transfer" vaddr="0x6e000000" perms="rw" cached="true" setvar_vaddr="device_lock_transfer" />
         <map mr="haskell_tcp_io" vaddr="0x4f_000_000" perms="rw" cached="true" setvar_vaddr="haskell_tcp_page" />
     </protection_domain>
     <protection_domain name="photo_reader" priority="98" budget="2500" period="10000" stack_size="0x20000">
@@ -550,6 +553,14 @@
     <channel>
         <end pd="vault" id="9" notify="false" />
         <end pd="photo_reader" id="1" pp="true" notify="false" />
+    </channel>
+    <channel>
+        <end pd="vault" id="10" notify="false" />
+        <end pd="slint_ui" id="15" pp="true" notify="false" />
+    </channel>
+    <channel>
+        <end pd="entropy_rng" id="4" notify="false" />
+        <end pd="slint_ui" id="16" pp="true" notify="false" />
     </channel>
     <protection_domain name="photo_worker" cpu="3" priority="101" budget="2500" period="10000" stack_size="0x20000">
         <program_image path="slint_photo_worker.elf" />

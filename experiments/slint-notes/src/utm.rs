@@ -278,7 +278,12 @@ struct PhotoTicket {
     cache_generation: u64,
 }
 
+#[cfg(feature = "utm-device-lock")]
+mod device_lock_utm;
+
 struct SlintService {
+    #[cfg(feature = "utm-device-lock")]
+    device_lock: Rc<RefCell<device_lock_utm::DeviceLock>>,
     frame_timer: Option<Channel>,
     frame_deadline: Option<core::time::Duration>,
     _ui: NotesWindow,
@@ -1842,6 +1847,7 @@ fn logical_screen() -> (f32, f32) {
 
 /// One-level back — same policy as the chrome HOME/LIST/CHATS/BACK button.
 fn shell_navigate_back(ui: &NotesWindow, drafts: Option<&RefCell<[String; CHAT_SLOTS]>>) -> bool {
+    if ui.get_device_lock_screen() { return false; }
     let page = ui.get_page();
     if page == 0 || page == 14 {
         return false;
@@ -1893,6 +1899,7 @@ fn shell_navigate_back(ui: &NotesWindow, drafts: Option<&RefCell<[String; CHAT_S
 }
 
 fn shell_navigate_home(ui: &NotesWindow, drafts: Option<&RefCell<[String; CHAT_SLOTS]>>) -> bool {
+    if ui.get_device_lock_screen() { return false; }
     if ui.get_page() == 0 {
         return false;
     }
@@ -1917,6 +1924,7 @@ fn shell_navigate_home(ui: &NotesWindow, drafts: Option<&RefCell<[String; CHAT_S
 
 /// Soft switcher: Tools hub (notes/clock/files/…) until a real multi-PD switcher exists.
 fn shell_navigate_recents(ui: &NotesWindow) -> bool {
+    if ui.get_device_lock_screen() { return false; }
     if ui.get_page() == 10 {
         return false;
     }
@@ -3086,6 +3094,7 @@ impl SlintService {
     }
 
     fn current_view(&self) -> i32 {
+        if self._ui.get_device_lock_screen() { return 1400; }
         let page = self._ui.get_page();
         if page == 1 && self._ui.get_note_editing() {
             return 101;
@@ -4018,6 +4027,8 @@ fn init() -> SlintService {
         });
     window.set_size(PhysicalSize::new(WIDTH as u32, HEIGHT as u32));
     let ui = NotesWindow::new().expect("create Slint workspace suite");
+    #[cfg(feature = "utm-device-lock")]
+    let device_lock = device_lock_utm::initialize(&ui, memory_region_symbol!(device_lock_transfer: *mut BlobTransferPage));
     ui.set_wallet_node("".into());
     ui.set_wallet_node_status("Loading saved node…".into());
     personal_os_slint_notes_spike::suite::wire(&ui);
@@ -5255,6 +5266,8 @@ fn init() -> SlintService {
     CATCH_UP_FLAG.store(unsafe { focus.as_ptr().add(1) }, Ordering::Release);
     let timer_id = *sel4_microkit::var!(slint_timer_channel: usize = usize::MAX);
     let mut service = SlintService {
+        #[cfg(feature = "utm-device-lock")]
+        device_lock,
         #[cfg(feature = "utm-photo-worker")]
         photo_mailbox: unsafe { memory_region_symbol!(photo_mailbox_region: *mut personal_os_slint_notes_spike::photo_ipc::PhotoMailbox).as_ref() },
         #[cfg(feature = "utm-photo-worker")]
@@ -5336,7 +5349,7 @@ fn init() -> SlintService {
     // Paint ARMED only. Open+queue runs on the first GPU→input→SLINT pulse
     // after scanout — init-time OPEN/REFRESH Calls left the shell with no
     // handler bounce, so WaitConnect never got notify pumps.
-    service._ui.set_page(16);
+    if !service._ui.get_device_lock_screen() { service._ui.set_page(16); }
     let page_now = service._ui.get_page();
     service
         ._ui
@@ -5411,7 +5424,7 @@ impl SlintService {
                 // is forced in phase 5 / OPEN-park rearm — do not nest refresh
                 // in this same advance (dump223 tipq left ARMED wedged).
                 debug_println!("SLINT WALLET BOOT PHASE OPEN+SYNC");
-                self._ui.set_page(16);
+                if !self._ui.get_device_lock_screen() { self._ui.set_page(16); }
                 self._ui
                     .set_wallet_status("NEXAWAL · OPENING WALLET PD…".into());
                 self.publish_frame();
@@ -5516,7 +5529,7 @@ impl SlintService {
                 self.wallet_boot_phase = 0;
                 skia_guest::prepare_skia_label();
                 self.load_vault_apps();
-                self.prepare_hidden_pages();
+                if !self._ui.get_device_lock_screen() { self.prepare_hidden_pages(); }
                 self.arm_page_sync();
                 false
             }
@@ -6019,7 +6032,19 @@ impl SlintService {
             POSTED_VALUE.store(value, Ordering::Relaxed);
             POSTED_POSITION.store(position, Ordering::Relaxed);
             POSTED_ACTIVE.store(true, Ordering::Release);
+            #[cfg(feature = "utm-device-lock")]
+            let secret_input = self._ui.get_device_lock_screen();
             let _ = self.handle_input(SLINT_INPUT, MessageInfo::new(REQUEST_SLINT_EVENT, 3));
+            #[cfg(feature = "utm-device-lock")]
+            if secret_input || self._ui.get_device_lock_screen() {
+                // The producer cannot reuse this slot until tail is advanced.
+                for offset in 0..4 { unsafe { core::ptr::write_volatile(record.add(offset), 0); } }
+                POSTED_DEVICE.store(0, Ordering::Relaxed);
+                POSTED_KIND.store(0, Ordering::Relaxed);
+                POSTED_CODE.store(0, Ordering::Relaxed);
+                POSTED_VALUE.store(0, Ordering::Relaxed);
+                POSTED_POSITION.store(0, Ordering::Relaxed);
+            }
             tail = tail.wrapping_add(1);
             // Free the slot before the next key arrives so a full address fits.
             tail_atom.store(tail, Ordering::Release);
@@ -6228,6 +6253,11 @@ impl SlintService {
     fn arm_frame_timer(&mut self) {
         let Some(channel) = self.frame_timer else { return };
         let mut delay = personal_os_slint_notes_spike::guest_platform::next_wake(&self.window);
+        #[cfg(feature = "utm-device-lock")]
+        if self.device_lock.borrow().enabled() {
+            let lock_poll = core::time::Duration::from_millis(250);
+            delay = Some(delay.map_or(lock_poll, |wake| wake.min(lock_poll)));
+        }
         #[cfg(feature = "simplex-agent-ui")]
         if self.chat_refresh.pending() {
             // Give scanout a chance to show the input frame before the
@@ -6785,6 +6815,37 @@ impl SlintService {
         if device == DEVICE_TABLET && event_type == EVENT_KEY && code == BTN_LEFT {
             debug_println!("PERF|POINTER|{}|{}", perf_time_us(), value);
         }
+        #[cfg(feature = "utm-device-lock")]
+        {
+            if (device == DEVICE_TABLET && event_type == EVENT_KEY && code == BTN_LEFT && value != 0)
+                || (device == DEVICE_KEYBOARD && event_type == EVENT_KEY && value != 0) {
+                self.device_lock.borrow_mut().activity(&self._ui);
+            }
+            if self._ui.get_device_lock_screen() {
+                if device == DEVICE_TABLET && event_type == EVENT_KEY && code == BTN_LEFT {
+                    let ptr = self.pointer.as_ptr();
+                    let packed = POSTED_POSITION.load(Ordering::Relaxed);
+                    let x = if posted { (packed & 0xffff) as u32 } else { unsafe { core::ptr::addr_of!((*ptr).x).read_volatile() } };
+                    let y = if posted { (packed >> 16) as u32 } else { unsafe { core::ptr::addr_of!((*ptr).y).read_volatile() } };
+                    let position = slint::LogicalPosition::new(x as f32 / SCALE, y as f32 / SCALE);
+                    let event = if value != 0 {
+                        slint::platform::WindowEvent::PointerPressed { position, button: slint::platform::PointerEventButton::Left }
+                    } else {
+                        slint::platform::WindowEvent::PointerReleased { position, button: slint::platform::PointerEventButton::Left }
+                    };
+                    self.window.window().dispatch_event(event);
+                    self.publish_frame(); SLINT_INPUT.notify();
+                } else if device == DEVICE_KEYBOARD && event_type == EVENT_KEY {
+                    if matches!(code, 42 | 54) { self.shift_down = value != 0; }
+                    else if value != 0 {
+                        if code == 28 { self._ui.invoke_device_lock_submit(); }
+                        else if let Some(key) = hardware_character(code, self.shift_down) { self._ui.invoke_device_lock_key(key.into()); }
+                        self.publish_frame(); SLINT_INPUT.notify();
+                    }
+                }
+                return Ok(MessageInfo::new(REPLY_SLINT_EVENT_OK, 0));
+            }
+        }
         // Timer callbacks and wallet IPC may reuse the message registers.
         // Capture the input packet above before invoking either.
         slint::platform::update_timers_and_animations();
@@ -7334,7 +7395,7 @@ impl SlintService {
             }
         } else if device == DEVICE_KEYBOARD && event_type == EVENT_KEY {
             #[cfg(feature = "utm-perf-trace")]
-            if value != 0 { debug_println!("PERF|KEY|{}|{}", perf_time_us(), code); }
+            if value != 0 { debug_println!("PERF|KEY|{}", perf_time_us()); }
             #[cfg(feature = "utm-perf-trace")]
             if code == 66 && value == 1 && self._ui.get_page() == 6 {
                 self._ui.set_edit_target(if self._ui.get_edit_target() == 6 { 0 } else { 6 });
@@ -7398,6 +7459,16 @@ impl Handler for SlintService {
 
     fn notified(&mut self, channels: ChannelSet) -> Result<(), Self::Error> {
         slint::platform::update_timers_and_animations();
+        #[cfg(feature = "utm-device-lock")]
+        {
+            let was_locked = self._ui.get_device_lock_screen();
+            self.device_lock.borrow_mut().tick(&self._ui);
+            if !was_locked && self._ui.get_device_lock_screen() {
+                self.scanout_hold = 0;
+                self.publish_frame();
+                SLINT_INPUT.notify();
+            }
+        }
         let timer_fired = self.frame_timer.is_some_and(|channel| channels.contains(channel));
         if timer_fired {
             #[cfg(feature = "utm-clock-selftest")]

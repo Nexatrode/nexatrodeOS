@@ -28,6 +28,9 @@ pub mod ath10k_wmi_tx;
 pub mod calculator;
 pub mod calendar;
 pub mod clock_display;
+pub mod device_lock;
+#[cfg(test)]
+mod device_lock_tests;
 pub mod contacts;
 pub mod ieee80211_bss;
 pub mod ieee80211_ccmp;
@@ -134,6 +137,7 @@ pub mod qcom_wmi_ce;
 pub mod record_crypto;
 pub mod wallet_pin;
 pub mod settings;
+pub mod system_lock_record;
 pub mod simplex_ipc;
 pub mod sunfish_htt_rx_profile;
 pub mod sunfish_htt_rx_ring;

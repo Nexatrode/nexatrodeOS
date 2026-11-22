@@ -19,6 +19,12 @@ pub const SIMPLEX_AGENT_CHANNEL: Channel = Channel::new(7);
 pub const WALLET_APP_CHANNEL: Channel = Channel::new(8);
 /// Read-only preview worker endpoint; uses its own transfer page.
 pub const PHOTO_READER_CHANNEL: Channel = Channel::new(9);
+#[cfg(feature = "utm-device-lock")]
+pub const DEVICE_LOCK_CHANNEL: Channel = Channel::new(10);
+#[cfg(feature = "utm-device-lock")]
+pub const REQUEST_DEVICE_LOCK_READ: MessageLabel = 0x450;
+#[cfg(feature = "utm-device-lock")]
+pub const REQUEST_DEVICE_LOCK_WRITE: MessageLabel = 0x451;
 // Local app endpoint shared by the supervisor's explicit namespace test calls.
 pub const APP_TEST_SUPERVISOR_CHANNEL: Channel = Channel::new(1);
 pub const NAMESPACE_COUNT: usize = 5;

@@ -296,6 +296,8 @@ fn init() -> Vault {
     let crypto = DevelopmentCryptoProvider::new();
     let state = memory_region_symbol!(vault_private_start: *mut VaultState).as_ptr();
     let notes_transfer = memory_region_symbol!(notes_transfer: *mut BlobTransferPage).as_ptr();
+    #[cfg(feature = "utm-device-lock")]
+    let lock_transfer = memory_region_symbol!(device_lock_transfer: *mut BlobTransferPage).as_ptr();
     let contacts_transfer =
         memory_region_symbol!(contacts_transfer: *mut BlobTransferPage).as_ptr();
     let calendar_transfer =
@@ -329,7 +331,12 @@ fn init() -> Vault {
         block: BlockClient::new(config),
         crypto,
         blob_transfer: [
-            ptr::null_mut(),
+            {
+                #[cfg(feature = "utm-device-lock")]
+                { lock_transfer }
+                #[cfg(not(feature = "utm-device-lock"))]
+                { ptr::null_mut() }
+            },
             notes_transfer,
             contacts_transfer,
             calendar_transfer,
@@ -430,6 +437,11 @@ impl Vault {
             }
             valid_count += namespace_valid;
         }
+
+        // Validate the lock-bearing namespace before any legacy migration can
+        // overwrite a corrupt slot. An unreadable lock must not become absent.
+        #[cfg(feature = "utm-device-lock")]
+        self.system_lock_state()?;
 
         // The previous prototype used a plain-value record with a simple
         // checksum. Preserve those demo records once, then leave only the
@@ -897,13 +909,44 @@ impl Vault {
         Ok(decoded.payload_length)
     }
 
+    /// Read the legacy scalar or the lock-aware system payload. A nonblank
+    /// invalid slot fails closed: falling back to an older unlocked record
+    /// could otherwise silently remove an enrolled lock after corruption.
+    #[cfg(feature = "utm-device-lock")]
+    fn system_lock_state(&mut self) -> Result<(u64, u64, Option<[u8; personal_os_rust_server::device_lock::SETTINGS_SIZE]>), MessageLabel> {
+        for slot in 0..SLOT_COUNT {
+            let mut raw = self.read_disk_block(NAMESPACE_FIRST_BLOCK[SYSTEM_NAMESPACE] + slot)?;
+            if raw.iter().all(|byte| *byte == 0) { continue; }
+            if raw[..vault_blob_record::MAGIC.len()] == vault_blob_record::MAGIC {
+                if vault_blob_record::decode(&self.crypto, SYSTEM_NAMESPACE, &mut raw)
+                    .map_err(|_| REPLY_STORAGE)?.is_none() { return Err(REPLY_CORRUPT); }
+            } else {
+                let mut small = [0u8; SLOT_SIZE];
+                small.copy_from_slice(&raw[..SLOT_SIZE]);
+                if raw[SLOT_SIZE..].iter().any(|byte| *byte != 0)
+                    || vault_record::decode(&self.crypto, SYSTEM_NAMESPACE, &small)
+                    .map_err(|_| REPLY_STORAGE)?.is_none() { return Err(REPLY_CORRUPT); }
+            }
+        }
+        let (index, slot) = self.active_slot(SYSTEM_NAMESPACE).ok_or(REPLY_CORRUPT)?;
+        if !slot.is_blob { return Ok((slot.generation, slot.value, None)); }
+        let mut raw = self.read_disk_block(NAMESPACE_FIRST_BLOCK[SYSTEM_NAMESPACE] + index)?;
+        let decoded = vault_blob_record::decode(&self.crypto, SYSTEM_NAMESPACE, &mut raw)
+            .map_err(|_| REPLY_STORAGE)?.ok_or(REPLY_CORRUPT)?;
+        let start = vault_blob_record::CIPHERTEXT_OFFSET;
+        let (value, settings) = personal_os_rust_server::system_lock_record::decode_system(
+            &raw[start..start + decoded.payload_length]
+        ).map_err(|_| REPLY_CORRUPT)?;
+        Ok((decoded.generation, value, Some(settings)))
+    }
+
     fn write_blob(
         &mut self,
         namespace: usize,
         expected_generation: MessageRegisterValue,
         payload: &[u8],
     ) -> Result<MessageRegisterValue, MessageLabel> {
-        if namespace == SYSTEM_NAMESPACE || payload.len() > vault_blob_record::MAX_PAYLOAD_SIZE {
+        if payload.len() > vault_blob_record::MAX_PAYLOAD_SIZE {
             return Err(REPLY_BAD_REQUEST);
         }
         let Some((active_index, active)) = self.active_slot(namespace) else {
@@ -2216,6 +2259,44 @@ impl Handler for Vault {
         channel: Channel,
         request: MessageInfo,
     ) -> Result<MessageInfo, Self::Error> {
+        #[cfg(feature = "utm-device-lock")]
+        if channel == vault_protocol::DEVICE_LOCK_CHANNEL {
+            if let Err(label) = self.load_from_disk() { return Ok(MessageInfo::new(label, 0)); }
+            let page = match self.transfer_page(SYSTEM_NAMESPACE) {
+                Ok(page) => page,
+                Err(label) => return Ok(MessageInfo::new(label, 0)),
+            };
+            let (generation, value, previous) = match self.system_lock_state() {
+                Ok(state) => state,
+                Err(label) => return Ok(MessageInfo::new(label, 0)),
+            };
+            if request.label() == vault_protocol::REQUEST_DEVICE_LOCK_READ && request.count() == 0 {
+                unsafe { &mut *page }.set_payload(&[]);
+                set_mr(0, generation);
+                return match previous {
+                    Some(settings) if unsafe { &mut *page }.set_payload(&settings) => Ok(MessageInfo::new(REPLY_OK, 1)),
+                    Some(_) => Ok(MessageInfo::new(REPLY_CORRUPT, 0)),
+                    None => Ok(MessageInfo::new(REPLY_NO_BLOB, 1)),
+                };
+            }
+            if request.label() == vault_protocol::REQUEST_DEVICE_LOCK_WRITE && request.count() == 1 {
+                let expected = get_mr(0);
+                let mut settings = [0u8; personal_os_rust_server::device_lock::SETTINGS_SIZE];
+                let input = unsafe { &*page }.payload();
+                if input.is_none_or(|input| input.len() != settings.len()) { return Ok(MessageInfo::new(REPLY_BAD_REQUEST, 0)); }
+                settings.copy_from_slice(input.unwrap());
+                unsafe { &mut *page }.set_payload(&[]);
+                let payload = match personal_os_rust_server::system_lock_record::encode_system(value, &settings) {
+                    Ok(payload) => payload,
+                    Err(_) => return Ok(MessageInfo::new(REPLY_BAD_REQUEST, 0)),
+                };
+                return match self.write_blob(SYSTEM_NAMESPACE, expected, &payload) {
+                    Ok(next) => { set_mr(0, next); Ok(MessageInfo::new(REPLY_OK, 1)) }
+                    Err(label) => Ok(MessageInfo::new(label, 0)),
+                };
+            }
+            return Ok(MessageInfo::new(REPLY_DENIED, 0));
+        }
         #[cfg(feature = "utm-photo-reader")]
         if channel == vault_protocol::PHOTO_READER_CHANNEL {
             if request.label() != vault_protocol::REQUEST_PHOTO_READ || request.count() != 3 {
@@ -2319,6 +2400,13 @@ impl Handler for Vault {
         match (request.label(), request.count()) {
             (REQUEST_READ, 0) => match self.active_slot(namespace) {
                 Some((_index, record)) => {
+                    #[cfg(feature = "utm-device-lock")]
+                    if namespace == SYSTEM_NAMESPACE {
+                        return match self.system_lock_state() {
+                            Ok((generation, value, _)) => { set_mr(0, generation); set_mr(1, value); Ok(MessageInfo::new(REPLY_OK, 2)) }
+                            Err(label) => Ok(MessageInfo::new(label, 0)),
+                        };
+                    }
                     set_mr(0, record.generation);
                     set_mr(1, if record.is_blob { 0 } else { record.value });
                     Ok(MessageInfo::new(REPLY_OK, 2))
@@ -2328,6 +2416,23 @@ impl Handler for Vault {
             (REQUEST_WRITE, 2) => {
                 let expected = get_mr(0);
                 let value = get_mr(1);
+                #[cfg(feature = "utm-device-lock")]
+                if namespace == SYSTEM_NAMESPACE {
+                    let settings = match self.system_lock_state() {
+                        Ok((_, _, settings)) => settings,
+                        Err(label) => return Ok(MessageInfo::new(label, 0)),
+                    };
+                    if let Some(settings) = settings {
+                        let payload = match personal_os_rust_server::system_lock_record::encode_system(value, &settings) {
+                            Ok(payload) => payload,
+                            Err(_) => return Ok(MessageInfo::new(REPLY_CORRUPT, 0)),
+                        };
+                        return match self.write_blob(namespace, expected, &payload) {
+                            Ok(generation) => { set_mr(0, generation); Ok(MessageInfo::new(REPLY_OK, 1)) }
+                            Err(label) => Ok(MessageInfo::new(label, 0)),
+                        };
+                    }
+                }
                 match self.write_record(namespace, expected, value, WriteMode::Complete) {
                     Ok(generation) => {
                         set_mr(0, generation);
@@ -2351,6 +2456,7 @@ impl Handler for Vault {
                 None => Ok(MessageInfo::new(REPLY_CORRUPT, 0)),
             },
             (REQUEST_WRITE_BLOB, 2) => {
+                if namespace == SYSTEM_NAMESPACE { return Ok(MessageInfo::new(REPLY_DENIED, 0)); }
                 let expected = get_mr(0);
                 let length = get_mr(1) as usize;
                 let page = match self.transfer_page(namespace) {
