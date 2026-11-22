@@ -1,4 +1,18 @@
 fn main() {
+    let timezone_output = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("timezone.bin");
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("none")
+        && std::env::var_os("CARGO_FEATURE_UTM_PD").is_some()
+    {
+        let status = std::process::Command::new("python3")
+            .args(["timezone_table.py"]).arg(&timezone_output)
+            .status().expect("generate host timezone transitions");
+        assert!(status.success(), "generate host timezone transitions");
+        println!("cargo:rerun-if-changed=timezone_table.py");
+        println!("cargo:rerun-if-changed=/etc/localtime");
+        println!("cargo:rerun-if-env-changed=NEXATRODE_HOST_TIMEZONE_SHA256");
+    } else {
+        std::fs::write(&timezone_output, []).expect("create empty timezone table");
+    }
     /* Slint's embedded bitmap renderer chooses the nearest available glyph
      * size at runtime. Include physical sizes for the iPhone's 2.6087 scale;
      * otherwise even a 34 px logical heading uses a 34 px glyph on its panel. */

@@ -38,6 +38,10 @@ const HEAP_BYTES: usize = 0x2000000;
 // Match the Pixel 4a panel: 1080x2340 at the same scale as the Pixel guest.
 const SCALE: f32 = 2.6086957;
 
+fn clock_view_address() -> usize {
+    *sel4_microkit::var!(slint_clock_view: usize = 0)
+}
+
 #[cfg(feature = "utm-perf-trace")]
 fn perf_time_us() -> u64 {
     let ticks: u64;
@@ -3243,6 +3247,7 @@ impl SlintService {
         };
         let page = self._ui.get_page();
         mix(&mut hash, &page.to_le_bytes());
+        mix(&mut hash, self._ui.get_system_clock().as_str().as_bytes());
         mix(&mut hash, &[u8::from(self._ui.get_aurora_accent())]);
         if page == 1 {
             mix(&mut hash, &[u8::from(self._ui.get_note_editing())]);
@@ -5480,6 +5485,7 @@ fn init() -> SlintService {
         alloc::format!("NEXAWAL · PAGE {page_now} · BOOT PHASE ARMED").into(),
     );
     skia_guest::invalidate_chrome();
+    service.refresh_wall_clock();
     service.window.request_redraw();
     service.publish_frame();
     unsafe {
@@ -5516,6 +5522,36 @@ fn init() -> SlintService {
 }
 
 impl SlintService {
+    fn refresh_wall_clock(&self) {
+        let address = clock_view_address();
+        if address == 0 { return; }
+        let view = address as *const personal_os_rust_server::app_view::AppViewState;
+        let mut text = [0u8; 19];
+        // The clock service publishes through the shared view's sequence
+        // counter. A bounded retry avoids ever blocking the UI on the writer.
+        for _ in 0..8 {
+            let revision = unsafe { &*core::ptr::addr_of!((*view).revision) };
+            let first = revision.load(Ordering::Acquire);
+            if first & 1 != 0 { continue; }
+            let size = unsafe { core::ptr::addr_of!((*view).length).read_volatile() };
+            if size != text.len() as u32 { return; }
+            let source = unsafe { core::ptr::addr_of!((*view).text).cast::<u8>() };
+            for (i, byte) in text.iter_mut().enumerate() {
+                *byte = unsafe { source.add(i).read_volatile() };
+            }
+            core::sync::atomic::fence(Ordering::Acquire);
+            if first != revision.load(Ordering::Acquire) { continue; }
+            let table = include_bytes!(concat!(env!("OUT_DIR"), "/timezone.bin"));
+            if let Some(time) = personal_os_slint_notes_spike::wall_clock::display_time(&text, table) {
+                let time = core::str::from_utf8(&time).expect("clock digits");
+                if self._ui.get_system_clock().as_str() != time {
+                    self._ui.set_system_clock(time.into());
+                }
+            }
+            return;
+        }
+    }
+
     fn nav_drafts(&self) -> Option<&RefCell<[String; CHAT_SLOTS]>> {
         #[cfg(feature = "simplex-agent-ui")]
         {
@@ -6400,6 +6436,10 @@ impl SlintService {
     fn arm_frame_timer(&mut self) {
         let Some(channel) = self.frame_timer else { return };
         let mut delay = personal_os_slint_notes_spike::guest_platform::next_wake(&self.window);
+        if clock_view_address() != 0 {
+            let poll = core::time::Duration::from_secs(1);
+            delay = Some(delay.map_or(poll, |wake| wake.min(poll)));
+        }
         #[cfg(feature = "utm-device-lock")]
         if self.device_lock.borrow().enabled() {
             let lock_poll = core::time::Duration::from_millis(250);
@@ -7638,6 +7678,7 @@ impl Handler for SlintService {
             #[cfg(feature = "utm-clock-selftest")]
             debug_println!("SLINT CLOCK ALARM");
             self.frame_deadline = None;
+            self.refresh_wall_clock();
         }
         self.handle_notification(channels)?;
         #[cfg(feature = "simplex-agent-ui")]

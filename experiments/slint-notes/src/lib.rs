@@ -35,6 +35,7 @@ pub mod photo_mailbox;
 pub mod photo_ipc;
 pub mod chat_drag;
 pub mod frame_clock;
+pub mod wall_clock;
 pub mod frame_wake;
 #[cfg(target_os = "none")]
 pub mod guest_platform;

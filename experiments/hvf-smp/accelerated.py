@@ -41,7 +41,7 @@ def ui_source_required(pds):
     if not (ui.is_file() and worker.is_file() and reader.is_file() and transcript.is_file() and messages.is_file() and entropy.is_file()):
         return True
     binary = ui.read_bytes()
-    return (b"device_lock_transfer" not in binary or b"ENTROPY|DEVICE_LOCK_V1" not in entropy.read_bytes()
+    return (b"slint_clock_view" not in binary or b"device_lock_transfer" not in binary or b"ENTROPY|DEVICE_LOCK_V1" not in entropy.read_bytes()
             or b"photo_mailbox_region" not in binary or b"photo_read_mailbox" not in binary
             or b"transcript_mailbox" not in binary or b"messages_worker_transfer" not in messages.read_bytes()
             or b"LIVE_RECEIVE_WORKER_ABI_V1" not in messages.read_bytes()
@@ -56,6 +56,9 @@ def build_ui_from_source(inputs, stage):
     target = Path(os.environ.get("NEXATRODE_UI_TARGET_DIR", str(ROOT / "build/utm-accelerated-ui-cargo"))).resolve()
     env = dict(os.environ, SEL4_PREFIX=str(inputs / "sel4-install"), CARGO_TARGET_DIR=str(target),
                SEL4_INCLUDE_DIRS=str(inputs / "sdk/board" / BOARD / CONFIG / "include"))
+    # Cargo must rebuild the UI if the Mac switches timezone, even when the
+    # newly selected zoneinfo file happens to have the same modification time.
+    env["NEXATRODE_HOST_TIMEZONE_SHA256"] = digest(Path("/etc/localtime"))
     env.setdefault("CARGO_BUILD_JOBS", "2")
     subprocess.run([
         "cargo", "+nightly-2026-09-25", "build", "--locked", "--offline", "--release",

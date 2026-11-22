@@ -435,7 +435,7 @@ export component NotesWindow inherits Window {
     in-out property <bool> device-lock-screen: false;
     in-out property <int> device-lock-stage: 0;
     in-out property <bool> device-lock-welcome: true;
-    in property <string> device-lock-clock: "";
+    in-out property <string> system-clock: "";
     in-out property <string> device-lock-status: "Checking lock…";
     in-out property <string> device-lock-setup-feedback: "";
     callback device-lock-key(string);
@@ -545,7 +545,7 @@ export component NotesWindow inherits Window {
         }
 
         // Static chrome follows the phone status-bar layout in the reference.
-        Text { x: 17px; y: 10px; text: "09:41"; color: #d5e7ef; font-size: 13px; font-weight: 700; }
+        Text { x: 17px; y: 10px; text: root.system-clock == "" ? "--:--" : root.system-clock; color: #d5e7ef; font-size: 13px; font-weight: 700; }
         if root.show-preview-privacy-controls: Rectangle { x: parent.width - 103px; y: 13px; width: 13px; height: 10px;
             background: #050a12; border-color: #28d8e8; border-width: 1px; }
         if root.show-preview-privacy-controls: Rectangle { x: parent.width - 100px; y: 8px; width: 7px; height: 8px;
@@ -2300,10 +2300,8 @@ export component NotesWindow inherits Window {
             background: #07132100;
             Image { x: (parent.width - 24px) / 2; y: 42px; width: 24px; height: 24px;
                 source: @image-url("../assets/icons/lock.svg"); colorize: #dcebf2; image-fit: contain; }
-            Text { x: 0px; y: 82px; width: parent.width; text: "09:41";
+            Text { x: 0px; y: 82px; width: parent.width; text: root.system-clock == "" ? "--:--" : root.system-clock;
                 color: #eef8fd; font-size: 66px; font-weight: 700; horizontal-alignment: center; }
-            Text { x: 0px; y: 156px; width: parent.width; text: "TUE  ·  APR 23";
-                color: #c6d8e1; font-size: 17px; horizontal-alignment: center; }
             Text { x: 0px; y: 493px; width: parent.width; text: "↑";
                 color: #28d8e8; font-size: 26px; horizontal-alignment: center; }
             Text { x: 0px; y: 528px; width: parent.width; text: "SWIPE UP TO UNLOCK";
@@ -2375,8 +2373,8 @@ export component NotesWindow inherits Window {
                 Image { x: (parent.width - 28px) / 2; y: 96px; width: 28px; height: 28px;
                     source: @image-url("../assets/icons/lock.svg"); colorize: #dcebf2; image-fit: contain; }
                 Text { x: 24px; y: 148px; width: parent.width - 48px;
-                    text: root.device-lock-clock == "" ? "NEXATRODE" : root.device-lock-clock;
-                    color: #eef8fd; font-size: root.device-lock-clock == "" ? 28px : 62px;
+                    text: root.system-clock == "" ? "NEXATRODE" : root.system-clock;
+                    color: #eef8fd; font-size: root.system-clock == "" ? 28px : 62px;
                     font-weight: 700; horizontal-alignment: center; }
                 Text { x: 24px; y: 208px; width: parent.width - 48px; text: "DEVICE LOCKED";
                     color: #b7d3df; font-size: 13px; horizontal-alignment: center; }

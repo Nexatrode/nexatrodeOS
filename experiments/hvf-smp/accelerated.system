@@ -524,6 +524,7 @@
         <map mr="messages_transfer" vaddr="0x4b_000_000" perms="rw" cached="true" setvar_vaddr="messages_transfer" />
         <map mr="wallet_transfer" vaddr="0x4e_000_000" perms="rw" cached="true" setvar_vaddr="wallet_transfer" />
         <map mr="device_lock_transfer" vaddr="0x6e000000" perms="rw" cached="true" setvar_vaddr="device_lock_transfer" />
+        <map mr="clock_view" vaddr="0x70_000_000" perms="r" cached="true" setvar_vaddr="slint_clock_view" />
         <map mr="haskell_tcp_io" vaddr="0x4f_000_000" perms="rw" cached="true" setvar_vaddr="haskell_tcp_page" />
     </protection_domain>
     <protection_domain name="photo_reader" priority="98" budget="2500" period="10000" stack_size="0x20000">

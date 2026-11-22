@@ -57,6 +57,8 @@ When prepared inputs predate the photo reader, the builder compiles the UI, inpu
 
 When developing the wallet itself, run `./dev utm-accelerated --rebuild-wallet` to compile the coordinator and workers from the current checkout with the same profile. Use `--output DIR` for a separate comparison build. The default release build verifies and uses the exact measured binaries. The source build retains early batch requests, rate-limit backoff, and the release's first-connection and polling behavior. Experimental source builds can still pass their flags to `build_wallet_scan_workers.sh` explicitly.
 
+The UTM status bar and lock screen display the Mac's local time. The guest clock remains UTC for network and wallet operations. The UI build embeds the Mac's timezone rules, including daylight-saving transitions, from `/etc/localtime`; if the Mac changes to a different timezone, rebuild the UI and restart the VM to pick it up. Pixel and iPhone need their own wall-clock and timezone sources.
+
 #### Installation inputs
 
 This Mac has a prepared, owner-private `.cache/utm-accelerated/` outside the build output. It contains the matching four-core SMC SDK, seL4 headers, configured service ELFs, the installation-specific vault ELF and a template of the VM hardware configuration. Keep this directory private. The build prefers the current bundle's settings and can use the template when the build tree has been cleaned. Wallet and chat data reside on the VM's own disk.
