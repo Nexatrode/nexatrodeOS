@@ -5778,6 +5778,7 @@ fn badge(channels: sel4_microkit::ChannelSet) -> u64 {
     result
 }
 
+#[cfg(not(feature="sunfish-runtime-handoff-stack-split"))]
 pub(super) fn start(display: &Display, state: &mut Startup) {
     if state._mpss_runtime.is_some() || !pixel_mpss_auth::runtime_ready(state) {
         return;
@@ -5793,6 +5794,47 @@ pub(super) fn start(display: &Display, state: &mut Startup) {
     let mut runtime = state._mpss_runtime.take().unwrap();
     runtime.begin(display, state);
     state._mpss_runtime = Some(runtime);
+}
+
+// Keep large construction temporaries out of the frame that begins GLINK and
+// services. The init-time path still holds Startup's initialization frame.
+#[cfg(feature="sunfish-runtime-handoff-stack-split")]
+#[inline(never)]
+fn construct_runtime(display: &Display, state: &mut Startup) -> bool {
+    let parts = match pixel_mpss_auth::take_runtime(state) {
+        Ok(parts) => parts,
+        Err(_) => {
+            pixel_mpss_auth::show(display, state);
+            return false;
+        }
+    };
+    state._mpss_runtime = Some(RuntimeDomain::new(parts));
+    true
+}
+
+#[cfg(feature="sunfish-runtime-handoff-stack-split")]
+#[inline(never)]
+fn begin_prepared_runtime(display: &Display, state: &mut Startup) {
+    display.hex(2,"HANDOFF STEP",3);
+    display.flush();
+    let mut runtime = state._mpss_runtime.take().unwrap();
+    runtime.begin(display, state);
+    state._mpss_runtime = Some(runtime);
+}
+
+#[cfg(feature="sunfish-runtime-handoff-stack-split")]
+#[inline(never)]
+pub(super) fn start(display: &Display, state: &mut Startup) {
+    if state._mpss_runtime.is_some() || !pixel_mpss_auth::runtime_ready(state) {
+        return;
+    }
+    display.replace_line(1,"RUNTIME HANDOFF START");
+    display.hex(2,"HANDOFF STEP",1);
+    display.flush();
+    if !construct_runtime(display,state) {return;}
+    display.hex(2,"HANDOFF STEP",2);
+    display.flush();
+    begin_prepared_runtime(display,state);
 }
 
 pub(super) fn notified(state: &mut Startup, channels: sel4_microkit::ChannelSet) {

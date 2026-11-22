@@ -10,7 +10,10 @@ impl RuntimeDomain {
         let close=owner.init_close_fifo().bounds.and_then(|c|c.first_visible);
         let age=|t|self.time_from_us(Some(self.runtime_started),t);
         let us=|t|self.time_from_us(Some(0),Some(t));
+        #[cfg(not(feature="sunfish-runtime-handoff-stack-split"))]
         display.replace_line(1,"WRQ POST RETURN CALLERS");
+        #[cfg(feature="sunfish-runtime-handoff-stack-split")]
+        display.replace_line(1,"WRQ CALLERS STACK SPLIT");
         for(i,(label,value)) in [("RUNTIME ERROR",self.error),("WRQ RXDONE US",age(returned)),
             ("REG QUEUE US",age(queued)),("REG PUB US",age(published)),("OACK HEAD US",age(head)),
             ("OACK READ US",age(read)),("CLOSE VIS US",age(close))].into_iter().enumerate(){display.hex(i+2,label,value);}
