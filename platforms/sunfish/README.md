@@ -10,6 +10,9 @@ build uses [`sel4-overlay.dts`](sel4-overlay.dts) on the final merged Lineage
 runtime FDT instead of the base DTB embedded in `boot_a`. See the measured addresses and backup notes in
 [`docs/pixel-p0-boot-feasibility.md`](../../docs/pixel-p0-boot-feasibility.md).
 
+For the WMI queue, CE ring and descriptor compatibility constraints, see the
+[WMI and Copy Engine integration notes](../../docs/sunfish-wmi-ce-integration.md).
+
 ## Contents
 
 | File | Role |
