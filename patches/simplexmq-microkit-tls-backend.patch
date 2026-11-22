@@ -1,0 +1,150 @@
+diff --git a/src/Simplex/Messaging/Client.hs b/src/Simplex/Messaging/Client.hs
+index dc811fa0..90c461df 100644
+--- a/src/Simplex/Messaging/Client.hs
++++ b/src/Simplex/Messaging/Client.hs
+@@ -34,6 +34,7 @@ module Simplex.Messaging.Client
+     SMPClient,
+     ProxiedRelay (..),
+     getProtocolClient,
++    getProtocolClientWithTLSBackend,
+     closeProtocolClient,
+     protocolClientServer,
+     protocolClientServer',
+@@ -158,6 +159,7 @@ import qualified Data.X509 as X
+ import qualified Data.X509.Validation as XV
+ import Network.Socket (HostName, ServiceName)
+ import Network.Socks5 (SocksCredentials (..))
++import qualified Network.TLS as TLSBackend
+ import Numeric.Natural
+ import qualified Simplex.Messaging.Crypto as C
+ import Simplex.Messaging.Encoding
+@@ -170,7 +172,7 @@ import Simplex.Messaging.SimplexName (SimplexDomain)
+ import Simplex.Messaging.TMap (TMap)
+ import qualified Simplex.Messaging.TMap as TM
+ import Simplex.Messaging.Transport
+-import Simplex.Messaging.Transport.Client (SocksAuth (..), SocksProxyWithAuth (..), TransportClientConfig (..), TransportHost (..), defaultSMPPort, runTransportClient)
++import Simplex.Messaging.Transport.Client (SocksAuth (..), SocksProxyWithAuth (..), TransportClientConfig (..), TransportHost (..), defaultSMPPort, runTLSBackendTransportClient, runTransportClient)
+ import Simplex.Messaging.Transport.HTTP2 (httpALPN11)
+ import Simplex.Messaging.Transport.KeepAlive
+ import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts, x509validate)
+@@ -568,7 +570,17 @@ type SMPTransportSession = TransportSession BrokerMsg
+ -- A single queue can be used for multiple 'SMPClient' instances,
+ -- as 'SMPServerTransmission' includes server information.
+ getProtocolClient :: forall v err msg. Protocol v err msg => TVar ChaChaDRG -> NetworkRequestMode -> TransportSession msg -> ProtocolClientConfig v -> [HostName] -> Maybe (TBQueue (ServerTransmissionBatch v err msg)) -> UTCTime -> (ProtocolClient v err msg -> IO ()) -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
+-getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, clientALPN, serviceCredentials, serverVRange, agreeSecret, proxyServer, useSNI} presetDomains msgQ proxySessTs disconnected = do
++getProtocolClient = getProtocolClientWithConnector Nothing
++
++-- | Connect the ordinary protocol client through a platform-supplied TLS
++-- backend. The connector opens a stream for the selected host and port; the
++-- TLS transport owns and closes it. This entry point is TLS-only and does not
++-- use the configured SOCKS proxy.
++getProtocolClientWithTLSBackend :: forall v err msg. Protocol v err msg => (TransportHost -> ServiceName -> IO TLSBackend.Backend) -> TVar ChaChaDRG -> NetworkRequestMode -> TransportSession msg -> ProtocolClientConfig v -> [HostName] -> Maybe (TBQueue (ServerTransmissionBatch v err msg)) -> UTCTime -> (ProtocolClient v err msg -> IO ()) -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
++getProtocolClientWithTLSBackend connector = getProtocolClientWithConnector (Just connector)
++
++getProtocolClientWithConnector :: forall v err msg. Protocol v err msg => Maybe (TransportHost -> ServiceName -> IO TLSBackend.Backend) -> TVar ChaChaDRG -> NetworkRequestMode -> TransportSession msg -> ProtocolClientConfig v -> [HostName] -> Maybe (TBQueue (ServerTransmissionBatch v err msg)) -> UTCTime -> (ProtocolClient v err msg -> IO ()) -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
++getProtocolClientWithConnector backendConnector g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, clientALPN, serviceCredentials, serverVRange, agreeSecret, proxyServer, useSNI} presetDomains msgQ proxySessTs disconnected = do
+   case chooseTransportHost networkConfig (host srv) of
+     Right useHost ->
+       (getCurrentTime >>= mkProtocolClient useHost >>= runClient useTransport useHost)
+@@ -608,8 +620,12 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
+       cVar <- newEmptyTMVarIO
+       let tcConfig = (transportClientConfig networkConfig nm useHost useSNI useALPN) {clientCredentials = serviceCreds <$> serviceCredentials}
+           socksCreds = clientSocksCredentials networkConfig proxySessTs transportSession
++          runConnection = case backendConnector of
++            Nothing -> runTransportClient tcConfig socksCreds useHost port' (Just $ keyHash srv) (client t c cVar)
++            Just connector ->
++              runTLSBackendTransportClient defaultSupportedParams Nothing tcConfig useHost port' (Just $ keyHash srv) (connector useHost port') (client (TProxy :: TProxy TLS 'TClient) c cVar)
+       tId <-
+-        runTransportClient tcConfig socksCreds useHost port' (Just $ keyHash srv) (client t c cVar)
++        runConnection
+           `forkFinally` \r ->
+             let err = either toNetworkError (const NEFailedError) r
+              in void $ atomically $ tryPutTMVar cVar $ Left $ PCENetworkError err
+diff --git a/src/Simplex/Messaging/Transport.hs b/src/Simplex/Messaging/Transport.hs
+index 51a2955e..7dcd521b 100644
+--- a/src/Simplex/Messaging/Transport.hs
++++ b/src/Simplex/Messaging/Transport.hs
+@@ -80,6 +80,7 @@ module Simplex.Messaging.Transport
+     pattern NoEntity,
+     ALPN,
+     connectTLS,
++    connectTLSBackend,
+     closeTLS,
+     defaultSupportedParams,
+     defaultSupportedParamsHTTPS,
+@@ -367,7 +368,17 @@ type ALPN = ByteString
+ 
+ connectTLS :: T.TLSParams p => Maybe HostName -> TransportConfig -> p -> Socket -> IO T.Context
+ connectTLS host_ TransportConfig {logTLSErrors} params sock =
+-  E.bracketOnError (T.contextNew sock params) closeTLS $ \ctx ->
++  connectTLSWith host_ logTLSErrors (T.contextNew sock params)
++
++-- | Connect through an already-open TLS backend, for transports whose TCP
++-- connection is supplied by an isolated service rather than a POSIX Socket.
++connectTLSBackend :: T.TLSParams p => Maybe HostName -> TransportConfig -> p -> T.Backend -> IO T.Context
++connectTLSBackend host_ TransportConfig {logTLSErrors} params backend =
++  connectTLSWith host_ logTLSErrors (T.contextNew backend params `E.onException` T.backendClose backend)
++
++connectTLSWith :: Maybe HostName -> Bool -> IO T.Context -> IO T.Context
++connectTLSWith host_ logTLSErrors openContext =
++  E.bracketOnError openContext closeTLS $ \ctx ->
+     logHandshakeErrors (T.handshake ctx) $> ctx
+   where
+     logHandshakeErrors = if logTLSErrors then (`catchAll` logThrow) else id
+diff --git a/src/Simplex/Messaging/Transport/Client.hs b/src/Simplex/Messaging/Transport/Client.hs
+index 5d85e7aa..934fbe78 100644
+--- a/src/Simplex/Messaging/Transport/Client.hs
++++ b/src/Simplex/Messaging/Transport/Client.hs
+@@ -10,6 +10,7 @@
+ module Simplex.Messaging.Transport.Client
+   ( runTransportClient,
+     runTLSTransportClient,
++    runTLSBackendTransportClient,
+     smpClientHandshake,
+     defaultSMPPort,
+     defaultTcpConnectTimeout,
+@@ -194,6 +195,23 @@ runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy,
+       THOnionHost h -> SocksAddrDomainName h
+       THDomainName h -> SocksAddrDomainName $ B.pack h
+ 
++-- | Use the same TLS parameters and peer-certificate handoff as the socket
++-- path, with a backend-opening action supplied by the platform. The action
++-- opens the underlying network capability; closing the TLS context closes
++-- the backend when the callback completes.
++runTLSBackendTransportClient :: T.Supported -> Maybe XS.CertificateStore -> TransportClientConfig -> TransportHost -> ServiceName -> Maybe C.KeyHash -> IO T.Backend -> (TLS 'TClient -> IO a) -> IO a
++runTLSBackendTransportClient tlsParams caStore_ cfg@TransportClientConfig {clientCredentials, clientALPN, useSNI} host port keyHash openBackend client = do
++  serverCert <- newEmptyTMVarIO
++  clientCredsSent <- newIORef False
++  let hostName = B.unpack $ strEncode host
++      clientParams = mkTLSClientParams tlsParams caStore_ hostName port keyHash clientCredentials clientCredsSent clientALPN useSNI serverCert
++      tCfg = clientTransportConfig cfg
++  E.bracket (openBackend >>= connectTLSBackend (Just hostName) tCfg clientParams) closeTLS $ \ctx -> do
++    chain <- takePeerCertChain serverCert
++    sent <- readIORef clientCredsSent
++    transport <- getTransportConnection tCfg sent chain ctx
++    client transport
++
+ connectTCPClient :: HostName -> ServiceName -> IO Socket
+ connectTCPClient host port = withSocketsDo $ resolve >>= tryOpen err
+   where
+diff --git a/src/Simplex/Messaging/Transport/Shared.hs b/src/Simplex/Messaging/Transport/Shared.hs
+index 204ef3f5..9ace7f16 100644
+--- a/src/Simplex/Messaging/Transport/Shared.hs
++++ b/src/Simplex/Messaging/Transport/Shared.hs
+@@ -16,7 +16,6 @@ import Data.ByteString (ByteString)
+ import qualified Data.X509 as X
+ import qualified Data.X509.CertificateStore as XS
+ import qualified Data.X509.Validation as XV
+-import Network.Socket (HostName)
+ 
+ data ChainCertificates
+   = CCEmpty
+@@ -33,7 +32,7 @@ chainIdCaCerts (X.CertificateChain chain) = case chain of
+   [leafCert, idCert, _, caCert] -> CCValid {leafCert, idCert, caCert} -- with network certificate
+   _ -> CCLong
+ 
+-x509validate :: X.SignedCertificate -> (HostName, ByteString) -> X.CertificateChain -> IO [XV.FailedReason]
++x509validate :: X.SignedCertificate -> (String, ByteString) -> X.CertificateChain -> IO [XV.FailedReason]
+ x509validate caCert serviceID = XV.validate X.HashSHA256 XV.defaultHooks checks certStore noCache serviceID
+   where
+     checks = XV.defaultChecks {XV.checkFQHN = False}

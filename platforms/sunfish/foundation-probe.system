@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<system>
+    <!-- Only the hog and witness can see this page. The intruder deliberately
+         tries the same virtual address without receiving a mapping. -->
+    <memory_region name="foundation_state" size="0x1000" page_size="0x1000" />
+
+    <protection_domain name="foundation_hog" priority="100" budget="2000" period="10000">
+        <program_image path="foundation-hog.elf" />
+        <map mr="foundation_state" vaddr="0x40000000" perms="rw" cached="false" />
+    </protection_domain>
+    <protection_domain name="foundation_intruder" priority="95" budget="200000" period="200000">
+        <program_image path="foundation-intruder.elf" />
+    </protection_domain>
+    <protection_domain name="foundation_witness" priority="90" budget="200000" period="200000" smc="true">
+        <program_image path="foundation-witness.elf" />
+        <map mr="foundation_state" vaddr="0x40000000" perms="r" cached="false" />
+    </protection_domain>
+</system>

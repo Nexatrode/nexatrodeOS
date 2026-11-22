@@ -1,0 +1,86 @@
+--- a/loader/src/aarch64/util64.S
++++ b/loader/src/aarch64/util64.S
+@@ -401,12 +401,22 @@
+     enable_mmu sctlr_el1, x8
+ 
+ #if defined(CONFIG_PLAT_IPHONE7PLUS)
+-    /* Black marks the first post-MMU C call on the known-visible band. */
+-    mov     x0, xzr
+-    mov     x1, #280
+-    mov     w2, wzr
+-    mov     w3, w2
+-    bl      pongo_draw_loader_marker
++    /* Direct black row 280 after SCTLR.M; no stack or C helper involved. */
++    ldr     x9, =0x8BB80C000 + (280 * 0x1100)
++    movz    w10, #0
++    mov     x11, #48
++    mov     x13, #0x1100
++1:
++    mov     x12, #128
++2:
++    str     w10, [x9], #4
++    subs    x12, x12, #1
++    b.ne    2b
++    add     x9, x9, x13
++    sub     x9, x9, #512
++    subs    x11, x11, #1
++    b.ne    1b
++    dsb     sy
+ #endif
+ 
+     ldp     x27, x28, [sp], #16
+@@ -530,6 +540,10 @@
+ 
+ .macro ventry id
+ .align 7
++#if defined(CONFIG_PLAT_IPHONE7PLUS)
++    /* Diagnostic vector avoids the loader stack and exception C path. */
++    b       pongo_mmu_fault_vector
++#else
+     /* push some temp registers on the stack */
+     stp     x2, x3, [sp, #-16]
+     adrp    x2, exception_register_state
+@@ -553,6 +567,7 @@
+     stp     x28, x29, [x0, #16 * 14]
+     mov     x0, \id
+     b       exception_handler
++#endif
+ .endm
+ 
+ .align 12
+@@ -574,3 +589,35 @@
+     ventry  #14    // FIQ 32-bit EL0
+     ventry  #15    // SError 32-bit EL0
+ END_FUNC(arm_vector_table)
++
++#if defined(CONFIG_PLAT_IPHONE7PLUS)
++/* Stackless fail signal: disable translation/caches, paint a black square, halt. */
++.align 4
++BEGIN_FUNC(pongo_mmu_fault_vector)
++    mrs     x9, sctlr_el1
++    bic     x9, x9, #1
++    bic     x9, x9, #4
++    bic     x9, x9, #0x1000
++    msr     sctlr_el1, x9
++    dsb     sy
++    isb
++    ldr     x9, =0x8BB80C000
++    movz    w10, #0
++    mov     x11, #128
++    mov     x13, #0x1100
++3:
++    mov     x12, #128
++4:
++    str     w10, [x9], #4
++    subs    x12, x12, #1
++    b.ne    4b
++    add     x9, x9, x13
++    sub     x9, x9, #512
++    subs    x11, x11, #1
++    b.ne    3b
++    dsb     sy
++5:
++    wfe
++    b       5b
++END_FUNC(pongo_mmu_fault_vector)
++#endif

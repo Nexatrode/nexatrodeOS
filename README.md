@@ -12,6 +12,22 @@ experimental graphics profile now includes isolated Notes, Contacts, a
 four-function Calculator, a read-only UTC Clock app, a bounded Calendar reminder
 list, an offline Messages peer-key shell, and a read-only Settings stub with routed navigation.
 
+The SimpleX messaging guest includes a modified SimpleXMQ agent. Its license,
+upstream revision, port sources, and decoder credits are listed in the
+[SimpleX third-party notices](THIRD_PARTY_NOTICES.md).
+
+## Screenshots
+
+NexatrodeOS running in accelerated UTM.
+
+| Home | SimpleX chats | SimpleX conversation | Settings |
+| :---: | :---: | :---: | :---: |
+| <img src="docs/screenshots/home.png" alt="NexatrodeOS home screen" width="200"> | <img src="docs/screenshots/simplex-chats.png" alt="SimpleX chat list" width="200"> | <img src="docs/screenshots/simplex-chat.png" alt="SimpleX conversation" width="200"> | <img src="docs/screenshots/settings.png" alt="NexatrodeOS settings" width="200"> |
+
+| NexaWal wallet | Receive XMR | Send XMR |
+| :---: | :---: | :---: |
+| <img src="docs/screenshots/nexawal-wallet.png" alt="NexaWal wallet overview" width="200"> | <img src="docs/screenshots/nexawal-receive.png" alt="NexaWal receive screen" width="200"> | <img src="docs/screenshots/nexawal-send.png" alt="NexaWal send screen" width="200"> |
+
 ## Run
 
 On this Mac, from any directory:
@@ -142,6 +158,7 @@ with either one.
 | `./dev backup-restore --archive vault.pvlt --output restored.img [--allow-rollback]` | Restore into a new copy of the default CLI disk; older authenticated generations require the explicit override |
 | `./dev run --disk restored.img` | Boot QEMU from a selected raw disk image |
 | `./dev utm` | Build and create/update the UTM bundle |
+| `./dev utm-accelerated` | Rebuild the regular four-vCPU NexatrodeOS image and stage its UTM configuration using the pinned [handoff-prime-m1-100 profile](experiments/hvf-smp/README.md#regular-accelerated-vm). |
 | `python3 tests/negative_controls.py` | Verify broken isolation and an unrelated fault are rejected |
 
 This initial bootstrap supports **Apple Silicon macOS**, Python 3.12+, Rustup/Cargo,

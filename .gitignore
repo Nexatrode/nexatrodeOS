@@ -10,3 +10,13 @@ tests/input/messages_model/target/
 
 # Pixel P0 local binaries (DT sources and README stay in git)
 docs/pixel-p0-assets/lineage-ref/
+
+# Local cargo products, runner logs, and native test binaries
+target/
+rust/vendor/**/.cargo-ok
+rust/monero-wallet-cli.log
+*.dSYM/
+experiments/ghc-microkit/sqlite_vfs_probe/vault_storage_test
+experiments/ghc-microkit/sqlite_vfs_probe/vfs_test
+experiments/ghc-microkit/*.hi
+experiments/ghc-microkit/*.o

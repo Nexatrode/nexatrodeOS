@@ -214,6 +214,20 @@ impl NotesApp {
         self.notes[self.selected as usize].text()
     }
 
+    /// Replace the selected note body while preserving its title and every
+    /// other note in the collection. The Slint prototype editor uses a single
+    /// text field, so it must not discard sibling notes when saving.
+    pub fn replace_current_text(&mut self, text: &[u8]) -> bool {
+        if text.len() > NOTE_TEXT_CAPACITY || !valid_text(text) {
+            return false;
+        }
+        let note = &mut self.notes[self.selected as usize];
+        note.text.fill(0);
+        note.text[..text.len()].copy_from_slice(text);
+        note.length = text.len() as u8;
+        true
+    }
+
     pub fn current_title(&self) -> &[u8] {
         self.notes[self.selected as usize].title()
     }
@@ -540,6 +554,25 @@ mod tests {
         let length = app.encode(&mut encoded).unwrap();
         assert_eq!(&encoded[..4], b"PNT2");
         assert_eq!(NotesApp::decode(&encoded[..length]), Some(app));
+    }
+
+    #[test]
+    fn replacing_current_text_preserves_other_notes_and_round_trips() {
+        let mut app = NotesApp::new();
+        app.notes[0] = Note::from_parts(b"FIRST", b"OLD").unwrap();
+        app.notes[1] = Note::from_parts(b"SECOND", b"KEEP").unwrap();
+        app.count = 2;
+        app.selected = 0;
+        assert!(app.replace_current_text(b"NEW TEXT"));
+        assert_eq!(app.current_title(), b"FIRST");
+        assert_eq!(app.current_text(), b"NEW TEXT");
+        app.selected = 1;
+        assert_eq!(app.current_text(), b"KEEP");
+        let mut encoded = [0; NOTES_BLOB_CAPACITY];
+        let length = app.encode(&mut encoded).unwrap();
+        assert_eq!(NotesApp::decode(&encoded[..length]), Some(app));
+        assert!(!app.replace_current_text(&[0xff]));
+        assert!(!app.replace_current_text(&[b'A'; NOTE_TEXT_CAPACITY + 1]));
     }
 
     #[test]

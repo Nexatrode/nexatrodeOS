@@ -1,0 +1,11 @@
+diff --git a/loader/src/aarch64/exceptions.c b/loader/src/aarch64/exceptions.c
+--- a/loader/src/aarch64/exceptions.c
++++ b/loader/src/aarch64/exceptions.c
+@@ -53,5 +53,7 @@ void exception_handler(uintptr_t ex)
+     }
+
+     uintptr_t ec = (esr >> 26) & 0x3f;
+ #if defined(BOARD_iphone7plus)
++    /* Red on the known-visible stage-2 band signals the exception path. */
++    pongo_draw_loader_marker(0, 280, 0xffff0000u, 0xffff0000u);
+     /* Show whether the MMU transition reached the loader's exception vector.

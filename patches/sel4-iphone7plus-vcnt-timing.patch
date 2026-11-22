@@ -1,0 +1,15 @@
+--- a/src/drivers/timer/config.cmake
++++ b/src/drivers/timer/config.cmake
+@@ -31,6 +31,12 @@
+     break()
+   endif()
+ endforeach()
++
++# The iPhone compile fixture omits timer hardware nodes. The board port uses
++# the ARM generic timer directly; allow this diagnostic SDK to export CNTVCT.
++if(KernelPlatformIPhone7Plus)
++  set(KernelArmHaveGenericTimer ON)
++endif()
+ 
+ config_option(
+   KernelArmExportPCNTUser

@@ -102,6 +102,33 @@ impl ContactsApp {
             .filter(|_| self.count > 0)
     }
 
+    /// Replace the selected record's name and phone while preserving its key
+    /// and every other contact. The Slint prototype exposes these two fields.
+    pub fn replace_selected_fields(&mut self, name: &[u8], phone: &[u8]) -> bool {
+        if name.is_empty()
+            || name.len() > NAME_CAPACITY
+            || name.iter().any(|byte| !matches!(byte, b'A'..=b'Z' | b' '))
+            || phone.len() > PHONE_CAPACITY
+            || phone.iter().any(|byte| !byte.is_ascii_digit())
+        {
+            return false;
+        }
+        if self.count == 0 {
+            self.count = 1;
+            self.selected = 0;
+        }
+        let Some(contact) = self.entries.get_mut(self.selected as usize) else {
+            return false;
+        };
+        contact.name.fill(0);
+        contact.name[..name.len()].copy_from_slice(name);
+        contact.name_length = name.len() as u8;
+        contact.phone.fill(0);
+        contact.phone[..phone.len()].copy_from_slice(phone);
+        contact.phone_length = phone.len() as u8;
+        true
+    }
+
     /// Import an older app blob that stored only a single name.
     pub fn from_legacy_name(name: &[u8]) -> Option<Self> {
         if name.len() > NAME_CAPACITY || name.iter().any(|byte| !matches!(byte, b'A'..=b'Z' | b' '))
@@ -562,6 +589,33 @@ mod tests {
     }
 
     #[test]
+    fn replacing_selected_fields_preserves_fingerprint_and_siblings() {
+        let mut app = ContactsApp::new();
+        key(&mut app, KEY_ENTER);
+        key(&mut app, 30); // A
+        key(&mut app, KEY_ENTER);
+        key(&mut app, 2); // 1
+        key(&mut app, KEY_ENTER);
+        key(&mut app, 30); // fingerprint A
+        key(&mut app, 48); // B
+        key(&mut app, KEY_ENTER);
+        key(&mut app, KEY_ENTER); // start second contact
+        key(&mut app, 48); // B
+        key(&mut app, KEY_ENTER);
+        key(&mut app, KEY_ENTER); // skip phone and commit empty key
+        assert_eq!(key(&mut app, KEY_ENTER), changed(true));
+        app.selected = 0;
+        assert!(app.replace_selected_fields(b"ALICE", b"5551234"));
+        assert_eq!(app.selected().unwrap().name(), b"ALICE");
+        assert_eq!(app.selected().unwrap().phone(), b"5551234");
+        assert_eq!(app.selected().unwrap().key(), b"AB");
+        app.selected = 1;
+        assert_eq!(app.selected().unwrap().name(), b"B");
+        assert!(!app.replace_selected_fields(b"", b"123"));
+        assert!(!app.replace_selected_fields(b"ALICE", b"12X"));
+    }
+
+    #[test]
     fn decodes_pct1_blobs_with_empty_fingerprints() {
         let payload = b"PCT1\x01\x01A\x045554";
         let decoded = ContactsApp::decode(payload).unwrap();
@@ -637,7 +691,10 @@ mod tests {
         let mut app = ContactsApp::from_legacy_name(b"ALICE").unwrap();
         let mut output = [0; 128];
         let length = app.render(&mut output);
-        assert_eq!(&output[..length], b"CONTACT 1 OF 1\nNAME ALICE\nPHONE \nKEY -");
+        assert_eq!(
+            &output[..length],
+            b"CONTACT 1 OF 1\nNAME ALICE\nPHONE \nKEY -"
+        );
         assert!(!app.apply_key(1, 0).changed);
     }
 }

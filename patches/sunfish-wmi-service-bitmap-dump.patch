@@ -1,0 +1,66 @@
+From: NexatrodeOS diagnostics
+Subject: [PATCH] qcacld: capture bounded WMI service capability bitmaps
+
+Log the base bitmap in the active WMA SERVICE_READY handler and the extended
+segment when QCACLD saves SERVICE_AVAILABLE. The records contain only service
+capability bits, firmware build/request counts, and a segment offset. They do
+not log pointers, MAC addresses, firmware bytes, host-memory tuples, physical
+addresses, or DMA data, and do not alter event handling or command bytes.
+
+---
+diff --git a/drivers/staging/qca-wifi-host-cmn/wmi/src/wmi_unified_tlv.c b/drivers/staging/qca-wifi-host-cmn/wmi/src/wmi_unified_tlv.c
+index b15f07a16..964c62ea4 100755
+--- a/drivers/staging/qca-wifi-host-cmn/wmi/src/wmi_unified_tlv.c
++++ b/drivers/staging/qca-wifi-host-cmn/wmi/src/wmi_unified_tlv.c
+@@ -17677,6 +17677,13 @@ QDF_STATUS save_ext_service_bitmap_tlv(wmi_unified_t wmi_handle, void *evt_buf,
+ 	qdf_mem_copy(soc->wmi_ext_service_bitmap,
+ 			ev->wmi_service_segment_bitmap,
+ 			(WMI_SERVICE_SEGMENT_BM_SIZE32 * sizeof(uint32_t)));
++	qdf_print("SUNFISH_WMI_SERVICE_AVAILABLE offset=%u words=%u\n",
++		  ev->wmi_service_segment_offset,
++		  WMI_SERVICE_SEGMENT_BM_SIZE32);
++	print_hex_dump(KERN_INFO, "SUNFISH_WMI_EXT_SERVICE_BITMAP ",
++		       DUMP_PREFIX_OFFSET, 16, 1,
++		       (const void *)ev->wmi_service_segment_bitmap,
++		       sizeof(ev->wmi_service_segment_bitmap), false);
+ 
+ 	WMI_LOGD("wmi_ext_service_bitmap 0:0x%x, 1:0x%x, 2:0x%x, 3:0x%x\n",
+ 			soc->wmi_ext_service_bitmap[0], soc->wmi_ext_service_bitmap[1],
+diff --git a/drivers/staging/qcacld-3.0/core/wma/src/wma_main.c b/drivers/staging/qcacld-3.0/core/wma/src/wma_main.c
+index aac70e318..541204442 100644
+--- a/drivers/staging/qcacld-3.0/core/wma/src/wma_main.c
++++ b/drivers/staging/qcacld-3.0/core/wma/src/wma_main.c
+@@ -5800,6 +5800,7 @@ int wma_rx_service_ready_event(void *handle, uint8_t *cmd_param_info,
+ 	target_resource_config *wlan_res_cfg;
+ 	struct wmi_unified *wmi_handle;
+ 	uint32_t *service_bitmap;
++	uint32_t bitmap_offset;
+ 
+ 	WMA_LOGD("%s: Enter", __func__);
+ 
+@@ -5837,6 +5838,23 @@ int wma_rx_service_ready_event(void *handle, uint8_t *cmd_param_info,
+ 	}
+ 
+ 	WMA_LOGD("WMA <-- WMI_SERVICE_READY_EVENTID");
++	qdf_print("SUNFISH_WMI_SERVICE_READY build=%08x mem_reqs=%u "
++		  "service_words=%u\n", ev->fw_build_vers,
++		  ev->num_mem_reqs, param_buf->num_wmi_service_bitmap);
++	if (param_buf->wmi_service_bitmap &&
++	    param_buf->num_wmi_service_bitmap == WMI_SERVICE_BM_SIZE) {
++		for (bitmap_offset = 0; bitmap_offset < WMI_SERVICE_BM_SIZE;
++		     bitmap_offset += 4) {
++			qdf_print("SUNFISH_WMI_BASE_SERVICE_BITMAP offset=%u "
++				  "%08x %08x %08x %08x\n", bitmap_offset,
++				  param_buf->wmi_service_bitmap[bitmap_offset],
++				  param_buf->wmi_service_bitmap[bitmap_offset + 1],
++				  param_buf->wmi_service_bitmap[bitmap_offset + 2],
++				  param_buf->wmi_service_bitmap[bitmap_offset + 3]);
++		}
++	} else {
++		qdf_print("SUNFISH_WMI_BASE_SERVICE_BITMAP invalid\n");
++	}
+ 
+ 	if (ev->num_dbs_hw_modes > param_buf->num_wlan_dbs_hw_mode_list) {
+ 		WMA_LOGE("FW dbs_hw_mode entry %d more than value %d in TLV hdr",
+-- 
+2.39.2

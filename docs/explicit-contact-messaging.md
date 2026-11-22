@@ -25,7 +25,7 @@ layer and are **not** the primary messaging identity.
 | Personal OS bias | How this idea matches |
 | --- | --- |
 | Explicit authority / seL4 capabilities | Explicit contact add = explicit trust edge |
-| Small rewritten apps | Messages UI + crypto agent we own; no Haskell/Linux port |
+| Narrow native apps | Messages UI and vault capabilities stay small; the SimpleX compatibility experiment is a separate native GHC port |
 | Offline-first vault | Keys and threads live in encrypted local storage |
 | U6 fake net before Pixel radios | Prototype against Ethernet/NAT or a test relay first |
 | Defer browser / app store / spam surfaces | Closed social graph by design |
@@ -53,14 +53,22 @@ SimpleX already rejects global user IDs and uses invite/QR-style links and
 relays. This vision is **philosophically close** (explicit peers, no public
 username graph) but **technically different**: we proposed long-lived PGP
 identity + a simple central router first; SimpleX uses disposable queue
-addresses, its own SMP stack, and Haskell clients we will not run natively on
-Microkit.
+addresses, its own SMP stack, and Haskell clients. We are now testing a native
+GHC runtime port for Microkit as a way to reuse the upstream chat core. That
+path is substantial and unproven; it does not make the two messaging designs
+identical.
 
-Practical options later:
+Practical paths under consideration:
 
-- Stay bespoke (PGP + our router + Rust client on Personal OS).
-- Interoperate with or learn from SimpleX protocols after U6 (large effort).
-- Run upstream SimpleX only inside a future Linux guest, if ever.
+- Continue the native GHC port and try the upstream SimpleX core on Personal OS.
+- Keep the bespoke PGP + router design as a distinct simpler product direction.
+- Reuse protocol ideas without claiming SimpleX interoperability.
+
+The upstream compatibility test and native runtime boundary probe are tracked
+in [`simplex-port-feasibility.md`](simplex-port-feasibility.md). The SMP round
+trip is proven on the host. The Microkit probe now boots a C runtime boundary
+with a bounded heap; it does not yet execute Haskell or demonstrate SimpleX on
+the OS.
 
 See [utm-vs-hardware.md](utm-vs-hardware.md#messaging-and-simplex-chat-long-term).
 

@@ -1,0 +1,9 @@
+[package]
+name = "nexawal-heap-test"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dev-dependencies]
+sel4-dlmalloc = { git = "https://github.com/seL4/rust-sel4", rev = "891b59622306e94ad428193838f0d6214bb5c7aa" }
+one-shot-mutex = "=0.2.1"

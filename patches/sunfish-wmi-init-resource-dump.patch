@@ -1,0 +1,24 @@
+From: NexatrodeOS diagnostics
+Subject: [PATCH] qcacld: dump the exact WMI INIT resource-config TLV
+
+Emit the serialized 276-byte WMI resource-config TLV immediately after
+QCACLD has populated it and before WMI_INIT submission. This diagnostic is
+bounded to one small record per WMI INIT and does not log pointers, firmware
+data, host-memory addresses, or alter the command bytes.
+
+--- a/drivers/staging/qca-wifi-host-cmn/wmi/src/wmi_unified_tlv.c
++++ b/drivers/staging/qca-wifi-host-cmn/wmi/src/wmi_unified_tlv.c
+@@ -16537,6 +16537,11 @@ static QDF_STATUS init_cmd_send_tlv(wmi_unified_t wmi_handle,
+ 	WMITLV_SET_HDR(&resource_cfg->tlv_header,
+ 			WMITLV_TAG_STRUC_wmi_resource_config,
+ 			WMITLV_GET_STRUCT_TLVLEN(wmi_resource_config));
++	/* One bounded record for source-matched WMI INIT policy capture. */
++	print_hex_dump(KERN_INFO, "SUNFISH_WMI_INIT_RSRC ",
++		       DUMP_PREFIX_OFFSET, 16, 1,
++		       (const void *)resource_cfg,
++		       sizeof(*resource_cfg), false);
+ 
+ 	for (idx = 0; idx < param->num_mem_chunks; ++idx) {
+ 		WMITLV_SET_HDR(&(host_mem_chunks[idx].tlv_header),
+-- 
+2.39.2

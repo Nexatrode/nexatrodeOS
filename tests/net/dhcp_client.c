@@ -31,6 +31,7 @@ net_queue_handle_t net_rx_handle;
 net_queue_handle_t net_tx_handle;
 
 uintptr_t messages_net_tx;
+uintptr_t haskell_tcp_page;
 
 #define LWIP_TICK_MS 100
 #define PENDING_TX_SLOTS 2
@@ -64,7 +65,9 @@ void netif_status_callback(char *ip_addr)
     /* Matches standalone echo_server wording so ./dev test-net can share markers. */
     sddf_printf("DHCP request finished, IP address for netif %s is: %s\n",
                 sddf_get_pd_name(), ip_addr);
-    start_dns_smoke();
+    haskell_tcp_network_ready();
+    if (haskell_tcp_page != 0) haskell_dns_configure_server();
+    else start_dns_smoke();
     /* Fragment-only guest B has no messages_net_tx; skip TLS so the host stub
      * stays free for the merged Personal OS guest. */
     if (messages_net_tx != 0) {
@@ -197,9 +200,26 @@ void init(void)
             page->reserved = 0;
         }
     }
+    if (haskell_tcp_page != 0) {
+        volatile struct haskell_tcp_page *pages =
+            (volatile struct haskell_tcp_page *)haskell_tcp_page;
+        for (unsigned i = 0; i < HASKELL_TCP_SESSIONS; ++i) {
+            pages[i].magic = HASKELL_TCP_MAGIC;
+            pages[i].request_len = 0;
+            pages[i].response_len = 0;
+            pages[i].reserved = i;
+        }
+    }
 
     sddf_lwip_maybe_notify();
 }
+
+#ifdef NEXAWAL_UTM_RX_NOTIFY
+static void notify_wallet_rx(void)
+{
+    if (haskell_tcp_take_wallet_rx_wake()) microkit_notify(WALLET_TCP_CHANNEL);
+}
+#endif
 
 void notified(sddf_channel ch)
 {
@@ -213,11 +233,100 @@ void notified(sddf_channel ch)
     } else {
         sddf_dprintf("DHCP_CLIENT|LOG: unexpected channel: %u\n", ch);
     }
+#ifdef NEXAWAL_UTM_RX_NOTIFY
+    notify_wallet_rx();
+#endif
     sddf_lwip_maybe_notify();
 }
 
 microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
 {
+    if ((ch == HASKELL_TCP_CHANNEL || ch == WALLET_TCP_CHANNEL ||
+         ch == SHELL_TCP_CHANNEL || ch == WORKER_TCP_CHANNEL) &&
+        haskell_tcp_page != 0) {
+        unsigned label = (unsigned)microkit_msginfo_get_label(msginfo);
+        unsigned result = HASKELL_TCP_ERROR;
+#ifdef NEXAWAL_UTM_RX_NOTIFY
+        bool wants_rx_wake = ch == WALLET_TCP_CHANNEL && label == WALLET_RECV_WIDE &&
+                             microkit_msginfo_get_count(msginfo) == 1 &&
+                             microkit_mr_get(0) == WALLET_RX_WAKE_ONCE;
+#endif
+        /* Wallet/worker get dedicated wire pages; agent/shell share page 0. */
+        if (ch == WALLET_TCP_CHANNEL) {
+            haskell_tcp_select(HASKELL_TCP_WALLET_SLOT, true);
+        } else if (ch == WORKER_TCP_CHANNEL) {
+            haskell_tcp_select(HASKELL_TCP_WORKER_SLOT, true);
+        } else {
+            volatile struct haskell_tcp_page *base =
+                (volatile struct haskell_tcp_page *)haskell_tcp_page;
+            uint32_t slot = base[0].reserved;
+            if (slot >= HASKELL_TCP_SESSIONS) slot = 0;
+            haskell_tcp_select(slot, false);
+        }
+        /* r18/r19: wallet WaitConnect STATUS PPC runs on this PD and can
+         * starve notified(RX). Host lsof showed Cake ESTABLISHED while qemu
+         * usernet stayed TCP[SYN_RCVD] until Connection aborted — SYN-ACK was
+         * sitting in the virt RX ring. Drain RX before/after TCP ops. */
+        sddf_lwip_process_rx();
+        if (label == HASKELL_TCP_OPEN) result = haskell_tcp_open();
+        else if (label == HASKELL_TCP_STATUS) result = haskell_tcp_status();
+        else if (label == HASKELL_TCP_SEND) result = haskell_tcp_send();
+        else if (label == HASKELL_TCP_RECV) result = haskell_tcp_recv();
+#ifdef NEXAWAL_UTM_WIDE_RX
+        else if (label == WALLET_QUERY_RX_WIDE && ch == WALLET_TCP_CHANNEL) result = WALLET_RX_1K;
+#ifdef NEXAWAL_UTM_RX_NOTIFY
+        else if (label == WALLET_RECV_WIDE && ch == WALLET_TCP_CHANNEL) result = haskell_tcp_recv_wide_wait(wants_rx_wake);
+#else
+        else if (label == WALLET_RECV_WIDE && ch == WALLET_TCP_CHANNEL) result = haskell_tcp_recv_wide();
+#endif
+#endif
+        else if (label == HASKELL_TCP_CLOSE) result = haskell_tcp_close();
+        else if (label == HASKELL_TCP_CANCEL) result = haskell_tcp_cancel();
+        else if (label == HASKELL_DNS_START) result = haskell_dns_start();
+        else if (label == HASKELL_DNS_POLL) result = haskell_dns_poll();
+        /* Non-blocking breadcrumb into active wire page so wallet can observe. */
+        if (label == HASKELL_TCP_STATUS) {
+            volatile struct haskell_tcp_page *pages =
+                (volatile struct haskell_tcp_page *)haskell_tcp_page;
+            uint32_t slot = (ch == WALLET_TCP_CHANNEL) ? HASKELL_TCP_WALLET_SLOT
+                          : (ch == WORKER_TCP_CHANNEL) ? HASKELL_TCP_WORKER_SLOT
+                          : pages[0].reserved;
+            if (slot >= HASKELL_TCP_SESSIONS) slot = 0;
+            if (ch == WALLET_TCP_CHANNEL || ch == WORKER_TCP_CHANNEL) {
+                pages[slot].response_len = 1;
+                pages[slot].response[0] = (uint8_t)(result & 0xff);
+            } else {
+                pages[0].response_len = 1;
+                pages[0].response[0] = (uint8_t)(result & 0xff);
+            }
+        }
+        /* SYN-ACK / data may have arrived during the op; drain again. */
+        sddf_lwip_process_rx();
+#ifdef NEXAWAL_UTM_RX_NOTIFY
+        notify_wallet_rx();
+#endif
+        /* Kick TX after OPEN/SEND so SYN/data leave without waiting for RX.
+         * maybe_notify() from protected() only defers the signal, and this
+         * PD's protected return does not flush it, so the SYN sat in the
+         * sDDF queue until lwIP aborted. Signal virt TX directly. */
+        if (label == HASKELL_TCP_OPEN || label == HASKELL_TCP_SEND
+            || label == HASKELL_TCP_STATUS || label == HASKELL_TCP_RECV
+#ifdef NEXAWAL_UTM_WIDE_RX
+            || label == WALLET_RECV_WIDE
+#endif
+        ) {
+            sddf_lwip_maybe_notify();
+            microkit_notify(net_config.tx.id);
+        }
+#ifdef NEXAWAL_UTM_WIDE_RX
+        if (result == WALLET_RX_1K) {
+            /* Older clients check only the label and keep requesting 1 KiB. */
+            microkit_mr_set(0, WALLET_WIDE_RX_BYTES);
+            return microkit_msginfo_new(result, 1);
+        }
+#endif
+        return microkit_msginfo_new(result, 0);
+    }
     if (ch != MESSAGES_NET_CHANNEL) {
         return microkit_msginfo_new(0, 0);
     }

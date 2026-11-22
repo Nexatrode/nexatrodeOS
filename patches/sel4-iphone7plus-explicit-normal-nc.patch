@@ -1,0 +1,118 @@
+--- a/include/arch/arm/arch/64/mode/object/structures.bf
++++ b/include/arch/arm/arch/64/mode/object/structures.bf
+@@ -228,7 +228,8 @@
+ -- VM attributes
+ 
+ block vm_attributes {
+-    padding                         61
++    padding                         60
++    field armNormalNonCacheable     1
+     field armExecuteNever           1
+     field armParityEnabled          1
+     field armPageCacheable          1
+--- a/libsel4/arch_include/arm/sel4/arch/types.h
++++ b/libsel4/arch_include/arm/sel4/arch/types.h
+@@ -30,6 +30,7 @@
+     seL4_ARM_ParityEnabled = 0x02,
+     seL4_ARM_Default_VMAttributes = 0x03,
+     seL4_ARM_ExecuteNever  = 0x04,
++    seL4_ARM_NormalNonCacheable = 0x08,
+     /* seL4_ARM_PageCacheable | seL4_ARM_ParityEnabled */
+     SEL4_FORCE_LONG_ENUM(seL4_ARM_VMAttributes),
+ } seL4_ARM_VMAttributes;
+@@ -40,4 +41,3 @@
+     seL4_ARM_CacheID  = 3,
+     SEL4_FORCE_LONG_ENUM(seL4_ARM_CacheType),
+ } seL4_ARM_CacheType;
+-
+--- a/src/arch/arm/64/kernel/vspace.c
++++ b/src/arch/arm/64/kernel/vspace.c
+@@ -701,6 +701,16 @@
+     /* Inner-shareable if SMP enabled, otherwise unshared (ignored for devices) */
+     word_t shareable = cacheable ? SMP_TERNARY(SMP_SHARE, 0) : 0;
+ 
++#ifndef CONFIG_ARM_HYPERVISOR_SUPPORT
++    /* Keep MMIO on Device memory. Explicitly requested framebuffer mappings
++     * use the MAIR Normal-NC slot, as in Sandcastle's ioremap_wc path. */
++    if (vm_attributes_get_armNormalNonCacheable(attributes)) {
++        assert(!cacheable);
++        attridx = NORMAL_NC;
++        shareable = SMP_TERNARY(SMP_SHARE, 0);
++    }
++#endif
++
+     if (page_size == ARMSmallPage) {
+         return pte_pte_4k_page_new(nonexecutable, paddr, nG, 1 /* access flag */,
+                                    shareable, APFromVMRights(vm_rights), attridx);
+--- a/src/arch/arm/machine/hardware.c
++++ b/src/arch/arm/machine/hardware.c
+@@ -31,9 +31,14 @@
+          * never be marked as executable.
+          */
+         assert(frame->armExecuteNever);
++#ifdef CONFIG_ARCH_AARCH64
+         map_kernel_frame(frame->paddr, frame->pptr, VMKernelOnly,
+-                         vm_attributes_new(frame->armExecuteNever, false,
++                         vm_attributes_new(false, frame->armExecuteNever, false,
+                                            false));
++#else
++        map_kernel_frame(frame->paddr, frame->pptr, VMKernelOnly,
++                         vm_attributes_new(frame->armExecuteNever, false, false));
++#endif
+         if (!frame->userAvailable) {
+             reserve_region((p_region_t) {
+                 .start = frame->paddr,
+@@ -42,4 +47,3 @@
+         }
+     }
+ }
+-
+--- a/src/drivers/smmu/smmuv2.c
++++ b/src/drivers/smmu/smmuv2.c
+@@ -10,6 +10,12 @@
+ #include <types.h>
+ #include <plat/machine/devices_gen.h>
+ #include <drivers/smmu/smmuv2.h>
++
++#ifdef CONFIG_ARCH_AARCH64
++#define SMMU_DEVICE_VM_ATTRIBUTES vm_attributes_new(false, true, false, false)
++#else
++#define SMMU_DEVICE_VM_ATTRIBUTES vm_attributes_new(true, false, false)
++#endif
+ 
+ /*supported stages of translations*/
+ #define STAGE1_TRANS           (1 << 0)
+@@ -153,28 +159,28 @@
+     map_kernel_frame(SMMU_GR1_PADDR(smmu_dev_knowledge.smmu_page_size),
+                      SMMU_GR1_PPTR,
+                      VMKernelOnly,
+-                     vm_attributes_new(true, false, false));
++                     SMMU_DEVICE_VM_ATTRIBUTES);
+     /*GID registers*/
+     map_kernel_frame(SMMU_GID_PADDR(smmu_dev_knowledge.smmu_page_size),
+                      SMMU_GID_PPTR,
+                      VMKernelOnly,
+-                     vm_attributes_new(true, false, false));
++                     SMMU_DEVICE_VM_ATTRIBUTES);
+     /*PM registers*/
+     map_kernel_frame(SMMU_PM_PADDR(smmu_dev_knowledge.smmu_page_size),
+                      SMMU_PM_PPTR,
+                      VMKernelOnly,
+-                     vm_attributes_new(true, false, false));
++                     SMMU_DEVICE_VM_ATTRIBUTES);
+     /*SSD registers*/
+     map_kernel_frame(SMMU_SSD_PADDR(smmu_dev_knowledge.smmu_page_size),
+                      SMMU_SSD_PPTR,
+                      VMKernelOnly,
+-                     vm_attributes_new(true, false, false));
++                     SMMU_DEVICE_VM_ATTRIBUTES);
+     /*map the context banks, each bank maps to a 4K page*/
+     for (int i = 0; i < smmu_dev_knowledge.num_cbanks; i++) {
+         map_kernel_frame(SMMU_CBn_PADDR(smmu_dev_knowledge.cb_base, i, smmu_dev_knowledge.smmu_page_size),
+                          SMMU_CBn_BASE_PPTR(i),
+                          VMKernelOnly,
+-                         vm_attributes_new(true, false, false));
++                         SMMU_DEVICE_VM_ATTRIBUTES);
+     }
+ }
+ 

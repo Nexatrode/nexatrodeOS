@@ -64,27 +64,74 @@ def build_response(query: bytes) -> bytes | None:
     return tid + flags + counts + question + answer
 
 
+def question_name(data: bytes) -> str:
+    pos = 12
+    labels: list[bytes] = []
+    while pos < len(data):
+        length = data[pos]
+        if length == 0:
+            break
+        if length & 0xC0:
+            return "?"
+        pos += 1
+        labels.append(data[pos : pos + length])
+        pos += length
+    return b".".join(labels).decode("ascii", "replace")
+
+
+def forward_query(query: bytes, upstream: tuple[str, int]) -> bytes | None:
+    remote = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    remote.settimeout(2.0)
+    try:
+        remote.sendto(query, upstream)
+        data, _ = remote.recvfrom(2048)
+        return data
+    except OSError as error:
+        print(f"dns_stub: forward failed: {error}", flush=True)
+        return None
+    finally:
+        remote.close()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--listen", type=int, default=53535)
     parser.add_argument("--count", type=int, default=1,
                         help="Exit after this many successful answers (0 = forever)")
+    parser.add_argument(
+        "--forward",
+        action="store_true",
+        help="Answer personal-os.test locally and forward every other query",
+    )
+    parser.add_argument("--upstream", default="1.1.1.1:53")
     args = parser.parse_args()
+    host, separator, port_text = args.upstream.rpartition(":")
+    if not separator:
+        raise SystemExit(f"dns_stub: upstream must be host:port, got {args.upstream}")
+    upstream = (host, int(port_text))
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind(("0.0.0.0", args.listen))
     answered = 0
-    print(f"dns_stub: listening on 0.0.0.0:{args.listen}", flush=True)
+    mode = "forwarding" if args.forward else "stub"
+    print(f"dns_stub: listening on 0.0.0.0:{args.listen} ({mode})", flush=True)
     while args.count == 0 or answered < args.count:
         data, addr = sock.recvfrom(512)
         response = build_response(data)
+        if response is None and args.forward:
+            name = question_name(data)
+            print(f"dns_stub: forwarding {name} from {addr}", flush=True)
+            response = forward_query(data, upstream)
         if response is None:
             print(f"dns_stub: ignored query from {addr}", flush=True)
             continue
         sock.sendto(response, addr)
         answered += 1
-        print(f"dns_stub: answered personal-os.test for {addr}", flush=True)
+        if build_response(data) is not None:
+            print(f"dns_stub: answered personal-os.test for {addr}", flush=True)
+        else:
+            print(f"dns_stub: forwarded {question_name(data)} for {addr}", flush=True)
     return 0
 
 

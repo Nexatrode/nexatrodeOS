@@ -1,0 +1,32 @@
+--- a/configure.ac
++++ b/configure.ac
+@@ -949,7 +949,12 @@
+ dnl    as we need to know whether we need libm
+ dnl    for math functions or not
+ dnl    (see https://gitlab.haskell.org/ghc/ghc/issues/3730)
+-AC_CHECK_LIB(m, atan, HaveLibM=YES, HaveLibM=NO)
++if test "$TargetOS" = "sel4"; then
++  dnl Microkit protection domains have no process-wide libm to link against.
++  HaveLibM=NO
++else
++  AC_CHECK_LIB(m, atan, HaveLibM=YES, HaveLibM=NO)
++fi
+ if test $HaveLibM = YES
+ then
+   AC_DEFINE([HAVE_LIBM], [1], [Define to 1 if you need to link with libm])
+@@ -970,8 +975,13 @@
+ AC_SUBST(UseSystemLibFFI)
+ 
+ dnl ** check whether we need -ldl to get dlopen()
+-AC_CHECK_LIB([dl], [dlopen])
+-AC_CHECK_LIB([dl], [dlopen], HaveLibdl=YES, HaveLibdl=NO)
++if test "$TargetOS" = "sel4"; then
++  dnl Dynamic loading is outside the static Microkit process model.
++  HaveLibdl=NO
++else
++  AC_CHECK_LIB([dl], [dlopen])
++  AC_CHECK_LIB([dl], [dlopen], HaveLibdl=YES, HaveLibdl=NO)
++fi
+ AC_SUBST([UseLibdl],[$HaveLibdl])
+ dnl ** check whether we have dlinfo
+ AC_CHECK_FUNCS([dlinfo])

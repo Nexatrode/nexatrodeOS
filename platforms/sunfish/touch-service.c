@@ -1,8 +1,8 @@
 /* Pixel 4a FTS touch controller service for the Microkit Slint shell. */
 #include <stdint.h>
 #include <microkit.h>
+#include "../slint-frame-wake.h"
 
-#define PSCI_SYSTEM_RESET 0x84000009u
 #define SE_GENI_M_CLK_CFG 0x48u
 #define SE_GENI_CLK_CTRL_RO 0x60u
 #define SE_GENI_FIFO_DISABLE_RO 0x64u
@@ -58,6 +58,7 @@ uintptr_t spmi_config_vaddr;
 uintptr_t spmi_gpio4_observer_vaddr;
 uintptr_t spmi_gpio4_writer_vaddr;
 uintptr_t touch_shared_vaddr;
+uintptr_t touch_frame_wake_request;
 
 typedef struct {
     volatile uint32_t revision;
@@ -372,8 +373,9 @@ void init(void)
     if ((irq & CMD_DONE) &&
         !(irq & (CMD_FAILURE | I2C_NACK | I2C_BUS_PROTO | I2C_ARB_LOST)) &&
         (fifo_status & 0x01ffffffu) >= 2u) {
-        report("EVENT WORD0", read_reg(SE_GENI_RX_FIFO));
-        report("EVENT WORD1", read_reg(SE_GENI_RX_FIFO));
+        /* Drain the event without exposing raw touch data on the debug UART. */
+        (void)read_reg(SE_GENI_RX_FIFO);
+        (void)read_reg(SE_GENI_RX_FIFO);
     } else {
         goto reset;
     }
@@ -413,8 +415,12 @@ void init(void)
 
     ((volatile TouchState *)touch_shared_vaddr)->event_write = 0;
     microkit_dbg_puts("SUNFISH TOUCH PING TOUCH READY\r\n");
-    uint32_t interesting_events = 0;
-    for (uint32_t poll = 0; poll < 100000u; ++poll) {
+    uint64_t last_frame_wake = 0;
+    /* The screen stays up. A capped poll left later taps with no reader. */
+    for (;;) {
+        if (slint_frame_wake_poll((const uint64_t *)touch_frame_wake_request, &last_frame_wake)) {
+            microkit_notify(0);
+        }
         for (volatile uint32_t delay = 0; delay < 200000u; ++delay) { }
         write_reg(SE_GENI_M_IRQ_CLEAR, 0xffffffffu);
         write_reg(SE_I2C_TX_TRANS_LEN, 1u);
@@ -431,7 +437,7 @@ void init(void)
         }
         if ((irq & TX_FIFO_WATERMARK) == 0) {
             report("POLL WRITE READY ERROR", irq);
-            goto reset;
+            continue;
         }
         write_reg(SE_GENI_TX_FIFO, 0x86u);
         write_reg(SE_GENI_TX_WATERMARK, 0u);
@@ -446,7 +452,7 @@ void init(void)
         if ((irq & CMD_DONE) == 0 ||
             (irq & (CMD_FAILURE | I2C_NACK | I2C_BUS_PROTO | I2C_ARB_LOST))) {
             report("POLL WRITE ERROR", irq);
-            goto reset;
+            continue;
         }
         write_reg(SE_GENI_M_IRQ_CLEAR, 0xffffffffu);
         write_reg(SE_I2C_RX_TRANS_LEN, 8u);
@@ -461,42 +467,27 @@ void init(void)
         if ((irq & CMD_DONE) == 0 ||
             (irq & (CMD_FAILURE | I2C_NACK | I2C_BUS_PROTO | I2C_ARB_LOST))) {
             report("POLL READ ERROR", irq);
-            goto reset;
+            continue;
         }
         fifo_status = read_reg(SE_GENI_RX_FIFO_STATUS);
         if ((fifo_status & 0x01ffffffu) < 2u) {
             report("POLL FIFO ERROR", fifo_status);
-            goto reset;
+            continue;
         }
         uint32_t word0 = read_reg(SE_GENI_RX_FIFO);
         uint32_t word1 = read_reg(SE_GENI_RX_FIFO);
         uint32_t event = word0 & 0xffu;
         uint32_t tool = (word0 >> 8) & 0x0fu;
-        if (event != 0x03u && interesting_events++ < 8u) {
-            report("RAW WORD0", word0);
-            report("RAW WORD1", word1);
-            report("RAW POLL", poll);
-        }
         if ((event >> 4) == 1u && tool == 1u) {
             uint32_t x = ((word0 >> 24) & 0x0fu) << 8 |
                          ((word0 >> 16) & 0xffu);
             uint32_t y = (word1 & 0xffu) << 4 |
                          ((word0 >> 28) & 0x0fu);
-            report("TOUCH DOWN WORD0", word0);
-            report("TOUCH DOWN WORD1", word1);
-            report("TOUCH DOWN X", x);
-            report("TOUCH DOWN Y", y);
-            report("TOUCH DOWN POLL", poll);
             publish_contact(x, y);
         }
     }
-    microkit_dbg_puts("SUNFISH TOUCH PING TOUCH TIMEOUT\r\n");
 reset:
-    microkit_dbg_puts("SUNFISH TOUCH PING RESET REQUEST\r\n");
-    seL4_ARM_SMCContext args = {0};
-    seL4_ARM_SMCContext response = {0};
-    args.x0 = PSCI_SYSTEM_RESET;
-    microkit_arm_smc_call(&args, &response);
+    microkit_dbg_puts("SUNFISH TOUCH PING STOPPED; RESET WATCHDOG OWNS RESET\r\n");
 }
 
 void notified(microkit_channel channel) { (void)channel; }

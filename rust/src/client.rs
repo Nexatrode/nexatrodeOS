@@ -17,26 +17,24 @@ use modem_protocol::{
     REQUEST_SMS as MODEM_SMS, SMS_MAX_BYTES,
 };
 use phone_protocol::{
-    CLIENT_CHANNEL as PHONE_CHANNEL, REPLY_OK as PHONE_OK,
-    REQUEST_SET_ALERTS as PHONE_SET_ALERTS,
-};
-use settings_protocol::{
-    CLIENT_CHANNEL as SETTINGS_CHANNEL, REPLY_OK as SETTINGS_OK,
-    REQUEST_SET_ALERTS as SETTINGS_SET_ALERTS,
+    CLIENT_CHANNEL as PHONE_CHANNEL, REPLY_OK as PHONE_OK, REQUEST_SET_ALERTS as PHONE_SET_ALERTS,
 };
 use sel4::{Fault, UserContext};
 use sel4_microkit::{
     Channel, ChannelSet, Child, Handler, Infallible, MessageInfo, MessageLabel,
     MessageRegisterValue, debug_print, debug_println, get_mr, protection_domain, set_mr,
 };
+use settings_protocol::{
+    CLIENT_CHANNEL as SETTINGS_CHANNEL, REPLY_OK as SETTINGS_OK,
+    REQUEST_SET_ALERTS as SETTINGS_SET_ALERTS,
+};
 use vault_protocol::{
     CLIENT_CHANNEL as VAULT, REPLY_CONFLICT as VAULT_CONFLICT,
     REPLY_NAMESPACE_TEST as VAULT_NAMESPACE_TEST, REPLY_NO_NET, REPLY_OK as VAULT_OK,
     REPLY_SEND_SEAL_DEMO_OK, REPLY_SEND_UI_SEALED_OK, REPLY_SET_NET_PEER_OK,
-    REQUEST_NAMESPACE_TEST as VAULT_NAMESPACE_TEST_REQUEST,
-    REQUEST_READ as VAULT_READ, REQUEST_SEND_SEAL_DEMO, REQUEST_SEND_UI_SEALED,
-    REQUEST_SET_NET_PEER, REQUEST_WRITE as VAULT_WRITE,
-    TEST_VALUE as VAULT_TEST_VALUE,
+    REQUEST_NAMESPACE_TEST as VAULT_NAMESPACE_TEST_REQUEST, REQUEST_READ as VAULT_READ,
+    REQUEST_SEND_SEAL_DEMO, REQUEST_SEND_UI_SEALED, REQUEST_SET_NET_PEER,
+    REQUEST_WRITE as VAULT_WRITE, TEST_VALUE as VAULT_TEST_VALUE,
 };
 
 include!(concat!(
@@ -189,7 +187,10 @@ impl Supervisor {
         }
 
         let modem_passed = modem_smoke_test();
-        self.record(modem_passed, "fake modem accepts RING and SMS inject; DIAL blocked on supervisor");
+        self.record(
+            modem_passed,
+            "fake modem accepts RING and SMS inject; DIAL blocked on supervisor",
+        );
         if modem_passed {
             debug_println!("MODEM|PASS: RING and SMS inject accepted; DIAL blocked on supervisor");
             self.modem_rings = 1;
@@ -498,9 +499,8 @@ impl Supervisor {
             );
             // Push Settings alerts after the crash/isolation checks so the busy
             // modem smoke path does not race VirtIO input attach on graphics.
-            let alerts_pushed = self.modem_rings > 0
-                && self.modem_sms > 0
-                && self.push_settings_alerts();
+            let alerts_pushed =
+                self.modem_rings > 0 && self.modem_sms > 0 && self.push_settings_alerts();
             self.record(alerts_pushed, "Settings and Phone show modem alert counts");
             if alerts_pushed {
                 debug_println!("SETTINGS|PASS: alert counts pushed after modem smoke");

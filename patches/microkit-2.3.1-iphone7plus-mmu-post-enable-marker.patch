@@ -1,0 +1,16 @@
+diff --git a/loader/src/aarch64/util64.S b/loader/src/aarch64/util64.S
+--- a/loader/src/aarch64/util64.S
++++ b/loader/src/aarch64/util64.S
+@@ -401,3 +401,12 @@ BEGIN_FUNC(el1_mmu_enable)
+     enable_mmu sctlr_el1, x8
+
++#if defined(CONFIG_PLAT_IPHONE7PLUS)
++    /* Black marks the first post-MMU C call on the known-visible band. */
++    mov     x0, xzr
++    mov     x1, #280
++    mov     w2, wzr
++    mov     w3, w2
++    bl      pongo_draw_loader_marker
++#endif
++
+     ldp     x27, x28, [sp], #16

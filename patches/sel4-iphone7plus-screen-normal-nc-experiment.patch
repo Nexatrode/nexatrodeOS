@@ -1,0 +1,21 @@
+--- a/src/arch/arm/64/kernel/vspace.c
++++ b/src/arch/arm/64/kernel/vspace.c
+@@ -701,6 +701,18 @@
+     /* Inner-shareable if SMP enabled, otherwise unshared (ignored for devices) */
+     word_t shareable = cacheable ? SMP_TERNARY(SMP_SHARE, 0) : 0;
+ 
++#if defined(CONFIG_PLAT_IPHONE7PLUS) && !defined(CONFIG_ARM_HYPERVISOR_SUPPORT)
++    /* Experimental D11 framebuffer mapping. The only uncached RAM in this
++     * range is Pongo's 1080x1920 scanout buffer; leave all MMIO Device. The
++     * AArch64 MAIR already provides Normal-NC at index 3, matching Linux's
++     * ioremap_wc. Keep this isolated until actual phone timing is measured. */
++    if (!cacheable && paddr >= UL_CONST(0x8bb80c000) &&
++        paddr < UL_CONST(0x8bc004000)) {
++        attridx = NORMAL_NC;
++        shareable = SMP_TERNARY(SMP_SHARE, 0);
++    }
++#endif
++
+     if (page_size == ARMSmallPage) {
+         return pte_pte_4k_page_new(nonexecutable, paddr, nG, 1 /* access flag */,
+                                    shareable, APFromVMRights(vm_rights), attridx);

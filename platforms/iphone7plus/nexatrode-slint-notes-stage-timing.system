@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<system>
+    <!-- Isolated Slint first-frame raster/copy timing on the explicit Normal-NC screen. -->
+    <memory_region name="screen" size="0x7f8000" page_size="0x4000" phys_addr="0x8bb80c000" />
+    <memory_region name="slint_stage_framebuffer" size="0x7f8000" page_size="0x4000" />
+    <memory_region name="slint_heap" size="0x400000" page_size="0x4000" />
+    <memory_region name="touch_state" size="0x4000" page_size="0x4000" />
+    <memory_region name="touch_spi2" size="0x4000" page_size="0x4000" phys_addr="0x20a088000" />
+    <memory_region name="touch_pmgr" size="0x4000" page_size="0x4000" phys_addr="0x20e080000" />
+    <memory_region name="touch_i2c01" size="0x4000" page_size="0x4000" phys_addr="0x20a110000" />
+    <memory_region name="touch_clock" size="0x4000" page_size="0x4000" phys_addr="0x20e078000" />
+    <memory_region name="touch_gpio" size="0x4000" page_size="0x4000" phys_addr="0x20f100000" />
+    <protection_domain name="slint_notes" priority="99" budget="20000" period="200000" stack_size="0x8000">
+        <program_image path="slint_notes_iphone.elf" />
+        <map mr="screen" vaddr="0x40000000" perms="rw" cached="false" normal_nc="true" setvar_vaddr="slint_framebuffer" />
+        <map mr="slint_heap" vaddr="0x42000000" perms="rw" setvar_vaddr="slint_heap" />
+        <map mr="touch_state" vaddr="0x44000000" perms="r" cached="false" setvar_vaddr="slint_touch_state" />
+        <map mr="slint_stage_framebuffer" vaddr="0x48000000" perms="rw" setvar_vaddr="slint_stage_framebuffer" />
+    </protection_domain>
+    <protection_domain name="touch_service" priority="90" budget="20000" period="200000" stack_size="0x4000">
+        <program_image path="touch-service.elf" />
+        <map mr="touch_spi2" vaddr="0x41000000" perms="rw" cached="false" setvar_vaddr="touch_service_spi2" />
+        <map mr="touch_pmgr" vaddr="0x42000000" perms="rw" cached="false" setvar_vaddr="touch_service_pmgr" />
+        <map mr="touch_i2c01" vaddr="0x43000000" perms="rw" cached="false" setvar_vaddr="touch_service_i2c0" />
+        <map mr="touch_clock" vaddr="0x44000000" perms="rw" cached="false" setvar_vaddr="touch_service_clock" />
+        <map mr="touch_gpio" vaddr="0x45000000" perms="rw" cached="false" setvar_vaddr="touch_service_gpio" />
+        <map mr="touch_state" vaddr="0x46000000" perms="rw" cached="false" setvar_vaddr="touch_service_shared_state" />
+    </protection_domain>
+    <channel>
+        <end pd="touch_service" id="0" />
+        <end pd="slint_notes" id="0" />
+    </channel>
+</system>

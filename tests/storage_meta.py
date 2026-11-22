@@ -44,11 +44,11 @@ def main():
     )
     vault = SystemDescription.ProtectionDomain(
         "vault", "rust_vault_disk.elf", priority=100, passive=True,
-        stack_size=0x10000,
+        stack_size=0x20000,
     )
     tester = SystemDescription.ProtectionDomain(
         "storage_test", "rust_vault_test_client.elf", priority=99,
-        budget=3_000, period=10_000,
+        budget=3_000, period=10_000, stack_size=0x40000,
     )
     serial_driver = SystemDescription.ProtectionDomain(
         "serial_driver", "serial_driver.elf", priority=200
@@ -85,7 +85,11 @@ def main():
     # is shared with the test client so blob commits can be interrupted at the
     # same flush boundaries as scalar commits.
     for name, vaddr in (("notes_transfer", 0x45000000),
-                        ("contacts_transfer", 0x46000000)):
+                        ("contacts_transfer", 0x46000000),
+                        ("calendar_transfer", 0x47000000),
+                        ("messages_transfer", 0x48000000),
+                        ("wallet_transfer", 0x4e000000),
+                        ("wallet_identity_transfer", 0x4e001000)):
         transfer = SystemDescription.MemoryRegion(sdf, name, 0x1000)
         sdf.add_mr(transfer)
         vault.add_map(
@@ -98,6 +102,20 @@ def main():
                 SystemDescription.Map(
                     transfer, 0x22002000, "rw", cached=False,
                     setvar_vaddr="blob_transfer",
+                )
+            )
+        elif name == "messages_transfer":
+            tester.add_map(
+                SystemDescription.Map(
+                    transfer, 0x22003000, "rw", cached=False,
+                    setvar_vaddr="messages_transfer",
+                )
+            )
+        elif name == "wallet_identity_transfer":
+            tester.add_map(
+                SystemDescription.Map(
+                    transfer, 0x22004000, "rw", cached=False,
+                    setvar_vaddr=name,
                 )
             )
     rng_mmio = SystemDescription.MemoryRegion(
@@ -157,6 +175,19 @@ def main():
         notify_b=False,
     )
     sdf.add_channel(notes)
+    messages = SystemDescription.Channel(
+        tester,
+        vault,
+        a_id=6,
+        b_id=6,
+        pp_a=True,
+        notify_a=False,
+        notify_b=False,
+    )
+    sdf.add_channel(messages)
+    sdf.add_channel(SystemDescription.Channel(
+        tester, vault, a_id=8, b_id=8, pp_a=True, notify_a=False, notify_b=False,
+    ))
     entropy_channel = SystemDescription.Channel(
         tester,
         entropy,

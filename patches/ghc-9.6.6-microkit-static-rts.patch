@@ -1,0 +1,502 @@
+--- a/rts/rts.cabal.in
++++ b/rts/rts.cabal.in
+@@ -522,14 +522,12 @@
+                  ExecPage.c
+                  Arena.c
+                  Capability.c
+-                 CheckUnload.c
+                  CloneStack.c
+                  ClosureFlags.c
+                  ClosureSize.c
+                  Continuation.c
+                  Disassembler.c
+                  FileLock.c
+-                 ForeignExports.c
+                  Globals.c
+                  Hash.c
+                  Heap.c
+@@ -541,11 +539,9 @@
+                  LdvProfile.c
+                  Libdw.c
+                  LibdwPool.c
+-                 Linker.c
+                  ReportMemoryMap.c
+                  Messages.c
+                  OldARMAtomic.c
+-                 PathUtils.c
+                  Pool.c
+                  Printer.c
+                  ProfHeap.c
+@@ -563,8 +559,6 @@
+                  RtsMain.c
+                  RtsMessages.c
+                  RtsStartup.c
+-                 RtsSymbolInfo.c
+-                 RtsSymbols.c
+                  RtsUtils.c
+                  STM.c
+                  Schedule.c
+@@ -597,25 +591,6 @@
+                  hooks/OnExit.c
+                  hooks/OutOfHeap.c
+                  hooks/StackOverflow.c
+-                 linker/CacheFlush.c
+-                 linker/Elf.c
+-                 linker/InitFini.c
+-                 linker/LoadArchive.c
+-                 linker/M32Alloc.c
+-                 linker/MMap.c
+-                 linker/MachO.c
+-                 linker/macho/plt.c
+-                 linker/macho/plt_aarch64.c
+-                 linker/PEi386.c
+-                 linker/SymbolExtras.c
+-                 linker/elf_got.c
+-                 linker/elf_plt.c
+-                 linker/elf_plt_aarch64.c
+-                 linker/elf_plt_arm.c
+-                 linker/elf_reloc.c
+-                 linker/elf_reloc_aarch64.c
+-                 linker/elf_tlsgd.c
+-                 linker/elf_util.c
+                  sm/BlockAlloc.c
+                  sm/CNF.c
+                  sm/Compact.c
+@@ -641,6 +616,38 @@
+                  fs.c
+                  -- I wish we had wildcards..., this would be:
+                  -- *.c hooks/**/*.c sm/**/*.c eventlog/**/*.c linker/**/*.c
++
++      if os(sel4)
++        -- Static Microkit images resolve Haskell objects at build time. Do not
++        -- build GHC's ELF runtime linker or its object-unloading machinery.
++        cpp-options: -DGHC_RTS_NO_LINKER
++        c-sources: sel4/LinkerStubs.c
++      else
++        c-sources: CheckUnload.c
++                   ForeignExports.c
++                   Linker.c
++                   PathUtils.c
++                   RtsSymbolInfo.c
++                   RtsSymbols.c
++                   linker/CacheFlush.c
++                   linker/Elf.c
++                   linker/InitFini.c
++                   linker/LoadArchive.c
++                   linker/M32Alloc.c
++                   linker/MMap.c
++                   linker/MachO.c
++                   linker/macho/plt.c
++                   linker/macho/plt_aarch64.c
++                   linker/PEi386.c
++                   linker/SymbolExtras.c
++                   linker/elf_got.c
++                   linker/elf_plt.c
++                   linker/elf_plt_aarch64.c
++                   linker/elf_plt_arm.c
++                   linker/elf_reloc.c
++                   linker/elf_reloc_aarch64.c
++                   linker/elf_tlsgd.c
++                   linker/elf_util.c
+ 
+       if os(windows)
+          c-sources: win32/AsyncMIO.c
+--- a/rts/LinkerInternals.h
++++ b/rts/LinkerInternals.h
+@@ -9,6 +9,14 @@
+ #pragma once
+ 
+ #include "Rts.h"
++#if defined(GHC_RTS_NO_LINKER) || defined(sel4_HOST_OS)
++
++/* Statically linked Microkit images have no runtime object loader. */
++typedef struct _ObjectCode ObjectCode;
++void exitLinker(void);
++
++#else
++
+ #include "Hash.h"
+ #include "linker/M32Alloc.h"
+ 
+@@ -520,3 +528,5 @@
+ void freeSegments(ObjectCode *oc);
+ 
+ #include "EndPrivate.h"
++
++#endif /* GHC_RTS_NO_LINKER || sel4_HOST_OS */
+--- a/rts/CheckUnload.h
++++ b/rts/CheckUnload.h
+@@ -10,7 +10,11 @@
+ 
+ #pragma once
+ 
++#if defined(GHC_RTS_NO_LINKER) || defined(sel4_HOST_OS)
++typedef struct _ObjectCode ObjectCode;
++#else
+ #include "LinkerInternals.h"
++#endif
+ 
+ #include "BeginPrivate.h"
+ 
+--- a/rts/ForeignExports.h
++++ b/rts/ForeignExports.h
+@@ -9,7 +9,11 @@
+ #pragma once
+ 
+ #include "Rts.h"
++#if defined(GHC_RTS_NO_LINKER) || defined(sel4_HOST_OS)
++typedef struct _ObjectCode ObjectCode;
++#else
+ #include "LinkerInternals.h"
++#endif
+ 
+ #include "BeginPrivate.h"
+ 
+@@ -18,4 +22,3 @@
+ void processForeignExports(void);
+ 
+ #include "EndPrivate.h"
+-
+--- a/rts/RtsStartup.c
++++ b/rts/RtsStartup.c
+@@ -63,7 +63,7 @@
+ #if defined(HAVE_UNISTD_H)
+ #include <unistd.h>
+ #endif
+-#if defined(HAVE_LOCALE_H)
++#if defined(HAVE_LOCALE_H) && !defined(sel4_HOST_OS)
+ #include <locale.h>
+ #endif
+ 
+@@ -263,7 +263,9 @@
+     }
+ #endif
+ 
++#if defined(HAVE_LOCALE_H) && !defined(sel4_HOST_OS)
+     setlocale(LC_CTYPE,"");
++#endif
+ 
+     /* Initialise the stats department, phase 0 */
+     initStats0();
+@@ -673,7 +675,7 @@
+     stg_exit(n);
+ }
+ 
+-#if !defined(mingw32_HOST_OS) && defined(HAVE_SIGNAL_H)
++#if !defined(mingw32_HOST_OS) && defined(HAVE_SIGNAL_H) && !defined(sel4_HOST_OS)
+ static void exitBySignal(int sig) STG_NORETURN;
+ 
+ void
+--- a/rts/include/rts/Config.h
++++ b/rts/include/rts/Config.h
+@@ -67,7 +67,7 @@
+ code.
+ */
+ 
+-#if defined(HAVE_SIGNAL_H)
++#if defined(HAVE_SIGNAL_H) && !defined(sel4_HOST_OS)
+ #define RTS_USER_SIGNALS 1
+ #endif
+ 
+--- a/rts/RtsUtils.c
++++ b/rts/RtsUtils.c
+@@ -15,7 +15,9 @@
+ #include "Schedule.h"
+ #include "RtsFlags.h"
+ 
++#if !defined(sel4_HOST_OS)
+ #include <time.h>
++#endif
+ 
+ /* HACK: On Mac OS X 10.4 (at least), time.h doesn't declare ctime_r with
+  *       _POSIX_C_SOURCE. If this is the case, we declare it ourselves.
+@@ -24,11 +26,11 @@
+ extern char *ctime_r(const time_t *, char *);
+ #endif
+ 
+-#if defined(HAVE_FCNTL_H)
++#if defined(HAVE_FCNTL_H) && !defined(sel4_HOST_OS)
+ #include <fcntl.h>
+ #endif
+ 
+-#if defined(HAVE_GETTIMEOFDAY)
++#if defined(HAVE_GETTIMEOFDAY) && !defined(sel4_HOST_OS)
+ #include <sys/time.h>
+ #endif
+ 
+@@ -37,7 +39,7 @@
+ #include <stdarg.h>
+ #include <stdio.h>
+ 
+-#if defined(HAVE_SIGNAL_H)
++#if defined(HAVE_SIGNAL_H) && !defined(sel4_HOST_OS)
+ #include <signal.h>
+ #endif
+ 
+@@ -205,7 +207,11 @@
+  * only have millisecond precision. */
+ int rtsSleep(Time t)
+ {
+-#if defined(_WIN32)
++#if defined(sel4_HOST_OS)
++    /* Microkit has no process sleep syscall; scheduler waits use awaitEvent. */
++    (void)t;
++    return -1;
++#elif defined(_WIN32)
+     // N.B. we can't use nanosleep on Windows as it would incur a pthreads
+     // dependency. See #18272.
+     Sleep(TimeToMS(t));
+@@ -229,6 +235,10 @@
+ char *
+ time_str(void)
+ {
++#if defined(sel4_HOST_OS)
++    /* Profiling reports have no wall-clock service during early bring-up. */
++    return "time unavailable";
++#else
+     static time_t now = 0;
+     static char nowstr[26];
+ 
+@@ -243,6 +253,7 @@
+         nowstr[21] = '\0';  // removes the \n
+     }
+     return nowstr;
++#endif
+ }
+ 
+ /* -----------------------------------------------------------------------------
+@@ -340,7 +351,7 @@
+ int genericRaise(int sig) {
+ #if defined(THREADED_RTS) && (defined(openbsd_HOST_OS) || defined(freebsd_HOST_OS) || defined(dragonfly_HOST_OS) || defined(netbsd_HOST_OS) || defined(darwin_HOST_OS))
+         return pthread_kill(pthread_self(), sig);
+-#elif defined(HAVE_RAISE)
++#elif defined(HAVE_RAISE) && !defined(sel4_HOST_OS)
+         return raise(sig);
+ #else
+         exit(sig);
+--- a/rts/Task.c
++++ b/rts/Task.c
+@@ -21,7 +21,7 @@
+ 
+ #include <string.h>
+ 
+-#if HAVE_SIGNAL_H
++#if HAVE_SIGNAL_H && !defined(sel4_HOST_OS)
+ #include <signal.h>
+ #endif
+ 
+--- a/rts/IOManager.c
++++ b/rts/IOManager.c
+@@ -23,7 +23,7 @@
+ #include "RtsFlags.h"
+ #include "RtsUtils.h"
+ 
+-#if !defined(mingw32_HOST_OS) && defined(HAVE_SIGNAL_H)
++#if !defined(mingw32_HOST_OS) && defined(HAVE_SIGNAL_H) && !defined(sel4_HOST_OS)
+ #include "posix/Signals.h"
+ #endif
+ 
+--- a/rts/RtsSignals.h
++++ b/rts/RtsSignals.h
+@@ -8,7 +8,7 @@
+ 
+ #pragma once
+ 
+-#if !defined(mingw32_HOST_OS) && defined(HAVE_SIGNAL_H)
++#if !defined(mingw32_HOST_OS) && defined(HAVE_SIGNAL_H) && !defined(sel4_HOST_OS)
+ 
+ #include "posix/Signals.h"
+ 
+--- a/rts/ProfHeap.c
++++ b/rts/ProfHeap.c
+@@ -27,14 +27,21 @@
+ #include <fs_rts.h>
+ #include <string.h>
+ 
++FILE *hp_file;
++static char *hp_filename; /* heap profile (hp2ps style) log file */
++
++#if defined(sel4_HOST_OS)
++/* Microkit has no process-global locale service; the C locale is fixed. */
++static void init_prof_locale(void) {}
++static void free_prof_locale(void) {}
++static void set_prof_locale(void) {}
++static void restore_locale(void) {}
++#else
+ #if defined(darwin_HOST_OS)
+ #include <xlocale.h>
+ #else
+ #include <locale.h>
+ #endif
+-
+-FILE *hp_file;
+-static char *hp_filename; /* heap profile (hp2ps style) log file */
+ 
+ /* ------------------------------------------------------------------------
+  * Locales
+@@ -125,6 +132,7 @@
+     setlocale(LC_NUMERIC, saved_locale);
+ #endif
+ }
++#endif /* !sel4_HOST_OS */
+ 
+ /* -----------------------------------------------------------------------------
+  * era stores the current time period.  It is the same as the
+--- a/rts/ProfHeapInternal.h
++++ b/rts/ProfHeapInternal.h
+@@ -10,6 +10,9 @@
+ 
+ #include "Hash.h"
+ #include "Arena.h"
++#if defined(sel4_HOST_OS)
++#include <sys/types.h>
++#endif
+ 
+ #include "BeginPrivate.h"
+ 
+--- a/rts/IPE.c
++++ b/rts/IPE.c
+@@ -57,7 +57,9 @@
+ After the content of a IpeBufferListNode has been inserted, it's freed.
+ */
+ 
++#if defined(THREADED_RTS)
+ static Mutex ipeMapLock;
++#endif
+ static HashTable *ipeMap = NULL;
+ 
+ // Accessed atomically
+--- a/rts/Timer.c
++++ b/rts/Timer.c
+@@ -219,5 +219,7 @@
+     if (RtsFlags.MiscFlags.tickInterval != 0) {
+         exitTicker(wait);
+     }
+-#endif
+-}
++#else
++    (void)wait;
++#endif
++}
+--- a/rts/Schedule.c
++++ b/rts/Schedule.c
+@@ -101,7 +101,7 @@
+ Mutex sched_mutex;
+ #endif
+ 
+-#if !defined(mingw32_HOST_OS) && !defined(wasm32_HOST_ARCH)
++#if !defined(mingw32_HOST_OS) && !defined(wasm32_HOST_ARCH) && !defined(sel4_HOST_OS)
+ #define FORKPROCESS_PRIMOP_SUPPORTED
+ #endif
+ 
+--- a/rts/ReportMemoryMap.c
++++ b/rts/ReportMemoryMap.c
+@@ -109,6 +109,13 @@
+     }
+ }
+ 
++#elif defined(sel4_HOST_OS)
++
++void reportMemoryMap(void) {
++    /* A Microkit protection domain has no process-global virtual map. */
++    debugBelch("\nMemory map unavailable for this protection domain\n");
++}
++
+ #else
+ 
+ // Linux et al.
+--- a/rts/eventlog/EventLogWriter.c
++++ b/rts/eventlog/EventLogWriter.c
+@@ -23,7 +23,9 @@
+ #endif
+ 
+ // PID of the process that writes to event_log_filename (#4512)
++#if defined(HAVE_GETPID)
+ static pid_t event_log_pid = -1;
++#endif
+ 
+ // File for logging events
+ static FILE *event_log_file = NULL;
+--- a/rts/sel4/LinkerStubs.c
++++ b/rts/sel4/LinkerStubs.c
+@@ -0,0 +1,69 @@
++/*
++ * Static-only RTS hooks for Microkit.
++ *
++ * Microkit programs are linked as complete images, so GHCi's runtime object
++ * loader and object unloading are unavailable. Keep GC and shutdown hooks
++ * inert, while retaining static foreign-export roots registered by generated
++ * module initializers.
++ */
++
++#include "Rts.h"
++#include "CheckUnload.h"
++#include "ForeignExports.h"
++#include "LinkerInternals.h"
++#include "linker/MMap.h"
++
++ObjectCode *objects = NULL;
++ObjectCode *loaded_objects = NULL;
++uint8_t object_code_mark_bit = 0;
++int n_unloaded_objects = 0;
++
++void exitLinker(void) {}
++
++/* Static Microkit images cannot allocate writable executable pages at runtime. */
++void *mmapAnonForLinker(size_t bytes) { (void)bytes; return NULL; }
++void mprotectForLinker(void *start, size_t len, MemoryAccess mode)
++{
++    (void)start;
++    (void)len;
++    (void)mode;
++    barf("runtime executable-memory protection is unavailable on seL4");
++}
++void munmapForLinker(void *addr, size_t bytes, const char *caller)
++{
++    (void)addr;
++    (void)bytes;
++    (void)caller;
++}
++
++void initUnloadCheck(void) {}
++void exitUnloadCheck(void) {}
++bool prepareUnloadCheck(void) { return false; }
++void markObjectCode(const void *addr) { (void)addr; }
++void checkUnload(void) {}
++void insertOCSectionIndices(ObjectCode *oc) { (void)oc; }
++
++static struct ForeignExportsList *pending = NULL;
++
++void registerForeignExports(struct ForeignExportsList *exports)
++{
++    exports->next = pending;
++    exports->oc = NULL;
++    exports->stable_ptrs = NULL;
++    pending = exports;
++}
++
++void processForeignExports(void)
++{
++    while (pending != NULL) {
++        struct ForeignExportsList *exports = pending;
++        pending = exports->next;
++        exports->next = NULL;
++        for (int i = 0; i < exports->n_entries; i++) {
++            (void)getStablePtr(exports->exports[i]);
++        }
++    }
++}
++
++void foreignExportsLoadingObject(ObjectCode *oc) { (void)oc; }
++void foreignExportsFinishedLoadingObject(void) {}
+--- a/rts/RtsFlags.c
++++ b/rts/RtsFlags.c
+@@ -808,7 +808,7 @@
+  * procRtsOpts: Process rts_argv between rts_argc0 and rts_argc.
+  * -------------------------------------------------------------------------- */
+ 
+-#if defined(HAVE_UNISTD_H) && defined(HAVE_SYS_TYPES_H) && !defined(mingw32_HOST_OS) && defined(HAVE_GETUID)
++#if defined(HAVE_UNISTD_H) && defined(HAVE_SYS_TYPES_H) && !defined(mingw32_HOST_OS) && defined(HAVE_GETUID) && !defined(sel4_HOST_OS)
+ static void checkSuid(RtsOptsEnabledEnum enabled)
+ {
+     if (enabled == RtsOptsSafeOnly) {

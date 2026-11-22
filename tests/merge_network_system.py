@@ -115,6 +115,10 @@ def main():
     parser.add_argument("--base", type=Path, required=True)
     parser.add_argument("--network", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--haskell-tcp", action="store_true",
+                        help="connect the native Haskell PD to bounded TCP instead of Messages TX")
+    parser.add_argument("--haskell-tcp-pd", metavar="PD",
+                        help="attach the bounded TCP bridge to this Haskell protection domain")
     parser.add_argument(
         "--elf-dir",
         type=Path,
@@ -231,7 +235,13 @@ def main():
     if args.elf_dir is not None:
         patch_phys_in_elfs(args.elf_dir, phys_remap)
 
-    inject_messages_net_bridge(root, memory_regions, pd_names, endpoint_ids)
+    if args.haskell_tcp_pd:
+        inject_haskell_tcp_bridge(root, memory_regions, pd_names, endpoint_ids,
+                                  args.haskell_tcp_pd)
+    elif args.haskell_tcp:
+        inject_haskell_tcp_bridge(root, memory_regions, pd_names, endpoint_ids, "client")
+    else:
+        inject_messages_net_bridge(root, memory_regions, pd_names, endpoint_ids)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     base_tree.write(args.output, encoding="UTF-8", xml_declaration=True)
@@ -274,6 +284,51 @@ def inject_messages_net_bridge(root, memory_regions, pd_names, endpoint_ids):
     dhcp_end.set("notify", "false")
     endpoint_ids.add(("messages_app", "3"))
     endpoint_ids.add(("dhcp_client", "3"))
+
+
+def inject_haskell_tcp_bridge(root, memory_regions, pd_names, endpoint_ids, client_pd_name):
+    """Give the Haskell PD only a shared request page and a protected endpoint."""
+    if client_pd_name not in pd_names or "dhcp_client" not in pd_names:
+        raise RuntimeError(f"{client_pd_name} and dhcp_client required for Haskell TCP bridge")
+    if "haskell_tcp_io" in memory_regions:
+        raise RuntimeError("base system already has haskell_tcp_io memory region")
+    ET.SubElement(root, "memory_region", {"name": "haskell_tcp_io", "size": "0x1000"})
+    memory_regions.add("haskell_tcp_io")
+    client = next(pd for pd in root.findall("protection_domain")
+                  if pd.get("name") == client_pd_name)
+    ET.SubElement(client, "map", {"mr": "haskell_tcp_io", "vaddr": "0x49001000",
+                                  "perms": "rw", "setvar_vaddr": "haskell_tcp_page"})
+    dhcp = next(pd for pd in root.findall("protection_domain")
+                if pd.get("name") == "dhcp_client")
+    dhcp.set("priority", str(max(int(dhcp.get("priority", "0")),
+                                  int(client.get("priority", "0")) + 1)))
+    mapping = ET.SubElement(dhcp, "map")
+    mapping.set("mr", "haskell_tcp_io")
+    mapping.set("vaddr", "0x49000000")
+    mapping.set("perms", "rw")
+    mapping.set("setvar_vaddr", "haskell_tcp_page")
+    def allocate(pd_name):
+        used = {int(channel_end_id) for endpoint_pd, channel_end_id in endpoint_ids
+                if endpoint_pd == pd_name}
+        if pd_name == "messages_app":
+            # Keep id 4 for the messages_app sDDF timer client, injected by the
+            # encrypted-store package step after this network merge.
+            used.add(4)
+        candidate = 0
+        while candidate in used:
+            candidate += 1
+        return candidate
+
+    client_id = allocate(client_pd_name)
+    dhcp_id = 4  # HASKELL_TCP_CHANNEL in tests/net/include/haskell_tcp_protocol.h
+    if ("dhcp_client", str(dhcp_id)) in endpoint_ids:
+        raise RuntimeError("dhcp_client channel 4 is reserved by the Haskell TCP service")
+    channel = ET.SubElement(root, "channel")
+    ET.SubElement(channel, "end", {"pd": client_pd_name, "id": str(client_id), "pp": "true",
+                                   "notify": "false"})
+    ET.SubElement(channel, "end", {"pd": "dhcp_client", "id": str(dhcp_id),
+                                   "notify": "false"})
+    endpoint_ids.update(((client_pd_name, str(client_id)), ("dhcp_client", str(dhcp_id))))
 
 
 if __name__ == "__main__":

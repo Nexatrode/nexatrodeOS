@@ -55,8 +55,12 @@
  */
 #define LWIP_DNS                        1
 #define LWIP_DNS_SECURE                 0
-/* Host dns_stub.py listens here; avoid UDP/53 and macOS mDNS 5353. */
+/* Host dns_stub.py listens here; avoid UDP/53 and macOS mDNS 5353.
+ * A public-relay build can pass -DDNS_SERVER_PORT=53 to use QEMU's
+ * built-in resolver at 10.0.2.3 instead of a host socket. */
+#ifndef DNS_SERVER_PORT
 #define DNS_SERVER_PORT                 53535
+#endif
 
 /**
  * Should be set to the alignment of the CPU.

@@ -1,0 +1,310 @@
+diff --git a/include/arch/arm/arch/64/mode/machine/registerset.h b/include/arch/arm/arch/64/mode/machine/registerset.h
+index d922e4df..f04d3bf5 100644
+--- a/include/arch/arm/arch/64/mode/machine/registerset.h
++++ b/include/arch/arm/arch/64/mode/machine/registerset.h
+@@ -58,12 +58,20 @@
+ #define PSTATE_EXTRA_FLAGS  PMODE_SERROR
+ #endif
+ 
+-#define PSTATE_USER         (PMODE_FIRQ | PMODE_EL0t | PSTATE_EXTRA_FLAGS)
++#ifdef CONFIG_PLAT_IPHONE7PLUS
++/* The A10 routes the generic timer through FIQ. seL4's Apple-only FIQ vector
++ * handles that source; exception entry masks FIQ while the kernel runs. */
++#define PSTATE_FIQ_MASK     0
++#else
++#define PSTATE_FIQ_MASK     PMODE_FIRQ
++#endif
++
++#define PSTATE_USER         (PSTATE_FIQ_MASK | PMODE_EL0t | PSTATE_EXTRA_FLAGS)
+ 
+ #ifdef CONFIG_ARM_HYPERVISOR_SUPPORT
+-#define PSTATE_IDLETHREAD   (PMODE_FIRQ | PMODE_EL2h | PSTATE_EXTRA_FLAGS)
++#define PSTATE_IDLETHREAD   (PSTATE_FIQ_MASK | PMODE_EL2h | PSTATE_EXTRA_FLAGS)
+ #else
+-#define PSTATE_IDLETHREAD   (PMODE_FIRQ | PMODE_EL1h | PSTATE_EXTRA_FLAGS)
++#define PSTATE_IDLETHREAD   (PSTATE_FIQ_MASK | PMODE_EL1h | PSTATE_EXTRA_FLAGS)
+ #endif
+ 
+ /* Offsets within the user context, these need to match the order in
+@@ -299,4 +307,3 @@ static inline void Arch_initContext(user_context_t *context)
+ }
+ 
+ #endif /* !__ASSEMBLER__ */
+-
+diff --git a/include/plat/iphone7plus/plat/machine/interrupt.h b/include/plat/iphone7plus/plat/machine/interrupt.h
+new file mode 100644
+index 00000000..589dc07a
+--- /dev/null
++++ b/include/plat/iphone7plus/plat/machine/interrupt.h
+@@ -0,0 +1,68 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#pragma once
++
++#include <config.h>
++#include <machine/interrupt.h>
++#include <mode/machine.h>
++#include <util.h>
++
++/* The first bring-up target exposes only the kernel's synthetic timer IRQ. */
++#define KERNEL_TIMER_IRQ 0
++#define NUM_SGIS 16
++#define APPLE_CNTV_ENABLE  BIT(0)
++#define APPLE_CNTV_IMASK   BIT(1)
++#define APPLE_CNTV_ISTATUS BIT(2)
++
++static const irq_t irqInvalid = (irq_t) -1;
++extern irq_t apple_timer_active_irq;
++
++static inline bool_t apple_timer_firing(void)
++{
++    word_t control = 0;
++    SYSTEM_READ_WORD(CNT_CTL, control);
++    return (control & (APPLE_CNTV_ENABLE | APPLE_CNTV_IMASK | APPLE_CNTV_ISTATUS)) ==
++           (APPLE_CNTV_ENABLE | APPLE_CNTV_ISTATUS);
++}
++
++static inline irq_t getActiveIRQ(void)
++{
++    if (apple_timer_active_irq == irqInvalid && apple_timer_firing()) {
++        apple_timer_active_irq = KERNEL_TIMER_IRQ;
++    }
++    return apple_timer_active_irq;
++}
++
++static inline bool_t isIRQPending(void)
++{
++    return apple_timer_firing();
++}
++
++static inline void maskInterrupt(bool_t disable, irq_t irq)
++{
++    if (irq != KERNEL_TIMER_IRQ) {
++        return;
++    }
++    word_t control = 0;
++    SYSTEM_READ_WORD(CNT_CTL, control);
++    if (disable) {
++        control |= APPLE_CNTV_IMASK;
++    } else {
++        control &= ~APPLE_CNTV_IMASK;
++    }
++    SYSTEM_WRITE_WORD(CNT_CTL, control);
++    isb();
++}
++
++static inline void ackInterrupt(irq_t irq)
++{
++    if (irq == KERNEL_TIMER_IRQ) {
++        /* timerTick()/ackDeadlineIRQ() deasserts the architectural source. */
++        apple_timer_active_irq = irqInvalid;
++    }
++}
++
++static inline void handleSpuriousIRQ(void)
++{
++    /* A timer-only build cannot safely return from an unknown FIQ source. */
++    halt();
++}
+diff --git a/libsel4/sel4_plat_include/iphone7plus/sel4/plat/api/constants.h b/libsel4/sel4_plat_include/iphone7plus/sel4/plat/api/constants.h
+new file mode 100644
+index 00000000..f33b772b
+--- /dev/null
++++ b/libsel4/sel4_plat_include/iphone7plus/sel4/plat/api/constants.h
+@@ -0,0 +1,10 @@
++/*
++ * Copyright 2026
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#pragma once
++
++#include <sel4/config.h>
++/* Temporary baseline only; the A10 cache geometry and PA width need audit. */
++#include <sel4/arch/constants_cortex_a53.h>
+diff --git a/src/arch/arm/64/traps.S b/src/arch/arm/64/traps.S
+index cbdb9341..580a7224 100644
+--- a/src/arch/arm/64/traps.S
++++ b/src/arch/arm/64/traps.S
+@@ -80,12 +80,20 @@ BEGIN_FUNC(arm_vector_table)
+ 
+     ventry  cur_el_sync                    // Current EL Synchronous (EL1/2)
+     ventry  cur_el_irq                     // IRQ
++#ifdef CONFIG_PLAT_IPHONE7PLUS
++    ventry  cur_el_irq                     // FIQ
++#else
+     ventry_invalid                         // FIQ
++#endif
+     ventry_serror                          // SError
+ 
+     ventry  lower_el_sync                  // Synchronous 64-bit EL0/EL1
+     ventry  lower_el_irq                   // IRQ 64-bit EL0/EL1
++#ifdef CONFIG_PLAT_IPHONE7PLUS
++    ventry  lower_el_irq                   // FIQ 64-bit EL0/EL1
++#else
+     ventry_invalid                         // FIQ 64-bit EL0/EL1
++#endif
+     ventry_serror                          // SError 64-bit EL0/EL1
+ 
+     ventry_invalid                         // Synchronous 32-bit EL0/EL1
+diff --git a/src/arch/arm/common_arm.lds b/src/arch/arm/common_arm.lds
+index 4ac3a882..5950cf95 100644
+--- a/src/arch/arm/common_arm.lds
++++ b/src/arch/arm/common_arm.lds
+@@ -48,7 +48,7 @@ SECTIONS
+         *(.text)
+     }
+ 
+-    .rodata . : AT(ADDR(.rodata) - KERNEL_OFFSET)
++    .rodata ALIGN(8) : AT(ADDR(.rodata) - KERNEL_OFFSET)
+     {
+         *(.rodata)
+         *(.rodata.*)
+diff --git a/src/plat/iphone7plus/compile-fixture.dts b/src/plat/iphone7plus/compile-fixture.dts
+new file mode 100644
+index 00000000..b774fdad
+--- /dev/null
++++ b/src/plat/iphone7plus/compile-fixture.dts
+@@ -0,0 +1,17 @@
++/dts-v1/;
++
++/ {
++	#address-cells = <2>;
++	#size-cells = <2>;
++	model = "iPhone 7 Plus measured RAM envelope compile fixture only";
++	compatible = "apple,t8010";
++
++	chosen {};
++
++	/* Compile fixture uses a conservative base above the highest observed
++	 * topOfKernelData (0x8074e0000); runtime memory must still be checked. */
++	memory@808000000 {
++		device_type = "memory";
++		reg = <0x00000008 0x08000000 0 0xb2d80000>;
++	};
++};
+diff --git a/src/plat/iphone7plus/config.cmake b/src/plat/iphone7plus/config.cmake
+new file mode 100644
+index 00000000..8c601cab
+--- /dev/null
++++ b/src/plat/iphone7plus/config.cmake
+@@ -0,0 +1,37 @@
++#
++# Copyright 2026
++# SPDX-License-Identifier: GPL-2.0-only
++#
++
++declare_platform(iphone7plus KernelPlatformIPhone7Plus PLAT_IPHONE7PLUS KernelSel4ArchAarch64)
++
++if(KernelPlatformIPhone7Plus)
++    declare_seL4_arch(aarch64)
++    # A10 implements AArch64 but is not an Arm Cortex core. A53 is used here
++    # only as the closest supported ARMv8-A kernel configuration; validate the
++    # final PA/cache settings against hardware before treating this as a port.
++    set(KernelArmCortexA53 ON)
++    set(KernelArchArmV8a ON)
++    set(KernelArmHypervisorSupport OFF)
++    config_set(KernelARMPlatform ARM_PLAT "iphone7plus")
++    # Compile fixture only: runtime memory comes from the boot handoff and will
++    # replace this synthetic DRAM node before any kernel image is loaded.
++    list(APPEND KernelDTSList "src/plat/iphone7plus/compile-fixture.dts")
++    declare_default_headers(
++        TIMER_FREQUENCY 24000000
++        MAX_IRQ 0
++        # Temporary build-time value copied from existing Microkit targets;
++        # do not treat it as measured A10 WCET or use it to budget real apps.
++        CLK_MAGIC 375299969u
++        CLK_SHIFT 53u
++        KERNEL_WCET 10u
++        TIMER drivers/timer/arm_generic.h
++        INTERRUPT_CONTROLLER plat/machine/interrupt.h
++    )
++endif()
++
++add_sources(
++    DEP "KernelPlatformIPhone7Plus"
++    CFILES src/plat/iphone7plus/machine/hardware.c src/arch/arm/machine/l2c_nop.c
++           src/drivers/timer/generic_timer.c
++)
+diff --git a/src/plat/iphone7plus/machine/hardware.c b/src/plat/iphone7plus/machine/hardware.c
+new file mode 100644
+index 00000000..98e79aea
+--- /dev/null
++++ b/src/plat/iphone7plus/machine/hardware.c
+@@ -0,0 +1,44 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#include <machine.h>
++#include <arch/machine.h>
++#include <mode/machine.h>
++#include <plat/platform_gen.h>
++
++void setIRQTrigger(irq_t irq, bool_t trigger)
++{
++    (void)irq;
++    (void)trigger;
++}
++
++bool_t plat_SGITargetValid(word_t target)
++{
++    return target == 0;
++}
++
++void plat_sendSGI(word_t irq, word_t target)
++{
++    (void)irq;
++    (void)target;
++}
++
++irq_t apple_timer_active_irq = irqInvalid;
++
++BOOT_CODE void cpu_initLocalIRQController(void)
++{
++}
++
++BOOT_CODE void initIRQController(void)
++{
++    word_t control = 0;
++
++    /* A10 has no EL2. Use CNTV as seL4's EL1 virtual timer and suppress an
++     * inherited physical-timer source before enabling timer FIQs to userland. */
++    SYSTEM_WRITE_WORD("cntp_ctl_el0", 0);
++    /* init_cpu() already called initTimer(), which enabled CNTV. Preserve
++     * ENABLE while masking it here; init_irqs() later removes IMASK. */
++    SYSTEM_READ_WORD(CNT_CTL, control);
++    control |= APPLE_CNTV_IMASK;
++    SYSTEM_WRITE_WORD(CNT_CTL, control);
++    isb();
++    apple_timer_active_irq = irqInvalid;
++}
+diff --git a/src/arch/arm/64/head.S b/src/arch/arm/64/head.S
+index 65b35d7a..0994f0ba 100644
+--- a/src/arch/arm/64/head.S
++++ b/src/arch/arm/64/head.S
+@@ -84,6 +84,28 @@ BEGIN_FUNC(_start)
+     /* Make sure interrupts are disabled */
+     msr daifset, #DAIFSET_MASK
+ 
++#ifdef CONFIG_PLAT_IPHONE7PLUS
++    /* Kernel-entry checkpoint for the Pongo framebuffer. The loader has
++     * already enabled an identity mapping for this device block. */
++    ldr     x9, =0x8BB80C000
++    ldr     x10, =0x1100
++    mov     x11, #1120
++    madd    x9, x11, x10, x9
++    mov     w12, #0
++    movk    w12, #0xffff, lsl #16
++    mov     x13, #48
++1:
++    mov     x14, #128
++2:
++    str     w12, [x9], #4
++    subs    x14, x14, #1
++    b.ne    2b
++    add     x9, x9, x10
++    sub     x9, x9, #512
++    subs    x13, x13, #1
++    b.ne    1b
++#endif
++
+     /* Initialise sctlr_el1 or sctlr_el2 register */
+     msr     spsel, #1
+     mrs     x4, SCTLR

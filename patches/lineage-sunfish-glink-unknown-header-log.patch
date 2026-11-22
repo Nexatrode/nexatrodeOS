@@ -1,0 +1,17 @@
+# Diagnostic-only patch for LineageOS Sunfish kernel 4.14.357, base commit 28f9290ae067d3e7857126eb6312720dbe9c7c80.
+# Adds rate-limited logging of unsupported GLINK RX header fields (command, param1, param2).
+# Preserves the existing -EINVAL stop; does not advance the RX ring or log payload bytes.
+
+--- a/drivers/rpmsg/qcom_glink_native.c
++++ b/drivers/rpmsg/qcom_glink_native.c
+@@ -1261,7 +1261,9 @@
+ 			qcom_glink_rx_advance(glink, ALIGN(sizeof(msg), 8));
+ 			break;
+ 		default:
+-			dev_err(glink->dev, "unhandled rx cmd: %d\n", cmd);
++			/* Keep rejection unchanged; record only the fixed RX header. */
++			GLINK_ERR(glink, "unhandled rx cmd: %u param1=0x%04x "
++				 "param2=0x%08x\n", cmd, param1, param2);
+ 			ret = -EINVAL;
+ 			break;
+ 		}

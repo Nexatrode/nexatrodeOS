@@ -1,0 +1,21 @@
+[package]
+name = "walletcore-core"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "NexaWal wallet core adapted for Microkit (no Tokio/rayon/ureq/ZMQ)."
+
+[dependencies]
+monero-epee = { path = "../vendor/monero-oxide/epee", default-features = false }
+monero-seed = { git = "https://github.com/monero-oxide/monero-wallet-util", rev = "420570cf6dfa9c1cd1c6c8230eb6dbe9b8569a0f", default-features = false }
+monero-wallet = { path = "../vendor/monero-oxide/wallet", default-features = false }
+curve25519-dalek = { version = "4", default-features = false, features = ["alloc", "zeroize"] }
+zeroize = { version = "1.9", default-features = false, features = ["alloc", "zeroize_derive"] }
+rand_core = { version = "0.6", default-features = false }
+rand_chacha = { version = "0.3", default-features = false }
+serde_json = { version = "=1.0.151", default-features = false, features = ["alloc"] }
+
+[features]
+default = []
+utm-range-74 = []
+worker-profile = []

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<system>
+    <!-- Observed Pongo framebuffer. Map only the first MiB for the result. -->
+    <memory_region name="screen" size="0x100000" page_size="0x4000" phys_addr="0x8bb80c000" />
+    <protection_domain name="smoke" stack_size="0x4000">
+        <program_image path="idle.elf" />
+        <map mr="screen" vaddr="0x40000000" perms="rw" cached="false" setvar_vaddr="smoke_framebuffer" />
+    </protection_domain>
+</system>

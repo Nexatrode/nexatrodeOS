@@ -1,22 +1,84 @@
+// Slint recognizes ListView and instantiates only the visible repeated rows.
+component ListView inherits Flickable {
+    out property <length> visible-width <=> self.width;
+    out property <length> visible-height <=> self.height;
+    @children
+}
 // Eight-workspace, touch-first Slint shell for the iPhone 7 Plus. Data in this
 // image is volatile until the phone has a storage and service bridge.
 component AppCard inherits Rectangle {
     in property <string> label;
     in property <string> detail;
+    in property <string> glyph: "";
+    in property <bool> show-open-hint: false;
+    in property <image> icon;
     in property <color> accent;
+    in property <bool> skia-label: false;
     callback chosen();
-    background: #0b1825;
+    background: hit.pressed ? #1c4052 : (glyph == "" ? #0b1825 : #102333);
     border-color: accent;
-    border-width: 1px;
-    Text {
-        x: 10px; y: 10px; width: parent.width - 20px;
+    border-width: glyph == "" ? 1px : 2px;
+    if glyph != "": Rectangle {
+        x: 10px; y: 17px; width: 38px; height: 38px;
+        background: #173348;
+        border-color: accent; border-width: 1px;
+        Image {
+            x: 7px; y: 7px; width: 24px; height: 24px;
+            source: icon; colorize: accent; image-fit: contain;
+        }
+    }
+    if !root.skia-label: Text {
+        x: glyph == "" ? 10px : 58px; y: glyph == "" ? 10px : 12px;
+        width: parent.width - (glyph == "" ? 20px : 66px);
         text: label; color: accent; font-size: 18px; font-weight: 700;
     }
-    Text {
-        x: 10px; y: 43px; width: parent.width - 20px;
+    if !root.skia-label: Text {
+        x: glyph == "" ? 10px : 58px; y: 43px;
+        width: parent.width - (glyph == "" ? 20px : 66px);
         text: detail; color: #a9c1cf; font-size: 13px;
     }
-    TouchArea { width: parent.width; height: parent.height; clicked => { chosen(); } }
+    if show-open-hint: Rectangle {
+        x: 58px; y: parent.height - 43px; width: parent.width - 76px; height: 1px;
+        background: accent;
+    }
+    if show-open-hint && !root.skia-label: Text {
+        x: 58px; y: parent.height - 34px; width: parent.width - 68px;
+        text: "TAP TO OPEN"; color: accent; font-size: 12px;
+    }
+    hit := TouchArea { width: parent.width; height: parent.height; clicked => { chosen(); } }
+}
+
+component SimplexChatRow inherits Rectangle {
+    in property <string> label;
+    in property <string> preview: "Encrypted";
+    in property <color> accent: #28d8e8;
+    in property <bool> skia-text: false;
+    callback chosen();
+    height: 72px;
+    background: hit.pressed ? #173544 : #050a12;
+    border-width: 0px;
+    Rectangle {
+        x: 4px; y: 14px; width: 42px; height: 42px;
+        border-radius: 21px;
+        background: accent;
+    }
+    if !root.skia-text: Text {
+        x: 56px; y: 10px;
+        width: parent.width - 68px;
+        text: label;
+        color: #e8f5fb;
+        font-size: 16px;
+        vertical-alignment: top;
+    }
+    if !root.skia-text: Text {
+        x: 56px; y: 38px;
+        width: parent.width - 68px;
+        text: preview;
+        color: #8eacbb;
+        font-size: 13px;
+    }
+    Rectangle { x: 56px; y: 71px; width: parent.width - 56px; height: 1px; background: #17303c; }
+    hit := TouchArea { width: parent.width; height: parent.height; clicked => { chosen(); } }
 }
 
 component SoftKey inherits Rectangle {
@@ -35,6 +97,10 @@ component SoftKey inherits Rectangle {
 
 component TouchKeyboard inherits Rectangle {
     callback typed(string);
+    in property <bool> decimal: false;
+    // Address entry starts in lowercase. Shift is one letter, then back to lowercase.
+    in property <bool> shift-key: false;
+    in-out property <bool> uppercase: false;
     background: #09141f;
     border-color: #203747;
     border-width: 2px;
@@ -47,21 +113,31 @@ component TouchKeyboard inherits Rectangle {
     for key[index] in ["Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P"]: SoftKey {
         x: 5px + index * (parent.width - 10px) / 10;
         y: 49px; width: (parent.width - 10px) / 10 - 2px; height: 39px;
-        label: key; typed(k) => { root.typed(k); }
+        label: root.shift-key && !root.uppercase ? key.to-lowercase() : key;
+        typed(k) => { root.typed(k); root.uppercase = false; }
     }
     for key[index] in ["A", "S", "D", "F", "G", "H", "J", "K", "L"]: SoftKey {
         x: 18px + index * (parent.width - 36px) / 9;
         y: 93px; width: (parent.width - 36px) / 9 - 2px; height: 39px;
-        label: key; typed(k) => { root.typed(k); }
+        label: root.shift-key && !root.uppercase ? key.to-lowercase() : key;
+        typed(k) => { root.typed(k); root.uppercase = false; }
     }
     for key[index] in ["Z", "X", "C", "V", "B", "N", "M"]: SoftKey {
         x: 42px + index * (parent.width - 84px) / 7;
         y: 137px; width: (parent.width - 84px) / 7 - 2px; height: 39px;
-        label: key; typed(k) => { root.typed(k); }
+        label: root.shift-key && !root.uppercase ? key.to-lowercase() : key;
+        typed(k) => { root.typed(k); root.uppercase = false; }
     }
     SoftKey {
         x: 5px; y: 181px; width: (parent.width - 20px) / 3; height: 39px;
-        label: "SPACE"; typed(k) => { root.typed(k); }
+        label: root.decimal ? "." : (root.shift-key ? "SHIFT" : "SPACE");
+        typed(k) => {
+            if (root.shift-key && !root.decimal) {
+                root.uppercase = !root.uppercase;
+            } else {
+                root.typed(k);
+            }
+        }
     }
     SoftKey {
         x: 10px + (parent.width - 20px) / 3; y: 181px;
@@ -73,6 +149,135 @@ component TouchKeyboard inherits Rectangle {
         width: (parent.width - 20px) / 3; height: 39px;
         label: "DELETE"; typed(k) => { root.typed(k); }
     }
+}
+
+// A case-sensitive, URL-capable touch layout for invitation links.
+component InvitationKeyboard inherits Rectangle {
+    callback typed(string);
+    in-out property <bool> symbols: false;
+    in-out property <bool> uppercase: false;
+    background: #09141f;
+    border-color: #203747;
+    border-width: 2px;
+    for key[index] in ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]: SoftKey {
+        x: 4px + index * (parent.width - 8px) / 10; y: 4px;
+        width: (parent.width - 8px) / 10 - 2px; height: 34px;
+        label: key; typed(k) => { root.typed(k); }
+    }
+    for key[index] in ["q", "w", "e", "r", "t", "y", "u", "i", "o", "p"]: SoftKey {
+        visible: !root.symbols;
+        x: 4px + index * (parent.width - 8px) / 10; y: 42px;
+        width: (parent.width - 8px) / 10 - 2px; height: 34px;
+        label: root.uppercase ? (index == 0 ? "Q" : index == 1 ? "W" : index == 2 ? "E" : index == 3 ? "R" : index == 4 ? "T" : index == 5 ? "Y" : index == 6 ? "U" : index == 7 ? "I" : index == 8 ? "O" : "P") : key;
+        typed(k) => { root.typed(k); }
+    }
+    for key[index] in ["a", "s", "d", "f", "g", "h", "j", "k", "l"]: SoftKey {
+        visible: !root.symbols;
+        x: 17px + index * (parent.width - 34px) / 9; y: 80px;
+        width: (parent.width - 34px) / 9 - 2px; height: 34px;
+        label: root.uppercase ? (index == 0 ? "A" : index == 1 ? "S" : index == 2 ? "D" : index == 3 ? "F" : index == 4 ? "G" : index == 5 ? "H" : index == 6 ? "J" : index == 7 ? "K" : "L") : key;
+        typed(k) => { root.typed(k); }
+    }
+    for key[index] in ["z", "x", "c", "v", "b", "n", "m"]: SoftKey {
+        visible: !root.symbols;
+        x: 37px + index * (parent.width - 74px) / 7; y: 118px;
+        width: (parent.width - 74px) / 7 - 2px; height: 34px;
+        label: root.uppercase ? (index == 0 ? "Z" : index == 1 ? "X" : index == 2 ? "C" : index == 3 ? "V" : index == 4 ? "B" : index == 5 ? "N" : "M") : key;
+        typed(k) => { root.typed(k); }
+    }
+    for key[index] in [":", "/", "?", "#", "=", "%", "&", "@", "!"]: SoftKey {
+        visible: root.symbols;
+        x: 17px + index * (parent.width - 34px) / 9; y: 42px;
+        width: (parent.width - 34px) / 9 - 2px; height: 34px;
+        label: key; typed(k) => { root.typed(k); }
+    }
+    for key[index] in ["+", "`", "_", ".", "~", "(", ")", "[", "]"]: SoftKey {
+        visible: root.symbols;
+        x: 17px + index * (parent.width - 34px) / 9; y: 80px;
+        width: (parent.width - 34px) / 9 - 2px; height: 34px;
+        label: key; typed(k) => { root.typed(k); }
+    }
+    for key[index] in [";", ",", "*", "'", "\"", "$", "^", "{", "}"]: SoftKey {
+        visible: root.symbols;
+        x: 17px + index * (parent.width - 34px) / 9; y: 118px;
+        width: (parent.width - 34px) / 9 - 2px; height: 34px;
+        label: key; typed(k) => { root.typed(k); }
+    }
+    SoftKey {
+        x: 4px; y: 156px; width: (parent.width - 8px) / 4 - 2px; height: 34px;
+        label: root.symbols ? "ABC" : "?123";
+        typed(k) => { root.symbols = !root.symbols; }
+    }
+    SoftKey {
+        x: 6px + (parent.width - 8px) / 4; y: 156px; width: (parent.width - 8px) / 4 - 2px; height: 34px;
+        label: root.symbols ? "<" : "SHIFT";
+        typed(k) => { if root.symbols { root.typed(k); } else { root.uppercase = !root.uppercase; } }
+    }
+    SoftKey {
+        x: 8px + 2 * (parent.width - 8px) / 4; y: 156px; width: (parent.width - 8px) / 4 - 2px; height: 34px;
+        label: root.symbols ? ">" : "-"; typed(k) => { root.typed(k); }
+    }
+    SoftKey {
+        x: 10px + 3 * (parent.width - 8px) / 4; y: 156px; width: (parent.width - 8px) / 4 - 2px; height: 34px;
+        label: "DELETE"; typed(k) => { root.typed(k); }
+    }
+    SoftKey {
+        x: 4px; y: 194px; width: (parent.width - 12px) / 2; height: 28px;
+        label: root.symbols ? "\\" : "CLEAR"; typed(k) => { root.typed(k); }
+    }
+    SoftKey {
+        x: 8px + (parent.width - 12px) / 2; y: 194px; width: (parent.width - 12px) / 2; height: 28px;
+        label: root.symbols ? "|" : "SPACE"; typed(k) => { root.typed(k); }
+    }
+}
+
+component ChatThread inherits Flickable {
+    in property <string> transcript-text;
+    interactive: true;
+    mouse-drag-pan-enabled: true;
+    content-width: self.width;
+    content-height: max(self.height, transcript.preferred-height);
+    changed transcript-text => {
+        // A large negative offset is clamped to the newest line.
+        self.content-y = -100000px;
+    }
+    transcript := Text {
+        width: parent.width;
+        text: transcript-text == "" ? "NO MESSAGES YET" : transcript-text;
+        color: transcript-text == "" ? #9bb6c4 : #e8f5fb;
+        font-size: 15px;
+        wrap: word-wrap;
+    }
+    TouchArea {
+        width: parent.width;
+        height: max(parent.height, transcript.preferred-height);
+        clicked => { root.focused(); }
+    }
+    callback focused();
+}
+
+component WalletTxRow inherits Rectangle {
+    in property <bool> incoming;
+    in property <string> amount;
+    in property <bool> divider: true;
+    height: amount == "" ? 0px : 44px;
+    visible: amount != "";
+    Image {
+        x: 0px; y: 12px; width: 18px; height: 18px;
+        source: incoming ? @image-url("../assets/icons/wallet-arrow-down.svg")
+                         : @image-url("../assets/icons/wallet-arrow-up.svg");
+        colorize: incoming ? #3DCF8E : #E25B64;
+    }
+    Text {
+        x: 28px; y: 0px; height: 44px; text: incoming ? "Received" : "Sent";
+        color: #E6F2F7; font-size: 15px; font-weight: 600; vertical-alignment: center;
+    }
+    Text {
+        x: 120px; y: 0px; width: parent.width - 120px; height: 44px; text: amount;
+        color: incoming ? #3DCF8E : #E25B64; font-size: 15px; font-weight: 600;
+        horizontal-alignment: right; vertical-alignment: center;
+    }
+    if divider: Rectangle { x: 0px; y: 43px; width: parent.width; height: 1px; background: #263D4B; }
 }
 
 export component NotesWindow inherits Window {
@@ -87,108 +292,903 @@ export component NotesWindow inherits Window {
     in-out property <int> page: 0;
     in-out property <int> edit-target: 0;
     in-out property <string> note: "";
+    in-out property <bool> note-editing: false;
     in-out property <string> status: "VOLATILE · NOT SAVED";
     in-out property <string> contact-name: "";
     in-out property <string> contact-phone: "";
+    in-out property <string> contact-status: "VOLATILE · NOT SAVED";
+    in-out property <bool> contact-detail: false;
+    property <bool> contact-stored: contact-name != "" &&
+        (contact-status == "LOADED FROM VAULT" || contact-status == "SAVED THROUGH VAULT");
     in-out property <string> calendar-item: "";
+    in-out property <string> calendar-status: "VOLATILE · NOT SAVED";
     in-out property <string> message-peer: "";
     in-out property <string> message-body: "";
+    in-out property <string> message-search: "";
+    in-out property <string> message-reply-to: "";
+    in-out property <bool> message-reply-mine: false;
+    in-out property <string> message-action-id: "";
+    in-out property <bool> message-edit-mode: false;
+    in-out property <[string]> message-bubble-ids;
+    in-out property <[string]> message-bubble-quotes;
+    in-out property <[string]> message-bubble-reacts;
+    in-out property <image> message-invitation-qr;
+    in-out property <bool> message-invitation-qr-visible: false;
+    in-out property <string> message-send-status: "NO MESSAGE SENT";
+    in-out property <string> message-incoming-body: "";
+    in-out property <string> message-transcript: "";
+    in-out property <[string]> message-bubbles;
+    in-out property <[string]> message-bubble-time;
+    in-out property <[int]> message-bubble-side;
+    in-out property <image> message-image;
+    in-out property <bool> message-image-visible: false;
+    in-out property <image> message-incoming-image;
+    in-out property <bool> message-incoming-image-visible: false;
+    in-out property <int> message-incoming-photo-index: -1;
+    in-out property <[image]> message-bubble-photos;
+    in-out property <[bool]> message-bubble-photo-ready;
+    in-out property <[bool]> message-bubble-photo-pending;
+    in-out property <[string]> message-bubble-photo-ids;
+    in-out property <[bool]> message-bubble-upload-failed;
+    in-out property <[string]> message-bubble-files;
+    in-out property <bool> message-file-open: false;
+    in-out property <string> message-file-name: "";
+    in-out property <string> message-file-body: "";
+    in-out property <bool> message-attach-menu: false;
+    in-out property <bool> message-photo-picker-open: false;
+    in-out property <[string]> message-photo-picker-labels;
+    in-out property <[image]> message-photo-picker-images;
+    in-out property <bool> message-group-invite: false;
+    in-out property <string> message-group-uri: "";
+    in-out property <string> message-group-name: "";
+    in-out property <string> message-group-status: "";
+    in-out property <int> message-group-recipient: -1;
+    in-out property <string> message-group-recipient-name: "";
+    in-out property <string> message-contact-name: "";
+    in-out property <string> message-profile-name: "";
+    in-out property <[string]> message-chats;
+    in-out property <[int]> message-chat-index-map;
+    in-out property <[string]> message-group-chats;
+    in-out property <[int]> message-group-index-map;
+    in-out property <[string]> message-archived-chats;
+    in-out property <[int]> message-archived-index-map;
+    in-out property <length> message-list-offset: 0px;
+    in-out property <float> message-list-scroll: -root.message-list-offset / 1px;
+    in-out property <int> message-list-tab: 0;
+    in-out property <int> message-chat-index: 0;
+    in-out property <string> message-receive-status: "NO INCOMING MESSAGE CHECKED";
+    in-out property <string> message-ack-status: "";
+    in-out property <string> message-selected: "Ch4113";
+    in-out property <bool> message-view: false;
+    in-out property <string> message-service-state: "";
+    in-out property <bool> message-service-ready: false;
+    in-out property <bool> message-target-ready: true;
+    in-out property <bool> message-has-connections: false;
+    in-out property <bool> message-invitation-view: false;
+    in-out property <bool> message-address-view: false;
+    in-out property <string> message-invitation-uri: "";
+    in-out property <string> message-invitation-status: "NO INVITATION REQUESTED";
+    in-out property <bool> message-join-view: false;
+    in-out property <string> message-join-uri: "";
+    in-out property <string> message-join-status: "PASTE OR TYPE AN INVITATION";
+    in-out property <bool> message-join-requested: false;
     in-out property <string> calc-display: "0";
     in-out property <string> phone-number: "";
     in-out property <string> phone-status: "IDLE";
+    in-out property <string> files-status: "";
+    in-out property <[string]> files-names;
+    in-out property <image> files-preview;
+    in-out property <bool> files-preview-open: false;
+    in-out property <string> files-preview-name: "";
+    in-out property <string> files-preview-text: "";
+    in-out property <bool> files-delete-confirm: false;
+    in-out property <bool> files-test-import-enabled: false;
+    in-out property <string> wallet-status: "Opening wallet…";
+    in-out property <bool> wallet-available: true;
+    /// 0=Wallet 1=Receive 2=Send 3=Settings — bottom nav like nexawal-android.
+    in-out property <int> wallet-tab: 0;
+    // 0 wallet, 1 choices, 2 backup, 4 restore, 5 unlock,
+    // 6 generating, 7 saving creation, 8 unlocking, 9 saving restore.
+    in-out property <int> wallet-setup: 0;
+    in-out property <int> wallet-network: 0;
+    in-out property <string> wallet-height: "0";
+    in-out property <string> wallet-words: "";
+    in-out property <string> wallet-backup: "";
+    in-out property <string> wallet-setup-status: "";
+    in-out property <string> wallet-balance: "—";
+    in-out property <string> wallet-unlocked: "—";
+    in-out property <string> wallet-address: "";
+    in-out property <string> wallet-address-short: "";
+    in-out property <string> wallet-sync: "Opening wallet…";
+    in-out property <string> wallet-sync-detail: "";
+    in-out property <string> wallet-history: "No transactions yet";
+    // Up to five original-style rows. Amount empty hides the row.
+    in-out property <bool> wallet-tx-in-0: false;
+    in-out property <string> wallet-tx-amt-0: "";
+    in-out property <bool> wallet-tx-in-1: false;
+    in-out property <string> wallet-tx-amt-1: "";
+    in-out property <bool> wallet-tx-in-2: false;
+    in-out property <string> wallet-tx-amt-2: "";
+    in-out property <bool> wallet-tx-in-3: false;
+    in-out property <string> wallet-tx-amt-3: "";
+    in-out property <bool> wallet-tx-in-4: false;
+    in-out property <string> wallet-tx-amt-4: "";
+    in-out property <string> wallet-node: "xmr-node.cakewallet.com:18081";
+    in-out property <string> wallet-node-status: "HTTP node · host:port";
+    in-out property <string> wallet-send-amount: "";
+    in-out property <string> wallet-send-dest: "";
+    in-out property <string> wallet-send-status: "";
+    in-out property <bool> wallet-send-max: false;
+    in-out property <bool> wallet-test-preview: false;
+    in-out property <bool> wallet-fee-ready: false;
+    in-out property <image> wallet-address-qr;
+    in-out property <bool> wallet-address-qr-visible: false;
+    in-out property <int> settings-selected: -1;
+    in-out property <string> settings-status: "DEVICE SERVICES · NOT CONNECTED";
+    in-out property <bool> device-lock-available: false;
+    in-out property <bool> device-lock-enabled: false;
+    in-out property <bool> device-lock-screen: false;
+    in-out property <int> device-lock-stage: 0;
+    in-out property <string> device-lock-status: "Checking lock…";
+    in-out property <string> device-lock-setup-feedback: "";
+    callback device-lock-key(string);
+    callback device-lock-submit();
+    callback device-lock-action(int);
+    in-out property <string> db-passphrase-current: "";
+    in-out property <string> db-passphrase-new: "";
+    in-out property <string> db-unlock-status: "LOCKED · ENTER PASSPHRASE";
+    in-out property <string> db-export-status: "OFFICIAL ZIP · CHAT + AGENT · KEY OUTSIDE";
+    in-out property <string> db-import-status: "IMPORT WRITES A NEW DISK ONLY";
+    in-out property <bool> db-unlocked: false;
+    in-out property <string> theme-choice: "DARK";
+    in-out property <string> quick-selected: "";
+    in-out property <bool> lockdown-preview: false;
+    in-out property <bool> message-receipts: true;
+    in property <bool> show-preview-privacy-controls: true;
+    in-out property <string> message-servers: "smp4.simplex.im:5223 · smp14.simplex.im:5223 · xftp1.simplex.im";
+    callback unlock-database-passphrase();
+    callback change-database-passphrase();
+    callback close-chat();
+    callback filter-message-chats();
     in-out property <string> perf: "";
+    in-out property <bool> aurora-accent: true;
     in property <length> keyboard-inset: 0px;
+    property <bool> message-keyboard: root.page == 6 && root.message-view && root.edit-target == 6;
+    property <bool> chat-list-keyboard: root.page == 6 && !root.message-view
+        && !root.message-join-view && !root.message-invitation-view
+        && (root.edit-target == 10 || root.edit-target == 13 || root.edit-target == 17);
+    property <bool> chat-keys-visible: root.message-keyboard || root.chat-list-keyboard;
+    // Both keyboards share a bottom dock. The Rust text overlay uses the same list bounds.
+    property <length> chat-dock-height: 278px;
+    out property <length> chat-keyboard-top: root.height - root.top-inset - root.chat-dock-height + 28px;
+    out property <length> chat-list-rows-height: min(260px, max(0px, chat-list-panel-height - 48px));
+    property <length> chat-list-panel-height: root.chat-list-keyboard
+        ? min(392px, max(0px, root.height - root.top-inset - root.chat-dock-height - 210px)) : 392px;
+    property <bool> receive-idle: root.message-incoming-body == "" && (root.message-receive-status == "" || root.message-receive-status == "NO INCOMING MESSAGE CHECKED" || root.message-receive-status == "NO NEW MESSAGE" || root.message-receive-status == "LIVE" || root.message-receive-status == "Up to date" || root.message-receive-status == "Listening");
+    property <bool> send-idle: root.message-send-status == "" || root.message-send-status == "NO MESSAGE SENT" || root.message-send-status == "Ready" || root.message-send-status == "Sent" || root.message-send-status == "Delivered" || root.message-send-status == "SENT THROUGH SIMPLEX";
+    // Keep the composer above the keyboard in the same frame as the keys.
+    out property <length> keyboard-travel: root.message-keyboard ? root.chat-dock-height : 0px;
     in property <length> top-inset: 0px;
     callback save-note(string);
+    callback save-contact(string, string);
+    callback save-calendar(string);
     callback key-tapped(string);
     callback action(string);
     callback calculator-key(string);
+    callback save-profile();
+    callback create-group();
+    callback create-address();
+    callback create-invitation();
+    callback refresh-invitation();
+    callback copy-invitation();
+    callback submit-join-invitation(string);
+    callback check-join-status();
+    callback join-key-tapped(string);
+    callback send-message(string);
+    callback attach-picture(bool);
+    callback pick-saved-photo(int);
+    callback retry-attachment(string, string);
+    callback save-chat-photo(string);
+    callback save-chat-file(string, string);
+    callback refresh-files();
+    callback open-saved-file(int);
+    callback delete-saved-file();
+    callback import-test-file();
+    callback inspect-bubble(string, string);
+    callback check-message-send-status();
+    callback receive-next-message();
+    callback open-chat(int) -> bool;
+    callback set-chat-photo-visibility(int, bool);
+    callback check-message-receive-status();
+    callback acknowledge-incoming-message();
+    callback check-message-ack-status();
+    callback delete-chat(int);
+    callback archive-chat(int, bool);
+    callback wallet-setup-action(int);
+    callback set-wallet-node();
+    callback prepare-wallet-send();
+    callback copy-wallet-address();
+    callback confirm-wallet-send();
+    callback reconcile-wallet-send();
+    callback retry-wallet-send();
+    // Shared shell navigation (chrome button + edge/home gestures + keys).
+    callback system-back();
+    callback system-home();
+    callback system-recents();
+
+    function open-named-chat(index: int, name: string) {
+        root.edit-target = 0;
+        root.message-view = root.open-chat(index);
+        if root.message-view {
+            root.message-selected = name;
+            root.message-chat-index = index;
+            root.receive-next-message();
+        }
+    }
 
     Rectangle {
         y: root.top-inset; width: 100%; height: parent.height - root.top-inset;
         background: #050a12;
 
-        Rectangle { x: 17px; y: 17px; width: 7px; height: 7px; background: #28d8e8; }
-        Text { x: 31px; y: 12px; text: "PERSONAL OS"; color: #45e1ee; font-size: 19px; font-weight: 700; }
-        Rectangle { x: 17px; y: 42px; width: parent.width - 34px; height: 1px; background: #174452; }
-        Text {
-            x: 17px; y: 51px; width: parent.width - 32px;
-            text: root.page == 0 ? "WORKSPACES" :
-                  root.page == 1 ? "PRIVATE NOTES" :
-                  root.page == 2 ? "CONTACTS" :
-                  root.page == 3 ? "CALCULATOR" :
-                  root.page == 4 ? "CLOCK" :
-                  root.page == 5 ? "CALENDAR" :
-                  root.page == 6 ? "MESSAGES" :
-                  root.page == 7 ? "PHONE DEMO" : "SETTINGS";
-            color: #eef8fd; font-size: 32px; font-weight: 700;
+        // Shared high-resolution wallpaper: art stays behind readable UI chrome.
+        if root.page == 14 && root.show-preview-privacy-controls: Image {
+            width: parent.width; height: parent.height;
+            source: @image-url("../assets/nexatrode-aurora-wallpaper.png");
+            image-fit: cover;
         }
-        if root.page != 0: Rectangle {
+
+        // Static chrome follows the phone status-bar layout in the reference.
+        Text { x: 17px; y: 10px; text: "09:41"; color: #d5e7ef; font-size: 13px; font-weight: 700; }
+        if root.show-preview-privacy-controls: Rectangle { x: parent.width - 103px; y: 13px; width: 13px; height: 10px;
+            background: #050a12; border-color: #28d8e8; border-width: 1px; }
+        if root.show-preview-privacy-controls: Rectangle { x: parent.width - 100px; y: 8px; width: 7px; height: 8px;
+            background: #050a12; border-color: #28d8e8; border-width: 1px; }
+        if root.show-preview-privacy-controls: TouchArea { x: parent.width - 108px; y: 5px; width: 23px; height: 26px;
+                clicked => { root.page = 14; root.edit-target = 0; } }
+        Rectangle { x: parent.width - 77px; y: 17px; width: 3px; height: 4px; background: #9bb6c4; }
+        Rectangle { x: parent.width - 71px; y: 15px; width: 3px; height: 6px; background: #9bb6c4; }
+        Rectangle { x: parent.width - 65px; y: 13px; width: 3px; height: 8px; background: #9bb6c4; }
+        Rectangle { x: parent.width - 53px; y: 12px; width: 17px; height: 10px;
+            background: #050a12; border-color: #9bb6c4; border-width: 1px; }
+        Rectangle { x: parent.width - 51px; y: 14px; width: 11px; height: 6px; background: #9bb6c4; }
+        Rectangle { x: parent.width - 35px; y: 15px; width: 2px; height: 4px; background: #9bb6c4; }
+        Rectangle { x: 17px; y: 42px; width: parent.width - 34px; height: 1px; background: #174452; }
+        // Standard NexaWal face: no shell HOME chrome (Android has bottom tabs only).
+        if root.page != 0 && root.page != 14 && root.page != 16: Rectangle {
             x: parent.width - 110px; y: 113px; width: 94px; height: 45px;
             background: #183a50; border-color: #68ddc2; border-width: 2px;
-            Text { width: parent.width; height: parent.height; text: "HOME";
+            Text { width: parent.width; height: parent.height;
+                text: root.page == 1 && root.note-editing ? "LIST" :
+                      root.page == 2 && root.contact-detail ? "LIST" :
+                      root.page == 6 && (root.message-view || root.message-join-view || root.message-invitation-view) ? "CHATS" :
+                      root.page == 15 ? "BACK" : "HOME";
                 color: #ffffff; font-size: 17px;
                 horizontal-alignment: center; vertical-alignment: center; }
-            TouchArea { width: parent.width; height: parent.height; clicked => { root.page = 0; root.edit-target = 0; } }
+            TouchArea { width: parent.width; height: parent.height; clicked => {
+                root.system-back();
+            } }
         }
-        Text {
-            x: 18px; y: 120px; width: parent.width - 135px;
-            text: root.page == 0 ? "TOUCH A WORKSPACE" :
+        if root.page == 6 && !root.message-view && !root.message-join-view: Rectangle {
+            x: parent.width - 214px; y: 113px; width: 94px; height: 45px;
+            background: #103143; border-color: #28d8e8; border-width: 1px;
+            Text { width: parent.width; height: parent.height;
+                text: root.message-invitation-view && !root.message-join-view ? "CHECK" : "NEW LINK";
+                color: #28d8e8; font-size: 13px;
+                horizontal-alignment: center; vertical-alignment: center; }
+            TouchArea { width: parent.width; height: parent.height; clicked => {
+                root.message-join-view = false; root.edit-target = 0;
+                if root.message-invitation-view { root.refresh-invitation(); }
+                else {
+                    root.message-address-view = false;
+                    root.message-invitation-view = true;
+                    root.create-invitation();
+                }
+            } }
+        }
+        if root.page == 6 && !root.message-view && !root.message-invitation-view && !root.message-join-view && root.message-service-ready: Rectangle {
+            x: 17px; y: 113px; width: 78px; height: 45px;
+            background: #102b37; border-color: #7ee7f2; border-width: 1px;
+            Text { width: parent.width; height: parent.height; text: "ADDRESS"; color: #7ee7f2; font-size: 11px;
+                horizontal-alignment: center; vertical-alignment: center; }
+            TouchArea { width: parent.width; height: parent.height; clicked => {
+                root.message-join-view = false;
+                root.message-address-view = true;
+                root.message-invitation-view = true;
+                root.edit-target = 0;
+                root.create-address();
+            } }
+        }
+        if root.page == 6 && !root.message-view && !root.message-invitation-view && !root.message-join-view: Rectangle {
+            x: parent.width - 320px; y: 113px; width: 94px; height: 45px;
+            background: #1e2541; border-color: #9279ff; border-width: 1px;
+            Text { width: parent.width; height: parent.height; text: "JOIN"; color: #c9baff; font-size: 14px;
+                horizontal-alignment: center; vertical-alignment: center; }
+            TouchArea { width: parent.width; height: parent.height; clicked => {
+                root.message-join-view = true; root.message-invitation-view = false;
+                root.message-join-requested = false; root.message-join-uri = "";
+                root.message-join-status = "PASTE OR TYPE AN INVITATION"; root.edit-target = 7;
+            } }
+        }
+        if root.page == 8: Rectangle {
+            x: parent.width - 210px; y: 113px; width: 86px; height: 45px;
+            background: #102333; border-color: #28d8e8; border-width: 1px;
+            Text { width: parent.width; height: parent.height; text: "QUICK"; color: #28d8e8; font-size: 14px;
+                horizontal-alignment: center; vertical-alignment: center; }
+            TouchArea { width: parent.width; height: parent.height; clicked => { root.page = 11; } }
+        }
+        if root.page != 0 && root.page != 14 && root.page != 16: Text {
+            x: 18px; y: 120px;
+            width: root.page == 6 ? parent.width - 230px : parent.width - 135px;
+            text: root.page == 0 ? "SECURE · PRIVATE · YOURS" :
                   root.page == 1 ? "PRIVATE · ON DEVICE" :
-                  root.page == 2 ? "PEOPLE AND DETAILS" :
+                  root.page == 2 ? (root.contact-detail ? "EDIT CONTACT" : "SAMPLE CONTACTS · DEMO") :
                   root.page == 3 ? "FOUR FUNCTION" :
                   root.page == 4 ? "UTC TIME" :
                   root.page == 5 ? "REMINDERS" :
-                  root.page == 6 ? "EXPLICIT PEERS" :
-                  root.page == 7 ? "NO MODEM" : "LOCAL ONLY";
+                  root.page == 6 ? (root.message-join-view ? "JOIN · PASTE A LINK" : (root.message-view ? (root.message-service-ready ? "ENCRYPTED" : "LOCAL CHAT · NOT SENT") : (root.message-invitation-view ? "SHARE THIS LINK" : ""))) :
+                  root.page == 7 ? "NO MODEM" :
+                  root.page == 8 ? "LOCAL ONLY" :
+                  root.page == 9 ? "ON DEVICE" :
+                  root.page == 10 ? "PRIVATE WORKSPACES" :
+                  root.page == 11 ? "QUICK SETTINGS · DEMO ONLY" :
+                  root.page == 12 ? "THEME PREVIEW" :
+                  root.page == 13 ? (root.show-preview-privacy-controls ? "RECEIPTS · SERVERS" : "SERVERS") :
+                  root.page == 15 ? "PASSPHRASE · EXPORT · IMPORT" :
+                  "SECURE · PRIVATE · YOURS";
             color: #ffffff; font-size: 17px;
         }
+        // Centered title like nexawal-android. HOME returns to the app shell.
+        if root.page == 16: Rectangle {
+            x: 8px; y: 48px; width: 72px; height: 36px; background: #00000000;
+            Text { width: parent.width; height: parent.height; text: "HOME";
+                color: #36C7D6; font-size: 14px; font-weight: 700;
+                horizontal-alignment: center; vertical-alignment: center; }
+            TouchArea { width: parent.width; height: parent.height; clicked => { root.system-home(); } }
+        }
+        if root.page == 16: Text {
+            x: 0px; y: 56px; width: parent.width;
+            text: root.wallet-tab == 1 ? "Receive XMR" :
+                  root.wallet-tab == 2 ? "Send XMR" :
+                  root.wallet-tab == 3 ? "Settings" : "Wallet";
+            color: #ffffff; font-size: 20px; font-weight: 700;
+            horizontal-alignment: center;
+        }
+        if root.page != 14 && root.page != 16: Rectangle {
+            x: 17px; y: root.page == 0 ? 100px : 163px;
+            width: parent.width - 34px; height: 1px; background: #174452;
+            Rectangle { width: 48px; height: 2px; background: #28d8e8; }
+        }
 
-        if root.page == 0: AppCard { x: 17px; y: 176px; width: (parent.width - 44px) / 2; height: 80px;
-            label: "NOTES"; detail: "PRIVATE NOTES"; accent: #68ddc2; chosen => { root.page = 1; root.edit-target = 1; } }
-        if root.page == 0: AppCard { x: 27px + (parent.width - 44px) / 2; y: 176px; width: (parent.width - 44px) / 2; height: 80px;
-            label: "CONTACTS"; detail: "PEOPLE"; accent: #b4a0ff; chosen => { root.page = 2; root.edit-target = 2; } }
-        if root.page == 0: AppCard { x: 17px; y: 266px; width: (parent.width - 44px) / 2; height: 80px;
-            label: "CALCULATOR"; detail: "FOUR FUNCTION"; accent: #ffcc55; chosen => { root.page = 3; } }
-        if root.page == 0: AppCard { x: 27px + (parent.width - 44px) / 2; y: 266px; width: (parent.width - 44px) / 2; height: 80px;
-            label: "CLOCK"; detail: "UTC TIME"; accent: #68ddc2; chosen => { root.page = 4; } }
-        if root.page == 0: AppCard { x: 17px; y: 356px; width: (parent.width - 44px) / 2; height: 80px;
-            label: "CALENDAR"; detail: "REMINDERS"; accent: #ff9b68; chosen => { root.page = 5; root.edit-target = 4; } }
-        if root.page == 0: AppCard { x: 27px + (parent.width - 44px) / 2; y: 356px; width: (parent.width - 44px) / 2; height: 80px;
-            label: "MESSAGES"; detail: "PEER KEYS"; accent: #68ddc2; chosen => { root.page = 6; root.edit-target = 5; } }
-        if root.page == 0: AppCard { x: 17px; y: 446px; width: (parent.width - 44px) / 2; height: 80px;
-            label: "PHONE"; detail: "DEMO ONLY"; accent: #8fb5cc; chosen => { root.page = 7; } }
-        if root.page == 0: AppCard { x: 27px + (parent.width - 44px) / 2; y: 446px; width: (parent.width - 44px) / 2; height: 80px;
-            label: "SETTINGS"; detail: "LOCAL ONLY"; accent: #a7b8c3; chosen => { root.page = 8; } }
-        if root.page == 0: Text { x: 18px; y: 548px; text: "LOCAL SESSION · NO SYNC";
-            color: #ffffff; font-size: 17px; }
+        // Home labels use Slint Text (skia-label false). Skia title bitmaps were
+        // deferred for wallet-boot TCG and left HOME with icon-only cards.
+        if root.page == 0: AppCard { x: 17px; y: parent.height * 0.14; width: (parent.width - 44px) / 2; height: parent.height * 0.19;
+            label: "SIMPLEX"; detail: "PRIVATE CHATS"; glyph: "M"; show-open-hint: true; icon: @image-url("../assets/icons/simplex.svg"); accent: #28d8e8; chosen => { root.page = 6; root.message-view = false; root.message-invitation-view = false; root.message-join-view = false; root.edit-target = 0; } }
+        if root.page == 0: AppCard { x: 27px + (parent.width - 44px) / 2; y: parent.height * 0.14; width: (parent.width - 44px) / 2; height: parent.height * 0.19;
+            label: "CONTACTS"; detail: "PEOPLE"; glyph: "C"; show-open-hint: true; icon: @image-url("../assets/icons/contacts.svg"); accent: #b4a0ff; chosen => { root.page = 2; root.contact-detail = false; root.edit-target = 0; } }
+        if root.page == 0: AppCard { x: 17px; y: parent.height * 0.34; width: (parent.width - 44px) / 2; height: parent.height * 0.19;
+            label: "NEXAWAL"; detail: root.wallet-available ? "MONERO WALLET" : "UNAVAILABLE"; glyph: "W"; show-open-hint: root.wallet-available; icon: @image-url("../assets/icons/nexawal.svg"); accent: #ff9b68; chosen => { if root.wallet-available { root.page = 16; root.edit-target = 0; } } }
+        if root.page == 0: AppCard { x: 27px + (parent.width - 44px) / 2; y: parent.height * 0.34; width: (parent.width - 44px) / 2; height: parent.height * 0.19;
+            label: "TOOLS"; detail: "NOTES · FILES · MORE"; glyph: "+"; show-open-hint: true; icon: @image-url("../assets/icons/tools.svg"); accent: #8fb5cc; chosen => { root.page = 10; } }
+        if root.page == 0: AppCard { x: 17px; y: parent.height * 0.55; width: parent.width - 34px; height: parent.height * 0.11;
+            label: "SETTINGS"; detail: "PRIVACY · APPEARANCE"; glyph: "S"; icon: @image-url("../assets/icons/settings.svg"); accent: #68ddc2; chosen => {
+                root.settings-selected = -1; root.page = 8;
+            } }
+        if root.page == 0: Text {
+            x: 18px; y: parent.height * 0.70;
+            width: parent.width - 36px;
+            text: "SECURE · PRIVATE · YOURS";
+            color: #ffffff; font-size: 17px; font-weight: 700;
+        }
 
-        if root.page == 1: Rectangle { x: 17px; y: 176px; width: parent.width - 34px; height: 216px;
+        // Aurora is an optional decorative layer in the open Home-screen footer.
+        // The low-contrast horizon and small color offsets stay clear of controls.
+        if root.page == 0 && root.aurora-accent: Rectangle {
+            x: 17px; y: parent.height * 0.82;
+            width: parent.width - 34px; height: 1px; background: #123447;
+        }
+        if root.page == 0 && root.aurora-accent: Rectangle {
+            x: 45px; y: parent.height * 0.832;
+            width: parent.width - 90px; height: 1px; background: #172b43;
+        }
+        if root.page == 0 && root.aurora-accent: Rectangle {
+            x: 84px; y: parent.height * 0.845;
+            width: parent.width - 168px; height: 2px; background: #26304b;
+        }
+        if root.page == 0 && root.aurora-accent: Rectangle {
+            x: 33px; y: parent.height * 0.859;
+            width: parent.width - 66px; height: 1px; background: #10293a;
+        }
+        if root.page == 0 && root.aurora-accent: Rectangle {
+            x: 60px; y: parent.height * 0.874;
+            width: parent.width - 120px; height: 1px; background: #172a3e;
+        }
+        if root.page == 0 && root.aurora-accent: Rectangle {
+            x: 22px; y: parent.height * 0.837;
+            width: 18px; height: 2px; background: #743f82;
+        }
+        if root.page == 0 && root.aurora-accent: Rectangle {
+            x: parent.width - 42px; y: parent.height * 0.856;
+            width: 20px; height: 2px; background: #286d7c;
+        }
+
+        if root.page == 10: AppCard { x: 17px; y: 176px; width: (parent.width - 44px) / 2; height: 80px;
+            label: "NOTES"; detail: "PRIVATE NOTES"; glyph: "N"; icon: @image-url("../assets/icons/notes.svg"); accent: #68ddc2; chosen => { root.page = 1; root.note-editing = false; root.edit-target = 0; } }
+        if root.page == 10: AppCard { x: 27px + (parent.width - 44px) / 2; y: 176px; width: (parent.width - 44px) / 2; height: 80px;
+            label: "CALCULATOR"; detail: "FOUR FUNCTION"; glyph: "="; icon: @image-url("../assets/icons/calculator.svg"); accent: #ffcc55; chosen => { root.page = 3; } }
+        if root.page == 10: AppCard { x: 17px; y: 266px; width: (parent.width - 44px) / 2; height: 80px;
+            label: "CLOCK"; detail: "UTC TIME"; glyph: "T"; icon: @image-url("../assets/icons/clock.svg"); accent: #68ddc2; chosen => { root.page = 4; } }
+        if root.page == 10: AppCard { x: 27px + (parent.width - 44px) / 2; y: 266px; width: (parent.width - 44px) / 2; height: 80px;
+            label: "CALENDAR"; detail: "REMINDERS"; glyph: "D"; icon: @image-url("../assets/icons/calendar.svg"); accent: #ff9b68; chosen => { root.page = 5; root.edit-target = 4; } }
+        if root.page == 10: AppCard { x: 17px; y: 356px; width: (parent.width - 44px) / 2; height: 80px;
+            label: "PHONE"; detail: "DEMO ONLY"; glyph: "P"; icon: @image-url("../assets/icons/phone.svg"); accent: #8fb5cc; chosen => { root.page = 7; } }
+        if root.page == 10: AppCard { x: 27px + (parent.width - 44px) / 2; y: 356px; width: (parent.width - 44px) / 2; height: 80px;
+            label: "FILES"; detail: "ON DEVICE"; glyph: "F"; icon: @image-url("../assets/icons/files.svg"); accent: #ffcc55; chosen => { root.page = 9; root.refresh-files(); } }
+
+        // Standard NexaWal (nexawal-android layout): slate/teal, bottom nav.
+        if root.page == 16: Rectangle {
+            x: 0px; y: 88px; width: parent.width; height: parent.height - 88px;
+            background: #081522;
+
+            // —— WALLET (home) — matches nexawal-android cards ——
+            if root.wallet-tab == 0: Rectangle {
+                width: parent.width; height: parent.height - 64px; background: #081522;
+                // Balance card
+                Rectangle { x: 16px; y: 8px; width: parent.width - 32px; height: 156px;
+                    background: #102433; border-radius: 18px; border-color: #263D4B; border-width: 1px;
+                    Text { x: 18px; y: 12px; text: "Wallet"; color: #A0B4C0; font-size: 13px; }
+                    Text { x: 18px; y: 32px; width: parent.width - 36px;
+                        text: root.wallet-balance == "—" ? "—" : root.wallet-balance + " XMR";
+                        color: #E6F2F7; font-size: 26px; font-weight: 700; wrap: no-wrap; overflow: elide; }
+                    Text { x: 18px; y: 64px; width: parent.width - 36px;
+                        text: "Unlocked " + (root.wallet-unlocked == "—" ? "—" : root.wallet-unlocked) + " XMR";
+                        color: #36C7D6; font-size: 12px; }
+                    Text { x: 18px; y: 82px; width: parent.width - 36px;
+                        text: root.wallet-address-short == "" ? "Opening address…" : root.wallet-address-short;
+                        color: #A0B4C0; font-size: 11px; wrap: no-wrap; overflow: elide; }
+                    // Send (teal) | Receive (green)
+                    Rectangle { x: 18px; y: 102px; width: (parent.width - 48px) / 2; height: 36px;
+                        background: #36C7D6; border-radius: 12px;
+                        HorizontalLayout { width: parent.width; height: parent.height; alignment: center; spacing: 6px;
+                            Image { width: 18px; height: 18px; source: @image-url("../assets/icons/wallet-send.svg"); colorize: #04151C; }
+                            Text { text: "Send"; color: #04151C; font-size: 15px; font-weight: 700; vertical-alignment: center; }
+                        }
+                        TouchArea { width: parent.width; height: parent.height; clicked => { root.wallet-tab = 2; } }
+                    }
+                    Rectangle { x: 30px + (parent.width - 48px) / 2; y: 102px; width: (parent.width - 48px) / 2; height: 36px;
+                        background: #3DCF8E; border-radius: 12px;
+                        HorizontalLayout { width: parent.width; height: parent.height; alignment: center; spacing: 6px;
+                            Image { width: 18px; height: 18px; source: @image-url("../assets/icons/wallet-qr.svg"); colorize: #04151C; }
+                            Text { text: "Receive"; color: #04151C; font-size: 15px; font-weight: 700; vertical-alignment: center; }
+                        }
+                        TouchArea { width: parent.width; height: parent.height; clicked => { root.wallet-tab = 1; } }
+                    }
+                }
+                // Sync status card — title + Node / Scanned / Height / Progress rows
+                Rectangle { x: 16px; y: 176px; width: parent.width - 32px; height: 120px;
+                    background: #102433; border-radius: 18px; border-color: #263D4B; border-width: 1px;
+                    Text { x: 18px; y: 12px; width: parent.width - 36px; text: root.wallet-sync;
+                        color: #E6F2F7; font-size: 15px; font-weight: 600; }
+                    Text { x: 18px; y: 40px; width: parent.width - 36px; height: 78px;
+                        text: root.wallet-sync-detail == "" ? ("Node  " + root.wallet-node) : root.wallet-sync-detail;
+                        color: #A0B4C0; font-size: 12px; wrap: word-wrap; }
+                }
+                // Recent transactions
+                Rectangle { x: 16px; y: 308px; width: parent.width - 32px; height: parent.height - 388px;
+                    background: #102433; border-radius: 18px; border-color: #263D4B; border-width: 1px;
+                    Text { x: 18px; y: 14px; text: "Recent Transactions"; color: #E6F2F7; font-size: 15px; font-weight: 600; }
+                    if root.wallet-tx-amt-0 == "": Text {
+                        x: 18px; y: 42px; width: parent.width - 36px; height: parent.height - 56px;
+                        text: root.wallet-history; color: #3DCF8E; font-size: 13px; wrap: word-wrap;
+                    }
+                    if root.wallet-tx-amt-0 != "": Rectangle {
+                        x: 18px; y: 42px; width: parent.width - 36px; height: parent.height - 56px;
+                        WalletTxRow { y: 0px; width: parent.width; incoming: root.wallet-tx-in-0; amount: root.wallet-tx-amt-0; divider: root.wallet-tx-amt-1 != ""; }
+                        WalletTxRow { y: 44px; width: parent.width; incoming: root.wallet-tx-in-1; amount: root.wallet-tx-amt-1; divider: root.wallet-tx-amt-2 != ""; }
+                        WalletTxRow { y: 88px; width: parent.width; incoming: root.wallet-tx-in-2; amount: root.wallet-tx-amt-2; divider: root.wallet-tx-amt-3 != ""; }
+                        WalletTxRow { y: 132px; width: parent.width; incoming: root.wallet-tx-in-3; amount: root.wallet-tx-amt-3; divider: root.wallet-tx-amt-4 != ""; }
+                        WalletTxRow { y: 176px; width: parent.width; incoming: root.wallet-tx-in-4; amount: root.wallet-tx-amt-4; divider: false; }
+                    }
+                }
+            }
+
+            // —— RECEIVE ——
+            if root.wallet-tab == 1: Rectangle {
+                width: parent.width; height: parent.height - 64px; background: #081522;
+                // Address QR. Amount, note, and payment link stay unwired.
+                Rectangle { x: 16px; y: 8px; width: parent.width - 32px; height: 220px;
+                    background: #102433; border-radius: 18px; border-color: #263D4B; border-width: 1px;
+                    Rectangle { x: parent.width/2 - 64px; y: 12px; width: 128px; height: 128px;
+                        background: #FFFFFF; border-radius: 8px;
+                        if root.wallet-address-qr-visible: Image {
+                            x: 6px; y: 6px; width: 116px; height: 116px;
+                            source: root.wallet-address-qr; image-fit: contain;
+                        }
+                        if !root.wallet-address-qr-visible: Text {
+                            width: parent.width; height: parent.height; text: "QR";
+                            color: #04151C; font-size: 18px; font-weight: 700;
+                            horizontal-alignment: center; vertical-alignment: center;
+                        }
+                    }
+                    Text { x: 16px; y: 148px; width: parent.width - 32px; height: 64px;
+                        text: root.wallet-address == "" ? "Address will appear when the wallet opens." : root.wallet-address;
+                        color: #E6F2F7; font-size: 12px; wrap: word-wrap; }
+                }
+                Text { x: 16px; y: 240px; text: "Payment Request (optional)"; color: #E6F2F7; font-size: 14px; font-weight: 600; }
+                Text { x: 16px; y: 264px; text: "Amount"; color: #A0B4C0; font-size: 13px; }
+                Rectangle { x: 16px; y: 284px; width: parent.width - 32px; height: 44px;
+                    background: #102433; border-radius: 14px; border-color: #335364; border-width: 1px;
+                    Text { x: 14px; y: 12px; text: "0.0000"; color: #6B8494; font-size: 16px; }
+                    Text { x: parent.width - 56px; y: 12px; text: "XMR"; color: #A0B4C0; font-size: 16px; }
+                }
+                Text { x: 16px; y: 338px; text: "Description"; color: #A0B4C0; font-size: 13px; }
+                Rectangle { x: 16px; y: 358px; width: parent.width - 32px; height: 44px;
+                    background: #102433; border-radius: 14px; border-color: #335364; border-width: 1px;
+                    Text { x: 14px; y: 12px; text: "Note for the payer"; color: #6B8494; font-size: 14px; }
+                }
+                Rectangle { x: 16px; y: 414px; width: parent.width - 32px; height: 44px;
+                    background: #0C1C28; border-radius: 14px; border-color: #36C7D6; border-width: 1px;
+                    Text { width: parent.width; height: parent.height; text: "Share Payment Link";
+                        color: #36C7D6; font-size: 15px; font-weight: 600;
+                        horizontal-alignment: center; vertical-alignment: center; }
+                }
+                Rectangle { x: 16px; y: 468px; width: parent.width - 32px; height: 48px;
+                    background: #36C7D6; border-radius: 14px;
+                    Text { width: parent.width; height: parent.height; text: "Copy Address";
+                        color: #04151C; font-size: 16px; font-weight: 700;
+                        horizontal-alignment: center; vertical-alignment: center; }
+                    TouchArea { width: parent.width; height: parent.height; clicked => { root.copy-wallet-address(); } }
+                }
+                Text { x: 16px; y: 526px; width: parent.width - 32px;
+                    text: root.wallet-sync; color: #A0B4C0; font-size: 13px; wrap: word-wrap; }
+            }
+
+            // —— SEND ——
+            if root.wallet-tab == 2: Rectangle {
+                width: parent.width; height: parent.height - 64px; background: #081522;
+                Text { x: 16px; y: 8px; text: "To address"; color: #A0B4C0; font-size: 13px; }
+                Rectangle { x: 16px; y: 30px; width: parent.width - 32px; height: 72px;
+                    background: #102433; border-radius: 14px;
+                    border-color: root.edit-target == 11 ? #36C7D6 : #335364; border-width: 1px;
+                    Text { x: 14px; y: 12px; width: parent.width - 28px; height: 48px;
+                        text: root.wallet-send-dest == "" ? "To address" : root.wallet-send-dest;
+                        color: root.wallet-send-dest == "" ? #6B8494 : #E6F2F7; font-size: 14px; wrap: word-wrap; }
+                    TouchArea { width: parent.width; height: parent.height; clicked => { root.edit-target = 11; } }
+                }
+                Text { x: 16px; y: 116px; text: "Amount"; color: #A0B4C0; font-size: 13px; }
+                Rectangle { x: 16px; y: 138px; width: parent.width - 32px; height: 48px;
+                    background: #102433; border-radius: 14px;
+                    border-color: root.edit-target == 12 ? #36C7D6 : #335364; border-width: 1px;
+                    Text { x: 14px; y: 14px; text: root.wallet-send-amount == "" ? "0.0" : root.wallet-send-amount; color: #E6F2F7; font-size: 16px; }
+                    Text { x: parent.width - 56px; y: 14px; text: "XMR"; color: #A0B4C0; font-size: 16px; }
+                    TouchArea { width: parent.width; height: parent.height; clicked => { root.edit-target = 12; } }
+                }
+                Text { x: 16px; y: 200px; text: "Actions"; color: #A0B4C0; font-size: 13px; }
+                Text { x: 16px; y: 222px; width: parent.width - 32px;
+                    text: root.wallet-send-status == "" ? root.wallet-sync : root.wallet-send-status;
+                    color: #A0B4C0; font-size: 13px; wrap: word-wrap; }
+                Rectangle { x: 16px; y: 256px; width: parent.width - 32px; height: 44px;
+                    background: #102433; border-radius: 14px; border-color: #335364; border-width: 1px;
+                    Text { width: parent.width; height: parent.height; text: "Preview Fee";
+                        color: #E6F2F7; font-size: 15px; font-weight: 600;
+                        horizontal-alignment: center; vertical-alignment: center; }
+                    TouchArea { width: parent.width; height: parent.height; clicked => { root.prepare-wallet-send(); } }
+                }
+                Rectangle { x: 16px; y: 310px; width: parent.width - 32px; height: 48px;
+                    background: #36C7D6; border-radius: 14px;
+                    Text { width: parent.width; height: parent.height; text: "Send";
+                        color: #04151C; font-size: 16px; font-weight: 700;
+                        horizontal-alignment: center; vertical-alignment: center; }
+                    TouchArea { width: parent.width; height: parent.height; clicked => { root.confirm-wallet-send(); } }
+                }
+                Rectangle { x: 16px; y: 368px; width: parent.width - 32px; height: 44px;
+                    background: #102433; border-radius: 14px; border-color: #335364; border-width: 1px;
+                    Text { width: parent.width; height: parent.height; text: "Send Max";
+                        color: #E6F2F7; font-size: 15px; font-weight: 600;
+                        horizontal-alignment: center; vertical-alignment: center; }
+                    TouchArea { width: parent.width; height: parent.height; clicked => {
+                        root.edit-target = 0;
+                        if (root.wallet-balance == "—" || root.wallet-balance == "") {
+                            root.wallet-send-max = false;
+                            root.wallet-fee-ready = false;
+                            root.wallet-send-status = "No balance to send";
+                        } else {
+                            root.wallet-send-max = true;
+                            root.wallet-fee-ready = false;
+                            root.wallet-send-amount = root.wallet-balance;
+                            root.wallet-send-status = "Send max · preview the fee";
+                        }
+                    } }
+                }
+                Rectangle { x: 16px; y: 422px; width: parent.width - 32px; height: 44px;
+                    background: #102433; border-radius: 14px; border-color: #335364; border-width: 1px;
+                    Text { width: parent.width; height: parent.height; text: "Check pending transaction";
+                        color: #E6F2F7; font-size: 14px;
+                        horizontal-alignment: center; vertical-alignment: center; }
+                    TouchArea { width: parent.width; height: parent.height; clicked => { root.reconcile-wallet-send(); } }
+                }
+                Rectangle { x: 16px; y: 476px; width: parent.width - 32px; height: 44px;
+                    background: #102433; border-radius: 14px; border-color: #335364; border-width: 1px;
+                    Text { width: parent.width; height: parent.height; text: "Retry pending transaction";
+                        color: #E6F2F7; font-size: 14px;
+                        horizontal-alignment: center; vertical-alignment: center; }
+                    TouchArea { width: parent.width; height: parent.height; clicked => { root.retry-wallet-send(); } }
+                }
+            }
+
+            // —— SETTINGS ——
+            if root.wallet-tab == 3: Rectangle {
+                width: parent.width; height: parent.height - 64px; background: #081522;
+                Rectangle { x: 16px; y: 390px; width: parent.width - 32px; height: 42px;
+                    background: #102433; border-radius: 12px;
+                    Text { width: parent.width; height: parent.height; text: "Lock wallet"; color: #36C7D6; horizontal-alignment: center; vertical-alignment: center; }
+                    TouchArea { width: parent.width; height: parent.height; clicked => { root.wallet-setup-action(5); } }
+                }
+                Text { x: 16px; y: 8px; text: "Appearance"; color: #A0B4C0; font-size: 13px; }
+                Rectangle { x: 16px; y: 28px; width: parent.width - 32px; height: 56px;
+                    background: #102433; border-radius: 14px; border-color: #263D4B; border-width: 1px;
+                    Text { x: 16px; y: 18px; text: "Standard theme"; color: #E6F2F7; font-size: 15px; }
+                    Rectangle { x: parent.width - 64px; y: 16px; width: 44px; height: 24px;
+                        background: #36C7D6; border-radius: 12px;
+                        Rectangle { x: 22px; y: 2px; width: 20px; height: 20px;
+                            background: #E6F2F7; border-radius: 10px; }
+                    }
+                }
+                Text { x: 16px; y: 96px; text: "Clearnet node"; color: #A0B4C0; font-size: 13px; }
+                Rectangle { x: 16px; y: 116px; width: parent.width - 32px; height: 48px;
+                    background: #102433; border-radius: 14px; border-color: #263D4B; border-width: 1px;
+                    Text { x: 14px; y: 14px; width: parent.width - 28px; text: root.wallet-node;
+                        color: #E6F2F7; font-size: 14px; wrap: no-wrap; overflow: elide; }
+                    TouchArea { width: parent.width; height: parent.height; clicked => { root.edit-target = 16; } }
+                }
+                Rectangle { x: 16px; y: 174px; width: parent.width - 32px; height: 40px;
+                    background: #0C1C28; border-radius: 12px; border-color: #36C7D6; border-width: 1px;
+                    Text { width: parent.width; height: parent.height; text: "Use this node";
+                        color: #36C7D6; font-size: 14px; font-weight: 600;
+                        horizontal-alignment: center; vertical-alignment: center; }
+                    TouchArea { width: parent.width; height: parent.height; clicked => { root.set-wallet-node(); } }
+                }
+                Text { x: 16px; y: 218px; width: parent.width - 32px; text: root.wallet-node-status; color: #A0B4C0; font-size: 11px; overflow: elide; }
+                Text { x: 16px; y: 230px; text: "About"; color: #A0B4C0; font-size: 13px; }
+                Rectangle { x: 16px; y: 250px; width: parent.width - 32px; height: 120px;
+                    background: #102433; border-radius: 14px; border-color: #263D4B; border-width: 1px;
+                    Text { x: 16px; y: 14px; text: "nexawal 1.0.6 (6)"; color: #E6F2F7; font-size: 15px; }
+                    Text { x: 16px; y: 40px; width: parent.width - 32px;
+                        text: "MIT · unaudited. Remote nodes can see your IP.";
+                        color: #A0B4C0; font-size: 12px; wrap: word-wrap; }
+                    Text { x: 16px; y: 72px; text: "Terms of Use"; color: #36C7D6; font-size: 13px; }
+                    Text { x: 130px; y: 72px; text: "Privacy policy"; color: #36C7D6; font-size: 13px; }
+                    Text { x: 16px; y: 94px; text: "MIT License"; color: #36C7D6; font-size: 13px; }
+                }
+            }
+
+            if root.wallet-setup != 0: Rectangle {
+                width: parent.width; height: parent.height; background: #081522;
+                Text { x: 16px; y: 10px; width: parent.width - 32px; text: "NexaWal setup"; color: #E6F2F7; font-size: 20px; font-weight: 700; }
+                if root.wallet-setup == 1 || root.wallet-setup == 4: Rectangle {
+                    x: 16px; y: 44px; width: parent.width - 32px; height: 38px; background: #102433; border-radius: 8px;
+                    Text { width: parent.width; height: parent.height; text: "Network: " + (root.wallet-network == 0 ? "Mainnet" : root.wallet-network == 1 ? "Stagenet" : "Testnet") + "  · tap to change"; color: #E6F2F7; horizontal-alignment: center; vertical-alignment: center; }
+                    TouchArea { width: parent.width; height: parent.height; clicked => { root.wallet-network = mod(root.wallet-network + 1, 3); } }
+                }
+                if root.wallet-setup == 1 || root.wallet-setup == 4: Rectangle {
+                    x: 16px; y: 88px; width: parent.width - 32px; height: 38px; background: #102433; border-radius: 8px;
+                    Text { x: 10px; width: parent.width - 20px; height: parent.height; text: "Restore height: " + root.wallet-height; color: #E6F2F7; vertical-alignment: center; }
+                    TouchArea { width: parent.width; height: parent.height; clicked => { root.edit-target = 15; } }
+                }
+                if root.wallet-setup == 2: Text { x: 16px; y: 48px; width: parent.width - 32px; height: 170px; text: "Write down these words privately:\n" + root.wallet-backup; color: #E6F2F7; font-size: 14px; wrap: word-wrap; }
+                if root.wallet-setup == 4 || root.wallet-setup == 5: Rectangle {
+                    x: 16px; y: root.wallet-setup == 4 ? 136px : 48px; width: parent.width - 32px; height: 112px; background: #102433; border-radius: 8px;
+                    Text { x: 10px; y: 8px; width: parent.width - 20px; height: parent.height - 16px; text: root.wallet-words == "" ? "Enter your 25 seed words" : root.wallet-words; color: #E6F2F7; font-size: 13px; wrap: word-wrap; overflow: elide; }
+                    TouchArea { width: parent.width; height: parent.height; clicked => { root.edit-target = 14; } }
+                }
+                Text { x: 16px; y: root.wallet-setup == 4 ? 255px : 220px; width: parent.width - 32px; height: 42px; text: root.wallet-setup-status; color: #A0B4C0; font-size: 12px; wrap: word-wrap; }
+                if root.wallet-setup == 1: Rectangle {
+                    x: 16px; y: 145px; width: parent.width - 32px; height: 42px; background: #36C7D6; border-radius: 8px;
+                    Text { width: parent.width; height: parent.height; text: "Create wallet"; horizontal-alignment: center; vertical-alignment: center; }
+                    TouchArea { width: parent.width; height: parent.height; clicked => { root.wallet-setup-action(0); } }
+                }
+                if root.wallet-setup == 1: Rectangle {
+                    x: 16px; y: 195px; width: parent.width - 32px; height: 42px; background: #102433; border-radius: 8px;
+                    Text { width: parent.width; height: parent.height; text: "Restore wallet"; color: #E6F2F7; horizontal-alignment: center; vertical-alignment: center; }
+                    TouchArea { width: parent.width; height: parent.height; clicked => { root.wallet-setup = 4; } }
+                }
+                if root.wallet-setup == 1: Rectangle {
+                    x: 16px; y: 245px; width: parent.width - 32px; height: 42px; background: #102433; border-radius: 8px;
+                    Text { width: parent.width; height: parent.height; text: "Unlock existing wallet"; color: #E6F2F7; horizontal-alignment: center; vertical-alignment: center; }
+                    TouchArea { width: parent.width; height: parent.height; clicked => { root.wallet-setup = 5; } }
+                }
+                if root.wallet-setup == 2 || root.wallet-setup == 4 || root.wallet-setup == 5: Rectangle {
+                    x: 16px; y: root.wallet-setup == 4 ? 302px : 270px; width: parent.width - 32px; height: 42px; background: #36C7D6; border-radius: 8px;
+                    Text { width: parent.width; height: parent.height; text: root.wallet-setup == 2 ? "I wrote them down" : root.wallet-setup == 4 ? "Restore" : "Unlock"; horizontal-alignment: center; vertical-alignment: center; }
+                    TouchArea { width: parent.width; height: parent.height; clicked => { root.wallet-setup-action(root.wallet-setup == 2 ? 1 : root.wallet-setup == 4 ? 3 : 4); } }
+                }
+                if root.wallet-setup == 2 || root.wallet-setup == 4 || root.wallet-setup == 5: Rectangle {
+                    x: 16px; y: root.wallet-setup == 4 ? 350px : 318px; width: parent.width - 32px; height: 38px; background: #102433; border-radius: 8px;
+                    Text { width: parent.width; height: parent.height; text: "Cancel"; color: #E6F2F7; horizontal-alignment: center; vertical-alignment: center; }
+                    TouchArea { width: parent.width; height: parent.height; clicked => { root.wallet-setup-action(6); } }
+                }
+            }
+
+            // Bottom nav — Wallet / Receive / Send / Settings
+            if root.wallet-setup == 0: Rectangle { x: 0px; y: parent.height - 64px; width: parent.width; height: 64px;
+                background: #081522; border-color: #173040; border-width: 1px;
+                for t[i] in ["Wallet", "Receive", "Send", "Settings"]: Rectangle {
+                    x: i * parent.width / 4; y: 0px; width: parent.width / 4; height: parent.height;
+                    Image { x: (parent.width - 22px) / 2; y: 6px; width: 22px; height: 22px;
+                        source: i == 0 ? @image-url("../assets/icons/wallet-home.svg") :
+                                i == 1 ? @image-url("../assets/icons/wallet-qr.svg") :
+                                i == 2 ? @image-url("../assets/icons/wallet-send.svg") :
+                                         @image-url("../assets/icons/settings.svg");
+                        colorize: root.wallet-tab == i ? #36C7D6 : #6B8494; }
+                    Text { y: 36px; width: parent.width; text: t;
+                        color: root.wallet-tab == i ? #36C7D6 : #6B8494;
+                        font-size: 11px; horizontal-alignment: center; }
+                    TouchArea { width: parent.width; height: parent.height; clicked => { root.wallet-tab = i; root.edit-target = 0; } }
+                }
+            }
+        }
+
+        if root.page == 9: Rectangle { x: 17px; y: 176px; width: parent.width - 34px; height: 410px;
+            background: #081522; border-color: #ffcc55; border-width: 1px;
+            Text { x: 14px; y: 10px; text: "ON DEVICE"; color: #dcebf2; font-size: 16px; }
+            if root.files-test-import-enabled: Rectangle {
+                x: parent.width - 116px; y: 6px; width: 104px; height: 28px;
+                background: #214a56; border-radius: 5px;
+                Text { width: parent.width; height: parent.height; text: "Import test file";
+                    color: #e8f5fb; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
+                TouchArea { width: parent.width; height: parent.height; clicked => { root.import-test-file(); } }
+            }
+            Rectangle { x: 14px; y: 42px; width: parent.width - 28px; height: 1px; background: #294454; }
+            Flickable {
+                x: 7px; y: 50px; width: parent.width - 14px; height: 310px;
+                viewport-width: self.width;
+                viewport-height: max(self.height, saved-list.preferred-height);
+                saved-list := VerticalLayout {
+                    width: parent.width; spacing: 4px;
+                    for name[index] in root.files-names: Rectangle {
+                        height: 48px; background: #102433; border-radius: 6px;
+                        Text { x: 10px; width: parent.width - 20px; height: parent.height;
+                            text: name; color: #e8f5fb; font-size: 14px; overflow: elide; vertical-alignment: center; }
+                        TouchArea { width: parent.width; height: parent.height; clicked => { root.open-saved-file(index); } }
+                    }
+                }
+            }
+            Text { x: 14px; y: 376px; width: parent.width - 28px; text: root.files-status;
+                color: #a9c1cf; font-size: 13px; }
+            if root.files-preview-open: Rectangle {
+                x: 6px; y: 46px; width: parent.width - 12px; height: parent.height - 52px;
+                background: #102433; border-color: #ffcc55; border-width: 1px;
+                Text { x: 8px; y: 4px; width: parent.width - 42px; text: root.files-preview-name;
+                    color: #ffcc55; font-size: 13px; overflow: elide; }
+                Image { x: 8px; y: 34px; width: parent.width - 16px; height: parent.height - 108px;
+                    source: root.files-preview; image-fit: contain; }
+                Text { x: 10px; y: parent.height - 30px; width: parent.width - 20px;
+                    text: root.files-preview-text; color: #a9c1cf; font-size: 12px; }
+                TouchArea { x: parent.width - 34px; width: 34px; height: 34px; clicked => { root.files-preview-open = false; } }
+                Text { x: parent.width - 24px; y: 4px; text: "×"; color: #ff8e9a; font-size: 18px; }
+                Rectangle { x: parent.width - 144px; y: parent.height - 36px; width: 136px; height: 30px;
+                    background: #522b38; border-radius: 5px;
+                    Text { width: parent.width; height: parent.height;
+                        text: root.files-delete-confirm ? "Confirm delete" : "Delete";
+                        color: #ffccd1; font-size: 13px; horizontal-alignment: center; vertical-alignment: center; }
+                    TouchArea { width: parent.width; height: parent.height; clicked => {
+                        if root.files-delete-confirm { root.delete-saved-file(); }
+                        else { root.files-delete-confirm = true; }
+                    } }
+                }
+            }
+        }
+
+        if root.page == 1 && !root.note-editing: Rectangle {
+            x: 17px; y: 176px; width: parent.width - 34px; height: 420px; background: #050a12;
+            if root.note == "": Text { x: 16px; y: 18px; text: "NO NOTES YET"; color: #8299a7; font-size: 15px; }
+            if root.note != "": Rectangle {
+                x: 0px; y: 0px; width: parent.width; height: 56px; background: #102433;
+                border-color: #68ddc2; border-width: 1px;
+                Text { x: 16px; y: 16px; width: parent.width - 40px; height: 24px;
+                    text: root.note; color: #e8f5fb; font-size: 16px; wrap: no-wrap; overflow: elide; }
+                TouchArea { width: parent.width; height: parent.height; clicked => {
+                    root.note-editing = true; root.edit-target = 1;
+                } }
+            }
+            Rectangle { x: parent.width - 68px; y: 352px; width: 52px; height: 52px;
+                border-radius: 26px; background: #0b2428; border-color: #68ddc2; border-width: 2px;
+                Text { width: parent.width; height: parent.height; text: "+"; color: #68ddc2;
+                    font-size: 28px; horizontal-alignment: center; vertical-alignment: center; }
+                TouchArea { width: parent.width; height: parent.height; clicked => {
+                    root.note-editing = true; root.edit-target = 1;
+                } }
+            }
+        }
+        if root.page == 1 && root.note-editing: Rectangle { x: 17px; y: 176px; width: parent.width - 34px; height: 216px;
             background: #17394e; border-color: #68ddc2; border-width: 2px;
             Text { x: 15px; y: 14px; width: parent.width - 30px; height: parent.height - 28px;
                 text: root.note == "" ? "TAP KEYS TO WRITE A NOTE" : root.note;
                 color: #ffffff; font-size: 22px; wrap: word-wrap; }
             TouchArea { width: parent.width; height: parent.height; clicked => { root.edit-target = 1; } }
         }
-        if root.page == 1: Text { x: 18px; y: 400px; text: root.status; color: #ffffff; font-size: 17px; }
-        if root.page == 1: AppCard { x: parent.width - 111px; y: 394px; width: 94px; height: 37px;
+        if root.page == 1 && root.note-editing: Text { x: 18px; y: 400px; text: root.status; color: #ffffff; font-size: 17px; }
+        if root.page == 1 && root.note-editing: AppCard { x: parent.width - 111px; y: 394px; width: 94px; height: 37px;
             label: "SAVE"; detail: ""; accent: #68ddc2; chosen => { root.save-note(root.note); } }
 
-        if root.page == 2: Rectangle { x: 17px; y: 176px; width: parent.width - 34px; height: 101px;
+        if root.page == 2 && !root.contact-detail: Rectangle {
+            x: 17px; y: 176px; width: parent.width - 95px; height: 44px;
+            background: #0b1825; border-color: #174452; border-width: 1px;
+            Text { x: 12px; y: 11px; text: "SEARCH CONTACTS"; color: #7f9aa9; font-size: 15px; }
+        }
+        if root.page == 2 && !root.contact-detail: Rectangle {
+            x: parent.width - 67px; y: 176px; width: 50px; height: 44px;
+            background: #103143; border-color: #28d8e8; border-width: 1px;
+            Text { width: parent.width; height: parent.height; text: "+"; color: #28d8e8;
+                font-size: 28px; horizontal-alignment: center; vertical-alignment: center; }
+            TouchArea { width: parent.width; height: parent.height; clicked => {
+                root.contact-name = ""; root.contact-phone = "";
+                root.contact-status = "VOLATILE · NOT SAVED";
+                root.contact-detail = true; root.edit-target = 2;
+            } }
+        }
+        if root.page == 2 && !root.contact-detail: Rectangle {
+            x: 17px; y: 229px; width: parent.width - 34px; height: 390px;
+            if root.contact-stored: Rectangle {
+                x: 0px; y: 0px; width: parent.width; height: 57px;
+                background: #0b2428;
+                Rectangle { x: 4px; y: 7px; width: 41px; height: 41px;
+                    background: #10382f; border-color: #23d398; border-width: 1px;
+                    Text { width: parent.width; height: parent.height; text: "S"; color: #23d398;
+                        font-size: 19px; horizontal-alignment: center; vertical-alignment: center; }
+                }
+                Text { x: 58px; y: 8px; text: root.contact-name; color: #e8f5fb; font-size: 17px; }
+                Text { x: 58px; y: 31px;
+                    text: root.contact-phone == "" ? "Saved locally · tap to edit" : "Saved locally · " + root.contact-phone;
+                    color: #8fa9b8; font-size: 12px; }
+                Text { x: parent.width - 30px; y: 17px; text: "›"; color: #23d398; font-size: 19px; }
+                Rectangle { x: 54px; y: 56px; width: parent.width - 54px; height: 1px; background: #142632; }
+                TouchArea { width: parent.width; height: parent.height; clicked => {
+                    root.contact-detail = true; root.edit-target = 2;
+                } }
+            }
+            for person[index] in ["Ch4113", "n0r4", "gr1d", "m4x", "r00t"]: Rectangle {
+                x: 0px; y: (index + (root.contact-stored ? 1 : 0)) * 63px;
+                width: parent.width; height: 57px;
+                background: #050a12;
+                Rectangle { x: 4px; y: 7px; width: 41px; height: 41px;
+                    background: index == 0 ? #103143 : (index == 1 ? #282044 : #252d37);
+                    border-color: index == 0 ? #28d8e8 : (index == 1 ? #b48cff : #8396a3); border-width: 1px;
+                    Text { width: parent.width; height: parent.height;
+                        text: index == 0 ? "C" : (index == 1 ? "N" : (index == 2 ? "G" : (index == 3 ? "M" : (index == 4 ? "R" : "T"))));
+                        color: #e8f5fb; font-size: 19px; horizontal-alignment: center; vertical-alignment: center; }
+                }
+                Text { x: 58px; y: 8px; text: person; color: #e8f5fb; font-size: 17px; }
+                Text { x: 58px; y: 31px; text: "Sample contact · local"; color: #8fa9b8; font-size: 12px; }
+                Text { x: parent.width - 30px; y: 17px; text: "›"; color: #628091; font-size: 19px; }
+                Rectangle { x: 54px; y: 56px; width: parent.width - 54px; height: 1px; background: #142632; }
+                TouchArea { width: parent.width; height: parent.height; clicked => {
+                    root.contact-name = person; root.contact-phone = "";
+                    root.contact-status = "VOLATILE · NOT SAVED";
+                    root.contact-detail = true; root.edit-target = 2;
+                } }
+            }
+            Text { x: 4px; y: 374px; text: root.contact-stored ? "SAVED LOCALLY · SAMPLE CONTACTS ARE DEMO" : "SAMPLE CONTACTS · NOT A LIVE DIRECTORY";
+                color: #8299a7; font-size: 12px; }
+        }
+        if root.page == 2 && root.contact-detail: Rectangle { x: 17px; y: 176px; width: parent.width - 34px; height: 101px;
             background: #282d4d; border-color: #b4a0ff; border-width: 2px;
             Text { x: 14px; y: 10px; text: "NAME"; color: #ffffff; font-size: 17px; }
             Text { x: 14px; y: 46px; text: root.contact-name == "" ? "TAP TO ENTER" : root.contact-name;
                 color: #ffffff; font-size: 22px; }
             TouchArea { width: parent.width; height: parent.height; clicked => { root.edit-target = 2; } }
         }
-        if root.page == 2: Rectangle { x: 17px; y: 287px; width: parent.width - 34px; height: 101px;
+        if root.page == 2 && root.contact-detail: Rectangle { x: 17px; y: 287px; width: parent.width - 34px; height: 101px;
             background: #282d4d; border-color: #b4a0ff; border-width: 2px;
             Text { x: 14px; y: 10px; text: "PHONE"; color: #ffffff; font-size: 17px; }
             Text { x: 14px; y: 46px; text: root.contact-phone == "" ? "TAP TO ENTER" : root.contact-phone;
                 color: #ffffff; font-size: 22px; }
             TouchArea { width: parent.width; height: parent.height; clicked => { root.edit-target = 3; } }
         }
-        if root.page == 2: Text { x: 18px; y: 401px; text: "CONTACT HELD IN MEMORY"; color: #ffffff; font-size: 17px; }
+        if root.page == 2 && root.contact-detail: Text { x: 18px; y: 401px; width: parent.width - 140px;
+            text: root.contact-status; color: #ffffff; font-size: 14px; }
+        if root.page == 2 && root.contact-detail: AppCard { x: parent.width - 111px; y: 394px; width: 94px; height: 37px;
+            label: "SAVE"; detail: ""; accent: #b4a0ff;
+            chosen => { root.save-contact(root.contact-name, root.contact-phone); } }
 
         if root.page == 3: Rectangle { x: 17px; y: 176px; width: parent.width - 34px; height: 88px;
             background: #282d4d; border-color: #ffcc55; border-width: 2px;
@@ -221,24 +1221,818 @@ export component NotesWindow inherits Window {
             Text { x: 15px; y: 52px; width: parent.width - 30px; height: 145px;
                 text: root.calendar-item == "" ? "TAP KEYS TO ADD A REMINDER" : root.calendar-item;
                 color: #ffffff; font-size: 22px; wrap: word-wrap; }
+            TouchArea { width: parent.width; height: parent.height; clicked => { root.edit-target = 4; } }
         }
-        if root.page == 5: Text { x: 18px; y: 400px; text: "REMINDER HELD IN MEMORY"; color: #ffffff; font-size: 17px; }
+        if root.page == 5: Text { x: 18px; y: 401px; width: parent.width - 140px;
+            text: root.calendar-status; color: #ffffff; font-size: 14px; }
+        if root.page == 5: AppCard { x: parent.width - 111px; y: 394px; width: 94px; height: 37px;
+            label: "SAVE"; detail: ""; accent: #ff9b68;
+            chosen => { root.save-calendar(root.calendar-item); } }
 
-        if root.page == 6: Rectangle { x: 17px; y: 176px; width: parent.width - 34px; height: 100px;
-            background: #17394e; border-color: #68ddc2; border-width: 2px;
-            Text { x: 15px; y: 10px; text: "PEER KEY"; color: #ffffff; font-size: 17px; }
-            Text { x: 15px; y: 47px; text: root.message-peer == "" ? "TAP TO ENTER" : root.message-peer;
-                color: #ffffff; font-size: 22px; }
-            TouchArea { width: parent.width; height: parent.height; clicked => { root.edit-target = 5; } }
+        if root.page == 6 && !root.message-view && !root.message-join-view && !root.message-service-ready: Rectangle {
+            x: 17px; y: 176px; width: parent.width - 34px; height: 397px;
+            for person[index] in ["Ch4113", "n0r4", "gr1d", "sys", "t3st"]: Rectangle {
+                x: 0px; y: index * 77px; width: parent.width; height: 70px;
+                background: #050a12;
+                Rectangle { x: 5px; y: 11px; width: 42px; height: 42px;
+                    background: index == 0 ? #103143 : (index == 1 ? #282044 : (index == 2 ? #3b3215 : #252d37));
+                    border-color: index == 0 ? #28d8e8 : (index == 1 ? #b48cff : (index == 2 ? #ffcc55 : #9bb6c4)); border-width: 1px;
+                    Text { width: parent.width; height: parent.height;
+                        text: index == 0 ? "C" : (index == 1 ? "N" : (index == 2 ? "G" : (index == 3 ? "S" : "T")));
+                        color: #e8f5fb; font-size: 20px; horizontal-alignment: center; vertical-alignment: center; }
+                }
+                Text { x: 60px; y: 8px; text: person; color: #e8f5fb; font-size: 27.6px; }
+                Text { x: parent.width - 68px; y: 12px;
+                    text: index == 0 ? "09:38" : (index == 1 ? "08:51" : (index == 2 ? "YESTERDAY" : "TUE"));
+                    color: #8299a7; font-size: 11px; }
+                Text { x: 60px; y: 38px; width: parent.width - 86px;
+                    text: index == 0 ? "See you soon?" : (index == 1 ? "Voice message" : (index == 2 ? "File" : (index == 3 ? "End-to-end encrypted" : "Let's sync later")));
+                    color: #9bb6c4; font-size: 22.08px; }
+                if index == 0 || index == 2: Rectangle {
+                    x: parent.width - 34px; y: 42px; width: 19px; height: 19px;
+                    background: index == 0 ? #28d8e8 : #ffcc55;
+                    Text { width: parent.width; height: parent.height;
+                        text: index == 0 ? "2" : "1"; color: #06111a; font-size: 12px; font-weight: 700;
+                        horizontal-alignment: center; vertical-alignment: center; }
+                }
+                Rectangle { x: 57px; y: 69px; width: parent.width - 57px; height: 1px; background: #142632; }
+                TouchArea { width: parent.width; height: parent.height; clicked => {
+                    root.message-selected = person; root.message-peer = ""; root.message-body = "";
+                    root.message-view = true; root.edit-target = 0;
+                } }
+            }
+            Rectangle { x: 0px; y: 386px; width: parent.width; height: 1px; background: #164653; }
+            Text { x: 25px; y: 367px; text: "CHATS"; color: #28d8e8; font-size: 13px; }
+            Text { x: parent.width / 2 - 25px; y: 367px; text: "GROUPS"; color: #718995; font-size: 13px; }
+            Text { x: parent.width - 86px; y: 367px; text: "ARCHIVE"; color: #718995; font-size: 13px; }
         }
-        if root.page == 6: Rectangle { x: 17px; y: 287px; width: parent.width - 34px; height: 100px;
-            background: #17394e; border-color: #68ddc2; border-width: 2px;
-            Text { x: 15px; y: 10px; text: "MESSAGE"; color: #ffffff; font-size: 17px; }
-            Text { x: 15px; y: 47px; text: root.message-body == "" ? "TAP TO COMPOSE" : root.message-body;
-                color: #ffffff; font-size: 22px; }
-            TouchArea { width: parent.width; height: parent.height; clicked => { root.edit-target = 6; } }
+        if root.page == 6 && !root.message-view && !root.message-join-view && root.message-service-ready && !root.message-invitation-view: Rectangle {
+            x: 17px; y: 168px; width: parent.width - 34px; height: 36px;
+            background: root.edit-target == 13 ? #102b37 : #0b1825;
+            border-color: root.edit-target == 13 ? #28d8e8 : #294454; border-width: 1px;
+            Text { x: 12px; width: parent.width - 24px; height: parent.height;
+                text: root.message-profile-name == "" ? "Your name" : root.message-profile-name;
+                color: root.message-profile-name == "" ? #7f9aa9 : #e8f5fb; font-size: 15px;
+                vertical-alignment: center; overflow: elide; }
+            TouchArea { width: parent.width; height: parent.height; clicked => { root.edit-target = 13; } }
         }
-        if root.page == 6: Text { x: 18px; y: 401px; text: "NO NETWORK · NO SEND"; color: #ffffff; font-size: 17px; }
+        if root.page == 6 && !root.message-view && !root.message-join-view && root.message-service-ready && !root.message-invitation-view: Rectangle {
+            x: 17px; y: 210px; width: parent.width - 34px; height: root.chat-list-panel-height;
+            clip: true;
+            background: #050a12;
+            Rectangle { x: 8px; y: 6px; width: parent.width - 16px; height: 36px;
+                background: root.edit-target == 10 ? #102b37 : #0b1825;
+                border-color: root.edit-target == 10 ? #28d8e8 : #294454; border-width: 1px;
+                Text { x: 12px; width: parent.width - (root.message-search == "" ? 24px : 56px); height: parent.height;
+                    text: root.message-search == "" ? "Search chats" : root.message-search;
+                    color: root.message-search == "" ? #7f9aa9 : #e8f5fb; font-size: 14px;
+                    vertical-alignment: center; overflow: elide; }
+                TouchArea { width: parent.width - (root.message-search == "" ? 0px : 40px); height: parent.height; clicked => {
+                    root.edit-target = 10;
+                } }
+                if root.message-search != "": TouchArea {
+                    x: parent.width - 40px; width: 40px; height: parent.height;
+                    clicked => {
+                        root.message-search = "";
+                        root.edit-target = 0;
+                        root.filter-message-chats();
+                    }
+                    Text { width: parent.width; height: parent.height; text: "×";
+                        color: #ff8e9a; font-size: 18px;
+                        horizontal-alignment: center; vertical-alignment: center; }
+                }
+            }
+            if root.message-list-tab == 0: Flickable {
+                x: 8px; y: 48px; width: parent.width - 16px; height: root.chat-list-rows-height;
+                interactive: true;
+                mouse-drag-pan-enabled: true;
+                content-width: self.width;
+                content-height: max(self.height, root.message-chats.length * 72px);
+                content-y <=> root.message-list-offset;
+                for chat[index] in root.message-chats: SimplexChatRow {
+                    y: index * 72px;
+                    width: parent.width;
+                    label: chat;
+                    skia-text: true;
+                    accent: index == 1 ? #b48cff : (index == 2 ? #ffcc55 : (index == 3 ? #68ddc2 : #28d8e8));
+                    chosen => { root.open-named-chat(root.message-chat-index-map[index], chat); }
+                }
+            }
+            if root.message-list-tab == 0 && root.message-chats.length > 3: Rectangle {
+                x: parent.width - 102px; y: 314px; width: 94px; height: 32px;
+                background: #102433; border-radius: 5px;
+                Text { width: 47px; height: parent.height; text: "↑"; color: #7ee7f2;
+                    font-size: 20px; horizontal-alignment: center; vertical-alignment: center; }
+                Text { x: 47px; width: 47px; height: parent.height; text: "↓"; color: #7ee7f2;
+                    font-size: 20px; horizontal-alignment: center; vertical-alignment: center; }
+                TouchArea { width: 47px; height: parent.height; clicked => {
+                    root.message-list-offset = min(0px, root.message-list-offset + 216px);
+                } }
+                TouchArea { x: 47px; width: 47px; height: parent.height; clicked => {
+                    root.message-list-offset = max(-max(0px, root.message-chats.length * 72px - root.chat-list-rows-height), root.message-list-offset - 216px);
+                } }
+            }
+            if root.message-list-tab == 0 && root.message-has-connections && root.message-chats.length == 0 && root.message-search == "": SimplexChatRow {
+                x: 8px; y: 48px; width: parent.width - 16px;
+                label: "Open chat";
+                preview: "A contact is connected · tap to open";
+                skia-text: true;
+                chosen => { root.open-named-chat(0, "Contact"); }
+            }
+            if root.message-list-tab == 0 && root.message-chats.length == 0 && root.message-search != "": Text {
+                x: 16px; y: 100px; width: parent.width - 32px;
+                text: "No chats match";
+                color: #e8f5fb; font-size: 16px; horizontal-alignment: center;
+            }
+            if root.message-list-tab == 0 && root.message-chats.length == 0 && root.message-search != "": Text {
+                x: 24px; y: 128px; width: parent.width - 48px;
+                text: "Clear search or try another name";
+                color: #8299a7; font-size: 13px; horizontal-alignment: center; wrap: word-wrap;
+            }
+            if root.message-list-tab == 0 && !root.message-has-connections && root.message-chats.length == 0 && root.message-search == "": Text {
+                x: 16px; y: 96px; width: parent.width - 32px;
+                text: "No chats yet";
+                color: #e8f5fb; font-size: 16px; horizontal-alignment: center;
+            }
+            if root.message-list-tab == 0 && !root.message-has-connections && root.message-chats.length == 0 && root.message-search == "": Text {
+                x: 24px; y: 124px; width: parent.width - 48px;
+                text: "NEW LINK to invite · JOIN to accept a link";
+                color: #8299a7; font-size: 13px; horizontal-alignment: center; wrap: word-wrap;
+            }
+            if root.message-list-tab == 1 && root.message-group-chats.length == 0: Text {
+                x: 16px; y: 100px; width: parent.width - 32px;
+                text: "No groups yet";
+                color: #e8f5fb; font-size: 16px; horizontal-alignment: center;
+            }
+            if root.message-list-tab == 1 && root.message-group-chats.length == 0: Text {
+                x: 24px; y: 128px; width: parent.width - 48px;
+                text: "NEW GROUP invites the connected contact";
+                color: #8299a7; font-size: 13px; horizontal-alignment: center; wrap: word-wrap;
+            }
+            if root.message-list-tab == 1: Rectangle {
+                x: 8px; y: 216px; width: parent.width - 16px; height: 38px;
+                background: #102b37; border-color: #7ee7f2; border-width: 1px;
+                Text { x: 8px; width: parent.width - 16px; height: parent.height;
+                    text: root.message-group-name == "" ? "Group name" : root.message-group-name;
+                    color: #e8f5fb; font-size: 13px; vertical-alignment: center; }
+                TouchArea { width: parent.width; height: parent.height; clicked => { root.edit-target = 17; } }
+            }
+            if root.message-list-tab == 1: Rectangle {
+                x: 8px; y: 260px; width: parent.width - 16px; height: 42px;
+                background: #102b37; border-color: #7ee7f2; border-width: 1px;
+                Text { x: 8px; width: parent.width - 16px; height: parent.height;
+                    text: root.message-group-recipient < 0 || root.message-group-recipient >= root.message-chats.length
+                        ? "Choose a contact · tap to select"
+                        : "Invite: " + root.message-chats[root.message-group-recipient];
+                    color: #e8f5fb; font-size: 13px; vertical-alignment: center; }
+                TouchArea { width: parent.width; height: parent.height; clicked => {
+                    if root.message-chats.length > 0 {
+                        root.message-group-recipient = mod(root.message-group-recipient + 1, root.message-chats.length);
+                        root.message-group-recipient-name = root.message-chats[root.message-group-recipient];
+                    }
+                } }
+            }
+            if root.message-list-tab == 1: Rectangle {
+                x: 8px; y: 312px; width: parent.width - 16px; height: 36px;
+                background: #102b37;
+                border-color: #7ee7f2; border-width: 1px;
+                Text { width: parent.width; height: parent.height; text: "NEW GROUP";
+                    color: #7ee7f2; font-size: 13px;
+                    horizontal-alignment: center; vertical-alignment: center; }
+                TouchArea { width: parent.width; height: parent.height;
+                    clicked => { root.create-group(); } }
+            }
+            if root.message-list-tab == 1 && root.message-group-status != "": Text {
+                x: 8px; y: 352px; width: parent.width - 16px;
+                text: root.message-group-status; color: #a0b4c0; font-size: 12px; wrap: word-wrap;
+            }
+            if root.message-list-tab == 1 && root.message-group-chats.length > 0: Flickable {
+                x: 8px; y: 48px; width: parent.width - 16px; height: 160px;
+                interactive: true;
+                mouse-drag-pan-enabled: true;
+                content-width: self.width;
+                content-height: max(self.height, root.message-group-chats.length * 72px);
+                for chat[index] in root.message-group-chats: SimplexChatRow {
+                    y: index * 72px;
+                    width: parent.width;
+                    label: chat;
+                    skia-text: false;
+                    accent: #b48cff;
+                    chosen => { root.open-named-chat(root.message-group-index-map[index], chat); }
+                }
+            }
+            if root.message-list-tab == 2 && root.message-archived-chats.length == 0: Text {
+                x: 16px; y: 100px; width: parent.width - 32px;
+                text: "Nothing archived";
+                color: #e8f5fb; font-size: 16px; horizontal-alignment: center;
+            }
+            if root.message-list-tab == 2 && root.message-archived-chats.length == 0: Text {
+                x: 24px; y: 128px; width: parent.width - 48px;
+                text: "Archive a chat from its header to move it here";
+                color: #8299a7; font-size: 13px; horizontal-alignment: center; wrap: word-wrap;
+            }
+            if root.message-list-tab == 2 && root.message-archived-chats.length > 0: Flickable {
+                x: 8px; y: 48px; width: parent.width - 16px; height: root.chat-list-rows-height;
+                interactive: true;
+                mouse-drag-pan-enabled: true;
+                content-width: self.width;
+                content-height: max(self.height, root.message-archived-chats.length * 72px);
+                for chat[index] in root.message-archived-chats: SimplexChatRow {
+                    y: index * 72px;
+                    width: parent.width;
+                    label: chat;
+                    skia-text: false;
+                    accent: #718995;
+                    chosen => { root.open-named-chat(root.message-archived-index-map[index], chat); }
+                }
+            }
+            if !root.receive-idle: Text { x: 12px; y: 316px; width: parent.width - 24px; height: 22px;
+                text: root.message-incoming-body == "" ? root.message-receive-status :
+                    (root.message-ack-status == "ACKNOWLEDGED" ? "Acknowledged" : root.message-incoming-body);
+                color: #7ee7f2; font-size: 12px; }
+            TouchArea { x: 8px; y: 312px; width: parent.width - 16px; height: 28px; clicked => {
+                if root.message-incoming-body == "" {
+                    if root.message-receive-status == "CHECKING AGENT" || root.message-receive-status == "CHECKING AGENT · TAP TO REFRESH" {
+                        root.check-message-receive-status();
+                    } else {
+                        root.receive-next-message();
+                    }
+                } else if root.message-ack-status == "ACKNOWLEDGED" {
+                    root.message-incoming-body = "";
+                    root.message-ack-status = "";
+                    root.receive-next-message();
+                } else if root.message-ack-status == "ACKNOWLEDGING" {
+                    root.check-message-ack-status();
+                } else {
+                    root.acknowledge-incoming-message();
+                }
+            } }
+            Rectangle { x: 8px; y: 348px; width: parent.width - 16px; height: 1px; background: #164653; }
+            Text { x: 28px; y: 360px; text: "CHATS"; font-size: 13px;
+                color: root.message-list-tab == 0 ? #28d8e8 : #718995; }
+            TouchArea { x: 8px; y: 348px; width: parent.width / 3; height: 44px;
+                clicked => { root.message-list-tab = 0; } }
+            Text { x: parent.width / 2 - 28px; y: 360px; text: "GROUPS"; font-size: 13px;
+                color: root.message-list-tab == 1 ? #28d8e8 : #718995; }
+            TouchArea { x: parent.width / 3; y: 348px; width: parent.width / 3; height: 44px;
+                clicked => { root.message-list-tab = 1; } }
+            Text { x: parent.width - 96px; y: 360px; text: "ARCHIVE"; font-size: 13px;
+                color: root.message-list-tab == 2 ? #28d8e8 : #718995; }
+            TouchArea { x: parent.width * 2 / 3; y: 348px; width: parent.width / 3; height: 44px;
+                clicked => { root.message-list-tab = 2; } }
+        }
+        if root.page == 6 && root.message-service-ready && !root.message-view
+            && !root.message-join-view && !root.message-invitation-view && !root.chat-list-keyboard: Text {
+            x: 25px; y: 610px; width: parent.width - 50px;
+            text: "SimpleXMQ 7.0.0.6 · AGPL-3.0-only\nPort source: github.com/Nexatrode/nexatrodeOS";
+            color: #9bb6c4; font-size: 12px; wrap: word-wrap;
+        }
+        if root.page == 6 && !root.message-view && !root.message-join-view && root.message-service-ready && root.message-invitation-view: Rectangle {
+            x: 17px; y: 176px; width: parent.width - 34px; height: 397px;
+            background: #050a12;
+            Text { x: 12px; y: 6px; text: root.message-address-view ? "YOUR ADDRESS" : "YOUR INVITATION"; color: #8299a7; font-size: 11px; }
+            Text { x: 12px; y: 22px; width: parent.width - 24px;
+                text: root.message-invitation-status; color: #7ee7f2; font-size: 14px; wrap: word-wrap; }
+            if root.message-invitation-qr-visible: Rectangle {
+                x: (parent.width - 168px) / 2; y: 56px; width: 168px; height: 168px;
+                background: #ffffff; border-color: #28d8e8; border-width: 1px;
+                Image {
+                    x: 8px; y: 8px; width: 152px; height: 152px;
+                    source: root.message-invitation-qr; image-fit: contain;
+                }
+            }
+            if !root.message-invitation-qr-visible: Rectangle {
+                x: (parent.width - 168px) / 2; y: 56px; width: 168px; height: 168px;
+                background: #0c1b27; border-color: #1d4152; border-width: 1px;
+                Text { width: parent.width; height: parent.height;
+                    text: "QR PENDING"; color: #8299a7; font-size: 13px;
+                    horizontal-alignment: center; vertical-alignment: center; }
+            }
+            Rectangle {
+                x: 10px; y: 236px; width: parent.width - 20px; height: 88px;
+                background: #0c1b27; border-color: #1d4152; border-width: 1px;
+                Text { x: 10px; y: 6px; text: "LINK"; color: #8299a7; font-size: 10px; }
+                Text { x: 10px; y: 22px; width: parent.width - 20px; height: 56px;
+                    text: root.message-invitation-uri == "" ? (root.message-address-view ? "Tap CHECK above to refresh the address." : "Tap CHECK above to refresh the invitation.") : root.message-invitation-uri;
+                    color: #e8f5fb; font-size: 12px; wrap: word-wrap; overflow: elide; }
+            }
+            Rectangle { x: 10px; y: 336px; width: (parent.width - 28px) / 2; height: 36px;
+                background: #103143; border-color: #7ee7f2; border-width: 1px;
+                Text { width: parent.width; height: parent.height; text: "COPY";
+                    color: #7ee7f2; font-size: 13px;
+                    horizontal-alignment: center; vertical-alignment: center; }
+                TouchArea { width: parent.width; height: parent.height; clicked => {
+                    root.copy-invitation();
+                } }
+            }
+            Rectangle { x: 18px + (parent.width - 28px) / 2; y: 336px; width: (parent.width - 28px) / 2; height: 36px;
+                background: #1a2430; border-color: #294454; border-width: 1px;
+                Text { width: parent.width; height: parent.height; text: "CLOSE";
+                    color: #9bb6c4; font-size: 13px;
+                    horizontal-alignment: center; vertical-alignment: center; }
+                TouchArea { width: parent.width; height: parent.height; clicked => {
+                    root.message-invitation-view = false;
+                    root.message-address-view = false;
+                    root.message-invitation-qr-visible = false;
+                    root.edit-target = 0;
+                } }
+            }
+            Text { x: 12px; y: 380px; width: parent.width - 24px;
+                text: root.message-address-view ? "Reusable address · scan QR or copy for another device" : "Private one-time link · scan QR or copy for another device";
+                color: #718995; font-size: 11px; }
+        }
+        if root.page == 6 && !root.message-view && root.message-join-view: Rectangle {
+            x: 17px; y: 176px; width: parent.width - 34px; height: 280px;
+            background: #050a12;
+            Text { x: 10px; y: 4px; text: "JOIN CONNECTION"; color: #8299a7; font-size: 11px; }
+            Text { x: 10px; y: 20px; width: parent.width - 20px;
+                text: root.message-join-status; color: #7ee7f2; font-size: 14px; wrap: word-wrap; }
+            Rectangle { x: 8px; y: 56px; width: parent.width - 16px; height: 100px;
+                background: #0c1b27; border-color: root.edit-target == 7 ? #7ee7f2 : #1d4152; border-width: 1px;
+                Text { x: 10px; y: 6px; text: "INVITATION LINK"; color: #8299a7; font-size: 10px; }
+                Text { x: 10px; y: 24px; width: parent.width - 20px; height: 66px;
+                    text: root.message-join-uri == "" ? "Tap to type or paste a simplex:/ or https://simplex.chat/ link" : root.message-join-uri;
+                    color: root.message-join-uri == "" ? #718995 : #e8f5fb; font-size: 14px; wrap: word-wrap; }
+                TouchArea { width: parent.width; height: parent.height; clicked => { root.edit-target = 7; } }
+            }
+            Rectangle { x: 8px; y: 168px; width: (parent.width - 32px) / 3; height: 40px;
+                background: #103143; border-color: #7ee7f2; border-width: 1px;
+                Text { width: parent.width; height: parent.height; text: "JOIN"; color: #7ee7f2; font-size: 13px;
+                    horizontal-alignment: center; vertical-alignment: center; }
+                TouchArea { width: parent.width; height: parent.height; clicked => {
+                    root.edit-target = 0; root.submit-join-invitation(root.message-join-uri);
+                } }
+            }
+            Rectangle { x: 16px + (parent.width - 32px) / 3; y: 168px; width: (parent.width - 32px) / 3; height: 40px;
+                background: #103143; border-color: #7ee7f2; border-width: 1px;
+                Text { width: parent.width; height: parent.height; text: "CHECK"; color: #7ee7f2; font-size: 13px;
+                    horizontal-alignment: center; vertical-alignment: center; }
+                TouchArea { width: parent.width; height: parent.height; clicked => {
+                    root.edit-target = 0; root.check-join-status();
+                } }
+            }
+            Rectangle { x: 24px + 2 * (parent.width - 32px) / 3; y: 168px; width: (parent.width - 32px) / 3; height: 40px;
+                background: #1a2430; border-color: #294454; border-width: 1px;
+                Text { width: parent.width; height: parent.height; text: "CANCEL"; color: #9bb6c4; font-size: 13px;
+                    horizontal-alignment: center; vertical-alignment: center; }
+                TouchArea { width: parent.width; height: parent.height; clicked => {
+                    root.message-join-view = false;
+                    root.message-join-uri = "";
+                    root.message-join-requested = false;
+                    root.edit-target = 0;
+                } }
+            }
+            Text { x: 10px; y: 222px; width: parent.width - 20px;
+                text: "Stays on this device until join succeeds. CHATS closes without joining.";
+                color: #718995; font-size: 12px; wrap: word-wrap; }
+        }
+        if root.page == 6 && root.message-view: Rectangle {
+            x: 17px; y: 176px; width: parent.width - 34px;
+            height: parent.height - 212px - root.keyboard-travel;
+            background: #050a12;
+            Rectangle { x: 0px; y: 0px; width: parent.width; height: 56px;
+                background: #0c1b27;
+                Rectangle { x: 8px; y: 8px; width: 40px; height: 40px;
+                    border-radius: 20px;
+                    background: #28d8e8; }
+                Text { x: 56px; y: 6px; width: parent.width - 160px; text: root.message-selected; color: #e8f5fb; font-size: 16px; }
+                Text { x: 56px; y: 28px; width: parent.width - 160px;
+                    text: root.message-contact-name == "" ? (root.message-peer == "" ? "Not connected" : "Key · " + root.message-peer) : "end-to-end encrypted";
+                    color: #7ee7f2; font-size: 13px; }
+                TouchArea { x: 0px; y: 0px; width: parent.width - 156px; height: parent.height; clicked => { root.edit-target = 0; } }
+                Rectangle { x: parent.width - 148px; y: 10px; width: 66px; height: 36px;
+                    background: #12384a; border-radius: 8px;
+                    Text { width: parent.width; height: parent.height; text: "ARCHIVE";
+                        color: #7ee7f2; font-size: 11px;
+                        horizontal-alignment: center; vertical-alignment: center; }
+                }
+                Rectangle { x: parent.width - 74px; y: 10px; width: 66px; height: 36px;
+                    background: #3a1820; border-radius: 8px;
+                    Text { width: parent.width; height: parent.height; text: "DELETE";
+                        color: #ff8e9a; font-size: 11px;
+                        horizontal-alignment: center; vertical-alignment: center; }
+                }
+                // Touch targets above the painted buttons so QMP taps hit them.
+                TouchArea {
+                    x: parent.width - 148px; y: 0px; width: 66px; height: parent.height;
+                    pointer-event(event) => {
+                        if event.kind == PointerEventKind.down {
+                            root.archive-chat(root.message-chat-index, true);
+                            root.message-view = false;
+                            root.edit-target = 0;
+                            root.message-list-tab = 2;
+                        }
+                    }
+                }
+                TouchArea {
+                    x: parent.width - 74px; y: 0px; width: 66px; height: parent.height;
+                    pointer-event(event) => {
+                        if event.kind == PointerEventKind.down {
+                            root.delete-chat(root.message-chat-index);
+                            root.message-view = false;
+                            root.edit-target = 0;
+                            root.message-list-tab = 0;
+                        }
+                    }
+                }
+            }
+            if !root.message-service-ready: Rectangle { x: 9px; y: 68px; width: parent.width - 150px; height: 52px;
+                background: #101c28; border-color: #294454; border-width: 1px;
+                Text { x: 8px; y: 6px; width: parent.width - 16px; text: "Hey, are you free later?";
+                    color: #e8f5fb; font-size: 13px; wrap: word-wrap; }
+                Text { x: 8px; y: 32px; text: "09:13"; color: #8299a7; font-size: 11px; }
+            }
+            if !root.message-service-ready: Rectangle { x: parent.width - 168px; y: 132px; width: 156px; height: 52px;
+                background: #0d2936; border-color: #28d8e8; border-width: 1px;
+                Text { x: 8px; y: 6px; width: parent.width - 16px; text: "Yes, should be good.";
+                    color: #e8f5fb; font-size: 13px; wrap: word-wrap; }
+                Text { x: parent.width - 58px; y: 32px; text: "09:14  ✓✓"; color: #28d8e8; font-size: 11px; }
+            }
+            if root.message-service-ready && root.message-bubbles.length == 0: Text {
+                x: 12px; y: 72px; width: parent.width - 24px;
+                text: "No messages yet"; color: #e8f5fb; font-size: 16px;
+                horizontal-alignment: center;
+            }
+            if root.message-service-ready && root.message-bubbles.length == 0: Text {
+                x: 16px; y: 100px; width: parent.width - 32px;
+                text: "Tap the compose field below to write";
+                color: #8299a7; font-size: 13px; horizontal-alignment: center;
+            }
+            if root.message-service-ready: chat-scroll := ListView {
+                x: 8px; y: 64px;
+                width: parent.width - 16px;
+                height: parent.height - 64px - (root.message-group-invite ? 148px : 108px);
+                mouse-drag-pan-enabled: true;
+                interactive: true;
+                property <string> watched: root.message-transcript;
+                property <bool> follow-latest: true;
+                init => { self.content-y = self.height - self.content-height; }
+                changed watched => {
+                    self.follow-latest = true;
+                    self.content-y = self.height - self.content-height;
+                }
+                changed content-height => {
+                    if self.follow-latest { self.content-y = self.height - self.content-height; }
+                }
+                flicked => { self.follow-latest = false; }
+                    for bubble[index] in root.message-bubbles: Rectangle {
+                        // Every sent Photo is the same bundled JPEG. A later text
+                        // line must not turn the picture back into the word Photo.
+                        property <bool> photo-here: root.message-image-visible && bubble == "Photo" && index < root.message-bubble-side.length && root.message-bubble-side[index] == 1;
+                        property <bool> incoming-photo: root.message-incoming-image-visible && index == root.message-incoming-photo-index;
+                        property <bool> saved-photo: index < root.message-bubble-photo-ready.length && root.message-bubble-photo-ready[index];
+                        property <bool> pending-photo: index < root.message-bubble-photo-pending.length && root.message-bubble-photo-pending[index];
+                        property <bool> has-photo-id: index < root.message-bubble-photo-ids.length && root.message-bubble-photo-ids[index] != "";
+                        // ListView materializes only rows intersecting the viewport.
+                        init => { if self.has-photo-id { root.set-chat-photo-visibility(index, true); } }
+                        changed has-photo-id => { if self.has-photo-id { root.set-chat-photo-visibility(index, true); } }
+                        property <bool> has-file-id: index < root.message-bubble-files.length && root.message-bubble-files[index] != "";
+                        property <bool> retryable: (has-photo-id || has-file-id) && index < root.message-bubble-upload-failed.length && root.message-bubble-upload-failed[index];
+                        property <bool> show-photo: photo-here || incoming-photo || saved-photo || pending-photo || has-photo-id;
+                        property <bool> show-caption: show-photo && bubble != "" && bubble != "Photo";
+                        property <length> content-h: show-photo ? 148px + (show-caption ? msg.preferred-height : 0px) : msg.preferred-height;
+                        property <bool> has-quote: index < root.message-bubble-quotes.length && root.message-bubble-quotes[index] != "";
+                        property <bool> has-react: index < root.message-bubble-reacts.length && root.message-bubble-reacts[index] != "";
+                        // Fixed quote band avoids forward-id preferred-height in Slint.
+                        // A hidden Image still reports the JPEG's intrinsic size, and
+                        // one copy on every row scrolls the thread into empty space.
+                        property <length> quote-h: has-quote ? 28px : 0px;
+                        height: card.height + 8px;
+                        preferred-height: card.height + 8px;
+                        card := Rectangle {
+                            x: root.message-bubble-side[index] == 1 ? parent.width - self.width - 4px : 4px;
+                            width: show-photo || has-photo-id ? 220px : min(parent.width * 74%, max(retryable ? 140px : 0px, msg.preferred-width + 16px));
+                            height: (retryable ? 30px : 0px) + content-h + quote-h + (has-react ? 22px : 0px) + (root.message-bubble-time[index] == "" ? 16px : 32px);
+                            border-radius: 14px;
+                            background: root.message-bubble-side[index] == 1 ? #0d2936 : #101c28;
+                            border-color: root.message-bubble-side[index] == 1 ? #28d8e8 : #294454;
+                            border-width: 1px;
+                            if photo-here: Image {
+                                x: 4px; y: 4px + quote-h;
+                                width: parent.width - 8px;
+                                height: 140px;
+                                source: root.message-image; image-fit: cover;
+                            }
+                            if incoming-photo || saved-photo: Image {
+                                x: 4px; y: 4px + quote-h;
+                                width: parent.width - 8px;
+                                height: 140px;
+                                source: saved-photo ? root.message-bubble-photos[index] : root.message-incoming-image;
+                                image-fit: cover;
+                            }
+                            if pending-photo && !saved-photo: Text {
+                                x: 8px; y: 8px + quote-h; width: parent.width - 16px; height: 132px;
+                                text: "Loading photo…"; color: #8299a7; font-size: 12px;
+                                vertical-alignment: center; horizontal-alignment: center;
+                            }
+                            if has-quote: Rectangle {
+                                x: 8px; y: 8px; width: 3px; height: 20px;
+                                background: root.message-bubble-side[index] == 1 ? #28d8e8 : #7ee7f2;
+                            }
+                            if has-quote: Text {
+                                x: 16px; y: 8px; width: parent.width - 24px; height: 20px;
+                                text: root.message-bubble-quotes[index];
+                                overflow: elide;
+                                font-size: 12px; color: #8eacbb;
+                                vertical-alignment: center;
+                            }
+                            msg := Text {
+                                x: 8px; y: 8px + quote-h + (show-photo ? 144px : 0px);
+                                width: parent.width - 16px;
+                                text: show-photo && !show-caption ? "" : bubble;
+                                wrap: word-wrap;
+                                font-size: 15px;
+                                color: #e8f5fb;
+                            }
+                            if has-react: Text {
+                                x: 8px;
+                                y: content-h + quote-h + 4px;
+                                text: root.message-bubble-reacts[index];
+                                font-size: 14px;
+                                color: #ffcc55;
+                            }
+                            Text {
+                                x: root.message-bubble-side[index] == 1 ? parent.width - self.preferred-width - 8px : 8px;
+                                y: content-h + quote-h + (has-react ? 26px : 8px) + (retryable ? 30px : 0px);
+                                text: root.message-bubble-time[index];
+                                font-size: 11px;
+                                color: root.message-bubble-side[index] == 1 ? #28d8e8 : #8299a7;
+                            }
+                            TouchArea {
+                                width: parent.width; height: parent.height;
+                                clicked => {
+                                    if !show-photo && bubble != "" {
+                                        root.inspect-bubble(bubble, index < root.message-bubble-files.length
+                                            ? root.message-bubble-files[index] : "");
+                                        if !root.message-file-open {
+                                            // Quote the leaf body, not a nested ↩ line.
+                                            root.message-reply-to = bubble;
+                                            root.message-reply-mine = root.message-bubble-side[index] == 1;
+                                            root.message-action-id = root.message-bubble-ids[index];
+                                            root.message-edit-mode = false;
+                                            root.edit-target = 6;
+                                        }
+                                    }
+                                }
+                            }
+                            if retryable: Rectangle {
+                                x: 8px; y: parent.height - 47px; width: 62px; height: 24px;
+                                background: #12384a; border-radius: 5px;
+                                Text { width: parent.width; height: parent.height; text: "Retry";
+                                    color: #7ee7f2; horizontal-alignment: center; vertical-alignment: center; font-size: 13px; }
+                                TouchArea { width: parent.width; height: parent.height; clicked => {
+                                    root.retry-attachment(has-file-id ? root.message-bubble-files[index] : root.message-bubble-photo-ids[index], bubble);
+                                } }
+                            }
+                            if has-photo-id && root.message-bubble-side[index] == 0: Rectangle {
+                                x: parent.width - 58px; y: 8px; width: 50px; height: 26px;
+                                background: #081522; border-radius: 5px;
+                                Text { width: parent.width; height: parent.height; text: "SAVE";
+                                    color: #7ee7f2; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                                TouchArea { width: parent.width; height: parent.height; clicked => {
+                                    root.save-chat-photo(root.message-bubble-photo-ids[index]);
+                                } }
+                            }
+                            if has-file-id && root.message-bubble-side[index] == 0: Rectangle {
+                                x: parent.width - 58px; y: parent.height - 27px; width: 50px; height: 24px;
+                                background: #081522; border-radius: 5px;
+                                Text { width: parent.width; height: parent.height; text: "SAVE";
+                                    color: #7ee7f2; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                                TouchArea { width: parent.width; height: parent.height; clicked => {
+                                    root.save-chat-file(root.message-bubble-files[index], bubble);
+                                } }
+                            }
+                        }
+                    }
+            }
+            if root.message-group-invite: Rectangle {
+                x: 8px; y: parent.height - 140px; width: parent.width - 16px; height: 32px;
+                background: #12384a; border-color: #7ee7f2; border-width: 1px;
+                Text { width: parent.width; height: parent.height; text: "JOIN GROUP";
+                    color: #7ee7f2; font-size: 13px;
+                    horizontal-alignment: center; vertical-alignment: center; }
+                TouchArea { width: parent.width; height: parent.height; clicked => {
+                    root.message-group-invite = false;
+                    root.message-view = false;
+                    root.message-join-view = true;
+                    root.message-invitation-view = false;
+                    root.message-join-uri = root.message-group-uri;
+                    root.edit-target = 0;
+                    root.submit-join-invitation(root.message-group-uri);
+                } }
+            }
+            if root.message-reply-to != "": Rectangle {
+                x: 8px; y: parent.height - 140px; width: parent.width - 16px; height: 76px;
+                background: #12384a; border-color: #7ee7f2; border-width: 1px;
+                Rectangle { x: 8px; y: 14px; width: 3px; height: 18px; background: #7ee7f2; }
+                Text { x: 16px; y: 3px; text: root.message-edit-mode ? "EDITING" :
+                    (root.message-reply-mine ? "REPLY TO YOU" : "REPLY");
+                    color: #7ee7f2; font-size: 10px; }
+                Text { x: 16px; y: 16px; width: parent.width - 54px;
+                    text: root.message-reply-to; color: #c5dbe6; font-size: 12px;
+                    overflow: elide; }
+                TouchArea { x: 8px; y: 30px; width: 52px; height: 22px; clicked => {
+                    root.message-edit-mode = false;
+                }
+                    Text { x: 2px; y: 2px; text: "REPLY"; color: #7ee7f2; font-size: 11px; }
+                }
+                TouchArea { x: 64px; y: 30px; width: 44px; height: 22px; clicked => {
+                    root.send-message("\u{001e}F\u{001f}" + root.message-reply-to);
+                    root.message-reply-to = "";
+                    root.message-action-id = "";
+                    root.message-edit-mode = false;
+                    root.edit-target = 0;
+                }
+                    Text { x: 2px; y: 2px; text: "FWD"; color: #7ee7f2; font-size: 11px; }
+                }
+                if root.message-reply-mine && root.message-action-id != "": TouchArea {
+                    x: 112px; y: 30px; width: 48px; height: 22px; clicked => {
+                        root.message-edit-mode = true;
+                        root.message-body = root.message-reply-to;
+                        root.edit-target = 6;
+                    }
+                    Text { x: 2px; y: 2px; text: "EDIT"; color: #ffcc55; font-size: 11px; }
+                }
+                if root.message-reply-mine && root.message-action-id != "": TouchArea {
+                    x: 164px; y: 30px; width: 40px; height: 22px; clicked => {
+                        root.send-message("\u{001e}D\u{001f}" + root.message-action-id);
+                        root.message-reply-to = "";
+                        root.message-action-id = "";
+                        root.message-edit-mode = false;
+                        root.edit-target = 0;
+                    }
+                    Text { x: 2px; y: 2px; text: "DEL"; color: #ff8e9a; font-size: 11px; }
+                }
+                // Embedded bitmaps render on the guest software backend.
+                if root.message-action-id != "": HorizontalLayout {
+                    x: 6px; y: 51px; width: parent.width - 12px; height: 24px;
+                    for reaction in [
+                        { emoji: "\u{1f44d}", icon: @image-url("../assets/reactions/thumbs-up.png") },
+                        { emoji: "\u{1f44e}", icon: @image-url("../assets/reactions/thumbs-down.png") },
+                        { emoji: "\u{1f600}", icon: @image-url("../assets/reactions/smile.png") },
+                        { emoji: "\u{1f602}", icon: @image-url("../assets/reactions/laugh.png") },
+                        { emoji: "\u{1f622}", icon: @image-url("../assets/reactions/sad.png") },
+                        { emoji: "\u{2764}", icon: @image-url("../assets/reactions/heart.png") },
+                        { emoji: "\u{1f680}", icon: @image-url("../assets/reactions/rocket.png") },
+                        { emoji: "\u{2705}", icon: @image-url("../assets/reactions/check.png") }
+                    ]: TouchArea {
+                        horizontal-stretch: 1;
+                        clicked => {
+                            root.send-message("\u{001e}R\u{001f}" + root.message-action-id + "\u{001f}" + reaction.emoji);
+                            root.message-reply-to = "";
+                            root.message-action-id = "";
+                            root.message-edit-mode = false;
+                            root.edit-target = 0;
+                        }
+                        Image {
+                            width: 20px; height: 20px;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                            source: reaction.icon;
+                        }
+                    }
+                }
+                TouchArea { x: parent.width - 36px; width: 36px; height: 30px; clicked => {
+                    root.message-reply-to = "";
+                    root.message-action-id = "";
+                    root.message-edit-mode = false;
+                } }
+                Text { x: parent.width - 28px; y: 8px; text: "×"; color: #ff8e9a; font-size: 16px; }
+            }
+            if !root.send-idle && root.message-reply-to == "": Text { x: 8px; y: parent.height - 100px; width: parent.width - 16px; height: 16px;
+                text: root.message-send-status; color: #7ee7f2; font-size: 12px; }
+            if !root.receive-idle: Rectangle { x: 8px; y: parent.height - 82px; width: parent.width - 16px; height: 22px;
+                Text { x: 0px; y: 2px; width: parent.width; height: 18px;
+                    text: root.message-incoming-body == "" ? root.message-receive-status :
+                        (root.message-ack-status == "ACKNOWLEDGED" ? "INCOMING MESSAGE ACKNOWLEDGED" : root.message-incoming-body);
+                    color: #8eacbb; font-size: 12px; }
+                TouchArea { width: parent.width; height: parent.height; clicked => {
+                    root.edit-target = 0;
+                    if root.message-incoming-body == "" {
+                        if root.message-receive-status == "CHECKING AGENT" || root.message-receive-status == "CHECKING AGENT · TAP TO REFRESH" {
+                            root.check-message-receive-status();
+                        } else {
+                            root.receive-next-message();
+                        }
+                    } else if root.message-ack-status == "ACKNOWLEDGED" {
+                        root.message-incoming-body = "";
+                        root.message-ack-status = "";
+                        root.receive-next-message();
+                    } else if root.message-ack-status == "ACKNOWLEDGING" {
+                        root.check-message-ack-status();
+                    } else {
+                        root.acknowledge-incoming-message();
+                    }
+                } }
+            }
+            if root.message-file-open: Rectangle {
+                x: 8px; y: 38px; width: parent.width - 16px; height: parent.height - 150px;
+                background: #102433; border-color: #7ee7f2; border-width: 1px; border-radius: 12px;
+                Text { x: 10px; y: 6px; width: parent.width - 36px; text: root.message-file-name;
+                    color: #7ee7f2; font-size: 12px; overflow: elide; }
+                Flickable {
+                    x: 10px; y: 28px; width: parent.width - 20px; height: parent.height - 38px;
+                    viewport-width: self.width;
+                    viewport-height: max(self.height, file-contents.preferred-height);
+                    file-contents := Text {
+                        width: parent.width; text: root.message-file-body;
+                        color: #e8f5fb; font-size: 14px; wrap: word-wrap;
+                    }
+                }
+                TouchArea { x: parent.width - 28px; y: 4px; width: 24px; height: 24px; clicked => {
+                    root.message-file-open = false;
+                } }
+                Text { x: parent.width - 22px; y: 4px; text: "×"; color: #ff8e9a; font-size: 16px; }
+            }
+            if root.message-photo-picker-open: Rectangle {
+                x: 8px; y: 38px; width: parent.width - 16px; height: parent.height - 150px;
+                background: #102433; border-color: #7ee7f2; border-width: 1px; border-radius: 12px;
+                Text { x: 10px; y: 8px; width: parent.width - 46px; text: "Choose from Files";
+                    color: #7ee7f2; font-size: 14px; overflow: elide; }
+                TouchArea { x: parent.width - 35px; y: 0px; width: 35px; height: 35px;
+                    clicked => { root.message-photo-picker-open = false; } }
+                Text { x: parent.width - 25px; y: 6px; text: "×"; color: #ff8e9a; font-size: 18px; }
+                if root.message-photo-picker-labels.length == 0: Text {
+                    x: 12px; y: 44px; width: parent.width - 24px;
+                    text: "No matching saved files"; color: #a9c1cf; font-size: 13px; wrap: word-wrap;
+                }
+                Flickable {
+                    x: 8px; y: 38px; width: parent.width - 16px; height: parent.height - 46px;
+                    viewport-width: self.width;
+                    viewport-height: max(self.height, picker-list.preferred-height);
+                    picker-list := VerticalLayout {
+                        width: parent.width; spacing: 4px;
+                        for label[index] in root.message-photo-picker-labels: Rectangle {
+                            height: 58px; background: #173040; border-radius: 6px;
+                            Image { x: 6px; y: 4px; width: 50px; height: 50px;
+                                source: root.message-photo-picker-images[index]; image-fit: contain; }
+                            Text { x: 64px; width: parent.width - 72px; height: parent.height;
+                                text: label; color: #e8f5fb; font-size: 14px; vertical-alignment: center; overflow: elide; }
+                            TouchArea { width: parent.width; height: parent.height; clicked => {
+                                root.message-photo-picker-open = false; root.pick-saved-photo(index);
+                            } }
+                        }
+                    }
+                }
+            }
+            if root.message-attach-menu: Rectangle {
+                x: 8px; y: parent.height - 146px; width: 132px; height: 84px;
+                background: #102433; border-color: #28d8e8; border-width: 1px; border-radius: 12px;
+                Text { x: 10px; y: 8px; width: parent.width - 12px; height: 28px;
+                    text: "Picture"; color: #e8f5fb; font-size: 15px; vertical-alignment: center; }
+                TouchArea { y: 0px; width: parent.width; height: 40px; clicked => {
+                    root.message-attach-menu = false;
+                    root.attach-picture(true);
+                } }
+                Text { x: 10px; y: 46px; width: parent.width - 12px; height: 28px;
+                    text: "File"; color: #e8f5fb; font-size: 15px; vertical-alignment: center; }
+                TouchArea { y: 42px; width: parent.width; height: 40px; clicked => {
+                    root.message-attach-menu = false;
+                    root.attach-picture(false);
+                } }
+            }
+            Rectangle { x: 8px; y: parent.height - 54px; width: parent.width - 16px; height: 42px;
+                border-radius: 21px;
+                background: #0c1b27; border-color: root.edit-target == 6 ? #7ee7f2 : #1d4152; border-width: 1px;
+                Rectangle { x: 6px; y: 6px; width: 30px; height: 30px;
+                    border-radius: 15px;
+                    background: #12384a;
+                    Text { width: parent.width; height: parent.height;
+                        text: "+";
+                        color: #7ee7f2; font-size: 18px;
+                        horizontal-alignment: center; vertical-alignment: center; }
+                    TouchArea { width: parent.width; height: parent.height; clicked => {
+                        root.edit-target = 0;
+                        root.message-attach-menu = !root.message-attach-menu;
+                    } }
+                }
+                Text { x: 42px; y: 10px; width: parent.width - 88px;
+                    text: root.message-body == "" ? "Message" : root.message-body;
+                    color: root.message-body == "" ? #8eacbb : #e8f5fb; font-size: 16px; }
+                Rectangle { x: parent.width - 40px; y: 6px; width: 30px; height: 30px;
+                    border-radius: 15px;
+                    background: #12384a; border-color: #7ee7f2; border-width: 1px;
+                    Text { width: parent.width; height: parent.height;
+                        text: "↑";
+                        color: #7ee7f2; font-size: 16px;
+                        horizontal-alignment: center; vertical-alignment: center; }
+                    TouchArea { width: parent.width; height: parent.height; clicked => {
+                        root.send-message(root.message-body);
+                        root.edit-target = 0;
+                    } }
+                }
+                TouchArea { x: 40px; y: 0px; width: parent.width - 84px; height: parent.height;
+                    clicked => { root.edit-target = 6; } }
+            }
+            if !root.message-target-ready: Rectangle {
+                width: parent.width; height: parent.height;
+                background: #050a12e8;
+                Text { x: 10px; y: 24px; width: parent.width - 20px;
+                    text: root.message-receive-status; color: #8eacbb; font-size: 14px;
+                    horizontal-alignment: center; }
+                TouchArea { width: parent.width; height: parent.height; }
+            }
+        }
 
         if root.page == 7: Rectangle { x: 17px; y: 176px; width: parent.width - 34px; height: 106px;
             background: #17394e; border-color: #8fb5cc; border-width: 2px;
@@ -256,24 +2050,338 @@ export component NotesWindow inherits Window {
             }
         }
 
-        if root.page == 8: Rectangle { x: 17px; y: 176px; width: parent.width - 34px; height: 322px;
-            background: #202b35; border-color: #a7b8c3; border-width: 2px;
-            Text { x: 18px; y: 25px; text: "LOCAL ONLY"; color: #ffffff; font-size: 22px; }
-            Text { x: 18px; y: 79px; text: "VAULT NOT CONNECTED"; color: #ffffff; font-size: 17px; }
-            Text { x: 18px; y: 126px; text: "NO NETWORK YET"; color: #ffffff; font-size: 17px; }
-            Text { x: 18px; y: 173px; text: "NO ALERTS YET"; color: #ffffff; font-size: 17px; }
+        if root.page == 8: Rectangle { x: 17px; y: 176px; width: parent.width - 34px; height: 452px;
+            background: #050a12;
+            for setting[index] in ["Network", "Privacy", "Display", "Database", "Sound", "Battery", "About"]: Rectangle {
+                visible: index != 3 || root.show-preview-privacy-controls;
+                x: 0px; y: (index - (index > 3 && !root.show-preview-privacy-controls ? 1 : 0)) * 55px;
+                width: parent.width; height: 53px;
+                background: root.settings-selected == index ? #101e2a : #050a12;
+                Rectangle { x: 5px; y: 6px; width: 39px; height: 39px;
+                    background: index == 1 || index == 3 ? #211c39 : #0c2531;
+                    border-color: index == 1 || index == 3 ? #9b7cff : #28d8e8; border-width: 1px;
+                    Image { x: 7px; y: 7px; width: 24px; height: 24px;
+                        source: index == 0 ? @image-url("../assets/icons/wifi.svg") :
+                                index == 1 ? @image-url("../assets/icons/lock.svg") :
+                                index == 2 ? @image-url("../assets/icons/display.svg") :
+                                index == 3 ? @image-url("../assets/icons/lock.svg") :
+                                index == 4 ? @image-url("../assets/icons/sound.svg") :
+                                index == 5 ? @image-url("../assets/icons/battery.svg") :
+                                             @image-url("../assets/icons/info.svg");
+                        colorize: index == 1 || index == 3 ? #b4a0ff : #28d8e8; image-fit: contain; }
+                }
+                Text { x: 54px; y: 6px; text: setting; color: #e8f5fb; font-size: 16px; }
+                Text { x: 54px; y: 29px;
+                    text: index == 0 ? "Wi-Fi, VPN, I2P" : (index == 1 ? (root.show-preview-privacy-controls ? "Receipts, pinned relays" : "Pinned relays") :
+                          (index == 2 ? "Brightness, theme" : (index == 3 ? "Passphrase, export, import" :
+                          (index == 4 ? "Volume, alerts" : (index == 5 ? "Power status" : "NexatrodeOS 0.1.0")))));
+                    color: #8fa9b8; font-size: 12px; }
+                Text { x: parent.width - 24px; y: 15px; text: "›"; color: #688493; font-size: 18px; }
+                Rectangle { x: 51px; y: 52px; width: parent.width - 51px; height: 1px; background: #142632; }
+                TouchArea { width: parent.width; height: parent.height; clicked => {
+                    root.settings-selected = index;
+                    if index == 0 { root.page = 11; }
+                    else if index == 1 { root.page = 13; }
+                    else if index == 2 { root.page = 12; }
+                    else if index == 3 && root.show-preview-privacy-controls {
+                        root.page = 15; root.edit-target = 0;
+                        root.db-passphrase-current = ""; root.db-passphrase-new = "";
+                        root.db-unlocked = false;
+                        root.db-unlock-status = "LOCKED · ENTER PASSPHRASE";
+                    }
+                    else { root.settings-status = setting + " · DEMO SETTINGS"; }
+                } }
+            }
+            Rectangle { x: 0px; y: root.show-preview-privacy-controls ? 391px : 336px; width: parent.width; height: 61px;
+                background: #0b1825; border-color: root.aurora-accent ? #68ddc2 : #425766; border-width: 1px;
+                Text { x: 10px; y: 8px; text: "AURORA ACCENTS"; color: #dcebf2; font-size: 15px; }
+                Text { x: 10px; y: 33px; text: root.aurora-accent ? "ON · HOME BACKDROP ONLY" : "OFF · CLEAN BACKDROP";
+                    color: #a9c1cf; font-size: 12px; }
+                TouchArea { width: parent.width; height: parent.height; clicked => { root.aurora-accent = !root.aurora-accent; } }
+            }
         }
 
-        if root.page == 1 || root.page == 2 || root.page == 5 || root.page == 6: TouchKeyboard {
+        if root.page == 15 && root.show-preview-privacy-controls: Rectangle { x: 17px; y: 176px; width: parent.width - 34px; height: 250px;
+            background: #050a12;
+            Text { x: 4px; y: 4px; text: "CHAT DATABASE"; color: #e8f5fb; font-size: 16px; }
+            Text { x: 4px; y: 28px; text: root.db-unlocked ? "SQLCIPHER · UNLOCKED" : "SQLCIPHER · ENCRYPTED";
+                color: root.db-unlocked ? #23d398 : #b4a0ff; font-size: 12px; }
+            Text { x: 4px; y: 52px; text: "CURRENT PASSPHRASE"; color: #8fa9b8; font-size: 11px; }
+            Rectangle { x: 0px; y: 70px; width: parent.width; height: 40px;
+                background: root.edit-target == 8 ? #102b37 : #0b1825;
+                border-color: root.edit-target == 8 ? #28d8e8 : #294454; border-width: 1px;
+                Text { x: 12px; y: 0px; width: parent.width - 24px; height: parent.height;
+                    text: root.db-passphrase-current == "" ? "TAP TO ENTER" :
+                          (root.db-unlocked ? root.db-passphrase-current : "••••••••");
+                    color: #e8f5fb; font-size: 14px; vertical-alignment: center; }
+                TouchArea { width: parent.width; height: parent.height; clicked => { root.edit-target = 8; } }
+            }
+            Text { x: 4px; y: 118px; text: "NEW PASSPHRASE"; color: #8fa9b8; font-size: 11px; }
+            Rectangle { x: 0px; y: 136px; width: parent.width; height: 40px;
+                background: root.edit-target == 9 ? #102b37 : #0b1825;
+                border-color: root.edit-target == 9 ? #28d8e8 : #294454; border-width: 1px;
+                Text { x: 12px; y: 0px; width: parent.width - 24px; height: parent.height;
+                    text: root.db-passphrase-new == "" ? "TAP TO ENTER" : "••••••••";
+                    color: #e8f5fb; font-size: 14px; vertical-alignment: center; }
+                TouchArea { width: parent.width; height: parent.height; clicked => { root.edit-target = 9; } }
+            }
+            Rectangle { x: 0px; y: 186px; width: (parent.width - 8px) / 2; height: 44px;
+                background: #0b2428; border-color: #23d398; border-width: 1px;
+                Text { width: parent.width; height: parent.height; text: "UNLOCK"; color: #23d398; font-size: 14px;
+                    horizontal-alignment: center; vertical-alignment: center; }
+                TouchArea { width: parent.width; height: parent.height; clicked => {
+                    root.unlock-database-passphrase();
+                } }
+            }
+            Rectangle { x: (parent.width + 8px) / 2; y: 186px; width: (parent.width - 8px) / 2; height: 44px;
+                background: #1e2541; border-color: #9279ff; border-width: 1px;
+                Text { width: parent.width; height: parent.height; text: "CHANGE"; color: #c9baff; font-size: 14px;
+                    horizontal-alignment: center; vertical-alignment: center; }
+                TouchArea { width: parent.width; height: parent.height; clicked => {
+                    root.change-database-passphrase();
+                } }
+            }
+            Text { x: 4px; y: 236px; width: parent.width - 8px; text: root.db-unlock-status;
+                color: #a9c1cf; font-size: 11px; wrap: word-wrap; }
+        }
+        if root.page == 15 && root.show-preview-privacy-controls: Rectangle { x: 17px; y: 432px; width: parent.width - 34px; height: 88px;
+            background: #0b1825; border-color: #294454; border-width: 1px;
+            Text { x: 12px; y: 12px; text: "EXPORT / IMPORT"; color: #e8f5fb; font-size: 13px; }
+            Text { x: 12px; y: 36px; width: parent.width - 24px; text: root.db-export-status;
+                color: #28d8e8; font-size: 11px; wrap: word-wrap; }
+            Text { x: 12px; y: 58px; width: parent.width - 24px; text: root.db-import-status;
+                color: #8fa9b8; font-size: 11px; wrap: word-wrap; }
+        }
+
+        if root.page == 11: Rectangle { x: 17px; y: 176px; width: parent.width - 34px; height: 488px;
+            background: #050a12;
+            for control[index] in ["Wi-Fi", "Bluetooth", "VPN", "Focus"]: Rectangle {
+                x: Math.mod(index, 2) * (parent.width / 2 + 5px); y: Math.floor(index / 2) * 105px;
+                width: parent.width / 2 - 5px; height: 94px;
+                background: quick-selected == control ? #102b37 : #0b1825;
+                border-color: index == 2 ? #23d398 : (index == 1 ? #9b7cff : #28d8e8);
+                border-width: quick-selected == control ? 2px : 1px;
+                Text { x: 12px; y: 16px; text: index == 0 ? "⌁" : (index == 1 ? "B" : (index == 2 ? "◆" : "◐"));
+                    color: index == 2 ? #23d398 : (index == 1 ? #b4a0ff : #28d8e8); font-size: 24px; }
+                Text { x: 48px; y: 17px; text: control; color: #e8f5fb; font-size: 15px; }
+                Text { x: 48px; y: 43px;
+                    text: index == 0 ? "No network" : (index == 1 ? "Unavailable" : (index == 2 ? "No tunnel" : "Off"));
+                    color: #8fa9b8; font-size: 12px; }
+                TouchArea { width: parent.width; height: parent.height; clicked => { root.quick-selected = control; } }
+            }
+            Rectangle { x: 0px; y: 220px; width: parent.width; height: 62px;
+                background: #0b1825; border-color: #294454; border-width: 1px;
+                Text { x: 13px; y: 21px; text: "☼  BRIGHTNESS"; color: #c6d8e1; font-size: 14px; }
+                Rectangle { x: parent.width - 170px; y: 25px; width: 145px; height: 10px;
+                    background: #0a1822; border-color: #286a77; border-width: 1px; }
+                Rectangle { x: parent.width - 167px; y: 27px; width: 85px; height: 6px; background: #28d8e8; }
+            }
+            for shortcut[index] in ["AIRPLANE", "LOCKDOWN", "LOCATION", "ROTATE"]: Rectangle {
+                visible: index != 1 || root.show-preview-privacy-controls;
+                property <int> columns: root.show-preview-privacy-controls ? 4 : 3;
+                property <int> column: index - (index > 1 && !root.show-preview-privacy-controls ? 1 : 0);
+                x: 2px + column * (parent.width - 4px) / columns;
+                y: 299px; width: (parent.width - 8px) / columns; height: 90px;
+                Text { width: parent.width; y: 8px; text: index == 1 ? "▣" : (index == 0 ? "✈" : (index == 2 ? "◎" : "↻"));
+                    color: index == 1 ? #23d398 : #9bb6c4; font-size: 22px; horizontal-alignment: center; }
+                Text { width: parent.width; y: 45px; text: shortcut; color: #c6d8e1; font-size: 10px;
+                    horizontal-alignment: center; }
+                Text { width: parent.width; y: 64px; text: index == 1 ? "Demo" : "Off"; color: #28d8e8; font-size: 10px;
+                    horizontal-alignment: center; }
+                TouchArea { width: parent.width; height: parent.height; clicked => {
+                    if index == 1 { root.page = 13; } else { root.quick-selected = shortcut; }
+                } }
+            }
+            Rectangle { x: 0px; y: 400px; width: parent.width; height: 62px;
+                background: #0b1825; border-color: #294454; border-width: 1px;
+                Text { x: 13px; y: 21px; text: "◖  SOUND"; color: #c6d8e1; font-size: 14px; }
+                Rectangle { x: parent.width - 170px; y: 25px; width: 145px; height: 10px;
+                    background: #0a1822; border-color: #286a77; border-width: 1px; }
+                Rectangle { x: parent.width - 167px; y: 27px; width: 95px; height: 6px; background: #28d8e8; }
+            }
+            Text { x: 3px; y: 468px; text: "LOCAL DEVICE CONTROLS ARE NOT CONNECTED"; color: #8299a7; font-size: 11px; }
+        }
+
+        if root.page == 12: Rectangle { x: 17px; y: 176px; width: parent.width - 34px; height: 446px;
+            background: #050a12;
+            for theme[index] in ["DARK", "DIM", "LIGHT"]: Rectangle {
+                x: 0px; y: index * 136px; width: parent.width; height: 124px;
+                background: theme-choice == theme ? #102433 : #0b1825;
+                border-color: theme-choice == theme ? #28d8e8 : #294454;
+                border-width: theme-choice == theme ? 2px : 1px;
+                Rectangle { x: 12px; y: 16px; width: 132px; height: 92px;
+                    background: index == 0 ? #071522 : (index == 1 ? #211d38 : #c9d6dd);
+                    border-color: #28d8e8; border-width: 1px;
+                    Rectangle { x: 0px; y: 64px; width: parent.width; height: 28px;
+                        background: index == 2 ? #aab8c2 : (index == 1 ? #302849 : #0b2232); }
+                    Rectangle { x: 22px; y: 52px; width: 88px; height: 2px; background: #28d8e8; }
+                }
+                Text { x: 160px; y: 36px; text: theme; color: #e8f5fb; font-size: 16px; }
+                Text { x: 160px; y: 64px; text: theme-choice == theme ? "SELECTED PREVIEW" : "TAP TO PREVIEW";
+                    color: theme-choice == theme ? #28d8e8 : #8fa9b8; font-size: 12px; }
+                Text { x: parent.width - 36px; y: 48px; text: theme-choice == theme ? "●" : "○";
+                    color: theme-choice == theme ? #28d8e8 : #607a88; font-size: 18px; }
+                TouchArea { width: parent.width; height: parent.height; clicked => { root.theme-choice = theme; } }
+            }
+            Text { x: 2px; y: 416px; text: "THEME SELECTION IS A VISUAL PREVIEW"; color: #8299a7; font-size: 12px; }
+        }
+
+        if root.page == 13: Rectangle { x: 17px; y: 176px; width: parent.width - 34px; height: 430px;
+            background: #050a12;
+            if root.show-preview-privacy-controls: Text { x: 4px; y: 8px; text: "MESSAGE RECEIPTS"; color: #e8f5fb; font-size: 15px; }
+            if root.show-preview-privacy-controls: Text { x: 4px; y: 32px; width: parent.width - 8px;
+                text: root.message-receipts ? "ON · SEND DELIVERY RECEIPTS" : "OFF · HIDE DELIVERY RECEIPTS";
+                color: #8fa9b8; font-size: 12px; wrap: word-wrap; }
+            if root.show-preview-privacy-controls: Rectangle { x: 0px; y: 60px; width: parent.width; height: 52px;
+                background: #0b1825; border-color: root.message-receipts ? #23d398 : #294454; border-width: 1px;
+                Text { x: 14px; height: parent.height; text: "SEND RECEIPTS";
+                    color: #e8f5fb; font-size: 15px; vertical-alignment: center; }
+                Text { x: parent.width - 72px; height: parent.height;
+                    text: root.message-receipts ? "ON" : "OFF";
+                    color: root.message-receipts ? #23d398 : #8fa9b8; font-size: 14px;
+                    vertical-alignment: center; }
+                TouchArea { width: parent.width; height: parent.height; clicked => {
+                    root.message-receipts = !root.message-receipts;
+                    root.settings-status = root.message-receipts
+                        ? "RECEIPTS ON · DELIVERY ✓ ENABLED"
+                        : "RECEIPTS OFF · LOCAL PREFERENCE";
+                } }
+            }
+            Text { x: 4px; y: root.show-preview-privacy-controls ? 132px : 8px; text: "PINNED RELAYS"; color: #e8f5fb; font-size: 15px; }
+            Text { x: 4px; y: root.show-preview-privacy-controls ? 156px : 32px; width: parent.width - 8px;
+                text: "Public SMP/XFTP used by this guest. Tor and custom operators are not available here.";
+                color: #8fa9b8; font-size: 12px; wrap: word-wrap; }
+            Rectangle { x: 0px; y: root.show-preview-privacy-controls ? 210px : 86px; width: parent.width; height: 110px;
+                background: #0b1825; border-color: #294454; border-width: 1px;
+                Text { x: 14px; y: 14px; text: "NETWORK"; color: #28d8e8; font-size: 12px; }
+                Text { x: 14px; y: 40px; width: parent.width - 28px; text: root.message-servers;
+                    color: #e8f5fb; font-size: 13px; wrap: word-wrap; }
+                Text { x: 14px; y: 82px; text: "HOST MODE PUBLIC · PROXY NEVER";
+                    color: #8fa9b8; font-size: 11px; }
+            }
+            if root.device-lock-available && !root.show-preview-privacy-controls: Rectangle {
+                x: 0px; y: 220px; width: parent.width; height: 52px;
+                background: #0b1825; border-color: #28d8e8; border-width: 1px;
+                Text { width: parent.width; height: parent.height;
+                    text: root.device-lock-enabled ? "LOCK NOW" : "SET DEVICE PASSPHRASE";
+                    color: #7ee7f2; font-size: 15px; horizontal-alignment: center; vertical-alignment: center; }
+                TouchArea { width: parent.width; height: parent.height; clicked => { root.device-lock-action(0); } }
+            }
+            if root.device-lock-available && root.device-lock-enabled && !root.show-preview-privacy-controls: Rectangle {
+                x: 0px; y: 282px; width: parent.width; height: 52px;
+                background: #0b1825; border-color: #294454; border-width: 1px;
+                Text { width: parent.width; height: parent.height; text: "DISABLE DEVICE LOCK";
+                    color: #7ee7f2; font-size: 15px; horizontal-alignment: center; vertical-alignment: center; }
+                TouchArea { width: parent.width; height: parent.height; clicked => { root.device-lock-action(1); } }
+            }
+            if root.show-preview-privacy-controls: Rectangle { x: 0px; y: 340px; width: parent.width; height: 55px;
+                background: #0b2428; border-color: #23d398; border-width: 1px;
+                Text { width: parent.width; height: parent.height;
+                    text: root.lockdown-preview ? "LOCKDOWN PREVIEW ON" : "LOCKDOWN PREVIEW OFF";
+                    color: #23d398; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; }
+                TouchArea { width: parent.width; height: parent.height; clicked => {
+                    root.lockdown-preview = !root.lockdown-preview;
+                } }
+            }
+        }
+
+        if root.page == 14 && root.show-preview-privacy-controls: Rectangle { x: 17px; y: 64px; width: parent.width - 34px; height: 610px;
+            background: #07132100;
+            Image { x: (parent.width - 24px) / 2; y: 42px; width: 24px; height: 24px;
+                source: @image-url("../assets/icons/lock.svg"); colorize: #dcebf2; image-fit: contain; }
+            Text { x: 0px; y: 82px; width: parent.width; text: "09:41";
+                color: #eef8fd; font-size: 66px; font-weight: 700; horizontal-alignment: center; }
+            Text { x: 0px; y: 156px; width: parent.width; text: "TUE  ·  APR 23";
+                color: #c6d8e1; font-size: 17px; horizontal-alignment: center; }
+            Text { x: 0px; y: 493px; width: parent.width; text: "↑";
+                color: #28d8e8; font-size: 26px; horizontal-alignment: center; }
+            Text { x: 0px; y: 528px; width: parent.width; text: "SWIPE UP TO UNLOCK";
+                color: #28d8e8; font-size: 14px; horizontal-alignment: center; }
+            TouchArea { x: 0px; y: 480px; width: parent.width; height: 82px;
+                clicked => { root.page = 0; root.edit-target = 0; } }
+        }
+
+        if root.device-lock-screen: Rectangle {
+            x: 0px; y: 0px; width: parent.width; height: parent.height;
+            background: #050a12;
+            TouchArea { width: parent.width; height: parent.height; }
+            Text { x: 17px; y: 105px; width: parent.width - 34px;
+                text: root.device-lock-stage == 2 ? "SET PASSPHRASE" :
+                      root.device-lock-stage == 3 ? "CONFIRM PASSPHRASE" :
+                      root.device-lock-stage == 4 ? "DISABLE DEVICE LOCK" : "UNLOCK";
+                color: #eef8fd; font-size: 22px; horizontal-alignment: center; }
+            Text { x: 17px; y: 150px; width: parent.width - 34px;
+                text: root.device-lock-status; color: #8fa9b8; font-size: 14px;
+                horizontal-alignment: center; wrap: word-wrap; }
+            if root.device-lock-stage == 2 || root.device-lock-stage == 3: Text {
+                x: 17px; y: 190px; width: parent.width - 34px;
+                text: root.device-lock-setup-feedback; color: #8fa9b8; font-size: 14px;
+                horizontal-alignment: center;
+            }
+            if root.device-lock-stage == 2 || root.device-lock-stage == 3 || root.device-lock-stage == 4: Rectangle {
+                x: 17px; y: parent.height - 327px; width: parent.width - 34px; height: 34px;
+                background: #0b1825;
+                Text { width: parent.width; height: parent.height; text: "CANCEL"; color: #7ee7f2;
+                    horizontal-alignment: center; vertical-alignment: center; }
+                TouchArea { width: parent.width; height: parent.height; clicked => { root.device-lock-action(2); } }
+            }
+            InvitationKeyboard { x: 17px; y: parent.height - 285px; width: parent.width - 34px; height: 228px;
+                typed(k) => { root.device-lock-key(k); } }
+            Rectangle { x: 17px; y: parent.height - 50px; width: parent.width - 34px; height: 42px;
+                background: #12384a; border-color: #7ee7f2; border-width: 1px;
+                Text { width: parent.width; height: parent.height; text: "CONTINUE"; color: #7ee7f2;
+                    horizontal-alignment: center; vertical-alignment: center; }
+                TouchArea { width: parent.width; height: parent.height; clicked => { root.device-lock-submit(); } }
+            }
+        }
+
+        if root.page == 6 && root.message-join-view && root.edit-target == 7: InvitationKeyboard {
+            x: 17px; y: 440px; width: parent.width - 34px; height: 228px;
+            typed(k) => { root.join-key-tapped(k); }
+        }
+        if root.page == 15 && (root.edit-target == 8 || root.edit-target == 9): InvitationKeyboard {
+            x: 17px; y: 528px; width: parent.width - 34px; height: 228px;
+            typed(k) => { root.join-key-tapped(k); }
+        }
+        if root.page == 16 && (root.edit-target == 14 || root.edit-target == 15 || root.edit-target == 16): InvitationKeyboard {
+            x: 0px; y: parent.height - 240px; width: parent.width; height: 228px;
+            typed(k) => { root.key-tapped(k); }
+        }
+        if root.page == 16 && root.wallet-tab == 2 && root.wallet-setup == 0 && (root.edit-target == 11 || root.edit-target == 12): TouchKeyboard {
+            x: 0px; y: parent.height - 240px; width: parent.width; height: 228px;
+            decimal: root.edit-target == 12;
+            shift-key: root.edit-target == 11;
+            typed(k) => { root.key-tapped(k); }
+        }
+        if (root.page == 1 && root.note-editing) || (root.page == 2 && root.contact-detail) || root.page == 5: TouchKeyboard {
             x: 17px; y: 440px; width: parent.width - 34px; height: 228px;
             typed(k) => { root.key-tapped(k); }
         }
-        Text { x: 18px; y: parent.height - 25px;
+        if root.chat-keys-visible: Rectangle {
+            x: 17px; y: root.chat-keyboard-top - 28px; width: parent.width - 34px; height: 28px;
+            background: #0b1825; border-color: #203747; border-width: 1px;
+            Text { width: parent.width; height: parent.height; text: "HIDE KEYBOARD";
+                color: #7ee7f2; font-size: 12px;
+                horizontal-alignment: center; vertical-alignment: center; }
+            TouchArea { width: parent.width; height: parent.height; clicked => {
+                root.edit-target = 0;
+            } }
+        }
+        if root.chat-keys-visible: TouchKeyboard {
+            x: 17px; y: root.chat-keyboard-top; width: parent.width - 34px; height: 228px;
+            typed(k) => { root.key-tapped(k); }
+        }
+        if root.page != 6 && root.page != 14 && root.page != 15 && root.page != 16 && !root.message-keyboard: Text { x: 18px; y: parent.height - 25px;
             text: root.perf != "" ? root.perf :
                   root.page == 0 ? "TOUCH INPUT · VOLATILE APPS" :
                   root.page == 3 ? "CALCULATOR RUNS IN THIS IMAGE" :
+                  root.page == 14 ? "LOCK SCREEN · UI PREVIEW" :
                   "VOLATILE SESSION · NO SYNC";
             color: #ffffff; font-size: 14px;
+        }
+        if root.page == 14: Rectangle {
+            x: (parent.width - 92px) / 2; y: parent.height - 9px;
+            width: 92px; height: 3px; border-radius: 2px; background: #eef8fd;
         }
     }
 }

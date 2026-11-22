@@ -1,0 +1,415 @@
+use core::ops::Deref as _;
+use std_shims::{vec, vec::Vec, collections::HashMap};
+
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
+
+#[cfg(feature = "compile-time-generators")]
+use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
+#[cfg(not(feature = "compile-time-generators"))]
+use curve25519_dalek::constants::ED25519_BASEPOINT_POINT as ED25519_BASEPOINT_TABLE;
+
+use monero_oxide::{
+  ed25519::{Scalar, CompressedPoint, Point, Commitment},
+  transaction::{Timelock, Pruned, Transaction},
+};
+use monero_interface::ScannableBlock;
+use crate::{
+  address::SubaddressIndex, ViewPair, GuaranteedViewPair, output::*, PaymentId, Extra,
+  SharedKeyDerivations,
+};
+
+/// A collection of potentially additionally timelocked outputs.
+#[derive(Zeroize, ZeroizeOnDrop)]
+pub struct Timelocked(Vec<WalletOutput>);
+
+impl Timelocked {
+  /// Return the outputs which aren't subject to an additional timelock.
+  #[must_use]
+  pub fn not_additionally_locked(self) -> Vec<WalletOutput> {
+    let mut res = vec![];
+    for output in &self.0 {
+      if output.additional_timelock() == Timelock::None {
+        res.push(output.clone());
+      }
+    }
+    res
+  }
+
+  /// Return the outputs whose additional timelock unlocks by the specified block/time.
+  ///
+  /// Additional timelocks are almost never used outside of miner transactions, and are
+  /// increasingly planned for removal. Ignoring non-miner additionally-timelocked outputs is
+  /// recommended.
+  ///
+  /// `block` is the block number of the block the additional timelock must be satsified by.
+  ///
+  /// `time` is represented in seconds since the epoch and is in terms of Monero's on-chain clock.
+  /// That means outputs whose additional timelocks are statisfied by `Instant::now()` (the time
+  /// according to the local system clock) may still be locked due to variance with Monero's clock.
+  #[must_use]
+  pub fn additional_timelock_satisfied_by(self, block: usize, time: u64) -> Vec<WalletOutput> {
+    let mut res = vec![];
+    for output in &self.0 {
+      if (output.additional_timelock() <= Timelock::Block(block)) ||
+        (output.additional_timelock() <= Timelock::Time(time))
+      {
+        res.push(output.clone());
+      }
+    }
+    res
+  }
+
+  /// Ignore the timelocks and return all outputs within this container.
+  #[must_use]
+  pub fn ignore_additional_timelock(mut self) -> Vec<WalletOutput> {
+    let mut res = vec![];
+    core::mem::swap(&mut self.0, &mut res);
+    res
+  }
+}
+
+/// Errors when scanning a block.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, thiserror::Error)]
+pub enum ScanError {
+  /// The block was for an unsupported protocol version.
+  #[error("unsupported protocol version ({0})")]
+  UnsupportedProtocol(u8),
+  /// The ScannableBlock was invalid.
+  #[error("invalid scannable block ({0})")]
+  InvalidScannableBlock(&'static str),
+}
+
+#[derive(Clone)]
+struct InternalScanner {
+  pair: ViewPair,
+  guaranteed: bool,
+  subaddresses: HashMap<CompressedPoint, Option<SubaddressIndex>>,
+}
+
+impl Zeroize for InternalScanner {
+  #[expect(clippy::iter_over_hash_type)]
+  fn zeroize(&mut self) {
+    self.pair.zeroize();
+    self.guaranteed.zeroize();
+
+    // This may not be effective, unfortunately
+    for (mut key, mut value) in self.subaddresses.drain() {
+      key.zeroize();
+      value.zeroize();
+    }
+  }
+}
+impl Drop for InternalScanner {
+  fn drop(&mut self) {
+    self.zeroize();
+  }
+}
+impl ZeroizeOnDrop for InternalScanner {}
+
+impl InternalScanner {
+  fn new(pair: ViewPair, guaranteed: bool) -> Self {
+    let mut subaddresses = HashMap::new();
+    subaddresses.insert(pair.spend().compress(), None);
+    Self { pair, guaranteed, subaddresses }
+  }
+
+  fn register_subaddress(&mut self, subaddress: SubaddressIndex) {
+    let (spend, _) = self.pair.subaddress_keys(subaddress);
+    self.subaddresses.insert(spend.compress(), Some(subaddress));
+  }
+
+  fn scan_transaction(
+    &self,
+    output_index_for_first_ringct_output: u64,
+    tx_hash: [u8; 32],
+    tx: &Transaction<Pruned>,
+  ) -> Result<Timelocked, ScanError> {
+    // Only scan TXs creating RingCT outputs
+    // For the full details on why this check is equivalent, please see the documentation in `scan`
+    if tx.version() != 2 {
+      return Ok(Timelocked(vec![]));
+    }
+
+    // Hoist invariants out of the inner loops:
+    // - view scalar conversion (used for ECDH)
+    // - uniqueness (guaranteed scanner mode) derived from tx inputs
+    let dalek_view = Zeroizing::new((*self.pair.view).into());
+    let uniqueness = self.guaranteed.then(|| SharedKeyDerivations::uniqueness(&tx.prefix().inputs));
+
+    // The compressed cofactor-cleared shared point is independent of the output index.
+    let mut derivations: HashMap<CompressedPoint, Zeroizing<[u8; 32]>> = HashMap::new();
+
+    // Read the extra field
+    let Ok(extra) = Extra::read(&mut tx.prefix().extra.as_slice()) else {
+      return Ok(Timelocked(vec![]));
+    };
+
+    let Some((tx_keys, additional)) = extra.compressed_keys() else {
+      return Ok(Timelocked(vec![]));
+    };
+    let payment_id = extra.payment_id();
+
+    let mut res = vec![];
+    for (o, output) in tx.prefix().outputs.iter().enumerate() {
+      /*
+        Explicitly skip keys which are the identity.
+
+        These are theoretically able to be scanned (with negligible probability except for a
+        recipient who chooses their keys as to cause this), but are unspendable due to restrictions
+        the key image isn't the identity point (in place since the RingCT upgrade).
+      */
+      if output.key == CompressedPoint::IDENTITY {
+        continue;
+      }
+
+      let mut decoded_output = None;
+
+      // Monero checks with each TX key and with the additional key for this output
+      // See notes in original code for Monero's behavior.
+      let additional = additional.as_ref().and_then(|additional| additional.get(o));
+
+      for key in tx_keys.iter().map(Some).chain(core::iter::once(additional)).flatten().copied() {
+        let derivation = derivations.entry(key).or_insert_with(|| {
+          // Monero interprets improperly encoded transaction keys as the identity.
+          // Multiplication by the private view key and cofactor preserves the identity.
+          let Some(point) = key.decompress() else {
+            return Zeroizing::new(CompressedPoint::IDENTITY.to_bytes());
+          };
+          let ecdh = Zeroizing::new(Point::from(dalek_view.deref() * point.into()));
+          SharedKeyDerivations::compute_ra_bytes(&ecdh)
+        });
+        let view_tag = SharedKeyDerivations::output_view_tag(derivation, o);
+        if output.view_tag.is_some_and(|tag| tag != view_tag) {
+          continue;
+        }
+        // A mismatch needs no destination point. For matching or untagged outputs,
+        // apply the same canonical decompression once even with multiple candidate keys.
+        let Some(output_key) = *decoded_output.get_or_insert_with(|| output.key.decompress()) else {
+          break;
+        };
+        let output_derivations = Zeroizing::new(SharedKeyDerivations {
+          view_tag,
+          shared_key: SharedKeyDerivations::output_shared_key(uniqueness, derivation, o),
+        });
+
+        // P - shared == spend
+        let Some(subaddress) = ({
+          // The output key may be of torsion [0, 8)
+          // Our subtracting of a prime-order element means any torsion will be preserved
+          // If someone wanted to malleate output keys with distinct torsions, only one will be
+          // scanned accordingly (the one which has matching torsion of the spend key)
+          let subaddress_spend_key =
+            output_key.into() - (&output_derivations.shared_key.into() * ED25519_BASEPOINT_TABLE);
+          self
+            .subaddresses
+            .get::<CompressedPoint>(&subaddress_spend_key.compress().to_bytes().into())
+        }) else {
+          continue;
+        };
+        let subaddress = *subaddress;
+
+        // The key offset is this shared key
+        let mut key_offset = output_derivations.shared_key.into();
+        if let Some(subaddress) = subaddress {
+          // And if this was to a subaddress, it's additionally the offset from subaddress spend
+          // key to the normal spend key
+          key_offset += self.pair.subaddress_derivation(subaddress).into();
+        }
+        // Since we've found an output to us, get its amount
+        let mut commitment = Commitment::zero();
+
+        // Miner transaction
+        if let Some(amount) = output.amount {
+          commitment.amount = amount;
+        // Regular transaction
+        } else {
+          let Transaction::V2 { proofs: Some(ref proofs), .. } = &tx else {
+            // Invalid transaction, as of consensus rules at the time of writing this code
+            Err(ScanError::InvalidScannableBlock("non-miner v2 transaction without RCT proofs"))?
+          };
+
+          commitment = match proofs.base.encrypted_amounts.get(o) {
+            Some(amount) => output_derivations.decrypt(amount),
+            // Invalid transaction, as of consensus rules at the time of writing this code
+            None => Err(ScanError::InvalidScannableBlock(
+              "RCT proofs without an encrypted amount per output",
+            ))?,
+          };
+
+          // Rebuild the commitment to verify it
+          if Some(&commitment.commit().compress()) != proofs.base.commitments.get(o) {
+            continue;
+          }
+        }
+
+        // Decrypt the payment ID
+        let payment_id =
+          payment_id.map(|id| id ^ SharedKeyDerivations::payment_id_xor_from_derivation(derivation));
+
+        let o = u64::try_from(o).expect("couldn't convert output index (usize) to u64");
+
+        res.push(WalletOutput {
+          absolute_id: AbsoluteId { transaction: tx_hash, index_in_transaction: o },
+          relative_id: RelativeId {
+            index_on_blockchain: output_index_for_first_ringct_output.checked_add(o).ok_or(
+              ScanError::InvalidScannableBlock(
+                "transaction's output's index isn't representable as a u64",
+              ),
+            )?,
+          },
+          data: OutputData { key: output_key, key_offset: Scalar::from(key_offset), commitment },
+          metadata: Metadata {
+            additional_timelock: tx.prefix().additional_timelock,
+            subaddress,
+            payment_id,
+            arbitrary_data: extra.arbitrary_data(),
+          },
+        });
+
+        // Break to prevent public keys from being included multiple times, triggering multiple
+        // inclusions of the same output
+        break;
+      }
+    }
+
+    Ok(Timelocked(res))
+  }
+
+  fn scan(&mut self, block: ScannableBlock) -> Result<Timelocked, ScanError> {
+    // This is the output index for the first RingCT output within the block
+    // We mutate it to be the output index for the first RingCT for each transaction
+    let ScannableBlock { block, transactions, output_index_for_first_ringct_output } = block;
+    if block.transactions.len() != transactions.len() {
+      Err(ScanError::InvalidScannableBlock(
+        "scanning a ScannableBlock with more/less transactions than it should have",
+      ))?;
+    }
+    let Some(mut output_index_for_first_ringct_output) = output_index_for_first_ringct_output
+    else {
+      return Ok(Timelocked(vec![]));
+    };
+
+    if block.header.hardfork_version > 16 {
+      Err(ScanError::UnsupportedProtocol(block.header.hardfork_version))?;
+    }
+
+    // We obtain all TXs in full
+    let mut txs_with_hashes = vec![(
+      block.miner_transaction().hash(),
+      Transaction::<Pruned>::from(block.miner_transaction().clone()),
+    )];
+    for (hash, tx) in block.transactions.iter().zip(transactions) {
+      txs_with_hashes.push((*hash, tx));
+    }
+
+    let mut res = Timelocked(vec![]);
+    for (hash, tx) in txs_with_hashes {
+      // Push all outputs into our result
+      {
+        let mut this_txs_outputs = vec![];
+        core::mem::swap(
+          &mut self.scan_transaction(output_index_for_first_ringct_output, hash, &tx)?.0,
+          &mut this_txs_outputs,
+        );
+        res.0.extend(this_txs_outputs);
+      }
+
+      // Update the RingCT starting index for the next TX
+      if matches!(tx, Transaction::V2 { .. }) {
+        output_index_for_first_ringct_output = output_index_for_first_ringct_output
+          .checked_add(
+            u64::try_from(tx.prefix().outputs.len())
+              .expect("couldn't convert amount of outputs (usize) to u64"),
+          )
+          .ok_or(ScanError::InvalidScannableBlock("RingCT output indexes exceeded u64::MAX"))?;
+      }
+    }
+
+    // If the block's version is >= 12, drop all unencrypted payment IDs
+    // https://github.com/monero-project/monero/blob/ac02af92867590ca80b2779a7bbeafa99ff94dcb/
+    //   src/wallet/wallet2.cpp#L2739-L2744
+    if block.header.hardfork_version >= 12 {
+      for output in &mut res.0 {
+        if matches!(output.metadata.payment_id, Some(PaymentId::Unencrypted(_))) {
+          output.metadata.payment_id = None;
+        }
+      }
+    }
+
+    Ok(res)
+  }
+}
+
+/// A transaction scanner to find outputs received.
+///
+/// When an output is successfully scanned, the output key MUST be checked against the local
+/// database for lack of prior observation. If it was prior observed, that output is an instance
+/// of the
+/// [burning bug](https://web.getmonero.org/2018/09/25/a-post-mortum-of-the-burning-bug.html) and
+/// MAY be unspendable. Only the prior received output(s) or the newly received output will be
+/// spendable (as spending one will burn all of them).
+///
+/// Once checked, the output key MUST be saved to the local database so future checks can be
+/// performed.
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
+pub struct Scanner(InternalScanner);
+
+impl Scanner {
+  /// Create a Scanner from a ViewPair.
+  pub fn new(pair: ViewPair) -> Self {
+    Self(InternalScanner::new(pair, false))
+  }
+
+  /// Register a subaddress to scan for.
+  ///
+  /// Subaddresses must be explicitly registered ahead of time in order to be successfully scanned.
+  ///
+  /// This function runs in variable time, notably with regards to the distribution of subaddress
+  /// derivations (which should be reasonably uniform) and the amount of subaddresses registered.
+  pub fn register_subaddress(&mut self, subaddress: SubaddressIndex) {
+    self.0.register_subaddress(subaddress);
+  }
+
+  /// Scan a block.
+  ///
+  /// This function runs in variable time, notably with regards to how the private view key relates
+  /// to outputs present within the block (such as if it can successfully scan outputs present).
+  pub fn scan(&mut self, block: ScannableBlock) -> Result<Timelocked, ScanError> {
+    self.0.scan(block)
+  }
+}
+
+/// A transaction scanner to find outputs received which are guaranteed to be spendable.
+///
+/// 'Guaranteed' outputs, or transactions outputs to the burning bug, are not officially specified
+/// by the Monero project. They should only be used if necessary. No support outside of
+/// monero-wallet is promised.
+///
+/// "guaranteed to be spendable" assumes satisfaction of any timelocks in effect.
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
+pub struct GuaranteedScanner(InternalScanner);
+
+impl GuaranteedScanner {
+  /// Create a GuaranteedScanner from a GuaranteedViewPair.
+  pub fn new(pair: GuaranteedViewPair) -> Self {
+    Self(InternalScanner::new(pair.0, true))
+  }
+
+  /// Register a subaddress to scan for.
+  ///
+  /// Subaddresses must be explicitly registered ahead of time in order to be successfully scanned.
+  ///
+  /// This function runs in variable time, notably with regards to the distribution of subaddress
+  /// derivations (which should be reasonably uniform) and the amount of subaddresses registered.
+  pub fn register_subaddress(&mut self, subaddress: SubaddressIndex) {
+    self.0.register_subaddress(subaddress);
+  }
+
+  /// Scan a block.
+  ///
+  /// This function runs in variable time, notably with regards to how the private view key relates
+  /// to outputs present within the block (such as if it can successfully scan outputs present).
+  pub fn scan(&mut self, block: ScannableBlock) -> Result<Timelocked, ScanError> {
+    self.0.scan(block)
+  }
+}

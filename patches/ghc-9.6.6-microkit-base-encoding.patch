@@ -1,0 +1,268 @@
+--- a/libraries/base/configure.ac
++++ b/libraries/base/configure.ac
+@@ -66,6 +66,13 @@
+ if test "$ac_cv_header_poll_h" = yes && test "$ac_cv_func_poll" = yes; then
+   AC_DEFINE([HAVE_POLL], [1], [Define if you have poll support.])
+ fi
++
++dnl Microkit's event path waits on the configured sDDF timer service instead
++dnl of a POSIX descriptor set. The target supplies a restricted poll shim for
++dnl timeout waits and rejects descriptor registration.
++case $host_alias in
++  *-sel4*) AC_DEFINE([HAVE_POLL], [1], [Define if Microkit timeout polling is available.]);;
++esac
+ 
+ # Linux open file descriptor locks
+ AC_CHECK_DECL([F_OFD_SETLK], [
+@@ -206,7 +213,7 @@
+ # them then it can cause problems. So we don't even try looking if
+ # we are on Windows.
+ # See http://www.haskell.org/pipermail/cvs-ghc/2011-September/065980.html
+-if test "$WINDOWS" = "NO"
++if test "$WINDOWS" = "NO" && ! expr "$host_alias" : '.*-sel4$' >/dev/null
+ then
+ 
+ # We can't just use AC_SEARCH_LIBS for this, as on OpenBSD the iconv.h
+--- a/libraries/base/configure
++++ b/libraries/base/configure
+@@ -4131,6 +4131,10 @@
+ 
+ fi
+ 
++case $host_alias in
++  *-sel4*) $as_echo "#define HAVE_POLL 1" >>confdefs.h ;;
++esac
++
+ # Linux open file descriptor locks
+ ac_fn_c_check_decl "$LINENO" "F_OFD_SETLK" "ac_cv_have_decl_F_OFD_SETLK" "
+   #include <unistd.h>
+@@ -30934,7 +30938,7 @@
+ # them then it can cause problems. So we don't even try looking if
+ # we are on Windows.
+ # See http://www.haskell.org/pipermail/cvs-ghc/2011-September/065980.html
+-if test "$WINDOWS" = "NO"
++if test "$WINDOWS" = "NO" && ! expr "$host_alias" : '.*-sel4$' >/dev/null
+ then
+ 
+ # We can't just use AC_SEARCH_LIBS for this, as on OpenBSD the iconv.h
+@@ -32387,4 +32391,3 @@
+   { $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: unrecognized options: $ac_unrecognized_opts" >&5
+ $as_echo "$as_me: WARNING: unrecognized options: $ac_unrecognized_opts" >&2;}
+ fi
+-
+--- a/libraries/base/base.cabal
++++ b/libraries/base/base.cabal
+@@ -372,7 +372,6 @@
+           cbits/DarwinUtils.c
+           cbits/PrelIOUtils.c
+           cbits/SetEnv.c
+-          cbits/iconv.c
+           cbits/inputReady.c
+           cbits/md5.c
+           cbits/primFloat.c
+@@ -382,6 +381,12 @@
+       cmm-sources:
+           cbits/CastFloatWord.cmm
+           cbits/StackCloningDecoding.cmm
++
++      if !os(sel4)
++        c-sources: cbits/iconv.c
++
++      if os(sel4)
++        c-sources: cbits/sel4_poll.c
+ 
+     if arch(javascript)
+       js-sources:
+--- a/libraries/base/include/HsBase.h
++++ b/libraries/base/include/HsBase.h
+@@ -23,6 +23,7 @@
+ #define _REENTRANT 1
+ 
+ #include "HsFFI.h"
++
+ 
+ #include <stdbool.h>
+ #include <stdio.h>
+@@ -284,6 +285,11 @@
+   return _chsize_s(fd,where);
+ #elif defined(HAVE_FTRUNCATE)
+   return ftruncate(fd,where);
++#elif defined(sel4_HOST_OS)
++  (void)fd;
++  (void)where;
++  errno = ENOSYS;
++  return -1;
+ #else
+ #error at least _chsize_s or ftruncate functions are required to build
+ #endif
+--- a/libraries/base/GHC/IO/Encoding.hs
++++ b/libraries/base/GHC/IO/Encoding.hs
+@@ -35,11 +35,13 @@
+ import GHC.IO.Buffer
+ import GHC.IO.Encoding.Failure
+ import GHC.IO.Encoding.Types
+-#if !defined(mingw32_HOST_OS)
++#if !defined(mingw32_HOST_OS) && !defined(sel4_HOST_OS)
+ import qualified GHC.IO.Encoding.Iconv as Iconv
+ #else
++#if defined(mingw32_HOST_OS)
+ import qualified GHC.IO.Encoding.CodePage as CodePage
+ import Text.Read (reads)
++#endif
+ #endif
+ import qualified GHC.IO.Encoding.Latin1 as Latin1
+ import qualified GHC.IO.Encoding.UTF8   as UTF8
+@@ -181,6 +183,12 @@
+ -- NOINLINE ensures that this result is shared.
+ 
+ #if defined(javascript_HOST_ARCH)
++initLocaleEncoding     = utf8
++initFileSystemEncoding = utf8
++initForeignEncoding    = utf8
++#elif defined(sel4_HOST_OS)
++-- Microkit has no locale service or iconv. Keep the process encoding explicit
++-- and deterministic until a locale/encoding service is provided.
+ initLocaleEncoding     = utf8
+ initFileSystemEncoding = utf8
+ initForeignEncoding    = utf8
+@@ -309,7 +317,9 @@
+     -- completely ignores the CodingFailureMode (TEST=encoding005).
+     _ | isAscii -> return (Latin1.mkAscii cfm)
+     _ | isLatin1 -> return (Latin1.mkLatin1_checked cfm)
+-#if defined(mingw32_HOST_OS)
++#if defined(sel4_HOST_OS)
++    _ -> unknownEncodingErr (enc ++ codingFailureModeSuffix cfm)
++#elif defined(mingw32_HOST_OS)
+     'C':'P':n | [(cp,"")] <- reads n -> return $ CodePage.mkCodePageEncoding cfm cp
+     _ -> unknownEncodingErr (enc ++ codingFailureModeSuffix cfm)
+ #else
+--- a/libraries/base/GHC/IO/Encoding/Iconv.hs
++++ b/libraries/base/GHC/IO/Encoding/Iconv.hs
+@@ -20,16 +20,23 @@
+ -----------------------------------------------------------------------------
+ 
+ module GHC.IO.Encoding.Iconv (
++#if !defined(sel4_HOST_OS)
+ #if !defined(mingw32_HOST_OS)
+    iconvEncoding, mkIconvEncoding,
+    localeEncodingName
+ #endif
+- ) where
++ )
++#else
++   )
++#endif
++ where
+ 
+ #include "MachDeps.h"
+ #include "HsBaseConfig.h"
+ 
+-#if defined(mingw32_HOST_OS)
++#if defined(sel4_HOST_OS)
++-- There is no iconv or locale service in the current Microkit platform.
++#elif defined(mingw32_HOST_OS)
+ import GHC.Base () -- For build ordering
+ #else
+ 
+@@ -198,4 +205,3 @@
+               throwErrno "iconvRecoder"
+ 
+ #endif /* !mingw32_HOST_OS */
+-
+--- a/libraries/base/cbits/sysconf.c
++++ b/libraries/base/cbits/sysconf.c
+@@ -1,4 +1,5 @@
+ #include "HsBaseConfig.h"
++#include "ghcplatform.h"
+ 
+ /* For _SC_CLK_TCK */
+ #if HAVE_UNISTD_H
+@@ -9,7 +10,10 @@
+ #include <time.h>
+ 
+ long clk_tck(void) {
+-#if defined(CLK_TCK)
++#if defined(sel4_HOST_OS)
++    /* Microkit does not expose process CPU-time clock ticks. */
++    return 0;
++#elif defined(CLK_TCK)
+     return (CLK_TCK);
+ #else
+     return sysconf(_SC_CLK_TCK);
+--- /dev/null
++++ b/libraries/base/cbits/sel4_poll.c
+@@ -0,0 +1,40 @@
++/*
++ * Restricted poll implementation for the initial Microkit base port.
++ * Descriptor readiness is not exposed to a protection domain yet; a zero-
++ * descriptor poll is a timer wait serviced through the RTS event bridge.
++ */
++
++#include <errno.h>
++#include <poll.h>
++#include <stdbool.h>
++#include <stdint.h>
++
++extern bool sel4_rts_read_monotonic_ns(uint64_t *nsec);
++extern void sel4_rts_wait_for_event(uint64_t deadline_ns);
++
++int poll(struct pollfd *fds, nfds_t count, int timeout_ms)
++{
++    if (count != 0) {
++        errno = ENOSYS;
++        return -1;
++    }
++    (void)fds;
++
++    if (timeout_ms == 0) {
++        return 0;
++    }
++
++    uint64_t deadline = UINT64_MAX;
++    if (timeout_ms > 0) {
++        uint64_t now;
++        if (!sel4_rts_read_monotonic_ns(&now)) {
++            errno = ENOSYS;
++            return -1;
++        }
++        const uint64_t delta = (uint64_t)timeout_ms * UINT64_C(1000000);
++        deadline = UINT64_MAX - now < delta ? UINT64_MAX - 1 : now + delta;
++    }
++
++    sel4_rts_wait_for_event(deadline);
++    return 0;
++}
+--- a/libraries/base/System/Posix/Internals.hs
++++ b/libraries/base/System/Posix/Internals.hs
+@@ -37,9 +37,7 @@
+ -- import Data.Bits
+ import Data.Maybe
+ 
+-#if !defined(HTYPE_TCFLAG_T)
+ import System.IO.Error
+-#endif
+ 
+ import GHC.Base
+ import GHC.Num
+--- a/libraries/base/System/Environment/Blank.hsc
++++ b/libraries/base/System/Environment/Blank.hsc
+@@ -122,7 +122,9 @@
+     value = takeWhile (/= '\NUL') value_
+ 
+ setEnv_ :: String -> String -> IO ()
+-#if defined(mingw32_HOST_OS)
++#if defined(sel4_HOST_OS)
++setEnv_ _ _ = ioError (mkIOError UnsupportedOperation "setEnv" Nothing Nothing)
++#elif defined(mingw32_HOST_OS)
+ setEnv_ key value = withCWString key $ \k -> withCWString value $ \v -> do
+   success <- c_SetEnvironmentVariable k v
+   unless success (throwGetLastError "setEnv")
+@@ -159,6 +161,8 @@
+ 
+ foreign import WINDOWS_CCONV unsafe "windows.h GetLastError"
+   c_GetLastError:: IO DWORD
++#elif defined(sel4_HOST_OS)
++unsetEnv _ = ioError (mkIOError UnsupportedOperation "unsetEnv" Nothing Nothing)
+ #elif HAVE_UNSETENV
+ # if !UNSETENV_RETURNS_VOID
+ unsetEnv name = withFilePath name $ \ s ->

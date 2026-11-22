@@ -39,6 +39,10 @@ impl BlobTransferPage {
             None
         }
     }
+
+    pub fn copy_to(&self, destination: &mut Self) -> bool {
+        self.payload().is_some_and(|bytes| destination.set_payload(bytes))
+    }
 }
 
 const _: () = assert!(core::mem::size_of::<BlobTransferPage>() <= PAGE_SIZE);
@@ -57,5 +61,18 @@ mod tests {
         page.length = (MAX_PAYLOAD_SIZE + 1) as u32;
         assert_eq!(page.payload(), None);
         assert!(!page.set_payload(&[0; MAX_PAYLOAD_SIZE + 1]));
+    }
+
+    #[test]
+    fn copying_between_isolated_clients_does_not_alias_and_rejects_bad_length() {
+        let mut source = BlobTransferPage::new();
+        let mut destination = BlobTransferPage::new();
+        assert!(source.set_payload(b"message"));
+        assert!(source.copy_to(&mut destination));
+        assert!(source.set_payload(b"other"));
+        assert_eq!(destination.payload(), Some(&b"message"[..]));
+        source.length = (MAX_PAYLOAD_SIZE + 1) as u32;
+        assert!(!source.copy_to(&mut destination));
+        assert_eq!(destination.payload(), Some(&b"message"[..]));
     }
 }

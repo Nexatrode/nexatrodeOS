@@ -3,7 +3,11 @@
 
 #[cfg(all(feature = "workspace-ui", feature = "snapshot-boot"))]
 compile_error!("the Notes snapshot asset does not match this UI");
-#[cfg(all(feature = "full-suite-ui", feature = "snapshot-boot", not(feature = "full-suite-snapshot-boot")))]
+#[cfg(all(
+    feature = "full-suite-ui",
+    feature = "snapshot-boot",
+    not(feature = "full-suite-snapshot-boot")
+))]
 compile_error!("use full-suite-snapshot-boot for this UI");
 #[cfg(all(feature = "full-suite-half-res", feature = "snapshot-boot"))]
 compile_error!("the full-resolution snapshot asset does not match half-resolution rendering");
@@ -14,22 +18,20 @@ compile_error!("select only one reduced render resolution");
 
 extern crate alloc;
 
-use alloc::{boxed::Box, rc::Rc};
+use alloc::rc::Rc;
 use core::{
     alloc::{GlobalAlloc, Layout},
     ptr::NonNull,
-    sync::atomic::{AtomicUsize, Ordering},
-    time::Duration,
+    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
 };
 use personal_os_slint_notes_spike::NotesWindow;
 use sel4_microkit::{
-    ChannelSet, Handler, Infallible, debug_println, memory_region_symbol,
-    protection_domain,
+    Channel, ChannelSet, Handler, Infallible, debug_println, memory_region_symbol, protection_domain,
 };
 use slint::{
     ComponentHandle, LogicalPosition, PhysicalSize,
     platform::{
-        Platform, PointerEventButton, WindowAdapter, WindowEvent,
+        PointerEventButton, WindowAdapter, WindowEvent,
         software_renderer::{LineBufferProvider, MinimalSoftwareWindow, RepaintBufferType},
     },
 };
@@ -81,23 +83,28 @@ struct BootHeap;
 unsafe impl GlobalAlloc for BootHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let base = HEAP_BASE.load(Ordering::Acquire);
-        if base == 0 { return core::ptr::null_mut(); }
+        if base == 0 {
+            return core::ptr::null_mut();
+        }
         let align = layout.align();
         let size = layout.size().max(1);
         let mut old = HEAP_USED.load(Ordering::Relaxed);
         loop {
-            let Some(start) = base.checked_add(old)
+            let Some(start) = base
+                .checked_add(old)
                 .and_then(|addr| addr.checked_add(align - 1))
                 .map(|addr| addr & !(align - 1))
-                .and_then(|addr| addr.checked_sub(base)) else {
+                .and_then(|addr| addr.checked_sub(base))
+            else {
                 return core::ptr::null_mut();
             };
             let Some(end) = start.checked_add(size) else {
                 return core::ptr::null_mut();
             };
-            if end > HEAP_BYTES { return core::ptr::null_mut(); }
-            match HEAP_USED.compare_exchange_weak(old, end,
-                    Ordering::AcqRel, Ordering::Relaxed) {
+            if end > HEAP_BYTES {
+                return core::ptr::null_mut();
+            }
+            match HEAP_USED.compare_exchange_weak(old, end, Ordering::AcqRel, Ordering::Relaxed) {
                 Ok(_) => return (base + start) as *mut u8,
                 Err(current) => old = current,
             }
@@ -109,18 +116,6 @@ unsafe impl GlobalAlloc for BootHeap {
 
 #[global_allocator]
 static ALLOCATOR: BootHeap = BootHeap;
-
-struct IphonePlatform {
-    window: Rc<MinimalSoftwareWindow>,
-}
-
-impl Platform for IphonePlatform {
-    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, slint::PlatformError> {
-        Ok(self.window.clone())
-    }
-
-    fn duration_since_start(&self) -> Duration { Duration::ZERO }
-}
 
 #[cfg(feature = "line-timing")]
 #[derive(Default)]
@@ -146,7 +141,9 @@ impl LineBufferProvider for FrameLines<'_> {
         range: core::ops::Range<usize>,
         render_fn: impl FnOnce(&mut [Self::TargetPixel]),
     ) {
-        if line >= RENDER_HEIGHT || range.end > RENDER_WIDTH { return; }
+        if line >= RENDER_HEIGHT || range.end > RENDER_WIDTH {
+            return;
+        }
         let mut pixels = [slint::Rgb8Pixel::default(); RENDER_WIDTH];
         #[cfg(feature = "line-timing")]
         let render_start = counter_ticks();
@@ -157,8 +154,10 @@ impl LineBufferProvider for FrameLines<'_> {
         {
             let mut packed = [0u32; WIDTH];
             for (dst, pixel) in packed[..range.len()].iter_mut().zip(pixels.iter()) {
-                *dst = ((pixel.r as u32) << 24) | ((pixel.g as u32) << 16)
-                    | ((pixel.b as u32) << 8) | 0xff;
+                *dst = ((pixel.r as u32) << 24)
+                    | ((pixel.g as u32) << 16)
+                    | ((pixel.b as u32) << 8)
+                    | 0xff;
             }
             // A single row copy lets the compiler use its optimized memory-copy
             // implementation for the Normal-NC destination.
@@ -170,31 +169,52 @@ impl LineBufferProvider for FrameLines<'_> {
                 );
             }
         }
-        #[cfg(all(not(feature = "row-copy"), not(feature = "full-suite-half-res"), not(feature = "full-suite-two-thirds")))]
+        #[cfg(all(
+            not(feature = "row-copy"),
+            not(feature = "full-suite-half-res"),
+            not(feature = "full-suite-two-thirds")
+        ))]
         for (column, pixel) in range.zip(pixels.iter()) {
             /* D11 scanout uses RRGGBBAA words; alpha occupies the low byte. */
-            let color = ((pixel.r as u32) << 24) | ((pixel.g as u32) << 16)
-                | ((pixel.b as u32) << 8) | 0xff;
+            let color = ((pixel.r as u32) << 24)
+                | ((pixel.g as u32) << 16)
+                | ((pixel.b as u32) << 8)
+                | 0xff;
             /* This is mapped framebuffer RAM, as in the working C shell, not
              * a register. Plain stores let LLVM combine sequential writes. */
-            unsafe { self.framebuffer.as_ptr().add(line * STRIDE + column).write(color) };
+            unsafe {
+                self.framebuffer
+                    .as_ptr()
+                    .add(line * STRIDE + column)
+                    .write(color)
+            };
         }
         #[cfg(feature = "full-suite-half-res")]
         for (column, pixel) in range.zip(pixels.iter()) {
-            let color = ((pixel.r as u32) << 24) | ((pixel.g as u32) << 16)
-                | ((pixel.b as u32) << 8) | 0xff;
+            let color = ((pixel.r as u32) << 24)
+                | ((pixel.g as u32) << 16)
+                | ((pixel.b as u32) << 8)
+                | 0xff;
             let base = line * 2 * STRIDE + column * 2;
             unsafe {
                 self.framebuffer.as_ptr().add(base).write(color);
                 self.framebuffer.as_ptr().add(base + 1).write(color);
                 self.framebuffer.as_ptr().add(base + STRIDE).write(color);
-                self.framebuffer.as_ptr().add(base + STRIDE + 1).write(color);
+                self.framebuffer
+                    .as_ptr()
+                    .add(base + STRIDE + 1)
+                    .write(color);
             }
         }
-        #[cfg(all(feature = "full-suite-two-thirds", not(feature = "full-suite-two-thirds-row-copy")))]
+        #[cfg(all(
+            feature = "full-suite-two-thirds",
+            not(feature = "full-suite-two-thirds-row-copy")
+        ))]
         for (column, pixel) in range.zip(pixels.iter()) {
-            let color = ((pixel.r as u32) << 24) | ((pixel.g as u32) << 16)
-                | ((pixel.b as u32) << 8) | 0xff;
+            let color = ((pixel.r as u32) << 24)
+                | ((pixel.g as u32) << 16)
+                | ((pixel.b as u32) << 8)
+                | 0xff;
             let x0 = column * 3 / 2;
             let x1 = (column + 1) * 3 / 2;
             let y0 = line * 3 / 2;
@@ -211,8 +231,10 @@ impl LineBufferProvider for FrameLines<'_> {
             let x_end = range.end * 3 / 2;
             let mut packed = [0u32; WIDTH];
             for (column, pixel) in range.zip(pixels.iter()) {
-                let color = ((pixel.r as u32) << 24) | ((pixel.g as u32) << 16)
-                    | ((pixel.b as u32) << 8) | 0xff;
+                let color = ((pixel.r as u32) << 24)
+                    | ((pixel.g as u32) << 16)
+                    | ((pixel.b as u32) << 8)
+                    | 0xff;
                 let start = column * 3 / 2;
                 let end = (column + 1) * 3 / 2;
                 packed[start..end].fill(color);
@@ -253,7 +275,9 @@ impl LineBufferProvider for DiscardLines {
         range: core::ops::Range<usize>,
         render_fn: impl FnOnce(&mut [Self::TargetPixel]),
     ) {
-        if line >= HEIGHT || range.end > WIDTH { return; }
+        if line >= HEIGHT || range.end > WIDTH {
+            return;
+        }
         let mut pixels = [slint::Rgb8Pixel::default(); WIDTH];
         render_fn(&mut pixels[..range.len()]);
     }
@@ -270,31 +294,45 @@ fn present_snapshot(framebuffer: NonNull<u32>) -> bool {
     let encoded = include_bytes!("../assets/notes-1080x1920.rle");
     let mut offset = 0usize;
     for row in 0..HEIGHT {
-        if offset + 2 > encoded.len() { return false; }
+        if offset + 2 > encoded.len() {
+            return false;
+        }
         let run_count = u16::from_le_bytes([encoded[offset], encoded[offset + 1]]) as usize;
         offset += 2;
         let mut packed = [0u32; WIDTH];
         let mut column = 0usize;
         for _ in 0..run_count {
-            if offset + 6 > encoded.len() { return false; }
+            if offset + 6 > encoded.len() {
+                return false;
+            }
             let length = u16::from_le_bytes([encoded[offset], encoded[offset + 1]]) as usize;
             let color = u32::from_le_bytes([
-                encoded[offset + 2], encoded[offset + 3],
-                encoded[offset + 4], encoded[offset + 5],
+                encoded[offset + 2],
+                encoded[offset + 3],
+                encoded[offset + 4],
+                encoded[offset + 5],
             ]);
             offset += 6;
-            if length == 0 || column + length > WIDTH { return false; }
+            if length == 0 || column + length > WIDTH {
+                return false;
+            }
             packed[column..column + length].fill(color);
             column += length;
         }
-        if column != WIDTH { return false; }
+        if column != WIDTH {
+            return false;
+        }
         unsafe {
             core::ptr::copy_nonoverlapping(
-                packed.as_ptr(), framebuffer.as_ptr().add(row * STRIDE), WIDTH,
+                packed.as_ptr(),
+                framebuffer.as_ptr().add(row * STRIDE),
+                WIDTH,
             );
         }
     }
-    if offset != encoded.len() { return false; }
+    if offset != encoded.len() {
+        return false;
+    }
     unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)) };
     true
 }
@@ -330,6 +368,7 @@ struct NotesService {
     _ui: NotesWindow,
     framebuffer: NonNull<u32>,
     touch: NonNull<TouchState>,
+    frame_wake: Option<NonNull<AtomicU64>>,
     pressed: bool,
     pressed_position: LogicalPosition,
     #[cfg(feature = "full-suite-queued-touch")]
@@ -339,6 +378,11 @@ struct NotesService {
 }
 
 impl NotesService {
+    fn arm_frame(&self) {
+        // The interactive image maps one aligned request page for the UI to write.
+        unsafe { personal_os_slint_notes_spike::guest_platform::arm_phone_frame(&self.window, self.frame_wake) };
+    }
+
     fn render(&self) {
         let framebuffer = self.framebuffer;
         self.window.draw_if_needed(|renderer| {
@@ -389,8 +433,11 @@ impl NotesService {
             });
         });
         let total = counter_ticks().wrapping_sub(start);
-        (timings.render_ticks / 24_000, timings.write_ticks / 24_000,
-         total / 24_000)
+        (
+            timings.render_ticks / 24_000,
+            timings.write_ticks / 24_000,
+            total / 24_000,
+        )
     }
 
     #[cfg(feature = "stage-timing")]
@@ -410,13 +457,17 @@ impl NotesService {
         // Copy the complete first frame so untouched padding cannot retain old pixels.
         unsafe {
             core::ptr::copy_nonoverlapping(
-                stage.as_ptr(), self.framebuffer.as_ptr(), STRIDE * HEIGHT,
+                stage.as_ptr(),
+                self.framebuffer.as_ptr(),
+                STRIDE * HEIGHT,
             );
         }
         let copy_done = counter_ticks();
         core::sync::atomic::fence(Ordering::SeqCst);
-        ((raster_done.wrapping_sub(start)) / 24_000,
-         (copy_done.wrapping_sub(raster_done)) / 24_000)
+        (
+            (raster_done.wrapping_sub(start)) / 24_000,
+            (copy_done.wrapping_sub(raster_done)) / 24_000,
+        )
     }
 
     #[cfg(not(feature = "full-suite-queued-touch"))]
@@ -424,7 +475,9 @@ impl NotesService {
         let ptr = self.touch.as_ptr();
         for _ in 0..4 {
             let before = unsafe { core::ptr::addr_of!((*ptr).revision).read_volatile() };
-            if before & 1 != 0 { continue; }
+            if before & 1 != 0 {
+                continue;
+            }
             let status = unsafe { core::ptr::addr_of!((*ptr).status).read_volatile() };
             let active = unsafe { core::ptr::addr_of!((*ptr).active).read_volatile() };
             let x = unsafe { core::ptr::addr_of!((*ptr).x).read_volatile() };
@@ -454,9 +507,12 @@ fn init() -> NotesService {
     };
 
     let window = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
-    slint::platform::set_platform(Box::new(IphonePlatform { window: window.clone() }))
-        .expect("set Slint platform");
-    window.window().dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor: SCALE });
+    personal_os_slint_notes_spike::guest_platform::install(&window);
+    window
+        .window()
+        .dispatch_event(WindowEvent::ScaleFactorChanged {
+            scale_factor: SCALE,
+        });
     window.set_size(PhysicalSize::new(RENDER_WIDTH as u32, RENDER_HEIGHT as u32));
 
     let ui = NotesWindow::new().expect("create Slint Notes");
@@ -464,19 +520,27 @@ fn init() -> NotesService {
     personal_os_slint_notes_spike::suite::wire(&ui);
     #[cfg(not(feature = "full-suite-ui"))]
     {
-    let weak = ui.as_weak();
-    ui.on_save_note(move |_| {
-        if let Some(ui) = weak.upgrade() {
-            #[cfg(feature = "workspace-ui")]
-            ui.set_status("SAVE TAP RECEIVED".into());
-            #[cfg(not(feature = "workspace-ui"))]
-            ui.set_status("SAVED THROUGH TOUCH".into());
-        }
-    });
+        let weak = ui.as_weak();
+        ui.on_save_note(move |_| {
+            if let Some(ui) = weak.upgrade() {
+                #[cfg(feature = "workspace-ui")]
+                ui.set_status("SAVE TAP RECEIVED".into());
+                #[cfg(not(feature = "workspace-ui"))]
+                ui.set_status("SAVED THROUGH TOUCH".into());
+            }
+        });
     }
+    // Full-suite images open the same NexaWal screen as UTM.
+    #[cfg(feature = "full-suite-ui")]
+    ui.set_page(16);
     ui.show().expect("show Slint Notes");
     let service = NotesService {
-        window, _ui: ui, framebuffer, touch, pressed: false,
+        window,
+        _ui: ui,
+        framebuffer,
+        touch,
+        frame_wake: NonNull::new(*sel4_microkit::var!(slint_frame_wake_request: usize = 0) as *mut AtomicU64),
+        pressed: false,
         pressed_position: LogicalPosition::default(),
         #[cfg(feature = "full-suite-queued-touch")]
         touch_read_sequence: 0,
@@ -495,7 +559,11 @@ fn init() -> NotesService {
         unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)) };
         counter_ticks().wrapping_sub(start) / 24_000
     };
-    #[cfg(all(not(feature = "stage-timing"), not(feature = "raster-profile"), not(feature = "snapshot-boot")))]
+    #[cfg(all(
+        not(feature = "stage-timing"),
+        not(feature = "raster-profile"),
+        not(feature = "snapshot-boot")
+    ))]
     {
         #[cfg(all(feature = "frame-timing", not(feature = "line-timing")))]
         let frame_start = counter_ticks();
@@ -509,18 +577,26 @@ fn init() -> NotesService {
             // and writes to the mapped framebuffer, but not panel scanout.
             #[cfg(not(feature = "line-timing"))]
             let elapsed_ms = counter_ticks().wrapping_sub(frame_start) / 24_000;
-            #[cfg(all(not(feature = "line-timing"), not(feature = "fill-timing"), not(feature = "full-suite-profile")))]
-            service._ui.set_status(alloc::format!("FRAME {elapsed_ms} MS").into());
+            #[cfg(all(
+                not(feature = "line-timing"),
+                not(feature = "fill-timing"),
+                not(feature = "full-suite-profile")
+            ))]
+            service
+                ._ui
+                .set_status(alloc::format!("FRAME {elapsed_ms} MS").into());
             #[cfg(feature = "full-suite-profile")]
-            service._ui.set_perf(alloc::format!("FIRST {elapsed_ms} MS").into());
+            service
+                ._ui
+                .set_perf(alloc::format!("FIRST {elapsed_ms} MS").into());
             #[cfg(feature = "line-timing")]
-            service._ui.set_status(
-                alloc::format!("R{render_ms} W{write_ms} T{elapsed_ms}").into()
-            );
+            service
+                ._ui
+                .set_status(alloc::format!("R{render_ms} W{write_ms} T{elapsed_ms}").into());
             #[cfg(feature = "fill-timing")]
-            service._ui.set_status(
-                alloc::format!("F{fill_ms} T{elapsed_ms} MS").into()
-            );
+            service
+                ._ui
+                .set_status(alloc::format!("F{fill_ms} T{elapsed_ms} MS").into());
             service.render();
         }
     }
@@ -533,9 +609,13 @@ fn init() -> NotesService {
             });
             let cpu_ms = counter_ticks().wrapping_sub(start) / 24_000;
             #[cfg(feature = "full-suite-snapshot-boot")]
-            service._ui.set_perf(alloc::format!("S{snapshot_ms} C{cpu_ms} MS").into());
+            service
+                ._ui
+                .set_perf(alloc::format!("S{snapshot_ms} C{cpu_ms} MS").into());
             #[cfg(not(feature = "full-suite-snapshot-boot"))]
-            service._ui.set_status(alloc::format!("S{snapshot_ms} C{cpu_ms} MS").into());
+            service
+                ._ui
+                .set_status(alloc::format!("S{snapshot_ms} C{cpu_ms} MS").into());
         }
         // If decoding failed, Slint performs its ordinary first live draw.
         // Otherwise only the changed status area is written to the screen.
@@ -544,77 +624,138 @@ fn init() -> NotesService {
     #[cfg(feature = "raster-profile")]
     {
         let (cpu_ms, live_ms) = service.render_initial_raster_profile();
-        service._ui.set_status(alloc::format!("C{cpu_ms} L{live_ms} MS").into());
+        service
+            ._ui
+            .set_status(alloc::format!("C{cpu_ms} L{live_ms} MS").into());
         service.render();
     }
     #[cfg(feature = "stage-timing")]
     {
         let stage = memory_region_symbol!(slint_stage_framebuffer: *mut u32);
         let (raster_ms, copy_ms) = service.render_initial_staged(stage);
-        service._ui.set_status(alloc::format!("R {raster_ms} C {copy_ms} MS").into());
+        service
+            ._ui
+            .set_status(alloc::format!("R {raster_ms} C {copy_ms} MS").into());
         // Follow-up interaction uses the proven direct render path.
         service.render();
     }
+    service.arm_frame();
     debug_println!("SLINT|IPHONE|NOTES READY");
     service
+}
+
+/// Wallet controls in the window's logical space. The iPhone has no punch-hole
+/// inset, so the wallet page starts 88 below the top of the screen.
+fn apply_wallet_tap(ui: &NotesWindow, x: f32, y: f32) {
+    if ui.get_page() != 16 {
+        return;
+    }
+    let x = x * TOUCH_SCALE / SCALE;
+    let y = y * TOUCH_SCALE / SCALE;
+    let w = WIDTH as f32 / SCALE;
+    let h = HEIGHT as f32 / SCALE;
+    let origin_y = 88.0;
+    let send_keyboard =
+        ui.get_wallet_tab() == 2 && (ui.get_edit_target() == 11 || ui.get_edit_target() == 12);
+    if !send_keyboard && y >= h - 64.0 && y < h && w > 0.0 {
+        let tab = ((x / w) * 4.0) as i32;
+        if (0..4).contains(&tab) {
+            ui.set_wallet_tab(tab);
+            ui.set_edit_target(0);
+            debug_println!("IPHONE WALLET TAB {}", tab);
+        }
+        return;
+    }
+    if ui.get_wallet_tab() != 0 {
+        return;
+    }
+    let button_w = (w - 80.0) / 2.0;
+    let top = origin_y + 8.0 + 102.0;
+    if button_w <= 0.0 || !(top..top + 36.0).contains(&y) {
+        return;
+    }
+    let send_left = 34.0;
+    let receive_left = 46.0 + button_w;
+    if (send_left..send_left + button_w).contains(&x) {
+        ui.set_wallet_tab(2);
+        ui.set_edit_target(0);
+        debug_println!("IPHONE WALLET HIT send");
+    } else if (receive_left..receive_left + button_w).contains(&x) {
+        ui.set_wallet_tab(1);
+        ui.set_edit_target(0);
+        debug_println!("IPHONE WALLET HIT receive");
+    }
 }
 
 impl NotesService {
     fn on_touch_sample(&mut self, active: bool, x: u32, y: u32) {
         if active != self.pressed {
-                #[cfg(feature = "full-suite-input-profile")]
-                let gap_ms = if active {
-                    self.pressed_ticks = counter_ticks();
-                    0
-                } else {
-                    counter_ticks().wrapping_sub(self.pressed_ticks) / 24_000
-                };
-                let position = if active {
-                    let position = LogicalPosition::new(
-                        x as f32 * WIDTH as f32 / 4096.0 / TOUCH_SCALE,
-                        y as f32 * HEIGHT as f32 / 4096.0 / TOUCH_SCALE,
-                    );
-                    self.pressed_position = position;
-                    position
-                } else {
-                    /* The D11 service publishes (0, 0) when contact ends;
-                     * release at the last contact so Slint can form a click. */
-                    self.pressed_position
-                };
-                #[cfg(feature = "full-suite-press-click")]
-                {
-                    if active {
-                        // This UI contains only tap targets. D11 release reports can
-                        // arrive seconds after a brief contact, so complete the click
-                        // immediately at the first contact and ignore that late release.
-                        self.window.window().dispatch_event(WindowEvent::PointerPressed {
-                            position, button: PointerEventButton::Left,
+            #[cfg(feature = "full-suite-input-profile")]
+            let gap_ms = if active {
+                self.pressed_ticks = counter_ticks();
+                0
+            } else {
+                counter_ticks().wrapping_sub(self.pressed_ticks) / 24_000
+            };
+            let position = if active {
+                let position = LogicalPosition::new(
+                    x as f32 * WIDTH as f32 / 4096.0 / TOUCH_SCALE,
+                    y as f32 * HEIGHT as f32 / 4096.0 / TOUCH_SCALE,
+                );
+                self.pressed_position = position;
+                position
+            } else {
+                /* The D11 service publishes (0, 0) when contact ends;
+                 * release at the last contact so Slint can form a click. */
+                self.pressed_position
+            };
+            #[cfg(feature = "full-suite-press-click")]
+            {
+                if active {
+                    // This UI contains only tap targets. D11 release reports can
+                    // arrive seconds after a brief contact, so complete the click
+                    // immediately at the first contact and ignore that late release.
+                    self.window
+                        .window()
+                        .dispatch_event(WindowEvent::PointerPressed {
+                            position,
+                            button: PointerEventButton::Left,
                         });
-                        self.window.window().dispatch_event(WindowEvent::PointerReleased {
-                            position, button: PointerEventButton::Left,
+                    self.window
+                        .window()
+                        .dispatch_event(WindowEvent::PointerReleased {
+                            position,
+                            button: PointerEventButton::Left,
                         });
-                        self.pressed = true;
-                        let start = counter_ticks();
-                        self.render();
-                        let draw_ms = counter_ticks().wrapping_sub(start) / 24_000;
-                        self._ui.set_perf(alloc::format!("PRESS DRAW {draw_ms} MS").into());
-                        self.render();
-                    } else {
-                        self.pressed = false;
-                    }
-                    return;
+                    apply_wallet_tap(&self._ui, position.x, position.y);
+                    self.pressed = true;
+                    let start = counter_ticks();
+                    self.render();
+                    let draw_ms = counter_ticks().wrapping_sub(start) / 24_000;
+                    self._ui
+                        .set_perf(alloc::format!("PRESS DRAW {draw_ms} MS").into());
+                    self.render();
+                } else {
+                    self.pressed = false;
                 }
-                #[cfg(not(feature = "full-suite-press-click"))]
-                {
+                return;
+            }
+            #[cfg(not(feature = "full-suite-press-click"))]
+            {
                 self.window.window().dispatch_event(if active {
                     WindowEvent::PointerPressed {
-                        position, button: PointerEventButton::Left,
+                        position,
+                        button: PointerEventButton::Left,
                     }
                 } else {
                     WindowEvent::PointerReleased {
-                        position, button: PointerEventButton::Left,
+                        position,
+                        button: PointerEventButton::Left,
                     }
                 });
+                if active {
+                    apply_wallet_tap(&self._ui, position.x, position.y);
+                }
                 self.pressed = active;
                 #[cfg(feature = "full-suite-profile")]
                 let draw_start = counter_ticks();
@@ -623,12 +764,14 @@ impl NotesService {
                 if !active {
                     let draw_ms = counter_ticks().wrapping_sub(draw_start) / 24_000;
                     #[cfg(feature = "full-suite-input-profile")]
-                    self._ui.set_perf(alloc::format!("GAP {gap_ms} DRAW {draw_ms} MS").into());
+                    self._ui
+                        .set_perf(alloc::format!("GAP {gap_ms} DRAW {draw_ms} MS").into());
                     #[cfg(not(feature = "full-suite-input-profile"))]
-                    self._ui.set_perf(alloc::format!("DRAW {draw_ms} MS").into());
+                    self._ui
+                        .set_perf(alloc::format!("DRAW {draw_ms} MS").into());
                     self.render();
                 }
-                }
+            }
         }
     }
 
@@ -641,19 +784,28 @@ impl NotesService {
         }
         while self.touch_read_sequence != latest {
             let sequence = self.touch_read_sequence.wrapping_add(1);
-            let entry = unsafe { core::ptr::addr_of!((*ptr).events[(sequence.wrapping_sub(1) % 256) as usize]) };
+            let entry = unsafe {
+                core::ptr::addr_of!((*ptr).events[(sequence.wrapping_sub(1) % 256) as usize])
+            };
             let mut sample = None;
             for _ in 0..4 {
                 let before = unsafe { core::ptr::addr_of!((*entry).revision).read_volatile() };
-                if before != sequence.wrapping_mul(2) { continue; }
+                if before != sequence.wrapping_mul(2) {
+                    continue;
+                }
                 let active = unsafe { core::ptr::addr_of!((*entry).active).read_volatile() };
                 let x = unsafe { core::ptr::addr_of!((*entry).x).read_volatile() };
                 let y = unsafe { core::ptr::addr_of!((*entry).y).read_volatile() };
                 core::sync::atomic::fence(Ordering::Acquire);
                 let after = unsafe { core::ptr::addr_of!((*entry).revision).read_volatile() };
-                if before == after { sample = Some((active != 0, x, y)); break; }
+                if before == after {
+                    sample = Some((active != 0, x, y));
+                    break;
+                }
             }
-            let Some((active, x, y)) = sample else { break; };
+            let Some((active, x, y)) = sample else {
+                break;
+            };
             self.touch_read_sequence = sequence;
             self.on_touch_sample(active, x, y);
         }
@@ -663,13 +815,18 @@ impl NotesService {
 impl Handler for NotesService {
     type Error = Infallible;
 
-    fn notified(&mut self, _channels: ChannelSet) -> Result<(), Self::Error> {
-        #[cfg(feature = "full-suite-queued-touch")]
-        self.drain_touch_queue();
-        #[cfg(not(feature = "full-suite-queued-touch"))]
-        if let Some((active, x, y)) = self.touch_snapshot() {
-            self.on_touch_sample(active, x, y);
+    fn notified(&mut self, channels: ChannelSet) -> Result<(), Self::Error> {
+        slint::platform::update_timers_and_animations();
+        if channels.contains(Channel::new(0)) {
+            #[cfg(feature = "full-suite-queued-touch")]
+            self.drain_touch_queue();
+            #[cfg(not(feature = "full-suite-queued-touch"))]
+            if let Some((active, x, y)) = self.touch_snapshot() {
+                self.on_touch_sample(active, x, y);
+            }
         }
+        self.render();
+        self.arm_frame();
         Ok(())
     }
 }

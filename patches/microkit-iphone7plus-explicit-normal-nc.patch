@@ -1,0 +1,260 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -12,10 +12,10 @@
+ ]
+ 
+ [workspace.dependencies.sel4-capdl-initializer]
+-path = "../rust-sel4-iphone7plus16k/crates/sel4-capdl-initializer"
++path = "../rust-sel4-iphone7plus16k-explicit-nc/crates/sel4-capdl-initializer"
+ 
+ [workspace.dependencies.sel4-capdl-initializer-types]
+-path = "../rust-sel4-iphone7plus16k/crates/sel4-capdl-initializer/types"
++path = "../rust-sel4-iphone7plus16k-explicit-nc/crates/sel4-capdl-initializer/types"
+ 
+ [profile.release.package.microkit-tool]
+ strip = true
+--- a/docs/manual.md
++++ b/docs/manual.md
+@@ -1020,6 +1020,7 @@
+ * `perms`: Identifies the permissions with which to map the memory region. Can be a combination of `r` (read), `w` (write), and `x` (eXecute), with the exception of a write-only mapping (just `w`).
+            Defaults to read-write.
+ * `cached`: (optional) Determines if mapped with caching enabled or disabled. Defaults to `true`.
++* `normal_nc`: (optional, experimental AArch64 EL1 build) Maps an uncached frame as Normal Non-cacheable rather than Device memory. Requires `cached="false"`; intended for a framebuffer, not MMIO.
+ * `setvar_vaddr`: (optional) Specifies a symbol in the program image. This symbol will be rewritten with the virtual address of the memory region.
+ * `setvar_size`: (optional) Specifies a symbol in the program image. This symbol will be rewritten with the size of the memory region.
+ * `setvar_prefill_size`: (optional) Specifies a symbol in the program image. This symbol will be rewritten with the size of the prefilled data.
+--- a/tool/microkit/src/sdf/memory_region.rs
++++ b/tool/microkit/src/sdf/memory_region.rs
+@@ -21,7 +21,7 @@
+ 
+ use crate::util::get_full_path;
+ use crate::util::round_up;
+-use crate::{Config, PageSize};
++use crate::{sel4::Arch, Config, PageSize};
+ 
+ // We do not include attributes (execute/cached) here since seL4 does not treat them like vm_rights.
+ // Note on seL4 you can't mint a write only frame. However you can request a write only mapping,
+@@ -113,6 +113,7 @@
+     pub vaddr: u64,
+     pub perms: SysMapPerms,
+     pub cached: bool,
++    pub normal_nc: bool,
+     /// Location in the parsed SDF file. Because this struct is
+     /// used in a non-XML context, we make the position optional.
+     pub text_pos: Option<SdfLocation>,
+@@ -128,6 +129,7 @@
+     fn addr_name(&self) -> &'static str;
+     fn range_name(&self) -> &'static str;
+     fn cached(&self) -> bool;
++    fn normal_nc(&self) -> bool;
+     fn perms(&self) -> Self::Perms;
+ 
+     fn read(&self) -> bool {
+@@ -176,6 +178,10 @@
+ 
+     fn cached(&self) -> bool {
+         self.cached
++    }
++
++    fn normal_nc(&self) -> bool {
++        self.normal_nc
+     }
+ }
+ 
+@@ -210,6 +216,10 @@
+     }
+ 
+     fn cached(&self) -> bool {
++        false
++    }
++
++    fn normal_nc(&self) -> bool {
+         false
+     }
+ }
+@@ -325,12 +335,13 @@
+ 
+ impl SysMap {
+     pub(super) fn from_xml(
++        config: &Config,
+         xml_sdf: &SystemDescriptionFile,
+         node: &dyn SdfNode,
+         allow_setvar: bool,
+         max_vaddr: u64,
+     ) -> Result<SysMap, String> {
+-        let mut attrs = vec!["mr", "vaddr", "perms", "cached"];
++        let mut attrs = vec!["mr", "vaddr", "perms", "cached", "normal_nc"];
+         if allow_setvar {
+             attrs.push("setvar_vaddr");
+             attrs.push("setvar_size");
+@@ -379,12 +390,21 @@
+         let cached = sdf_parse_attribute(xml_sdf, node, "cached")?
+             // Default to cached
+             .unwrap_or(true);
++        let normal_nc = sdf_parse_attribute(xml_sdf, node, "normal_nc")?.unwrap_or(false);
++        if normal_nc && (cached || config.arch != Arch::Aarch64 || config.hypervisor) {
++            return Err(value_error(
++                xml_sdf,
++                node,
++                "normal_nc requires cached='false' on AArch64 without hypervisor support".to_string(),
++            ));
++        }
+ 
+         Ok(SysMap {
+             mr,
+             vaddr,
+             perms,
+             cached,
++            normal_nc,
+             text_pos: Some(node.range().start),
+         })
+     }
+--- a/tool/microkit/src/sdf/pd_vm.rs
++++ b/tool/microkit/src/sdf/pd_vm.rs
+@@ -308,7 +308,7 @@
+                 }
+                 "map" => {
+                     let map_max_vaddr = config.pd_map_max_vaddr(stack_size);
+-                    let map = SysMap::from_xml(xml_sdf, &*child, true, map_max_vaddr)?;
++                    let map = SysMap::from_xml(config, xml_sdf, &*child, true, map_max_vaddr)?;
+ 
+                     if let Some(setvar_vaddr) = child.attribute("setvar_vaddr") {
+                         let setvar = SysSetVar {
+@@ -917,7 +917,7 @@
+                 "map" => {
+                     // Virtual machines do not have program images and so we do not allow
+                     // setvar_vaddr on SysMap
+-                    let map = SysMap::from_xml(xml_sdf, &*child, false, config.vm_map_max_vaddr())?;
++                    let map = SysMap::from_xml(config, xml_sdf, &*child, false, config.vm_map_max_vaddr())?;
+                     maps.push(map);
+                 }
+                 _ => {
+--- a/tool/microkit/src/capdl/util.rs
++++ b/tool/microkit/src/capdl/util.rs
+@@ -49,6 +49,7 @@
+     write: bool,
+     executable: bool,
+     cached: bool,
++    normal_nc: bool,
+ ) -> Cap {
+     Cap::Frame(cap::Frame {
+         object: frame_obj_id,
+@@ -60,6 +61,7 @@
+         },
+         // This is not used on RISC-V, PTEs have no cached bit, see seL4_RISCV_VMAttributes.
+         cached,
++        normal_nc,
+         // This is ignored on x86 by seL4. As the NX/XD bit that marks page as non-executable
+         // is unsupported on old hardware.
+         executable,
+--- a/tool/microkit/src/capdl/builder.rs
++++ b/tool/microkit/src/capdl/builder.rs
+@@ -349,6 +349,7 @@
+                     segment.is_writable(),
+                     segment.is_executable(),
+                     true,
++                    false,
+                 );
+ 
+                 match address_space.map_page(
+@@ -423,7 +424,7 @@
+     for frame_obj_id in frames.iter() {
+         // Make a cap for this frame.
+         let frame_cap =
+-            capdl_util_make_frame_cap(*frame_obj_id, read, write, execute, map.cached());
++            capdl_util_make_frame_cap(*frame_obj_id, read, write, execute, map.cached(), map.normal_nc());
+         // Map it into this PD address space.
+         target_address_space
+             .map_page(spec_container, sel4_config, frame_cap, page_sz, cur_vaddr)
+@@ -513,7 +514,7 @@
+         PageSize::Small.fixed_size_bits(kernel_config) as u8,
+     );
+     let mon_stack_frame_cap =
+-        capdl_util_make_frame_cap(mon_stack_frame_obj_id, true, true, false, true);
++        capdl_util_make_frame_cap(mon_stack_frame_obj_id, true, true, false, true, false);
+     monitor_elf_spec
+         .address_space
+         .map_page(
+@@ -534,7 +535,7 @@
+         PageSize::Small.fixed_size_bits(kernel_config) as u8,
+     );
+     let mon_ipcbuf_frame_cap =
+-        capdl_util_make_frame_cap(mon_ipcbuf_frame_obj_id, true, true, false, true);
++        capdl_util_make_frame_cap(mon_ipcbuf_frame_obj_id, true, true, false, true, false);
+     monitor_elf_spec
+         .address_space
+         .map_page(
+@@ -754,7 +755,7 @@
+             PageSize::Small.fixed_size_bits(kernel_config) as u8,
+         );
+         let ipcbuf_frame_cap =
+-            capdl_util_make_frame_cap(ipcbuf_frame_obj_id, true, true, false, true);
++            capdl_util_make_frame_cap(ipcbuf_frame_obj_id, true, true, false, true, false);
+         pd_elf_spec
+             .address_space
+             .map_page(
+@@ -785,7 +786,7 @@
+                 PageSize::Small.fixed_size_bits(kernel_config) as u8,
+             );
+             let stack_frame_cap =
+-                capdl_util_make_frame_cap(stack_frame_obj_id, true, true, false, true);
++                capdl_util_make_frame_cap(stack_frame_obj_id, true, true, false, true, false);
+             pd_elf_spec
+                 .address_space
+                 .map_page(
+@@ -978,7 +979,7 @@
+                         PageSize::Small.fixed_size_bits(kernel_config) as u8,
+                     );
+                     let vm_ipcbuf_frame_cap =
+-                        capdl_util_make_frame_cap(vm_ipcbuf_frame_obj_id, true, true, false, true);
++                        capdl_util_make_frame_cap(vm_ipcbuf_frame_obj_id, true, true, false, true, false);
+                     caps_to_bind_to_vm_tcbs.push(capdl_util_make_cte(
+                         TcbBoundSlot::IpcBuffer as u32,
+                         vm_ipcbuf_frame_cap,
+--- a/tool/microkit/tests/test.rs
++++ b/tool/microkit/tests/test.rs
+@@ -146,6 +146,44 @@
+     assert!(parse_err.starts_with(expected_err));
+ }
+ 
++#[test]
++fn normal_nc_requires_explicit_uncached_aarch64_mapping() {
++    let xml = |attrs: &str| format!(
++        "<system><memory_region name='screen' size='0x1000'/>\
++         <protection_domain name='test'><program_image path='test'/>\
++         <map mr='screen' vaddr='0x3000000' {attrs}/></protection_domain></system>"
++    );
++    let config = sel4::Config {
++        hypervisor: false,
++        ..DEFAULT_AARCH64_KERNEL_CONFIG
++    };
++    let parsed = sdf::parse_xml(
++        Path::new("normal_nc.system"),
++        &xml("cached='false' normal_nc='true'"),
++        &config,
++        &Vec::new(),
++    )
++    .unwrap();
++    let map = &parsed.protection_domains.get("test").unwrap().maps[0];
++    assert!(map.normal_nc);
++    assert!(!map.cached);
++
++    for (attrs, kernel_config) in [
++        ("normal_nc='true'", &config),
++        ("cached='false' normal_nc='true'", &DEFAULT_AARCH64_KERNEL_CONFIG),
++        ("cached='false' normal_nc='true'", &DEFAULT_X86_64_KERNEL_CONFIG),
++    ] {
++        let error = sdf::parse_xml(
++            Path::new("normal_nc.system"),
++            &xml(attrs),
++            kernel_config,
++            &Vec::new(),
++        )
++        .unwrap_err();
++        assert!(error.contains("normal_nc requires cached='false' on AArch64 without hypervisor support"));
++    }
++}
++
+ fn check_missing(kernel_config: &sel4::Config, test_name: &str, attr: &str, element: &str) {
+     let expected_error =
+         format!("Error: missing required attribute '{attr}' on element '{element}'");

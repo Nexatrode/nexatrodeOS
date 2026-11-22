@@ -1,0 +1,28 @@
+diff --git a/loader/src/aarch64/util64.S b/loader/src/aarch64/util64.S
+--- a/loader/src/aarch64/util64.S
++++ b/loader/src/aarch64/util64.S
+@@ -342,10 +342,14 @@ BEGIN_FUNC(el1_mmu_enable)
+     mov     x27, x0
+     mov     x28, x1
++#if !defined(CONFIG_PLAT_IPHONE7PLUS_SKIP_MMU_STAGE_HOOKS)
+     mov     x0, #4
+     bl      pongo_mmu_stage
++#endif
+ 
+     /* Disable the MMU */
+     bl      el1_mmu_disable
++#if !defined(CONFIG_PLAT_IPHONE7PLUS_SKIP_MMU_STAGE_HOOKS)
+     mov     x0, #5
+     bl      pongo_mmu_stage
++#endif
+ 
+@@ -389,7 +393,9 @@ BEGIN_FUNC(el1_mmu_enable)
+     tlbi    vmalle1is
+     dsb     ish
+     isb
++#if !defined(CONFIG_PLAT_IPHONE7PLUS_SKIP_MMU_STAGE_HOOKS)
+     mov     x0, #6
+     bl      pongo_mmu_stage
++#endif
+ 
+     enable_mmu sctlr_el1, x8

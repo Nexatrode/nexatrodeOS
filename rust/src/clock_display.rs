@@ -67,9 +67,7 @@ fn civil_from_unix_days(unix_days: u32) -> (u32, u32, u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        UTC_CLOCK_TEXT_LENGTH, UTC_TIME_TEXT_LENGTH, format_utc_clock, format_utc_hms,
-    };
+    use super::{UTC_CLOCK_TEXT_LENGTH, UTC_TIME_TEXT_LENGTH, format_utc_clock, format_utc_hms};
 
     fn formatted_time(seconds: u32) -> [u8; UTC_TIME_TEXT_LENGTH] {
         let mut output = [0; UTC_TIME_TEXT_LENGTH];

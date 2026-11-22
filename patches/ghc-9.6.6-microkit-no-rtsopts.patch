@@ -1,0 +1,26 @@
+--- a/rts/RtsFlags.c
++++ b/rts/RtsFlags.c
+@@ -838,6 +838,15 @@
+ static void procRtsOpts (int rts_argc0,
+                          RtsOptsEnabledEnum rtsOptsEnabled)
+ {
++#if defined(sel4_HOST_OS)
++    /* Microkit PDs have no process argv or inherited environment. Their
++       entry adapter sets RtsOptsIgnoreAll, so keep the parser out of the
++       target image rather than importing numeric libc parsers for options
++       that cannot be supplied. */
++    (void)rts_argc0;
++    (void)rtsOptsEnabled;
++    return;
++#else
+     bool error = false;
+     int arg;
+     int unchecked_arg_start;
+@@ -1815,6 +1824,7 @@
+     }
+ 
+     if (error) errorUsage();
++#endif
+ }
+ 
+ /* -----------------------------------------------------------------------------

@@ -1,0 +1,17 @@
+{
+  "name": "handoff-prime-m1-100",
+  "cpus": 4,
+  "memory_mib": 2048,
+  "machine": "virtualization=off,gic-version=3,kernel-irqchip=on",
+  "release_elf_sha256": {
+    "rust_wallet_app.elf": "c97f209e77c689eeaa78ce5a19130b08dad9dcb80407422e84f247f5431bb64f",
+    "rust_wallet_range_worker.elf": "b7f773edc3b9efe7da1074b1c72c584154668392a793f19c223811a5c4b83937",
+    "dhcp_client.elf": "2c82b589b12b8ae5579015d8acb98309507f2bbafefa9c35936875ad213c262c"
+  },
+  "sdk_elf_sha256": {
+    "monitor.elf": "4f800268d32d48dc0a92e78219b5f4992d5ecfd0fca076b1c9ebb8130ff1be1d",
+    "sel4.elf": "b5b54db4c7ede5daefaa7918e919fb01f56429ee002151803a3b1679784b053c",
+    "loader.elf": "7f72fd28b7ce212b7b188b8dfbd46b0cf3965a7855a4ed5b80e9d8f9eee22a13",
+    "initialiser.elf": "ccaa4ff8b1530d37bcad349562024e0d18195fdd418871b5dca017da7e46f2cf"
+  }
+}

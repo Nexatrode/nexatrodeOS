@@ -1,0 +1,59 @@
+--- a/drivers/platform/msm/ipa/ipa_v3/ipa_qmi_service.c
++++ b/drivers/platform/msm/ipa/ipa_v3/ipa_qmi_service.c
+@@ -518,6 +518,7 @@
+ 	struct ipa_init_modem_driver_resp_msg_v01 resp;
+ 	struct ipa_msg_desc req_desc, resp_desc;
+ 	int rc;
++	int uc_loaded;
+ 	u16 smem_restr_bytes = ipa3_get_smem_restr_bytes();
+ 	int wan_cons_ep;
+ 
+@@ -622,7 +623,8 @@
+ 	req.hw_drop_stats_table_size_valid = true;
+ 	req.hw_drop_stats_table_size = IPA_MEM_PART(stats_drop_size);
+ 
+-	if (!ipa3_uc_loaded_check()) {  /* First time boot */
++	uc_loaded = ipa3_uc_loaded_check();
++	if (!uc_loaded) {  /* First time boot */
+ 		req.is_ssr_bootup_valid = false;
+ 		req.is_ssr_bootup = 0;
+ 	} else {  /* After SSR boot */
+@@ -668,6 +670,20 @@
+ 	IPAWANDBG("v6_hash_filter_tbl_start_addr %d\n",
+ 		req.v6_hash_filter_tbl_start_addr);
+ 
++	pr_info("IPA_INIT_MODEM_SNAPSHOT request hw=%u smem_restricted=0x%x "
++		"smem_size=0x%x modem_mem_valid=%u modem_offset=0x%x "
++		"modem_size=0x%x ctrl_ep_valid=%u ctrl_ep=%u uc_loaded=%u "
++		"ssr_valid=%u ssr=%u\n",
++		(unsigned int)ipa3_ctx->ipa_hw_type,
++		(unsigned int)ipa3_ctx->smem_restricted_bytes,
++		(unsigned int)ipa3_ctx->smem_sz,
++		(unsigned int)req.modem_mem_info_valid,
++		req.modem_mem_info.block_start_addr, req.modem_mem_info.size,
++		(unsigned int)req.ctrl_comm_dest_end_pt_valid,
++		req.ctrl_comm_dest_end_pt, (unsigned int)uc_loaded,
++		(unsigned int)req.is_ssr_bootup_valid,
++		(unsigned int)req.is_ssr_bootup);
++
+ 	req_desc.max_msg_len = QMI_IPA_INIT_MODEM_DRIVER_REQ_MAX_MSG_LEN_V01;
+ 	req_desc.msg_id = QMI_IPA_INIT_MODEM_DRIVER_REQ_V01;
+ 	req_desc.ei_array = ipa3_init_modem_driver_req_msg_data_v01_ei;
+@@ -692,6 +708,17 @@
+ 	}
+ 
+ 	pr_info("QMI_IPA_INIT_MODEM_DRIVER_REQ_V01 response received\n");
++
++	pr_info("IPA_INIT_MODEM_SNAPSHOT response rc=%d result=%u error=%u "
++		"ctrl_ep_valid=%u ctrl_ep=%u default_ep_valid=%u default_ep=%u "
++		"pending_valid=%u pending=%u\n",
++		rc, (unsigned int)resp.resp.result,
++		(unsigned int)resp.resp.error,
++		(unsigned int)resp.ctrl_comm_dest_end_pt_valid,
++		resp.ctrl_comm_dest_end_pt,
++		(unsigned int)resp.default_end_pt_valid, resp.default_end_pt,
++		(unsigned int)resp.modem_driver_init_pending_valid,
++		(unsigned int)resp.modem_driver_init_pending);
+ 
+ 	place_marker("M - QMI ready for commands");
+ 

@@ -8,7 +8,7 @@ use std::{
 };
 
 use personal_os_rust_server::vault_crypto::{DevelopmentCryptoProvider, VaultCryptoProvider};
-use personal_os_rust_server::{vault_backup, vault_blob_record, vault_record};
+use personal_os_rust_server::{vault_backup, vault_blob_record, vault_file, vault_record};
 
 const SECTOR_SIZE: usize = 512;
 const GPT_HEADER_LBA: usize = 1;
@@ -113,6 +113,22 @@ fn run() -> Result<(), String> {
             println!("The source disk image was left unchanged.");
             Ok(())
         }
+        Some("export-agent-db") => {
+            let disk_path = next_path(&mut args, "disk image")?;
+            let output_path = next_path(&mut args, "agent database output")?;
+            reject_extra_args(args)?;
+            let disk = read_disk(&disk_path)?;
+            validate_gpt(&disk)?;
+            let database = extract_agent_database(&disk, &development_crypto())?;
+            write_new_file(&output_path, &database)?;
+            println!(
+                "Exported the SimpleX agent database ({} bytes) to {}",
+                database.len(),
+                output_path.display()
+            );
+            println!("The source disk image was left unchanged.");
+            Ok(())
+        }
         _ => Err(usage()),
     }
 }
@@ -135,7 +151,73 @@ fn reject_extra_args(mut args: impl Iterator<Item = std::ffi::OsString>) -> Resu
 }
 
 fn usage() -> String {
-    "usage:\n  vault-backup export <raw-disk-image> <new-archive-file>\n  vault-backup restore <archive-file> <source-raw-disk-image> <new-disk-image> [--allow-rollback]".into()
+    "usage:\n  vault-backup export <raw-disk-image> <new-archive-file>\n  vault-backup restore <archive-file> <source-raw-disk-image> <new-disk-image> [--allow-rollback]\n  vault-backup export-agent-db <raw-disk-image> <new-agent-database>".into()
+}
+
+fn extract_agent_database(
+    disk: &[u8],
+    crypto: &impl VaultCryptoProvider,
+) -> Result<Vec<u8>, String> {
+    let file = vault_file::VaultFileId::AgentDatabase;
+    let mut selected: Option<vault_file::FileMetadata> = None;
+    for slot in 0..vault_file::METADATA_SLOT_COUNT {
+        let block = file
+            .metadata_block(slot)
+            .ok_or_else(|| format!("agent database has no metadata slot {slot}"))?;
+        let mut record = disk_block(disk, block)?;
+        let decoded = vault_file::decode_metadata(crypto, file, &mut record)
+            .map_err(|_| "development crypto provider failed".to_string())?;
+        if let Some(metadata) = decoded {
+            if selected.is_none_or(|current| metadata.generation > current.generation) {
+                selected = Some(metadata);
+            }
+        }
+    }
+    let metadata = selected.ok_or_else(|| {
+        "agent database metadata has no committed record on this disk".to_string()
+    })?;
+    if !metadata.exists {
+        return Err("agent database is marked missing".into());
+    }
+    let mut database = vec![0; metadata.length()];
+    let mut copied = 0;
+    while copied < database.len() {
+        let logical_block = copied / BLOCK_SIZE;
+        let within_block = copied % BLOCK_SIZE;
+        let physical = file
+            .physical_block(logical_block)
+            .ok_or_else(|| "agent database extends past its fixed extent".to_string())?;
+        let block = disk_block(disk, physical)?;
+        let count = (BLOCK_SIZE - within_block).min(database.len() - copied);
+        database[copied..copied + count].copy_from_slice(&block[within_block..within_block + count]);
+        copied += count;
+    }
+    if database.len() < 16 || database.starts_with(b"SQLite format 3") {
+        return Err(
+            "agent database is not an encrypted SQLCipher file; the guest profile was not exported"
+                .into(),
+        );
+    }
+    Ok(database)
+}
+
+fn disk_block(disk: &[u8], block: usize) -> Result<[u8; BLOCK_SIZE], String> {
+    let start = VAULT_PARTITION_START
+        .checked_add(
+            block
+                .checked_mul(BLOCK_SIZE)
+                .ok_or_else(|| "vault block offset overflows".to_string())?,
+        )
+        .ok_or_else(|| "vault block offset overflows".to_string())?;
+    let end = start
+        .checked_add(BLOCK_SIZE)
+        .ok_or_else(|| "vault block end overflows".to_string())?;
+    if end > disk.len() {
+        return Err(format!("vault block {block} extends beyond the disk image"));
+    }
+    let mut record = [0; BLOCK_SIZE];
+    record.copy_from_slice(&disk[start..end]);
+    Ok(record)
 }
 
 fn read_disk(path: &PathBuf) -> Result<Vec<u8>, String> {

@@ -2,12 +2,19 @@
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
-pub const FRAME_WIDTH: u32 = 300;
-pub const FRAME_HEIGHT: u32 = 400;
+pub const FRAME_WIDTH: u32 = 1080;
+pub const FRAME_HEIGHT: u32 = 2340;
 pub const FRAME_BYTES_PER_PIXEL: u32 = 3;
 pub const FRAME_STRIDE_BYTES: u32 = FRAME_WIDTH * FRAME_BYTES_PER_PIXEL;
 pub const FRAME_PIXEL_BYTES: usize = FRAME_STRIDE_BYTES as usize * FRAME_HEIGHT as usize;
 pub const FRAME_FORMAT_RGB8: u32 = 1;
+
+/// Whether a Slint damage interval overlaps an independently drawn overlay.
+pub fn bands_intersect(top: i32, bottom: i32, band_y: u32, band_height: u32) -> bool {
+    let start = i64::from(band_y);
+    let end = start + i64::from(band_height);
+    bottom > top && band_height > 0 && i64::from(top) < end && i64::from(bottom) > start
+}
 
 /// Header followed immediately by `FRAME_PIXEL_BYTES` RGB bytes.
 ///
@@ -21,6 +28,9 @@ pub struct FrameSurfaceHeader {
     pub height: u32,
     pub stride_bytes: u32,
     pub format: u32,
+    /// First changed row in the RGB buffer. The GPU copies only this band.
+    pub damage_y: AtomicU32,
+    pub damage_height: AtomicU32,
 }
 
 impl FrameSurfaceHeader {
@@ -31,16 +41,31 @@ impl FrameSurfaceHeader {
             height: FRAME_HEIGHT,
             stride_bytes: FRAME_STRIDE_BYTES,
             format: FRAME_FORMAT_RGB8,
+            damage_y: AtomicU32::new(0),
+            damage_height: AtomicU32::new(0),
         }
     }
 
     pub fn publish(&self, pixels: &mut [u8], source: &[u8]) -> bool {
+        self.publish_rows(pixels, source, 0, FRAME_HEIGHT)
+    }
+
+    /// Copy one horizontal band. Rows outside it stay as the previous frame.
+    pub fn publish_rows(&self, pixels: &mut [u8], source: &[u8], y: u32, height: u32) -> bool {
         if pixels.len() != FRAME_PIXEL_BYTES || source.len() != FRAME_PIXEL_BYTES {
+            return false;
+        }
+        if height == 0 || y >= FRAME_HEIGHT || height > FRAME_HEIGHT - y {
             return false;
         }
         let odd = self.revision.load(Ordering::Relaxed).wrapping_add(1) | 1;
         self.revision.store(odd, Ordering::Release);
-        pixels.copy_from_slice(source);
+        self.damage_y.store(y, Ordering::Relaxed);
+        self.damage_height.store(height, Ordering::Relaxed);
+        let stride = FRAME_STRIDE_BYTES as usize;
+        let start = y as usize * stride;
+        let bytes = height as usize * stride;
+        pixels[start..start + bytes].copy_from_slice(&source[start..start + bytes]);
         self.revision.store(odd.wrapping_add(1), Ordering::Release);
         true
     }

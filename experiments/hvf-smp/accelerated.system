@@ -1,0 +1,712 @@
+<?xml version='1.0' encoding='utf-8'?>
+<system>
+    <memory_region name="uart0" size="0x1000" phys_addr="0x09000000" />
+    <memory_region name="rtc" size="0x1000" phys_addr="0x09010000" />
+    <memory_region name="rng_mmio" size="0x1000" phys_addr="0x0a001000" />
+    <memory_region name="rng_dma" size="0x2000" phys_addr="0x5fdc0000" />
+    <memory_region name="server_private" size="0x1000" />
+    <memory_region name="c_reference_private" size="0x1000" />
+    <memory_region name="vault_private" size="0x1000" />
+    <memory_region name="notes_view" size="0x1000" />
+    <memory_region name="contacts_view" size="0x1000" />
+    <memory_region name="calendar_view" size="0x1000" />
+    <memory_region name="messages_view" size="0x1000" />
+    <memory_region name="wallet_view" size="0x1000" />
+    <memory_region name="wallet_transfer" size="0x1000" />
+    <memory_region name="wallet_identity_transfer" size="0x1000" />
+    <memory_region name="device_lock_transfer" size="0x1000" />
+    <memory_region name="wallet_scan_job" size="0x1000" />
+    <memory_region name="wallet_heap" size="0x2000000" page_size="0x200000" />
+    <memory_region name="clock_view" size="0x1000" />
+    <memory_region name="notes_touch_mode" size="0x1000" />
+    <memory_region name="notes_transfer" size="0x1000" />
+    <memory_region name="contacts_transfer" size="0x1000" />
+    <memory_region name="calendar_transfer" size="0x1000" />
+    <memory_region name="messages_transfer" size="0x1000" />
+    <memory_region name="messages_vault_transfer" size="0x1000" />
+    <memory_region name="messages_worker_transfer" size="0x1000" />
+    <memory_region name="transcript_mailbox" size="0x200000" page_size="0x200000" />
+    <memory_region name="live_receive_mailbox" size="0x2000" />
+    <memory_region name="navigation_mailbox" size="0x1000" />
+    <memory_region name="snapshot_mailbox" size="0x2000" />
+    <memory_region name="messages_net_tx" size="0x1000" />
+    <memory_region name="settings_view" size="0x1000" />
+    <memory_region name="phone_view" size="0x1000" />
+    <protection_domain name="server" priority="100" passive="true">
+        <program_image path="rust_server.elf" />
+        <map mr="server_private" vaddr="0x40000000" perms="rw" setvar_vaddr="server_private_start" />
+    </protection_domain>
+    <protection_domain name="c_reference" priority="100" passive="true">
+        <program_image path="c_server.elf" />
+        <map mr="c_reference_private" vaddr="0x41000000" perms="rw" />
+    </protection_domain>
+    <protection_domain name="vault" priority="101" passive="true" stack_size="0x80000">
+        <program_image path="rust_vault_disk.elf" />
+        <map mr="vault_private" vaddr="0x42000000" perms="rw" setvar_vaddr="vault_private_start" />
+        <map mr="notes_transfer" vaddr="0x45000000" perms="rw" cached="true" setvar_vaddr="notes_transfer" />
+        <map mr="contacts_transfer" vaddr="0x46000000" perms="rw" cached="true" setvar_vaddr="contacts_transfer" />
+        <map mr="calendar_transfer" vaddr="0x47000000" perms="rw" cached="true" setvar_vaddr="calendar_transfer" />
+        <map mr="messages_vault_transfer" vaddr="0x48000000" perms="rw" cached="true" setvar_vaddr="messages_transfer" />
+        <map mr="photo_read_transfer" vaddr="0x4d000000" perms="rw" cached="true" setvar_vaddr="photo_read_transfer" />
+        <map mr="blk_client_vault_storage_info" vaddr="0x48001000" perms="r" />
+        <map mr="blk_client_vault_request" vaddr="0x48002000" perms="rw" />
+        <map mr="blk_client_vault_response" vaddr="0x48003000" perms="rw" />
+        <map mr="blk_client_vault_data" vaddr="0x48004000" perms="rw" />
+        <map mr="simplex_agent_transfer" vaddr="0x4c_000_000" perms="rw" cached="true" setvar_vaddr="simplex_agent_transfer" />
+        <map mr="wallet_transfer" vaddr="0x4e_000_000" perms="rw" cached="true" setvar_vaddr="wallet_transfer" />
+        <map mr="wallet_identity_transfer" vaddr="0x4e_001_000" perms="rw" cached="true" setvar_vaddr="wallet_identity_transfer" />
+        <map mr="device_lock_transfer" vaddr="0x4f000000" perms="rw" cached="true" setvar_vaddr="device_lock_transfer" />
+    </protection_domain>
+    <protection_domain name="notes_app" priority="100" passive="true" stack_size="0x10000">
+        <program_image path="rust_vault_notes_test.elf" />
+        <map mr="notes_view" vaddr="0x43_000_000" perms="rw" cached="true" setvar_vaddr="app_view" />
+        <map mr="notes_transfer" vaddr="0x44_000_000" perms="rw" cached="true" setvar_vaddr="blob_transfer" />
+        <map mr="notes_touch_mode" vaddr="0x47_000_000" perms="rw" cached="true" setvar_vaddr="notes_touch_mode" />
+    </protection_domain>
+    <protection_domain name="contacts_app" priority="100" passive="true" stack_size="0x10000">
+        <program_image path="rust_vault_contacts_test.elf" />
+        <map mr="contacts_view" vaddr="0x43_000_000" perms="rw" cached="true" setvar_vaddr="app_view" />
+        <map mr="contacts_transfer" vaddr="0x44_000_000" perms="rw" cached="true" setvar_vaddr="blob_transfer" />
+    </protection_domain>
+    <protection_domain name="calendar_app" priority="100" passive="true" stack_size="0x10000">
+        <program_image path="rust_calendar_app.elf" />
+        <map mr="calendar_view" vaddr="0x43_000_000" perms="rw" cached="true" setvar_vaddr="calendar_view" />
+        <map mr="calendar_transfer" vaddr="0x44_000_000" perms="rw" cached="true" setvar_vaddr="blob_transfer" />
+    </protection_domain>
+    <protection_domain name="messages_app" priority="100" passive="true" stack_size="0x40000">
+        <program_image path="rust_messages_agent_app.elf" />
+        <map mr="messages_view" vaddr="0x43_000_000" perms="rw" cached="true" setvar_vaddr="messages_view" />
+        <map mr="messages_vault_transfer" vaddr="0x44_000_000" perms="rw" cached="true" setvar_vaddr="blob_transfer" />
+        <map mr="messages_transfer" vaddr="0x44_001_000" perms="rw" cached="true" setvar_vaddr="messages_ui_transfer" />
+        <map mr="messages_worker_transfer" vaddr="0x44_002_000" perms="rw" cached="true" setvar_vaddr="messages_worker_transfer" />
+        <map mr="messages_net_tx" vaddr="0x49_000_000" perms="rw" setvar_vaddr="messages_net_tx" />
+        <map mr="simplex_ipc_page" vaddr="0x4a000000" perms="rw" cached="true" setvar_vaddr="simplex_ipc_page" />
+    </protection_domain>
+    <protection_domain name="settings_app" priority="100" passive="true">
+        <program_image path="rust_settings_app.elf" />
+        <map mr="settings_view" vaddr="0x43_000_000" perms="rw" cached="true" setvar_vaddr="settings_view" />
+    </protection_domain>
+    <protection_domain name="phone_app" priority="100" passive="true">
+        <program_image path="rust_phone_app.elf" />
+        <map mr="phone_view" vaddr="0x43_000_000" perms="rw" cached="true" setvar_vaddr="phone_view" />
+    </protection_domain>
+    <protection_domain name="wallet_app" priority="100" passive="true" stack_size="0x20000">
+        <program_image path="rust_wallet_app.elf" />
+        <map mr="wallet_view" vaddr="0x43_000_000" perms="rw" cached="true" setvar_vaddr="wallet_view" />
+        <map mr="wallet_transfer" vaddr="0x44_000_000" perms="rw" cached="true" setvar_vaddr="blob_transfer" />
+        <map mr="wallet_identity_transfer" vaddr="0x44_001_000" perms="rw" cached="true" setvar_vaddr="wallet_identity_transfer" />
+        <map mr="wallet_scan_job" vaddr="0x45_000_000" perms="rw" cached="true" setvar_vaddr="scan_job" />
+        <map mr="wallet_heap" vaddr="0x46_000_000" perms="rw" cached="true" setvar_vaddr="wallet_heap" />
+        <map mr="haskell_tcp_io" vaddr="0x49002000" perms="rw" cached="true" setvar_vaddr="haskell_tcp_page" />
+        <map mr="scan_mailbox_1" vaddr="0x5a000000" perms="rw" setvar_vaddr="scan_mailbox_1" />
+        <map mr="scan_mailbox_2" vaddr="0x5a400000" perms="rw" setvar_vaddr="scan_mailbox_2" />
+        <map mr="scan_mailbox_3" vaddr="0x5a800000" perms="rw" setvar_vaddr="scan_mailbox_3" />
+    </protection_domain>
+    <protection_domain name="scan_worker" priority="101" passive="true" stack_size="0x10000">
+        <program_image path="rust_scan_worker.elf" />
+        <map mr="wallet_scan_job" vaddr="0x45_000_000" perms="rw" cached="true" setvar_vaddr="scan_job" />
+        <map mr="haskell_tcp_io" vaddr="0x49003000" perms="rw" cached="true" setvar_vaddr="haskell_tcp_page" />
+    </protection_domain>
+    <protection_domain name="client" priority="99" budget="3_000" period="10_000">
+        <program_image path="rust_client.elf" />
+        <protection_domain name="crasher" priority="98" id="1" budget="1_000" period="10_000">
+            <program_image path="rust_crasher.elf" />
+        </protection_domain>
+    </protection_domain>
+    <protection_domain name="clock" priority="101" budget="1_000" period="10_000">
+        <program_image path="rust_clock.elf" />
+        <map mr="rtc" vaddr="0x50000000" perms="rw" cached="false" setvar_vaddr="rtc_regs" />
+        <map mr="clock_view" vaddr="0x50100000" perms="rw" cached="true" setvar_vaddr="clock_view" />
+        <irq irq="34" id="0" />
+    </protection_domain>
+    <protection_domain name="entropy_rng" priority="102" passive="true" stack_size="0x4000">
+        <program_image path="rust_entropy_rng.elf" />
+        <map mr="rng_mmio" vaddr="0x52000000" perms="rw" cached="false" setvar_vaddr="rng_regs" />
+        <map mr="rng_dma" vaddr="0x53000000" perms="rw" cached="false" setvar_vaddr="rng_dma" />
+    </protection_domain>
+    <protection_domain name="fake_modem" priority="102" passive="true">
+        <program_image path="rust_fake_modem.elf" />
+    </protection_domain>
+    <protection_domain name="console" priority="96" budget="3_000" period="10_000">
+        <program_image path="rust_console.elf" />
+        <map mr="uart0" vaddr="0x51000000" perms="rw" cached="false" setvar_vaddr="uart_regs" />
+        <irq irq="33" id="2" />
+    </protection_domain>
+    <channel>
+        <end pd="server" id="0" notify="false" />
+        <end pd="client" id="0" pp="true" notify="false" />
+    </channel>
+    <channel>
+        <end pd="c_reference" id="0" notify="false" />
+        <end pd="client" id="4" pp="true" notify="false" />
+    </channel>
+    <channel>
+        <end pd="vault" id="1" notify="false" />
+        <end pd="client" id="6" pp="true" notify="false" />
+    </channel>
+    <channel>
+        <end pd="vault" id="2" notify="false" />
+        <end pd="crasher" id="1" pp="true" notify="false" />
+    </channel>
+    <channel>
+        <end pd="vault" id="3" notify="false" />
+        <end pd="notes_app" id="0" pp="true" notify="false" />
+    </channel>
+    <channel>
+        <end pd="vault" id="4" notify="false" />
+        <end pd="contacts_app" id="0" pp="true" notify="false" />
+    </channel>
+    <channel>
+        <end pd="vault" id="5" notify="false" />
+        <end pd="calendar_app" id="0" pp="true" notify="false" />
+    </channel>
+    <channel>
+        <end pd="vault" id="6" notify="false" />
+        <end pd="messages_app" id="0" pp="true" notify="false" />
+    </channel>
+    <channel>
+        <end pd="vault" id="8" notify="false" />
+        <end pd="wallet_app" id="0" pp="true" notify="false" />
+    </channel>
+    <channel>
+        <end pd="clock" id="3" notify="false" />
+        <end pd="messages_app" id="2" pp="true" notify="false" />
+    </channel>
+    <channel>
+        <end pd="entropy_rng" id="1" notify="false" />
+        <end pd="messages_app" id="3" pp="true" notify="false" />
+    </channel>
+    <channel>
+        <end pd="client" id="7" pp="true" notify="false" />
+        <end pd="notes_app" id="1" notify="false" />
+    </channel>
+    <channel>
+        <end pd="client" id="8" pp="true" notify="false" />
+        <end pd="contacts_app" id="1" notify="false" />
+    </channel>
+    <channel>
+        <end pd="client" id="10" pp="true" notify="false" />
+        <end pd="calendar_app" id="1" notify="false" />
+    </channel>
+    <channel>
+        <end pd="client" id="11" pp="true" notify="false" />
+        <end pd="messages_app" id="1" notify="false" />
+    </channel>
+    <channel>
+        <end pd="client" id="1" />
+        <end pd="crasher" id="0" notify="false" />
+    </channel>
+    <channel>
+        <end pd="console" id="0" pp="true" notify="false" />
+        <end pd="client" id="2" notify="false" />
+    </channel>
+    <channel>
+        <end pd="clock" id="1" />
+        <end pd="console" id="1" notify="false" />
+    </channel>
+    <channel>
+        <end pd="client" id="3" />
+        <end pd="console" id="3" notify="false" />
+    </channel>
+    <channel>
+        <end pd="console" id="4" pp="true" notify="false" />
+        <end pd="clock" id="2" notify="false" />
+    </channel>
+    <channel>
+        <end pd="console" id="5" />
+        <end pd="client" id="5" notify="false" />
+    </channel>
+    <channel>
+        <end pd="entropy_rng" id="0" notify="false" />
+        <end pd="client" id="9" pp="true" notify="false" />
+    </channel>
+    <channel>
+        <end pd="fake_modem" id="0" notify="false" />
+        <end pd="client" id="12" pp="true" notify="false" />
+    </channel>
+    <channel>
+        <end pd="fake_modem" id="1" notify="false" />
+        <end pd="phone_app" id="1" pp="true" notify="false" />
+    </channel>
+    <channel>
+        <end pd="settings_app" id="0" notify="false" />
+        <end pd="client" id="13" pp="true" notify="false" />
+    </channel>
+    <channel>
+        <end pd="phone_app" id="0" notify="false" />
+        <end pd="client" id="14" pp="true" notify="false" />
+    </channel>
+    <memory_region name="virtio_mmio@a000200/drivers/blk/virtio/regs" size="0x1000" phys_addr="0xa000000" />
+    <memory_region name="virtio_mmio@a000200/drivers/blk/virtio/virtio_headers" size="0x10000" phys_addr="0x5fff0000" />
+    <memory_region name="virtio_mmio@a000200/drivers/blk/virtio/virtio_metadata" size="0x200000" phys_addr="0x5fdf0000" />
+    <memory_region name="blk_driver_storage_info" size="0x1000" />
+    <memory_region name="blk_driver_request" size="0x1000" />
+    <memory_region name="blk_driver_response" size="0x1000" />
+    <memory_region name="blk_driver_data" size="0xa000" phys_addr="0x5fde6000" />
+    <memory_region name="blk_client_vault_storage_info" size="0x1000" />
+    <memory_region name="blk_client_vault_request" size="0x1000" />
+    <memory_region name="blk_client_vault_response" size="0x1000" />
+    <memory_region name="blk_client_vault_data" size="0xa000" phys_addr="0x5fddc000" />
+    <protection_domain name="blk_driver" priority="200" stack_size="0x2000">
+        <program_image path="blk_driver.elf" />
+        <map mr="virtio_mmio@a000200/drivers/blk/virtio/regs" vaddr="0x20000000" perms="rw" cached="false" />
+        <map mr="virtio_mmio@a000200/drivers/blk/virtio/virtio_headers" vaddr="0x20001000" perms="rw" cached="false" />
+        <map mr="virtio_mmio@a000200/drivers/blk/virtio/virtio_metadata" vaddr="0x20200000" perms="rw" cached="false" />
+        <map mr="blk_driver_storage_info" vaddr="0x20400000" perms="rw" />
+        <map mr="blk_driver_request" vaddr="0x20401000" perms="rw" />
+        <map mr="blk_driver_response" vaddr="0x20402000" perms="rw" />
+        <irq irq="49" id="0" trigger="edge" />
+    </protection_domain>
+    <protection_domain name="blk_virt" priority="199" stack_size="0x2000">
+        <program_image path="blk_virt.elf" />
+        <map mr="blk_driver_storage_info" vaddr="0x20000000" perms="r" />
+        <map mr="blk_driver_request" vaddr="0x20001000" perms="rw" />
+        <map mr="blk_driver_response" vaddr="0x20002000" perms="rw" />
+        <map mr="blk_driver_data" vaddr="0x20003000" perms="rw" />
+        <map mr="blk_client_vault_storage_info" vaddr="0x2000d000" perms="rw" />
+        <map mr="blk_client_vault_request" vaddr="0x2000e000" perms="rw" />
+        <map mr="blk_client_vault_response" vaddr="0x2000f000" perms="rw" />
+        <map mr="blk_client_vault_data" vaddr="0x20010000" perms="rw" />
+    </protection_domain>
+    <channel>
+        <end pd="blk_virt" id="0" />
+        <end pd="blk_driver" id="1" />
+    </channel>
+    <channel>
+        <end pd="blk_virt" id="1" />
+        <end pd="vault" id="0" />
+    </channel>
+    <protection_domain name="simplex_agent" priority="100" passive="true" stack_size="0x100000">
+        <program_image path="agentstore_probe.elf" />
+        <map mr="simplex_agent_transfer" vaddr="0x44_000_000" perms="rw" cached="true" setvar_vaddr="blob_transfer" />
+        <map mr="haskell_tcp_io" vaddr="0x49001000" perms="rw" cached="true" setvar_vaddr="haskell_tcp_page" />
+        <map mr="simplex_ipc_page" vaddr="0x4a000000" perms="rw" cached="true" setvar_vaddr="simplex_ipc_page" />
+    </protection_domain>
+    <channel>
+        <end pd="vault" id="7" notify="false" />
+        <end pd="simplex_agent" id="0" notify="false" pp="true" />
+    </channel>
+    <channel>
+        <end pd="clock" id="4" notify="false" />
+        <end pd="simplex_agent" id="2" notify="false" pp="true" />
+    </channel>
+    <channel>
+        <end pd="entropy_rng" id="2" notify="false" />
+        <end pd="simplex_agent" id="3" notify="false" pp="true" />
+    </channel>
+    <channel>
+        <end pd="entropy_rng" id="3" notify="false" />
+        <end pd="wallet_app" id="4" notify="false" pp="true" />
+    </channel>
+    <memory_region name="virtio_mmio@a000000/drivers/network/virtio/mmio/hw_ring_buffer" size="0x10000" phys_addr="0x5fdcc000" />
+    <memory_region name="virtio_mmio@a000000/net/queue/ethernet_driver/net_virt_rx/free" size="0x3000" />
+    <memory_region name="virtio_mmio@a000000/net/queue/ethernet_driver/net_virt_rx/active" size="0x3000" />
+    <memory_region name="virtio_mmio@a000000/net/rx/data/device" size="0x100000" phys_addr="0x5fcc0000" />
+    <memory_region name="virtio_mmio@a000000/net/rx/virt_metadata" size="0x1000" />
+    <memory_region name="virtio_mmio@a000000/net/queue/ethernet_driver/net_virt_tx/free" size="0x3000" />
+    <memory_region name="virtio_mmio@a000000/net/queue/ethernet_driver/net_virt_tx/active" size="0x3000" />
+    <memory_region name="virtio_mmio@a000000/net/queue/net_virt_rx/net_copier/free" size="0x3000" />
+    <memory_region name="virtio_mmio@a000000/net/queue/net_virt_rx/net_copier/active" size="0x3000" />
+    <memory_region name="virtio_mmio@a000000/net/queue/net_copier/dhcp_client/free" size="0x3000" />
+    <memory_region name="virtio_mmio@a000000/net/queue/net_copier/dhcp_client/active" size="0x3000" />
+    <memory_region name="virtio_mmio@a000000/net/rx/data/client/dhcp_client" size="0x100000" />
+    <memory_region name="virtio_mmio@a000000/net/queue/net_virt_tx/dhcp_client/free" size="0x3000" />
+    <memory_region name="virtio_mmio@a000000/net/queue/net_virt_tx/dhcp_client/active" size="0x3000" />
+    <memory_region name="virtio_mmio@a000000/net/tx/data/client/dhcp_client" size="0x100000" phys_addr="0x5fbc0000" />
+    <memory_region name="virtio_mmio@a000000/net/lib_sddf_lwip/dhcp_client" size="0xe000" />
+    <protection_domain name="timer_driver" priority="130" passive="true">
+        <program_image path="timer_driver.elf" />
+        <map mr="hvf_timer_shared" vaddr="0x50000000" perms="rw" cached="true" setvar_vaddr="hvf_timer_state" />
+    </protection_domain>
+    <protection_domain name="ethernet_driver" priority="127" budget="4000" period="10000">
+        <program_image path="eth_driver.elf" />
+        <map mr="virtio_mmio@a000200/drivers/blk/virtio/regs" vaddr="0x20000000" perms="rw" cached="false" />
+        <map mr="virtio_mmio@a000000/drivers/network/virtio/mmio/hw_ring_buffer" vaddr="0x20001000" perms="rw" cached="true" />
+        <map mr="virtio_mmio@a000000/net/queue/ethernet_driver/net_virt_rx/free" vaddr="0x20011000" perms="rw" />
+        <map mr="virtio_mmio@a000000/net/queue/ethernet_driver/net_virt_rx/active" vaddr="0x20014000" perms="rw" />
+        <map mr="virtio_mmio@a000000/net/queue/ethernet_driver/net_virt_tx/free" vaddr="0x20017000" perms="rw" />
+        <map mr="virtio_mmio@a000000/net/queue/ethernet_driver/net_virt_tx/active" vaddr="0x2001a000" perms="rw" />
+        <irq irq="48" id="0" trigger="edge" />
+    </protection_domain>
+    <protection_domain name="net_virt_tx" priority="125" budget="4000" period="10000">
+        <program_image path="network_virt_tx.elf" />
+        <map mr="virtio_mmio@a000000/net/queue/ethernet_driver/net_virt_tx/free" vaddr="0x20000000" perms="rw" />
+        <map mr="virtio_mmio@a000000/net/queue/ethernet_driver/net_virt_tx/active" vaddr="0x20003000" perms="rw" />
+        <map mr="virtio_mmio@a000000/net/queue/net_virt_tx/dhcp_client/free" vaddr="0x20006000" perms="rw" />
+        <map mr="virtio_mmio@a000000/net/queue/net_virt_tx/dhcp_client/active" vaddr="0x20009000" perms="rw" />
+        <map mr="virtio_mmio@a000000/net/tx/data/client/dhcp_client" vaddr="0x2000c000" perms="r" />
+    </protection_domain>
+    <protection_domain name="net_virt_rx" priority="126" budget="4000" period="10000">
+        <program_image path="network_virt_rx.elf" />
+        <map mr="virtio_mmio@a000000/net/queue/ethernet_driver/net_virt_rx/free" vaddr="0x20000000" perms="rw" />
+        <map mr="virtio_mmio@a000000/net/queue/ethernet_driver/net_virt_rx/active" vaddr="0x20003000" perms="rw" />
+        <map mr="virtio_mmio@a000000/net/rx/data/device" vaddr="0x20006000" perms="r" />
+        <map mr="virtio_mmio@a000000/net/rx/virt_metadata" vaddr="0x20106000" perms="rw" />
+        <map mr="virtio_mmio@a000000/net/queue/net_virt_rx/net_copier/free" vaddr="0x20107000" perms="rw" />
+        <map mr="virtio_mmio@a000000/net/queue/net_virt_rx/net_copier/active" vaddr="0x2010a000" perms="rw" />
+    </protection_domain>
+    <protection_domain name="dhcp_client" priority="123" budget="8000" period="10000">
+        <program_image path="dhcp_client.elf" />
+        <map mr="virtio_mmio@a000000/net/queue/net_copier/dhcp_client/free" vaddr="0x20000000" perms="rw" />
+        <map mr="virtio_mmio@a000000/net/queue/net_copier/dhcp_client/active" vaddr="0x20003000" perms="rw" />
+        <map mr="virtio_mmio@a000000/net/rx/data/client/dhcp_client" vaddr="0x20006000" perms="rw" />
+        <map mr="virtio_mmio@a000000/net/queue/net_virt_tx/dhcp_client/free" vaddr="0x20106000" perms="rw" />
+        <map mr="virtio_mmio@a000000/net/queue/net_virt_tx/dhcp_client/active" vaddr="0x20109000" perms="rw" />
+        <map mr="virtio_mmio@a000000/net/tx/data/client/dhcp_client" vaddr="0x2010c000" perms="rw" />
+        <map mr="virtio_mmio@a000000/net/lib_sddf_lwip/dhcp_client" vaddr="0x2020c000" perms="rw" />
+        <map mr="haskell_tcp_io" vaddr="0x49000000" perms="rw" cached="true" setvar_vaddr="haskell_tcp_page" />
+    </protection_domain>
+    <protection_domain name="net_copier" priority="124" budget="4000" period="10000">
+        <program_image path="network_copy.elf" />
+        <map mr="virtio_mmio@a000000/net/queue/net_virt_rx/net_copier/free" vaddr="0x20000000" perms="rw" />
+        <map mr="virtio_mmio@a000000/net/queue/net_virt_rx/net_copier/active" vaddr="0x20003000" perms="rw" />
+        <map mr="virtio_mmio@a000000/net/queue/net_copier/dhcp_client/free" vaddr="0x20006000" perms="rw" />
+        <map mr="virtio_mmio@a000000/net/queue/net_copier/dhcp_client/active" vaddr="0x20009000" perms="rw" />
+        <map mr="virtio_mmio@a000000/net/rx/data/device" vaddr="0x2000c000" perms="rw" />
+        <map mr="virtio_mmio@a000000/net/rx/data/client/dhcp_client" vaddr="0x2010c000" perms="rw" />
+    </protection_domain>
+    <channel>
+        <end pd="ethernet_driver" id="1" />
+        <end pd="net_virt_rx" id="0" />
+    </channel>
+    <channel>
+        <end pd="ethernet_driver" id="2" />
+        <end pd="net_virt_tx" id="0" />
+    </channel>
+    <channel>
+        <end pd="net_virt_rx" id="1" />
+        <end pd="net_copier" id="0" />
+    </channel>
+    <channel>
+        <end pd="net_copier" id="1" />
+        <end pd="dhcp_client" id="0" />
+    </channel>
+    <channel>
+        <end pd="net_virt_tx" id="1" />
+        <end pd="dhcp_client" id="1" />
+    </channel>
+    <channel>
+        <end pd="timer_driver" id="1" />
+        <end pd="dhcp_client" id="2" notify="false" pp="true" />
+    </channel>
+    <memory_region name="haskell_tcp_io" size="0x1000" />
+    <channel>
+        <end pd="simplex_agent" id="1" pp="true" notify="false" />
+        <end pd="dhcp_client" id="3" notify="false" />
+    </channel>
+    <channel>
+        <end pd="wallet_app" id="2" pp="true" notify="false" />
+        <end pd="dhcp_client" id="4" notify="false" />
+    </channel>
+    <channel>
+        <end pd="slint_ui" id="7" pp="true" notify="false" />
+        <end pd="dhcp_client" id="5" notify="false" />
+    </channel>
+    <channel>
+        <end pd="scan_worker" id="1" pp="true" notify="false" />
+        <end pd="dhcp_client" id="6" notify="false" />
+    </channel>
+    <memory_region name="virtio_regs" size="0x10_000" page_size="0x1_000" phys_addr="0xa003000" />
+    <memory_region name="virtio_metadata" size="0x200_000" page_size="0x200_000" />
+    <memory_region name="virtio_data" size="0x200_000" page_size="0x200_000" />
+    <memory_region name="gpu_driver_events" size="0x1_000" page_size="0x1_000" />
+    <memory_region name="gpu_driver_req_queue" size="0x200_000" page_size="0x200_000" />
+    <memory_region name="gpu_driver_resp_queue" size="0x200_000" page_size="0x200_000" />
+    <memory_region name="gpu_driver_data" size="0x1_000" page_size="0x1_000" />
+    <memory_region name="gpu_client_events" size="0x1_000" page_size="0x1_000" />
+    <memory_region name="gpu_client_req_queue" size="0x200_000" page_size="0x200_000" />
+    <memory_region name="gpu_client_resp_queue" size="0x200_000" page_size="0x200_000" />
+    <memory_region name="gpu_client_data" size="0x1000_000" page_size="0x200_000" />
+    <protection_domain name="gpu_driver" priority="254" stack_size="0x10000">
+        <program_image path="gpu_driver.elf" />
+        <map mr="virtio_regs" vaddr="0x2_000_000" perms="rw" cached="false" setvar_vaddr="virtio_regs" />
+        <map mr="virtio_metadata" vaddr="0x60_000_000" perms="rw" cached="false" setvar_vaddr="virtio_metadata" />
+        <map mr="virtio_data" vaddr="0x60_200_000" perms="rw" cached="false" setvar_vaddr="virtio_data" />
+        <setvar symbol="virtio_metadata_paddr" region_paddr="virtio_metadata" />
+        <setvar symbol="virtio_data_paddr" region_paddr="virtio_data" />
+        <map mr="gpu_driver_events" vaddr="0x40_000_000" perms="rw" cached="false" setvar_vaddr="gpu_events" />
+        <map mr="gpu_driver_req_queue" vaddr="0x40_200_000" perms="rw" cached="false" setvar_vaddr="gpu_req_queue" />
+        <map mr="gpu_driver_resp_queue" vaddr="0x40_400_000" perms="rw" cached="false" setvar_vaddr="gpu_resp_queue" />
+        <map mr="gpu_driver_data" vaddr="0x40_600_000" perms="rw" cached="true" setvar_vaddr="gpu_driver_data" />
+        <setvar symbol="gpu_client_data_paddr" region_paddr="gpu_client_data" />
+        <irq irq="79" id="0" trigger="edge" />
+    </protection_domain>
+    <protection_domain name="gpu_virt" priority="121" stack_size="0x10000">
+        <program_image path="gpu_virt.elf" />
+        <map mr="gpu_driver_events" vaddr="0x40000000" perms="rw" cached="false" setvar_vaddr="gpu_driver_events" />
+        <map mr="gpu_driver_req_queue" vaddr="0x40200000" perms="rw" cached="false" setvar_vaddr="gpu_driver_req_queue" />
+        <map mr="gpu_driver_resp_queue" vaddr="0x40400000" perms="rw" cached="false" setvar_vaddr="gpu_driver_resp_queue" />
+        <map mr="gpu_driver_data" vaddr="0x40600000" perms="rw" cached="true" setvar_vaddr="gpu_driver_data" />
+        <map mr="gpu_client_events" vaddr="0x30000000" perms="rw" cached="false" setvar_vaddr="gpu_client_events" />
+        <map mr="gpu_client_req_queue" vaddr="0x30200000" perms="rw" cached="false" setvar_vaddr="gpu_client_req_queue" />
+        <map mr="gpu_client_resp_queue" vaddr="0x30400000" perms="rw" cached="false" setvar_vaddr="gpu_client_resp_queue" />
+        <map mr="gpu_client_data" vaddr="0x30600000" perms="rw" cached="true" setvar_vaddr="gpu_client_data" />
+    </protection_domain>
+    <protection_domain name="gpu_client" priority="120" stack_size="0x10000">
+        <program_image path="gpu_client.elf" />
+        <map mr="gpu_client_events" vaddr="0x40_000_000" perms="rw" cached="false" setvar_vaddr="gpu_events" />
+        <map mr="gpu_client_req_queue" vaddr="0x40_200_000" perms="rw" cached="false" setvar_vaddr="gpu_req_queue" />
+        <map mr="gpu_client_resp_queue" vaddr="0x40_400_000" perms="rw" cached="false" setvar_vaddr="gpu_resp_queue" />
+        <map mr="gpu_client_data" vaddr="0x40_800_000" perms="rw" cached="true" setvar_vaddr="gpu_data" />
+        <map mr="ui_focus" vaddr="0x42_000_000" perms="r" cached="true" setvar_vaddr="ui_focus" />
+        <map mr="ui_pointer" vaddr="0x47_000_000" perms="r" cached="true" setvar_vaddr="ui_pointer" />
+        <map mr="slint_frame" vaddr="0x4d_000_000" perms="r" cached="true" setvar_vaddr="slint_frame" />
+        <map mr="notes_view" vaddr="0x43_000_000" perms="r" cached="true" setvar_vaddr="notes_view" />
+        <map mr="contacts_view" vaddr="0x44_000_000" perms="r" cached="true" setvar_vaddr="contacts_view" />
+        <map mr="calculator_view" vaddr="0x45_000_000" perms="r" cached="true" setvar_vaddr="calculator_view" />
+        <map mr="calendar_view" vaddr="0x48_000_000" perms="r" cached="true" setvar_vaddr="calendar_view" />
+        <map mr="messages_view" vaddr="0x49_000_000" perms="r" cached="true" setvar_vaddr="messages_view" />
+        <map mr="settings_view" vaddr="0x4a_000_000" perms="r" cached="true" setvar_vaddr="settings_view" />
+        <map mr="phone_view" vaddr="0x4b_000_000" perms="r" cached="true" setvar_vaddr="phone_view" />
+        <map mr="clock_view" vaddr="0x46_000_000" perms="r" cached="true" setvar_vaddr="clock_view" />
+    </protection_domain>
+    <channel>
+        <end pd="gpu_client" id="0" />
+        <end pd="gpu_virt" id="1" />
+    </channel>
+    <channel>
+        <end pd="gpu_client" id="1" pp="true" />
+        <end pd="timer_driver" id="2" />
+    </channel>
+    <channel>
+        <end pd="gpu_virt" id="0" />
+        <end pd="gpu_driver" id="1" />
+    </channel>
+    <memory_region name="input_queues" size="0x4_000" page_size="0x1_000" />
+    <memory_region name="input_handoff" size="0x1_000" page_size="0x1_000" />
+    <memory_region name="ui_focus" size="0x1_000" page_size="0x1_000" />
+    <memory_region name="ui_pointer" size="0x1_000" page_size="0x1_000" />
+    <memory_region name="calculator_view" size="0x1_000" page_size="0x1_000" />
+    <memory_region name="slint_frame" size="0x800000" page_size="0x200000" />
+    <memory_region name="slint_heap" size="0x2000000" page_size="0x200000" />
+    <memory_region name="photo_heap" size="0x4000000" page_size="0x200000" />
+    <memory_region name="photo_mailbox" size="0x200000" page_size="0x200000" />
+    <memory_region name="photo_read_mailbox" size="0x200000" page_size="0x200000" />
+    <memory_region name="photo_read_heap" size="0x200000" page_size="0x200000" />
+    <memory_region name="photo_read_transfer" size="0x1000" />
+    <memory_region name="page_pictures" size="0xD200000" page_size="0x200000" />
+    <protection_domain name="input_driver" priority="254" budget="1_000" period="10_000" stack_size="0x10000">
+        <program_image path="input_driver.elf" />
+        <map mr="virtio_regs" vaddr="0x2_000_000" perms="rw" cached="false" setvar_vaddr="virtio_regs" />
+        <map mr="input_queues" vaddr="0x40_000_000" perms="rw" cached="false" setvar_vaddr="input_queues" />
+        <map mr="input_handoff" vaddr="0x41_000_000" perms="rw" cached="true" setvar_vaddr="input_handoff" />
+        <setvar symbol="input_queues_paddr" region_paddr="input_queues" />
+        <irq irq="78" id="0" trigger="edge" />
+        <irq irq="77" id="1" trigger="edge" />
+    </protection_domain>
+    <protection_domain name="input_service" priority="119" budget="8000" period="10000">
+        <program_image path="input_service.elf" />
+        <map mr="input_handoff" vaddr="0x41_000_000" perms="rw" cached="true" setvar_vaddr="input_handoff" />
+        <map mr="ui_focus" vaddr="0x42_000_000" perms="rw" cached="true" setvar_vaddr="ui_focus" />
+        <map mr="ui_pointer" vaddr="0x44_000_000" perms="rw" cached="true" setvar_vaddr="ui_pointer" />
+        <map mr="notes_touch_mode" vaddr="0x43_000_000" perms="r" cached="true" setvar_vaddr="notes_touch_mode" />
+    </protection_domain>
+    <protection_domain name="calculator_app" priority="100" passive="true">
+        <program_image path="rust_calculator_app.elf" />
+        <map mr="calculator_view" vaddr="0x43_000_000" perms="rw" cached="true" setvar_vaddr="calculator_view" />
+    </protection_domain>
+    <protection_domain name="slint_ui" priority="99" budget="2500" period="10000" stack_size="0x20000">
+        <program_image path="slint_notes_utm.elf" />
+        <map mr="slint_heap" vaddr="0x48_000_000" perms="rw" cached="true" setvar_vaddr="slint_heap" />
+        <map mr="photo_mailbox" vaddr="0x5e_000_000" perms="rw" cached="true" setvar_vaddr="photo_mailbox_region" />
+        <map mr="photo_read_mailbox" vaddr="0x60_000_000" perms="rw" cached="true" setvar_vaddr="photo_read_mailbox" />
+        <map mr="transcript_mailbox" vaddr="0x66_000_000" perms="rw" cached="true" setvar_vaddr="transcript_mailbox" />
+        <map mr="live_receive_mailbox" vaddr="0x68_000_000" perms="rw" cached="true" setvar_vaddr="live_receive_mailbox" />
+        <map mr="navigation_mailbox" vaddr="0x6a_000_000" perms="rw" cached="true" setvar_vaddr="navigation_mailbox" />
+        <map mr="snapshot_mailbox" vaddr="0x6c_000_000" perms="rw" cached="true" setvar_vaddr="snapshot_mailbox" />
+        <map mr="ui_focus" vaddr="0x42_000_000" perms="rw" cached="true" setvar_vaddr="ui_focus" />
+        <map mr="ui_pointer" vaddr="0x47_000_000" perms="r" cached="true" setvar_vaddr="ui_pointer" />
+        <map mr="slint_frame" vaddr="0x4d_000_000" perms="rw" cached="true" setvar_vaddr="slint_frame" />
+        <map mr="page_pictures" vaddr="0x50_000_000" perms="rw" cached="true" setvar_vaddr="page_pictures" />
+        <map mr="notes_transfer" vaddr="0x45_000_000" perms="rw" cached="true" setvar_vaddr="notes_transfer" />
+        <map mr="contacts_transfer" vaddr="0x46_000_000" perms="rw" cached="true" setvar_vaddr="contacts_transfer" />
+        <map mr="calendar_transfer" vaddr="0x4a_000_000" perms="rw" cached="true" setvar_vaddr="calendar_transfer" />
+        <map mr="messages_transfer" vaddr="0x4b_000_000" perms="rw" cached="true" setvar_vaddr="messages_transfer" />
+        <map mr="wallet_transfer" vaddr="0x4e_000_000" perms="rw" cached="true" setvar_vaddr="wallet_transfer" />
+        <map mr="device_lock_transfer" vaddr="0x6e000000" perms="rw" cached="true" setvar_vaddr="device_lock_transfer" />
+        <map mr="haskell_tcp_io" vaddr="0x4f_000_000" perms="rw" cached="true" setvar_vaddr="haskell_tcp_page" />
+    </protection_domain>
+    <protection_domain name="photo_reader" priority="98" budget="2500" period="10000" stack_size="0x20000">
+        <program_image path="slint_photo_reader.elf" />
+        <map mr="photo_read_mailbox" vaddr="0x60_000_000" perms="rw" cached="true" setvar_vaddr="photo_read_mailbox" />
+        <map mr="photo_read_transfer" vaddr="0x62_000_000" perms="rw" cached="true" setvar_vaddr="photo_read_transfer" />
+        <map mr="photo_read_heap" vaddr="0x64_000_000" perms="rw" cached="true" setvar_vaddr="photo_read_heap" />
+    </protection_domain>
+    <channel>
+        <end pd="slint_ui" id="10" notify="true" />
+        <end pd="photo_reader" id="0" notify="true" />
+    </channel>
+    <protection_domain name="transcript_worker" priority="98" budget="2500" period="10000" stack_size="0x20000">
+        <program_image path="slint_transcript_worker.elf" />
+        <map mr="transcript_mailbox" vaddr="0x60_000_000" perms="rw" cached="true" setvar_vaddr="transcript_mailbox" />
+        <map mr="live_receive_mailbox" vaddr="0x64_000_000" perms="rw" cached="true" setvar_vaddr="live_receive_mailbox" />
+        <map mr="navigation_mailbox" vaddr="0x66_000_000" perms="rw" cached="true" setvar_vaddr="navigation_mailbox" />
+        <map mr="snapshot_mailbox" vaddr="0x68_000_000" perms="rw" cached="true" setvar_vaddr="snapshot_mailbox" />
+        <map mr="messages_worker_transfer" vaddr="0x62_000_000" perms="rw" cached="true" setvar_vaddr="messages_worker_transfer" />
+    </protection_domain>
+    <channel>
+        <end pd="slint_ui" id="11" notify="true" />
+        <end pd="transcript_worker" id="0" notify="true" />
+    </channel>
+    <channel>
+        <end pd="slint_ui" id="12" notify="true" />
+        <end pd="transcript_worker" id="2" notify="true" />
+    </channel>
+    <channel>
+        <end pd="slint_ui" id="13" notify="true" />
+        <end pd="transcript_worker" id="3" notify="true" />
+    </channel>
+    <channel>
+        <end pd="slint_ui" id="14" notify="true" />
+        <end pd="transcript_worker" id="4" notify="true" />
+    </channel>
+    <channel>
+        <end pd="messages_app" id="7" notify="false" />
+        <end pd="transcript_worker" id="1" pp="true" notify="false" />
+    </channel>
+    <channel>
+        <end pd="vault" id="9" notify="false" />
+        <end pd="photo_reader" id="1" pp="true" notify="false" />
+    </channel>
+    <channel>
+        <end pd="vault" id="10" notify="false" />
+        <end pd="slint_ui" id="15" pp="true" notify="false" />
+    </channel>
+    <channel>
+        <end pd="entropy_rng" id="4" notify="false" />
+        <end pd="slint_ui" id="16" pp="true" notify="false" />
+    </channel>
+    <protection_domain name="photo_worker" cpu="3" priority="101" budget="2500" period="10000" stack_size="0x20000">
+        <program_image path="slint_photo_worker.elf" />
+        <map mr="photo_heap" vaddr="0x50_000_000" perms="rw" cached="true" setvar_vaddr="photo_heap" />
+        <map mr="photo_mailbox" vaddr="0x60_000_000" perms="rw" cached="true" setvar_vaddr="photo_mailbox_region" />
+    </protection_domain>
+    <channel>
+        <end pd="slint_ui" id="9" notify="true" />
+        <end pd="photo_worker" id="0" notify="true" />
+    </channel>
+    <channel>
+        <end pd="input_driver" id="2" />
+        <end pd="input_service" id="0" />
+    </channel>
+    <channel>
+        <end pd="input_service" id="2" notify="false" />
+        <end pd="notes_app" id="2" notify="false" />
+    </channel>
+    <channel>
+        <end pd="input_service" id="3" notify="false" />
+        <end pd="contacts_app" id="2" notify="false" />
+    </channel>
+    <channel>
+        <end pd="input_service" id="5" notify="false" />
+        <end pd="calculator_app" id="2" notify="false" />
+    </channel>
+    <channel>
+        <end pd="input_service" id="6" notify="false" />
+        <end pd="calendar_app" id="2" notify="false" />
+    </channel>
+    <channel>
+        <end pd="input_service" id="7" notify="false" />
+        <end pd="messages_app" id="6" notify="false" />
+    </channel>
+    <channel>
+        <end pd="input_service" id="8" notify="false" />
+        <end pd="phone_app" id="2" notify="false" />
+    </channel>
+    <channel>
+        <end pd="input_service" id="4" />
+        <end pd="gpu_client" id="2" />
+    </channel>
+    <channel>
+        <end pd="input_service" id="9" notify="true" />
+        <end pd="slint_ui" id="1" notify="true" />
+    </channel>
+    <channel>
+        <end pd="notes_app" id="3" notify="false" />
+        <end pd="slint_ui" id="2" pp="true" notify="false" />
+    </channel>
+    <channel>
+        <end pd="contacts_app" id="3" notify="false" />
+        <end pd="slint_ui" id="3" pp="true" notify="false" />
+    </channel>
+    <channel>
+        <end pd="calendar_app" id="3" notify="false" />
+        <end pd="slint_ui" id="4" pp="true" notify="false" />
+    </channel>
+    <channel>
+        <end pd="messages_app" id="5" notify="true" />
+        <end pd="slint_ui" id="5" pp="true" notify="true" />
+    </channel>
+    <channel>
+        <end pd="wallet_app" id="1" notify="true" />
+        <end pd="slint_ui" id="6" pp="true" notify="true" />
+    </channel>
+    <channel>
+        <end pd="scan_worker" id="0" notify="true" />
+        <end pd="wallet_app" id="3" pp="true" notify="true" />
+    </channel>
+    <memory_region name="simplex_ipc_page" size="0x1000" page_size="0x1000" />
+    <channel>
+        <end pd="simplex_agent" id="5" notify="true" />
+        <end pd="messages_app" id="4" notify="true" />
+    </channel>
+    <channel>
+        <end pd="timer_driver" id="3" />
+        <end pd="simplex_agent" id="4" notify="false" pp="true" />
+    </channel>
+    <memory_region name="simplex_agent_transfer" size="0x1000" page_size="0x1000" />
+    <channel>
+        <end pd="timer_driver" id="4" />
+        <end pd="wallet_app" id="6" pp="true" notify="true" />
+    </channel>
+    <memory_region name="hvf_timer_shared" size="0x1000" />
+    <protection_domain name="timer_poller" priority="1" budget="100" period="1000">
+        <program_image path="timer_poller.elf" />
+        <map mr="hvf_timer_shared" vaddr="0x50000000" perms="rw" cached="true" setvar_vaddr="hvf_timer_state" />
+    </protection_domain>
+    <channel>
+        <end pd="timer_poller" id="0" />
+        <end pd="timer_driver" id="0" />
+    </channel>
+    <channel>
+        <end pd="clock" id="5" notify="false" />
+        <end pd="wallet_app" id="5" pp="true" notify="false" />
+    </channel>
+    <channel>
+        <end pd="timer_driver" id="7" notify="true" />
+        <end pd="slint_ui" id="8" pp="true" notify="true" setvar_id="slint_timer_channel" />
+    </channel>
+    <memory_region name="scan_mailbox_1" size="0x400000" page_size="0x200000" />
+    <memory_region name="wallet_scan_1_heap" size="0x1000000" page_size="0x200000" />
+    <protection_domain name="wallet_scan_1" cpu="1" priority="100" budget="10000" period="10000" stack_size="0x20000">
+        <program_image path="rust_wallet_range_worker.elf" />
+        <map mr="scan_mailbox_1" vaddr="0x50000000" perms="rw" setvar_vaddr="range_mailbox" />
+        <map mr="wallet_scan_1_heap" vaddr="0x52000000" perms="rw" setvar_vaddr="range_heap" />
+    </protection_domain>
+    <channel>
+        <end pd="wallet_app" id="16" notify="true" />
+        <end pd="wallet_scan_1" id="0" notify="false" />
+    </channel>
+    <memory_region name="scan_mailbox_2" size="0x400000" page_size="0x200000" />
+    <memory_region name="wallet_scan_2_heap" size="0x1000000" page_size="0x200000" />
+    <protection_domain name="wallet_scan_2" cpu="2" priority="100" budget="10000" period="10000" stack_size="0x20000">
+        <program_image path="rust_wallet_range_worker.elf" />
+        <map mr="scan_mailbox_2" vaddr="0x50000000" perms="rw" setvar_vaddr="range_mailbox" />
+        <map mr="wallet_scan_2_heap" vaddr="0x52000000" perms="rw" setvar_vaddr="range_heap" />
+    </protection_domain>
+    <channel>
+        <end pd="wallet_app" id="17" notify="true" />
+        <end pd="wallet_scan_2" id="0" notify="false" />
+    </channel>
+    <memory_region name="scan_mailbox_3" size="0x400000" page_size="0x200000" />
+    <memory_region name="wallet_scan_3_heap" size="0x1000000" page_size="0x200000" />
+    <protection_domain name="wallet_scan_3" cpu="3" priority="100" budget="10000" period="10000" stack_size="0x20000">
+        <program_image path="rust_wallet_range_worker.elf" />
+        <map mr="scan_mailbox_3" vaddr="0x50000000" perms="rw" setvar_vaddr="range_mailbox" />
+        <map mr="wallet_scan_3_heap" vaddr="0x52000000" perms="rw" setvar_vaddr="range_heap" />
+    </protection_domain>
+    <channel>
+        <end pd="wallet_app" id="18" notify="true" />
+        <end pd="wallet_scan_3" id="0" notify="false" />
+    </channel>
+</system>

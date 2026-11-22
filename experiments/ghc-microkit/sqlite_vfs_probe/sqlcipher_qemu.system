@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<system>
+    <memory_region name="rng_mmio" size="0x1000" phys_addr="0x0a001000" />
+    <memory_region name="rng_dma" size="0x2000" phys_addr="0x5fdc0000" />
+    <protection_domain name="entropy_rng" priority="102" passive="true" stack_size="0x4000">
+        <program_image path="rust_entropy_rng.elf" />
+        <map mr="rng_mmio" vaddr="0x52000000" perms="rw" cached="false" setvar_vaddr="rng_regs" />
+        <map mr="rng_dma" vaddr="0x53000000" perms="rw" cached="false" setvar_vaddr="rng_dma" />
+    </protection_domain>
+    <protection_domain name="sqlcipher_qemu_probe" priority="100" stack_size="0x10000">
+        <program_image path="sqlcipher_qemu_probe.elf" />
+    </protection_domain>
+    <channel>
+        <end pd="entropy_rng" id="0" notify="false" />
+        <end pd="sqlcipher_qemu_probe" id="0" notify="false" pp="true" />
+    </channel>
+</system>

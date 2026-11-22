@@ -1,0 +1,40 @@
+From: NexatrodeOS diagnostics
+Subject: [PATCH] qcacld: log service-ready host memory requests at INFO
+
+The vendor driver emits the host-memory request tuples only at TARGET_IF
+DEBUG. Some production builds do not expose that trace category at runtime.
+Emit the count and request fields at INFO so a controlled diagnostic boot can
+capture them without changing allocation behavior. Do not print pointers or
+DMA addresses.
+
+--- a/drivers/staging/qca-wifi-host-cmn/target_if/init_deinit/src/init_cmd_api.c
++++ b/drivers/staging/qca-wifi-host-cmn/target_if/init_deinit/src/init_cmd_api.c
+@@ -338,12 +338,23 @@ QDF_STATUS init_deinit_handle_host_mem_req(
+ 	mem_reqs = wmi_extract_host_mem_req_from_service_ready(
+ 					wmi_handle, event, &num_mem_reqs);
+-	if (!num_mem_reqs)
++	target_if_info("WMI service-ready host-mem request count=%u",
++		       num_mem_reqs);
++	if (!num_mem_reqs)
+ 		return QDF_STATUS_SUCCESS;
+ 
+ 	if (num_mem_reqs > MAX_MEM_CHUNKS) {
+ 		target_if_err_rl("num_mem_reqs:%u is out of bounds",
+ 				 num_mem_reqs);
+ 		return QDF_STATUS_E_FAILURE;
+ 	}
+ 
++	for (idx = 0; idx < num_mem_reqs; idx++) {
++		target_if_info("WMI service-ready host-mem req idx=%u id=%u "
++			       "units=%u unit-info=%u unit-bytes=%u",
++			       idx, mem_reqs[idx].req_id,
++			       mem_reqs[idx].num_units,
++			       mem_reqs[idx].num_unit_info,
++			       mem_reqs[idx].unit_size);
++	}
++
+ 	for (i = 0; i < FW_PRIORITY_MAX; i++) {
+ 		for (idx = 0; idx < num_mem_reqs; idx++) {
+ 			status = init_deinit_alloc_num_units(psoc, tgt_hdl,
+-- 
+2.39.2

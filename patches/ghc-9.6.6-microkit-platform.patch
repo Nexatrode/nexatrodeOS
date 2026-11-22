@@ -1,0 +1,203 @@
+--- a/libraries/ghc-boot/GHC/Platform/ArchOS.hs
++++ b/libraries/ghc-boot/GHC/Platform/ArchOS.hs
+@@ -99,6 +99,7 @@
+    | OSHurd
+    | OSWasi
+    | OSGhcjs
++   | OSSeL4
+    deriving (Read, Show, Eq, Ord)
+ 
+ 
+@@ -159,3 +160,4 @@
+   OSHurd      -> "hurd"
+   OSWasi      -> "wasi"
+   OSGhcjs     -> "ghcjs"
++  OSSeL4      -> "sel4"
+--- a/compiler/GHC/Platform.hs
++++ b/compiler/GHC/Platform.hs
+@@ -208,6 +208,7 @@
+ osElfTarget OSHurd      = True
+ osElfTarget OSWasi      = False
+ osElfTarget OSGhcjs     = False
++osElfTarget OSSeL4      = True
+ osElfTarget OSUnknown   = False
+  -- Defaulting to False is safe; it means don't rely on any
+  -- ELF-specific functionality.  It is important to have a default for
+--- a/m4/ghc_convert_os.m4
++++ b/m4/ghc_convert_os.m4
+@@ -52,6 +52,9 @@
+       wasi)
+         $3="wasi"
+         ;;
++      none)
++        $3="sel4"
++        ;;
+       ghcjs*)
+         $3="ghcjs"
+         ;;
+--- a/m4/fptools_set_haskell_platform_vars.m4
++++ b/m4/fptools_set_haskell_platform_vars.m4
+@@ -108,6 +108,9 @@
+             ;;
+         wasi)
+             test -z "[$]2" || eval "[$]2=OSWasi"
++            ;;
++        sel4)
++            test -z "[$]2" || eval "[$]2=OSSeL4"
+             ;;
+         dragonfly|hpux|linuxaout|freebsd2|nextstep2|nextstep3|sunos4|ultrix)
+             test -z "[$]2" || eval "[$]2=OSUnknown"
+--- a/configure.ac
++++ b/configure.ac
+@@ -708,5 +708,5 @@
+ dnl the JS backend. The JS backend uses emscripten to wrap c++ utilities which
+ dnl fails this check, so we avoid it when compiling to JS.
+-if test "$TargetOS" != "ghcjs"; then
++if test "$TargetOS" != "ghcjs" && test "$TargetOS" != "sel4"; then
+    FP_FIND_CXX_STD_LIB
+ fi
+--- a/hadrian/src/Oracles/Flag.hs
++++ b/hadrian/src/Oracles/Flag.hs
+@@ -108,7 +108,8 @@
+ -- | Does the target support threaded RTS?
+ targetSupportsThreadedRts :: Action Bool
+ targetSupportsThreadedRts = do
+     bad_arch <- anyTargetArch [ "wasm32", "javascript" ]
+-    return $ not bad_arch
++    microkit <- anyTargetOs [ "sel4" ]
++    return $ not (bad_arch || microkit)
+
+ -- | Does the target support the -N RTS flag?
+ targetSupportsSMP :: Action Bool
+--- a/hadrian/src/Settings/Builders/Configure.hs
++++ b/hadrian/src/Settings/Builders/Configure.hs
+@@ -30,12 +30,17 @@
+             , builder (Configure libffiPath) ? do
+                 top            <- expr topDirectory
+                 targetPlatform <- getSetting TargetPlatform
++                targetPlatformFull <- getSetting TargetPlatformFull
++                targetOs       <- getSetting TargetOs
+                 way            <- getWay
++                let ffiTarget = if targetOs == "sel4"
++                                then targetPlatformFull
++                                else targetPlatform
+                 pure [ "--prefix=" ++ top -/- libffiPath -/- "inst"
+                      , "--libdir=" ++ top -/- libffiPath -/- "inst/lib"
+                      , "--enable-static=yes"
+                      , "--enable-shared="
+                             ++ (if wayUnit Dynamic way
+                                     then "yes"
+                                     else "no")
+-                     , "--host=" ++ targetPlatform ] ]
++                     , "--host=" ++ ffiTarget ] ]
+--- a/rts/LinkerInternals.h
++++ b/rts/LinkerInternals.h
+@@ -23,5 +23,5 @@
+ || defined(linux_android_HOST_OS) \
+ || defined(freebsd_HOST_OS) || defined(kfreebsdgnu_HOST_OS) \
+ || defined(dragonfly_HOST_OS) || defined(netbsd_HOST_OS) \
+-|| defined(openbsd_HOST_OS) || defined(gnu_HOST_OS)
++|| defined(openbsd_HOST_OS) || defined(gnu_HOST_OS) || defined(sel4_HOST_OS)
+ #  define OBJFORMAT_ELF
+--- a/compiler/GHC/CmmToAsm/AArch64/Ppr.hs
++++ b/compiler/GHC/CmmToAsm/AArch64/Ppr.hs
+@@ -474,63 +474,53 @@
+   STR _f o1 o2 -> op2 (text "\tstr") o1 o2
+   STLR _f o1 o2 -> op2 (text "\tstlr") o1 o2
+ 
+-#if defined(darwin_HOST_OS)
+   LDR _f o1 (OpImm (ImmIndex lbl' off)) | Just (_info, lbl) <- dynamicLinkerLabelInfo lbl' ->
+-    op_adrp o1 (pprAsmLabel platform lbl <> text "@gotpage") $$
+-    op_ldr o1 (pprAsmLabel platform lbl <> text "@gotpageoff") $$
+-    op_add o1 (char '#' <> int off) -- TODO: check that off is in 12bits.
++    if platformOS platform == OSDarwin
++      then op_adrp o1 (pprAsmLabel platform lbl <> text "@gotpage") $$
++           op_ldr o1 (pprAsmLabel platform lbl <> text "@gotpageoff") $$
++           op_add o1 (char '#' <> int off)
++      else op_adrp o1 (text ":got:" <> pprAsmLabel platform lbl) $$
++           op_ldr o1 (text ":got_lo12:" <> pprAsmLabel platform lbl) $$
++           op_add o1 (char '#' <> int off)
+ 
+   LDR _f o1 (OpImm (ImmIndex lbl off)) | isForeignLabel lbl ->
+-    op_adrp o1 (pprAsmLabel platform lbl <> text "@gotpage") $$
+-    op_ldr o1 (pprAsmLabel platform lbl <> text "@gotpageoff") $$
+-    op_add o1 (char '#' <> int off) -- TODO: check that off is in 12bits.
++    if platformOS platform == OSDarwin
++      then op_adrp o1 (pprAsmLabel platform lbl <> text "@gotpage") $$
++           op_ldr o1 (pprAsmLabel platform lbl <> text "@gotpageoff") $$
++           op_add o1 (char '#' <> int off)
++      else op_adrp o1 (text ":got:" <> pprAsmLabel platform lbl) $$
++           op_ldr o1 (text ":got_lo12:" <> pprAsmLabel platform lbl) $$
++           op_add o1 (char '#' <> int off)
+ 
+   LDR _f o1 (OpImm (ImmIndex lbl off)) ->
+-    op_adrp o1 (pprAsmLabel platform lbl <> text "@page") $$
+-    op_add o1 (pprAsmLabel platform lbl <> text "@pageoff") $$
+-    op_add o1 (char '#' <> int off) -- TODO: check that off is in 12bits.
++    if platformOS platform == OSDarwin
++      then op_adrp o1 (pprAsmLabel platform lbl <> text "@page") $$
++           op_add o1 (pprAsmLabel platform lbl <> text "@pageoff") $$
++           op_add o1 (char '#' <> int off)
++      else op_adrp o1 (pprAsmLabel platform lbl) $$
++           op_add o1 (text ":lo12:" <> pprAsmLabel platform lbl) $$
++           op_add o1 (char '#' <> int off)
+ 
+   LDR _f o1 (OpImm (ImmCLbl lbl')) | Just (_info, lbl) <- dynamicLinkerLabelInfo lbl' ->
+-    op_adrp o1 (pprAsmLabel platform lbl <> text "@gotpage") $$
+-    op_ldr o1 (pprAsmLabel platform lbl <> text "@gotpageoff")
++    if platformOS platform == OSDarwin
++      then op_adrp o1 (pprAsmLabel platform lbl <> text "@gotpage") $$
++           op_ldr o1 (pprAsmLabel platform lbl <> text "@gotpageoff")
++      else op_adrp o1 (text ":got:" <> pprAsmLabel platform lbl) $$
++           op_ldr o1 (text ":got_lo12:" <> pprAsmLabel platform lbl)
+ 
+   LDR _f o1 (OpImm (ImmCLbl lbl)) | isForeignLabel lbl ->
+-    op_adrp o1 (pprAsmLabel platform lbl <> text "@gotpage") $$
+-    op_ldr o1 (pprAsmLabel platform lbl <> text "@gotpageoff")
++    if platformOS platform == OSDarwin
++      then op_adrp o1 (pprAsmLabel platform lbl <> text "@gotpage") $$
++           op_ldr o1 (pprAsmLabel platform lbl <> text "@gotpageoff")
++      else op_adrp o1 (text ":got:" <> pprAsmLabel platform lbl) $$
++           op_ldr o1 (text ":got_lo12:" <> pprAsmLabel platform lbl)
+ 
+   LDR _f o1 (OpImm (ImmCLbl lbl)) ->
+-    op_adrp o1 (pprAsmLabel platform lbl <> text "@page") $$
+-    op_add o1 (pprAsmLabel platform lbl <> text "@pageoff")
+-
+-#else
+-  LDR _f o1 (OpImm (ImmIndex lbl' off)) | Just (_info, lbl) <- dynamicLinkerLabelInfo lbl' ->
+-    op_adrp o1 (text ":got:" <> pprAsmLabel platform lbl) $$
+-    op_ldr o1 (text ":got_lo12:" <> pprAsmLabel platform lbl) $$
+-    op_add o1 (char '#' <> int off) -- TODO: check that off is in 12bits.
+-
+-  LDR _f o1 (OpImm (ImmIndex lbl off)) | isForeignLabel lbl ->
+-    op_adrp o1 (text ":got:" <> pprAsmLabel platform lbl) $$
+-    op_ldr o1 (text ":got_lo12:" <> pprAsmLabel platform lbl) $$
+-    op_add o1 (char '#' <> int off) -- TODO: check that off is in 12bits.
+-
+-  LDR _f o1 (OpImm (ImmIndex lbl off)) ->
+-    op_adrp o1 (pprAsmLabel platform lbl) $$
+-    op_add o1 (text ":lo12:" <> pprAsmLabel platform lbl) $$
+-    op_add o1 (char '#' <> int off) -- TODO: check that off is in 12bits.
+-
+-  LDR _f o1 (OpImm (ImmCLbl lbl')) | Just (_info, lbl) <- dynamicLinkerLabelInfo lbl' ->
+-    op_adrp o1 (text ":got:" <> pprAsmLabel platform lbl) $$
+-    op_ldr o1 (text ":got_lo12:" <> pprAsmLabel platform lbl)
+-
+-  LDR _f o1 (OpImm (ImmCLbl lbl)) | isForeignLabel lbl ->
+-    op_adrp o1 (text ":got:" <> pprAsmLabel platform lbl) $$
+-    op_ldr o1 (text ":got_lo12:" <> pprAsmLabel platform lbl)
+-
+-  LDR _f o1 (OpImm (ImmCLbl lbl)) ->
+-    op_adrp o1 (pprAsmLabel platform lbl) $$
+-    op_add o1 (text ":lo12:" <> pprAsmLabel platform lbl)
+-
+-#endif
++    if platformOS platform == OSDarwin
++      then op_adrp o1 (pprAsmLabel platform lbl <> text "@page") $$
++           op_add o1 (pprAsmLabel platform lbl <> text "@pageoff")
++      else op_adrp o1 (pprAsmLabel platform lbl) $$
++           op_add o1 (text ":lo12:" <> pprAsmLabel platform lbl)
+ 
+   LDR _f o1@(OpReg W8 (RegReal (RealRegSingle i))) o2 | i < 32 ->
+     op2 (text "\tldrb") o1 o2

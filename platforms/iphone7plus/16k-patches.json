@@ -1,0 +1,124 @@
+{
+  "sel4": {
+    "path": ".cache/sel4-src-microkit231",
+    "patch": "patches/sel4-iphone7plus-16k.patch",
+    "files": {
+      "include/arch/arm/arch/64/mode/hardware.h": {
+        "before": "b25e01fea2b18f48905bb4f7eb9298641e8671fbe04c42631dbd97ce16b6770c",
+        "after": "adda897238ba053cdb0f77f06466c97338c37f2227673b8ed29034ea205c35c7"
+      },
+      "include/arch/arm/arch/64/mode/machine/hardware.h": {
+        "before": "8304f29c3cf4e7e5c0b75318118d0f18ab0909f32104cea4b4423f2e6f8af853",
+        "after": "3eaef82531e13937d026bcc19dafc3daacc6fdcce0b7289b474ddafd64de7555"
+      },
+      "include/arch/arm/arch/64/mode/model/statedata.h": {
+        "before": "f22d30e671a8a2380fef66f68296c480c999be796a4843150da7251a6d3056e7",
+        "after": "df2534f638d2f95eb69fc6d250bfd01b87fcd8ce32c7124bde28c9796681ebdf"
+      },
+      "libsel4/sel4_arch_include/aarch64/sel4/sel4_arch/constants.h": {
+        "before": "f6c27911f28da60d47510a9cd250c2749fed5e8539bf3c61e128a380eb6f6cb4",
+        "after": "aab5650440f7460cfc83bad381c5fa6f2120aa9d3c6830968551796831ee1255"
+      },
+      "src/arch/arm/64/kernel/vspace.c": {
+        "before": "b1ea9e5f5665d18e75a0c057f53472641337ab2cccabb3eb0805ff88de88afc2",
+        "after": "9983198dad717cd05c1f92b3813c91c8cada021a99dfbd848e83d8f10cdb807e"
+      },
+      "src/arch/arm/64/model/statedata.c": {
+        "before": "8546126a3482785568af413424831fff231dc35efb86aed7714af2bd89d238b8",
+        "after": "352d37048f1cb67ec5098180cc5ce92e086fba5b94217706f359d9e8b5f341be"
+      },
+      "src/arch/arm/common_arm.lds": {
+        "before": "f35e961782f9003f2101be85825d2eb50c78a40472d22f717e801f8290e944bc",
+        "after": "da1ab0b5d8a1162c77075917681de4cabcc1ad639672c4a7695e173edb9c725f"
+      },
+      "src/arch/arm/config.cmake": {
+        "before": "b73b88d39831ee4b397bd6fd694776e21ed70ef0c805a5aea7fada36e6e9e311",
+        "after": "a3ab2c914b4bd6ec5398cf929481f5dd6129a149597ee7c6f3b55019cda620a3"
+      }
+    }
+  },
+  "microkit": {
+    "path": ".cache/microkit-src-2.3.1",
+    "patch": "patches/microkit-iphone7plus-16k.patch",
+    "files": {
+      "Cargo.lock": {
+        "before": "3fba64e70688e6766f697499d3aad74474a8b99d3bef32f751c075e97e38b3e2",
+        "after": "9219168a742c213cc8e84c683e44b8fd8ba9878d19e4a0e71ee7c559f440f79b"
+      },
+      "Cargo.toml": {
+        "before": "66ef5b1c3bbc59af5340ebe408984023ec9fc9efbc3be150ad5f667fc4115b54",
+        "after": "502e040024fb7a97eb26cf4b8cf64a041479f6850e8295888bd154d5585c2a6c"
+      },
+      "build_sdk.py": {
+        "before": "c9bc583367ceeaf85247e3c324119a2ed2a0c49e81ccc7a9b7f23204f9994f6a",
+        "after": "520663677f4164840e95936e2b2544e84a3b466691f23f002546e8c37c13f2d1"
+      },
+      "libmicrokit/microkit.ld": {
+        "before": "3a1641059bd8f0046efb8628535d96d0b3f395745d8a8d5db101afac9ff45c3f",
+        "after": "4656555126a56655c9661f7488cd17b9594e1917db887865ae8b706070c80a0e"
+      },
+      "loader/src/aarch64/mmu.c": {
+        "before": "01e7056241f608b4a871db3206759a8698cb62529a77adbd3e8082036335d00f",
+        "after": "0a8fa8419a74c740bd98cf37fa0aaff55f37ad115e4d1629acf8407f1362b5c9"
+      },
+      "loader/src/aarch64/util64.S": {
+        "before": "270257ebf280600e6069782e148edb26fe4557eb752cc8bd0a7faecf04579a40",
+        "after": "bd8c163c3f40d2c71c4cd2d3a054f9e8f3caff2b22752747045e6a03c4a8ab47"
+      },
+      "loader/src/loader.c": {
+        "before": "1b13b887b18be357b3d82ccf05f476f2639ca6fa8be71fcf7b636213a5c70f1e",
+        "after": "069883f0f14cefb8a860e4a22de412a9993cb5996c17dbb9483e3bcc8fc238c4"
+      },
+      "monitor/Makefile": {
+        "before": "c681781acc9da60fa591391aa12e1c6653add483f5e477d1911237f75b9d05d7",
+        "after": "97f0486b8fd9a5adcfd6aa74f486ed530501e47c784b491642d012287a07ff32"
+      },
+      "tool/microkit/src/build.rs": {
+        "before": "f85a45c27c67d29312d5926677f7462f0b92bd1e5760d3e46a472d25b2b41c42",
+        "after": "57c07456c631ff2b6b33801d51ddd2ce3d69bf476ef4c14768fe726172ad5810"
+      },
+      "tool/microkit/src/capdl/builder.rs": {
+        "before": "469c5369fa2f63b121469080956e1b6f108ed6907217a586abd05fb6d79104b9",
+        "after": "fab56b8407a28621aafa938d2d956668e8f2e3a197f5523c872e0a26bad40bc1"
+      },
+      "tool/microkit/src/capdl/initialiser.rs": {
+        "before": "c24539297e759dca65610d261f3ee2e843a30147b57bc0ec845dcfb8c1e64a2c",
+        "after": "816aa68d7fe929bd8f78f909ecedfd7bdd2809b3c1768626c85d9a8cfc862e7d"
+      },
+      "tool/microkit/src/capdl/memory.rs": {
+        "before": "b8f0e54307485ef44a8bcea78104b99486cd9ac7b279d9c82cbcaa9f9a4e01fc",
+        "after": "5da3a940691903e90d0ecc40f88903c5cc39649afb985cb0bdf3b33ef3c5ef4d"
+      },
+      "tool/microkit/src/loader.rs": {
+        "before": "d3458a7c3cb12190aa78c0ecb269565d9e5d7da8c8e8272a8b2b3c74577c76e3",
+        "after": "bac6a0cc6a00120a4275a890d9c733c121aec35d2359930ee2b45e9ae42820c5"
+      },
+      "tool/microkit/src/sdf/memory_region.rs": {
+        "before": "d7db64ea0b4611178774106c03b5485f738dd522638c291206c4168cee06f38e",
+        "after": "e88144e627cd575b6cc4ce946eab29917c5272cc83e178675498d0ab2ea6ac58"
+      },
+      "tool/microkit/src/sdf/pd_vm.rs": {
+        "before": "03a209d5bdc2e667f7e4401d01a1fdb6662fc08d3edb8c0e57c67a5549338cd9",
+        "after": "1505062b17aa02b9baf4b477fa38ae0d9c2484dfa9566a79590e18bcc8efcbb0"
+      },
+      "tool/microkit/src/sel4.rs": {
+        "before": "b26b08980470208f6ef2dd5cd4d65339e61eb89c2d91fdac5e5b38e07cbdc648",
+        "after": "0238010dcb16aef6bd2a3aeec00a8f368c133c1be5cb8ebe28290d4b7fa86cc6"
+      },
+      "tool/microkit/tests/test.rs": {
+        "before": "b129d9ebc54f0973b7504d3a253c447db106caa03191c117945629e470870148",
+        "after": "26e931b414f85d69c39a6a34e59a8d36af55cc358a5675400e6d35de5a443ed0"
+      }
+    }
+  },
+  "rust-sel4": {
+    "path": ".cache/rust-sel4-iphone7plus16k",
+    "patch": "patches/rust-sel4-iphone7plus-16k.patch",
+    "files": {
+      "crates/sel4-capdl-initializer/src/memory.rs": {
+        "before": "27f06088ea6f392a6d1f2368b6ccb6e0d9258ddb29428f34f7d0591cba626237",
+        "after": "563078a9998c285930c4ce0b3b3d36379cb1fd8db97c828b81d2baf31e7cff92"
+      }
+    }
+  }
+}
