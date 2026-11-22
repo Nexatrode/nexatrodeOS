@@ -21,6 +21,34 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+/// Compare one complete, exclusively retained Normal-NC table RAM page.
+/// This is not an MMIO accessor, an atomic snapshot or a validation cache.
+///
+/// # Safety
+/// Null and misaligned pointers are rejected without access. Otherwise,
+/// `pointer` must retain a readable4KiB page with no concurrent CPU/device
+/// writer. The caller proves Normal-NC mapping and retains the
+/// surrounding full-domain validation and barriers. Each pair stays in-page.
+#[cfg(feature = "sunfish-smmu-normal-nc-table-pairs")]
+#[inline(never)]
+unsafe fn verify_normal_nc_table_pairs(
+    pointer: *const u64,
+    expected: &[u64; LPAE_ENTRIES_PER_TABLE],
+) -> Result<(), Error> {
+    if pointer.is_null() || pointer as usize % 16 != 0 { return Err(Error::Tables); }
+    const { assert!(LPAE_ENTRIES_PER_TABLE == 512); }
+    for (pair, words) in expected.as_chunks::<2>().0.iter().enumerate() {
+        #[cfg(target_endian = "little")]
+        let value = words[0] as u128 | ((words[1] as u128) << 64);
+        #[cfg(target_endian = "big")]
+        let value = ((words[0] as u128) << 64) | words[1] as u128;
+        // SAFETY: alignment checked above; pair0..255 spans exactly4096 bytes.
+        let actual = unsafe { pointer.cast::<u128>().add(pair).read_volatile() };
+        if actual != value { return Err(Error::Tables); }
+    }
+    Ok(())
+}
+
 pub const PAGE_BYTES: usize = 4096;
 /// The stable cold census observed banks 0..3 retained and bank 4 eligible.
 /// Every boot still verifies no route reference, SCTLR.M=0 and no ASID conflict.
@@ -675,10 +703,10 @@ impl<'a, F: FnMut(usize) -> Result<(), Error>> Native<'a, F> {
         self.receive_mapping_inner()
     }
     /// # Safety
-    /// Retain four exclusive uncached RW/NX extra table mappings: second L2,
-    /// command L3, shared L3, then receive L3. Actual CapDL must prove their
-    /// frame identities, reserved-memory exclusion and absence of aliases.
-    /// The adapter already owns the real receive RAM and live shared owner.
+    /// Retain four exclusive uncached RW/NX extra frames: second L2, command L3, shared L3, receive L3.
+    /// With pair reads enabled, all eight frames (including Native::new's four) must be Normal-NC
+    /// and have no concurrent CPU/device writer throughout retention. CapDL must prove identities,
+    /// reserved-memory exclusion and absence of aliases. Receive RAM and shared owner stay retained.
     pub unsafe fn stage_receive_root_tables(
         &mut self,
         plan: &crate::sunfish_smmu_lpae::LpaeRootS1Plan<'_, 4>,
@@ -1214,7 +1242,11 @@ impl<'a, F: FnMut(usize) -> Result<(), Error>> Native<'a, F> {
             let values = &image;
             #[cfg(feature = "sunfish-smmu-retained-table-expectation")]
             let values = &expectation[page];
-            #[cfg(feature = "sunfish-smmu-grouped-table-check")]
+            #[cfg(feature = "sunfish-smmu-normal-nc-table-pairs")]
+            // SAFETY: these are the eight exclusively owned, page-aligned table
+            // RAM frames; the opt-in SDK/mapping audit proves Normal-NC memory.
+            unsafe { verify_normal_nc_table_pairs(*pointer, values)?; }
+            #[cfg(all(feature = "sunfish-smmu-grouped-table-check", not(feature = "sunfish-smmu-normal-nc-table-pairs")))]
             {
                 const GROUP_WORDS: usize = 32;
                 const { assert!(LPAE_ENTRIES_PER_TABLE % GROUP_WORDS == 0); }
@@ -1227,7 +1259,7 @@ impl<'a, F: FnMut(usize) -> Result<(), Error>> Native<'a, F> {
                     }
                 }
             }
-            #[cfg(not(feature = "sunfish-smmu-grouped-table-check"))]
+            #[cfg(all(not(feature = "sunfish-smmu-grouped-table-check"), not(feature = "sunfish-smmu-normal-nc-table-pairs")))]
             for (n, value) in values.iter().enumerate() {
                 // SAFETY: these exact eight frames were retained before staging.
                 if unsafe { pointer.add(n).read_volatile() } != *value {
@@ -2063,6 +2095,24 @@ mod tests {
             assert!(matches!(n.take_receive_memory(), Err(Error::State)));
         }
     }
+    #[cfg(feature = "sunfish-smmu-normal-nc-table-pairs")]
+    #[test]
+    fn normal_nc_table_pairs_check_every_bit_and_reject_misalignment() {
+        let mut page = Page(core::array::from_fn(|i| (i as u64).wrapping_mul(0x123456789abcdef) ^ u64::MAX));
+        let expected = page.0;
+        // Exclusive host RAM models a page; no concurrent writer or device I/O.
+        assert_eq!(unsafe { verify_normal_nc_table_pairs(page.0.as_ptr(), &expected) }, Ok(()));
+        for word in 0..512 {
+            for bit in 0..64 {
+                page.0[word] ^= 1u64 << bit;
+                assert_eq!(unsafe { verify_normal_nc_table_pairs(page.0.as_ptr(), &expected) }, Err(Error::Tables), "word {word}, bit {bit}");
+                page.0[word] ^= 1u64 << bit;
+            }
+        }
+        assert_eq!(unsafe { verify_normal_nc_table_pairs(page.0.as_ptr().add(1), &expected) }, Err(Error::Tables));
+        assert_eq!(unsafe { verify_normal_nc_table_pairs(page.0.as_ptr(), &expected) }, Ok(()));
+    }
+
     #[cfg(feature = "sunfish-smmu-install-probe")]
     #[test]
     fn native_receive_revalidation_rejects_corruption_at_every_table_word() {

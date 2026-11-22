@@ -14,8 +14,10 @@ impl RuntimeDomain {
         display.replace_line(1,"WRQ POST RETURN CALLERS");
         #[cfg(all(feature="sunfish-runtime-handoff-stack-split",not(feature="sunfish-tftp-peer-metadata-batch")))]
         display.replace_line(1,"WRQ CALLERS STACK SPLIT");
-        #[cfg(feature="sunfish-tftp-peer-metadata-batch")]
+        #[cfg(all(feature="sunfish-tftp-peer-metadata-batch",not(feature="sunfish-smmu-normal-nc-table-pairs")))]
         display.replace_line(1,"WRQ PEER METADATA BATCH");
+        #[cfg(feature="sunfish-smmu-normal-nc-table-pairs")]
+        display.replace_line(1,"WRQ TABLE PAIR READS");
         for(i,(label,value)) in [("RUNTIME ERROR",self.error),("WRQ RXDONE US",age(returned)),
             ("REG QUEUE US",age(queued)),("REG PUB US",age(published)),("OACK HEAD US",age(head)),
             ("OACK READ US",age(read)),("CLOSE VIS US",age(close))].into_iter().enumerate(){display.hex(i+2,label,value);}
