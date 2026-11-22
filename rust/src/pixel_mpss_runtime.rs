@@ -19,6 +19,9 @@ mod wrq_callers;
 #[cfg(feature="sunfish-first-data-ack-elf-trace")]
 #[path="pixel_mpss_tftp_completion.rs"]
 mod tftp_completion;
+#[cfg(feature="sunfish-ack-elf-phase-trace")]
+#[path="pixel_mpss_ack_elf_stages.rs"]
+mod ack_elf_stages;
 
 #[cfg(all(feature = "sunfish-ipa-independent-server-experiment", not(feature = "sunfish-ipa-independent-server-runtime")))]
 compile_error!("independent IPA server experiment is offline only; native composition not validated");

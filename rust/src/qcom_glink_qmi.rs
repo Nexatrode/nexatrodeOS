@@ -1148,6 +1148,21 @@ pub struct ElfWriteData {
     pub body_bytes: u32,
     pub received_at: Option<u64>,
     pub result: Option<u32>,
+    #[cfg(feature = "sunfish-ack-elf-phase-trace")]
+    pub stages: FinalAckStages,
+}
+
+/// First matching DATA lifecycle observations; these never drive protocol decisions.
+#[cfg(feature = "sunfish-ack-elf-phase-trace")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct FinalAckStages {
+    /// Identity proofs independent of whether an optional observation clock exists.
+    pub final_prepared: bool,
+    pub final_queued: bool,
+    pub dispatch_at: Option<u64>,
+    pub prepared_at: Option<u64>,
+    pub returned_at: Option<u64>,
+    pub queued_at: Option<u64>,
 }
 
 #[cfg(feature = "sunfish-wlan-elf-host-credit-trace")]
@@ -3451,6 +3466,12 @@ impl Session {
         {
             write.timing.dispatch_at = clock.map(|clock| clock());
         }
+        #[cfg(feature = "sunfish-ack-elf-phase-trace")]
+        for write in self.server_check_traces_mut() {
+            if let Some(data) = write.data.as_mut().filter(|d| d.request == *handle)
+                && data.stages.dispatch_at.is_none()
+            { data.stages.dispatch_at = clock.map(|clock| clock()); }
+        }
         #[cfg(feature = "sunfish-wlan-first-server-check-repeat")]
         if let Some(repeat) = self.server_check_repeat_mut(handle) {
             repeat.dispatch_at = clock.map(|clock| clock());
@@ -3518,6 +3539,13 @@ impl Session {
             {
                 write.final_block = Some(u16::from_be_bytes([*high, *low]));
                 write.ack.phase = 1;
+                #[cfg(feature = "sunfish-ack-elf-phase-trace")]
+                if let Some(data) = write.data.as_mut().filter(|d| d.request == *handle
+                    && Some(d.block) == write.final_block)
+                {
+                    data.stages.final_prepared = true;
+                    data.stages.prepared_at = clock.map(|clock| clock());
+                }
             }
         }
     }
@@ -3643,6 +3671,24 @@ impl Session {
             }
         }
         let clock = self.intent_ack_clock;
+        #[cfg(feature = "sunfish-ack-elf-phase-trace")]
+        if let Ok(slot) = result && route.source.node == self.config.local_node
+            && let [0, 4, high, low] = packet
+        {
+            let block = u16::from_be_bytes([*high, *low]);
+            for write in self.server_check_traces_mut().filter(|w| w.peer == route.destination
+                && w.transfer_port == Some(route.source.port) && w.final_block == Some(block)
+                && w.ack.phase == 2 && w.ack.slot == Some(slot))
+            {
+                if let Some(data) = write.data.as_mut().filter(|d| d.request == *handle
+                    && d.block == block && d.result == Some(0) && d.stages.final_prepared
+                    && !d.stages.final_queued)
+                {
+                    data.stages.final_queued = true;
+                    data.stages.queued_at = clock.map(|clock| clock());
+                }
+            }
+        }
         if let Some(repeat) = self.server_check_repeat_mut(handle).filter(|repeat| repeat.oack.phase == 1) {
             match result {
                 Ok(slot) => {
@@ -4707,6 +4753,8 @@ impl Session {
                         write.data = Some(ElfWriteData {
                             request, block, body_bytes: body as u32,
                             received_at: clock.map(|clock| clock()), result: None,
+                            #[cfg(feature = "sunfish-ack-elf-phase-trace")]
+                            stages: FinalAckStages::default(),
                         });
                     }
                 }
@@ -8166,6 +8214,17 @@ impl Session {
                 { self.intent_ack_started = None; }
             },
             Commit::Done(index) => {
+                #[cfg(feature = "sunfish-ack-elf-phase-trace")]
+                {
+                    let request = TftpHandle { owner: self.owner, generation: self.generation,
+                        intent: self.receive[index].tftp_datagram_id() };
+                    let clock = self.intent_ack_clock;
+                    for write in self.server_check_traces_mut() {
+                        if let Some(data) = write.data.as_mut().filter(|d| d.request == request)
+                            && data.stages.returned_at.is_none()
+                        { data.stages.returned_at = clock.map(|clock| clock()); }
+                    }
+                }
                 #[cfg(feature = "sunfish-tftp-oack-repeat-turn")]
                 if repeat_release == Some(index) && let Some(trace) = self.oack_slot_follow.as_mut() {
                     trace.exact_repeat_done_at = self.intent_ack_clock.map(|clock| clock());

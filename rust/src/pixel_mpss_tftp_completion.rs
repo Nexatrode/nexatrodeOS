@@ -3,6 +3,7 @@ use super::*;
 fn completion_before(end:Option<u64>, boundary:Option<u64>)->u32 {
     end.zip(boundary).map_or(u32::MAX, |(a,b)|u32::from(a<b))
 }
+#[cfg(not(feature = "sunfish-ack-elf-phase-trace"))]
 impl RuntimeDomain {
     pub(super) fn show_tftp_completion(&self, display:&Display, owner:&ModemOwner) {
         let first=owner.server_check_oacks()[0];
