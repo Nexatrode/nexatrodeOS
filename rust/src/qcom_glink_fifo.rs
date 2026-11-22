@@ -2637,6 +2637,56 @@ impl<I: Io> Adapter<I> {
         self.check(generation)?;
         self.session.set_tftp_owner_peers(generation, peers).map_err(Into::into)
     }
+    /// One fresh live gate for callback-free bookkeeping on host-owned packets.
+    /// No successful sample is carried into the next FIFO operation.
+    #[cfg(feature = "sunfish-tftp-peer-metadata-batch")]
+    pub(crate) fn refresh_tftp_peer_snapshot(
+        &mut self,
+        generation: u64,
+        held: &[Option<TftpHandle>],
+        retained: &[(Option<crate::qcom_qmi_router::Address>, u8, bool); core::TFTP_OWNER_PEER_SLOTS],
+    ) -> Result<[(Option<crate::qcom_qmi_router::Address>, u8); core::TFTP_OWNER_PEER_SLOTS], Error> {
+        self.gate(generation)?;
+        let mut peers = [None; core::TFTP_OWNER_PEER_SLOTS];
+        let mut firmware = [None; core::TFTP_OWNER_PEER_SLOTS];
+        let mut snapshot = [(None, 0); core::TFTP_OWNER_PEER_SLOTS];
+        let mut count = 0;
+        let mut firmware_count = 0;
+        for handle in held.iter().flatten() {
+            // Each opaque handle is still checked against the current Session
+            // owner, generation and held slot. Bytes were copied at ingress.
+            let (route, packet) = self.session.tftp_datagram(handle)?;
+            *peers.get_mut(count).ok_or(core::Error::NoCapacity)? = Some(route.destination);
+            snapshot[count] = (Some(route.destination), 1);
+            count += 1;
+            if (route.source.port == crate::qcom_tftp_server_check::SERVICE_PORT
+                    && crate::qcom_tftp::decode_read_request(packet).is_ok())
+                || (0x5100..=0x51ff).contains(&route.source.port) {
+                *firmware.get_mut(firmware_count).ok_or(core::Error::NoCapacity)? = Some(route.destination);
+                firmware_count += 1;
+            }
+        }
+        for &(peer, kind, is_firmware) in retained {
+            if let Some(peer) = peer {
+                *peers.get_mut(count).ok_or(core::Error::NoCapacity)? = Some(peer);
+                snapshot[count] = (Some(peer), kind);
+                count += 1;
+                if is_firmware {
+                    *firmware.get_mut(firmware_count).ok_or(core::Error::NoCapacity)? = Some(peer);
+                    firmware_count += 1;
+                }
+            }
+        }
+        // No callbacks, transport I/O or external state changes occur between
+        // the gate and these infallible-for-the-checked-generation setters.
+        self.session.set_tftp_owner_peers(generation, peers)?;
+        self.session.set_tftp_firmware_peers(generation, firmware)?;
+        Ok(snapshot)
+    }
+    #[cfg(all(test, feature = "sunfish-tftp-peer-metadata-batch"))]
+    pub(crate) fn test_peer_metadata(&self) -> ([Option<crate::qcom_qmi_router::Address>; core::TFTP_OWNER_PEER_SLOTS], [Option<crate::qcom_qmi_router::Address>; core::TFTP_OWNER_PEER_SLOTS]) {
+        self.session.test_peer_metadata()
+    }
     #[cfg(feature = "sunfish-tftp-close-owner-fence")]
     pub fn set_tftp_firmware_peers(&mut self, generation: u64, peers: [Option<crate::qcom_qmi_router::Address>; core::TFTP_OWNER_PEER_SLOTS]) -> Result<(), Error> {
         self.revalidate(generation)?;

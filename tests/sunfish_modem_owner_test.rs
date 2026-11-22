@@ -5782,3 +5782,7 @@ fn wrq_stage_history_freezes_only_after_exact_checked_return() {
         assert!(!path.records.records(end+1,u64::MAX).any(|r|r.cmd==7));
     }
 }
+
+#[cfg(feature = "sunfish-tftp-peer-metadata-batch")]
+#[path = "sunfish_tftp_peer_metadata_test.rs"]
+mod peer_metadata_batch_tests;

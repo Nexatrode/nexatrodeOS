@@ -3129,7 +3129,7 @@ impl<I: Io> Owner<I> {
                 let busy = self.has_pending_tftp_reply() || self.tftp_requests.iter().any(Option::is_some);
                 self.adapter.set_tftp_owner_busy(self.generation, busy)?;
             }
-            #[cfg(feature = "sunfish-tftp-peer-close-experiment")]
+            #[cfg(all(feature = "sunfish-tftp-peer-close-experiment", not(feature = "sunfish-tftp-peer-metadata-batch")))]
             {
                 let mut peers = [None; crate::qcom_glink_qmi::TFTP_OWNER_PEER_SLOTS];
                 let mut snapshot = [(None, 0); crate::qcom_glink_qmi::TFTP_OWNER_PEER_SLOTS];
@@ -3181,6 +3181,29 @@ impl<I: Io> Owner<I> {
                 #[cfg(feature = "sunfish-tftp-close-owner-fence")]
                 { let _ = firmware_count; self.adapter.set_tftp_firmware_peers(self.generation, firmware_guard)?; }
                 self.tftp_owner_snapshot = snapshot;
+            }
+            #[cfg(feature = "sunfish-tftp-peer-metadata-batch")]
+            {
+                let mut retained = [(None, 0, false); crate::qcom_glink_qmi::TFTP_OWNER_PEER_SLOTS];
+                let mut count = 0;
+                if let Some(reply) = self.pending_tftp_reply {
+                    retained[count] = (Some(reply.route.destination), 2, false);
+                    count += 1;
+                }
+                for reply in self.peer_tftp_replies.iter().flatten() {
+                    *retained.get_mut(count).ok_or(Error::QueueFull)? =
+                        (Some(reply.meta.route.destination), 4, (0x5100..=0x51ff).contains(&reply.meta.route.source.port));
+                    count += 1;
+                }
+                for peer in self.firmware_peers.iter().flatten() {
+                    *retained.get_mut(count).ok_or(Error::QueueFull)? = (Some(*peer), 8, true);
+                    count += 1;
+                }
+                if count + self.tftp_requests.iter().flatten().count() > retained.len() {
+                    return Err(Error::QueueFull);
+                }
+                self.tftp_owner_snapshot = self.adapter.refresh_tftp_peer_snapshot(
+                    self.generation, &self.tftp_requests, &retained)?;
             }
             let rx = self.adapter.poll_receive(self.generation)?;
             #[cfg(feature = "sunfish-tftp-wlan-close-handoff")]

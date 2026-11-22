@@ -3796,6 +3796,10 @@ impl Session {
         self.tftp_owner_snapshot_valid = true;
         Ok(())
     }
+    #[cfg(all(test, feature = "sunfish-tftp-peer-metadata-batch"))]
+    pub(crate) fn test_peer_metadata(&self) -> ([Option<Address>; TFTP_OWNER_PEER_SLOTS], [Option<Address>; TFTP_OWNER_PEER_SLOTS]) {
+        (self.tftp_owner_peers, self.tftp_firmware_peers)
+    }
     #[cfg(feature = "sunfish-tftp-close-owner-fence")]
     pub fn set_tftp_firmware_peers(&mut self, generation: u64, peers: [Option<Address>; TFTP_OWNER_PEER_SLOTS]) -> Result<(), Error> {
         self.check(generation)?;
