@@ -3868,26 +3868,49 @@ fn intent_ack_turn_sends_exact_backing_and_yields_to_ordinary_work() {
 fn replay_full_52_byte_request_then_receive_done() {
     for block_done in [false, true] {
         let mut s = session();
+        #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+        s.set_registry_ack_clock(|| 17);
         for _ in 1..qcom_glink_qmi::RX_SLOTS { offer(&mut s); }
         assert_eq!(s.ingest(1, &control(7, 52)), Ok(Event::ReceiveIntentRequest { granted: true }));
         let Published::ReceiveIntent(id) = publish(&mut s).unwrap().0 else { panic!() };
         assert_eq!(publish(&mut s).unwrap().0, Published::IntentRequestAck { granted: true });
         assert_eq!(s.ingest(1, &data(9, id, &resume_route(0xdead_0000, STORAGE), 0)), Ok(Event::CreditReceived));
         assert_eq!(s.ingest(1, &control(7, 52)), Ok(Event::ReceiveIntentRequest { granted: false }));
+        #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+        {
+            assert_eq!(s.grant_backing.requested, 52);
+            assert!(s.grant_backing.intent.is_none() && s.grant_backing.reserved_at.is_none());
+            s.set_registry_ack_clock(|| 31);
+        }
         if block_done {
             assert_eq!(s.publish_next(1, |bytes| {
                 assert_eq!(word(bytes, 0) & 0xffff, 6);
                 Err(WriteError::WouldBlock)
             }), Err(Error::WouldBlock));
         }
+        #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+        assert!(s.grant_backing.reserved_at.is_none());
         assert_eq!(publish(&mut s).unwrap().0, Published::ReceiveDone(id));
+        #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+        {
+            assert_eq!(s.grant_backing.intent, Some(id + 1));
+            assert_eq!(s.grant_backing.reserved_at, Some(31));
+            s.set_registry_ack_clock(|| 46);
+        }
         if cfg!(feature = "sunfish-glink-retry-full-intent") {
             assert_eq!(s.publish_next(1, |bytes| {
                 assert_eq!(word(bytes, 0) & 0xffff, 5);
                 assert_eq!(word(bytes, 12), id + 1);
                 Err(WriteError::WouldBlock)
             }), Err(Error::WouldBlock));
+            #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+            assert!(s.grant_backing.writer.is_none() && s.grant_backing.advertised_at.is_none());
             assert_eq!(publish(&mut s).unwrap().0, Published::ReceiveIntent(id + 1));
+            #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+            {
+                assert_eq!(s.grant_backing.writer, Some(qcom_glink_qmi::GrantAdWriter::Ordinary));
+                assert_eq!(s.grant_backing.advertised_at, Some(46));
+            }
         }
         assert_eq!(publish(&mut s).unwrap().0, Published::IntentRequestAck { granted: cfg!(feature = "sunfish-glink-retry-full-intent") });
         assert!(publish(&mut s).is_none());

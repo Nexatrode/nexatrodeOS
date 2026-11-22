@@ -64,8 +64,12 @@ def main():
         env[key] = str(source)
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp)
-        shutil.copytree(ROOT / "rust/src", work / "rust/src")
-        shutil.copytree(ROOT / "tests", work / "tests")
+        # Replay the measured baseline even after a trial policy enters the driver.
+        archive = work / "baseline.tar"
+        subprocess.run(["git", "-C", str(ROOT), "archive", "-o", str(archive),
+                        "e7d8b0d1eb029955a757a3839c6f8f437ccb6ad7", "rust/src", "tests"],
+                       check=True)
+        subprocess.run(["tar", "-xf", str(archive)], cwd=work, check=True)
         harness = work / "tests/sunfish_glink_fifo_test.rs"
         source = harness.read_text()
         hook = "inject_at_registration_write(self, name, &op);"

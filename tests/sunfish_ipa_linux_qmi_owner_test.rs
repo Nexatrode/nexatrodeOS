@@ -1494,3 +1494,175 @@ mod independent_runtime_tests {
     include!("sunfish_ipa_independent_runtime_cases.rs");
     include!("sunfish_ipa_independent_server_cases.rs");
 }
+
+#[cfg(feature = "sunfish-ipa-announcement-fifo")]
+#[test]
+fn modem_ipa_announcement_fifo_matches_first_accepted_record() {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    static CLOCK: AtomicU64 = AtomicU64::new(1);
+    for buffered_wrq in [false, true] {
+        let mut session = lo_session();
+        let port = qcom_tftp_server_check::SERVICE_PORT;
+        session.prepare_tftp_server(1, port).unwrap();
+        let mut rig = LoRig::from_session_with_modem(0, false, session, false, false);
+        while rig.available.len() < 4 {
+            rig.owner.offer_receive().unwrap();
+            rig.drive().unwrap();
+        }
+        rig.owner.set_rmtfs_event_clock(|| CLOCK.fetch_add(1, Relaxed));
+        rig.drive().unwrap();
+        let other = owner_control_frame(4, [0x31, 0x101, 0, LO_MODEM]);
+        let announcement = owner_control_frame(4, [0x31, 0x201, 0, LO_MODEM]);
+        let wrq = lo_packet(1, 0x1f, port, false, qcom_tftp_server_check::REQUEST);
+        rig.input(&other).unwrap();
+        assert_eq!(rig.owner.ipa_announcement_rx(), None);
+        rig.enqueue(&other);
+        rig.enqueue(&announcement);
+        if buffered_wrq { rig.enqueue(&wrq); }
+        rig.drive().unwrap();
+        let snapshot = rig.owner.ipa_announcement_rx().unwrap();
+        let visible = snapshot.first_visible.unwrap();
+        assert!(snapshot.last_absent.unwrap() < visible);
+        assert_eq!(snapshot.bytes_ahead, Some(data(1, &other).len() as u32));
+        assert!(visible <= rig.owner.first_ipa_announcement().unwrap().1.unwrap());
+        if !buffered_wrq { rig.input(&wrq).unwrap(); }
+        let wrq_bounds = rig.owner.ipa_wrq_timing().1.unwrap();
+        if buffered_wrq {
+            assert_eq!(Some(visible), wrq_bounds.first_visible);
+        } else {
+            assert!(visible < wrq_bounds.last_absent.unwrap());
+        }
+        rig.input(&announcement).unwrap();
+        assert_eq!(rig.owner.ipa_announcement_rx(), Some(snapshot));
+    }
+}
+
+#[cfg(feature = "sunfish-ipa-announcement-fifo")]
+#[test]
+fn announcement_after_wrq_needs_the_complete_glink_record() {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    static CLOCK: AtomicU64 = AtomicU64::new(1);
+    let mut session = lo_session();
+    let port = qcom_tftp_server_check::SERVICE_PORT;
+    session.prepare_tftp_server(1, port).unwrap();
+    let mut rig = LoRig::from_session_with_modem(0, false, session, false, false);
+    rig.owner.set_rmtfs_event_clock(|| CLOCK.fetch_add(1, Relaxed));
+    rig.input(&lo_packet(1, 0x1f, port, false, qcom_tftp_server_check::REQUEST)).unwrap();
+    let wrq = rig.owner.ipa_wrq_timing().1.unwrap();
+    let announcement = data(rig.available.remove(0), &owner_control_frame(4, [0x31, 0x201, 0, LO_MODEM]));
+    let (incomplete, rest) = announcement.split_at(announcement.len() - 8);
+    rig.peer.push(incomplete);
+    rig.drive().unwrap();
+    assert_eq!(rig.owner.first_ipa_announcement(), None);
+    assert_eq!(rig.owner.ipa_announcement_rx(), None);
+    rig.peer.push(rest);
+    rig.drive().unwrap();
+    let bounds = rig.owner.ipa_announcement_rx().unwrap();
+    assert!(wrq.first_visible.unwrap() < bounds.last_absent.unwrap());
+    assert!(bounds.last_absent.unwrap() < bounds.first_visible.unwrap());
+    assert_eq!(Some(0), bounds.bytes_ahead);
+    assert_eq!(rig.owner.ipa_wrq_timing().1, Some(wrq));
+}
+
+#[cfg(feature = "sunfish-ipa-ingress-work")]
+#[test]
+fn announcement_work_uses_validated_records_and_freezes_at_acceptance() {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    static CLOCK: AtomicU64 = AtomicU64::new(1);
+    let mut rig = LoRig::from_session_with_modem(0, false, lo_session(), false, false);
+    while rig.available.len() < 3 {
+        rig.owner.offer_receive().unwrap();
+        rig.drive().unwrap();
+    }
+    rig.owner.set_rmtfs_event_clock(|| CLOCK.fetch_add(1, Relaxed));
+    rig.peer.push(&control(7, 2, 52));
+    rig.enqueue(&owner_control_frame(4, [36, 1, 0, 26]));
+    rig.enqueue(&owner_control_frame(4, [0x31, 0x201, 0, LO_MODEM]));
+    rig.drive().unwrap();
+    let bounds = rig.owner.ipa_announcement_rx().unwrap();
+    let visible = bounds.first_visible.unwrap();
+    let accepted = rig.owner.first_ipa_announcement().unwrap().1.unwrap();
+    let collect = |r: &LoRig| {
+        let work = r.owner.ipa_ingress_work();
+        work.records(visible, accepted).map(|e| (e.kind, e.cmd, e.detail, work.distance(e))).collect::<Vec<_>>()
+    };
+    let expected = [(0,7,52,Some(80)), (1,5,1,None), (4,9,36,Some(72)),
+                    (1,8,1,None), (4,9,0x31,Some(0))];
+    assert_eq!(bounds.bytes_ahead, Some(80));
+    assert_eq!(collect(&rig), expected);
+    assert!(!rig.owner.ipa_ingress_work().lost(visible));
+    rig.input(&owner_control_frame(4, [0x31, 0x201, 0, LO_MODEM])).unwrap();
+    assert_eq!(collect(&rig), expected);
+}
+
+#[cfg(feature = "sunfish-ipa-ingress-work")]
+#[test]
+fn announcement_work_marks_overwritten_intervals() {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    static CLOCK: AtomicU64 = AtomicU64::new(1);
+    let mut rig = LoRig::from_session_with_modem(0, false, lo_session(), false, false);
+    rig.owner.set_rmtfs_event_clock(|| CLOCK.fetch_add(1, Relaxed));
+    rig.peer.push(&control(13, 0, 0).repeat(16));
+    rig.enqueue(&owner_control_frame(4, [0x31, 0x201, 0, LO_MODEM]));
+    rig.drive().unwrap();
+    let bounds = rig.owner.ipa_announcement_rx().unwrap();
+    assert_eq!(bounds.bytes_ahead, Some(128));
+    let visible = bounds.first_visible.unwrap();
+    let accepted = rig.owner.first_ipa_announcement().unwrap().1.unwrap();
+    let work = rig.owner.ipa_ingress_work();
+    let retained: Vec<_> = work.records(visible, accepted).collect();
+    assert!(work.lost(visible));
+    assert_eq!(retained.len(), 24);
+    assert!(retained.windows(2).all(|w| w[0].end <= w[1].start));
+    assert_eq!(retained.last().and_then(|e| work.distance(e)), Some(0));
+}
+
+#[cfg(feature = "sunfish-wrq-prefix-close")]
+#[test]
+fn original_wrq_prefix_retains_only_intervening_committed_rx_records() {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    static CLOCK: AtomicU64 = AtomicU64::new(1);
+    for count in [0, 12, 13] {
+        let mut session = lo_session();
+        let port = qcom_tftp_server_check::SERVICE_PORT;
+        session.prepare_tftp_server(1, port).unwrap();
+        let mut rig = LoRig::from_session_with_modem(0, false, session, false, false);
+        rig.owner.set_rmtfs_event_clock(|| CLOCK.fetch_add(1, Relaxed));
+        rig.peer.push(&control(13, 0, 0));
+        rig.enqueue(&owner_control_frame(4, [0x31, 0x201, 0, LO_MODEM]));
+        rig.peer.push(&control(13, 0, 0).repeat(count));
+        rig.enqueue(&lo_packet(1, 0x1f, port, false, qcom_tftp_server_check::REQUEST));
+        rig.drive().unwrap();
+        rig.peer.push(&control(13, 0, 0));
+        rig.drive().unwrap();
+        let prefix = rig.owner.wrq_prefix();
+        assert!(prefix.complete);
+        assert_eq!(prefix.bytes as usize, count * 8);
+        assert_eq!(prefix.records as usize, count);
+        assert_eq!(prefix.headers().len(), count.min(12));
+        assert!(prefix.headers().iter().all(|h| h.command == 13 && h.bytes == 8));
+    }
+}
+
+#[cfg(feature = "sunfish-wrq-prefix-close")]
+#[test]
+fn wrq_prefix_identifies_a_server_announcement_and_requires_original_peer() {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    static CLOCK: AtomicU64 = AtomicU64::new(1);
+    for peer in [0x1f, 0x49] {
+        let mut session = lo_session();
+        let port = qcom_tftp_server_check::SERVICE_PORT;
+        session.prepare_tftp_server(1, port).unwrap();
+        let mut rig = LoRig::from_session_with_modem(0, false, session, false, false);
+        rig.owner.set_rmtfs_event_clock(|| CLOCK.fetch_add(1, Relaxed));
+        rig.input(&owner_control_frame(4, [0x31, 0x201, 0, LO_MODEM])).unwrap();
+        rig.input(&owner_control_frame(4, [0x24, 1, 0, 0x1c])).unwrap();
+        rig.input(&lo_packet(1, peer, port, false, qcom_tftp_server_check::REQUEST)).unwrap();
+        let trace = rig.owner.wrq_prefix();
+        assert_eq!(trace.complete, peer == 0x1f);
+        assert_eq!((trace.records, trace.bytes), (1, 72));
+        let header = &trace.headers()[0];
+        assert_eq!((header.command, header.extra), (9, 0x24));
+        assert_eq!(header.qrtr.unwrap()[0], 4);
+    }
+}

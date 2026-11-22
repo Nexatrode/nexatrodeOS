@@ -150,6 +150,8 @@ pub struct IpaRegistrationTxTrace {
     pub uncertain: u32,
     pub first_pass_at: Option<u64>,
     pub selected_at: Option<u64>,
+    #[cfg(feature = "sunfish-reg-writer-timeline")]
+    pub committed_write_start: Option<u64>,
     pub last_end: Option<u64>,
     /// Measured selection/writer interval within publication calls, not the
     /// complete router callback. Writer time is a subset of active time.
@@ -600,6 +602,11 @@ impl Session {
         trace.last_end = ended;
         let selected = matches!(choice, PublishSelection::Data(index) if index == slot);
         if selected && trace.selected_at.is_none() { trace.selected_at = writer_started; }
+        #[cfg(feature = "sunfish-reg-writer-timeline")]
+        if selected && result.is_ok() {
+            // For a fragmented reply the final successful fragment supplies this time.
+            trace.committed_write_start = writer_started;
+        }
         match result {
             Err(WriteError::Uncertain) => trace.uncertain = trace.uncertain.saturating_add(1),
             Err(WriteError::WouldBlock) if selected => trace.target_blocked = trace.target_blocked.saturating_add(1),

@@ -821,7 +821,11 @@ fn linuxlink_registration_turn_preserves_grant_and_credit_and_falls_back_after_b
             let trace = rig.link.ipa_registration_trace().unwrap();
             assert_eq!(trace.tx.target_blocked, 1);
             assert!(trace.published_at.is_none());
-
+            #[cfg(feature = "sunfish-reg-writer-timeline")]
+            {
+                assert!(trace.tx.selected_at.is_some());
+                assert_eq!(trace.tx.committed_write_start, None);
+            }
         } else {
             assert!(matches!(result, Ok(Some(Published::Data { last_fragment: true, .. }))));
         }
@@ -831,6 +835,15 @@ fn linuxlink_registration_turn_preserves_grant_and_credit_and_falls_back_after_b
         if blocked {
             let (_, frame) = publish_until_data(&mut rig.link);
             assert_eq!(&frame[48..48 + reply.bytes().len()], reply.bytes());
+        }
+        #[cfg(feature = "sunfish-reg-writer-timeline")]
+        {
+            let reg = rig.link.ipa_registration_trace().unwrap();
+            let first = reg.tx.selected_at.unwrap();
+            let committed = reg.tx.committed_write_start.unwrap();
+            assert_eq!(first < committed, blocked);
+            assert!(first <= committed && committed < reg.tx.last_end.unwrap());
+            assert!(reg.tx.last_end.unwrap() < reg.published_at.unwrap());
         }
     }
 }
@@ -2213,14 +2226,16 @@ fn first_oack_borrows_one_fitting_intent_after_exact_ipa_publication() {
     use crate::qcom_tftp_server_check as tftp;
     use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
     static CLOCK: AtomicU64 = AtomicU64::new(1);
-    for (scarce, blocked, close, close_before_pass) in [
-        (false, false, false, false),
-        (false, false, true, false),
-        (false, true, false, false),
-        (false, true, true, false),
-        (true, false, false, false),
-        (true, false, true, false),
-        (false, false, true, true),
+    for (scarce, blocked, close, close_before_pass, bounded) in [
+        (false, false, false, false, false),
+        (false, false, true, false, false),
+        (false, true, false, false, false),
+        (false, true, true, false, false),
+        (true, false, false, false, false),
+        (true, false, true, false, false),
+        (false, false, true, true, false),
+        #[cfg(feature = "sunfish-first-wrq-spare-oack")]
+        (false, true, false, false, true),
     ] {
         let mut link = session();
         link.enable_ipa_before_first_oack();
@@ -2307,6 +2322,12 @@ fn first_oack_borrows_one_fitting_intent_after_exact_ipa_publication() {
             .queue_linux_ipa(1, &prepared, Some(&handle))
             .unwrap();
 
+        #[cfg(feature = "sunfish-first-wrq-spare-oack")]
+        {
+            // Exercise admission with the existing fixture's transport pressure.
+            rig.link.enable_first_wrq_spare_oack();
+            assert!(!rig.link.first_oack_ready_without_grant());
+        }
         let (
             Published::Data {
                 remote_intent: ipa_id,
@@ -2321,17 +2342,25 @@ fn first_oack_borrows_one_fitting_intent_after_exact_ipa_publication() {
             &ipa_frame[48..48 + prepared.bytes().len()],
             prepared.bytes()
         );
+        #[cfg(feature = "sunfish-post-reg-oack-turn")]
+        assert!(rig.link.post_reg_oack_turns().entries().is_empty());
+        #[cfg(feature = "sunfish-first-wrq-spare-oack")]
+        assert_eq!(rig.link.first_oack_ready_without_grant(), !scarce);
         if close_before_pass {
             // IPA was published by the preceding turn. Closing immediately
             // distinguishes a missing writer opportunity from a missing intent.
             rig.link.ingest(1, &data(9, close_intent,
                 &qrtr_control(6, [0, peer.port, 0, 0]), 0)).unwrap();
+            #[cfg(feature = "sunfish-first-wrq-spare-oack")]
+            assert!(!rig.link.first_oack_ready_without_grant());
             let gates = rig.link.first_oack_eligibility();
             assert!(gates.passes > 0 && gates.queued_at.is_some());
             assert_eq!((gates.ipa_passes, gates.ready_passes, gates.close_mask), (0, 0, Some(0)));
             rig.link.ingest(1, &control(14, ipa_id)).unwrap();
             let _ = publish(&mut rig.link);
             assert_eq!(rig.link.first_oack_eligibility(), gates);
+            #[cfg(feature = "sunfish-post-reg-oack-turn")]
+            assert!(rig.link.post_reg_oack_turns().entries().is_empty());
             continue;
         }
         if blocked {
@@ -2339,9 +2368,13 @@ fn first_oack_borrows_one_fitting_intent_after_exact_ipa_publication() {
                 rig.link.ingest(1, &control(7, 128)),
                 Ok(Event::ReceiveIntentRequest { granted: true })
             );
+            #[cfg(feature = "sunfish-first-wrq-spare-oack")]
+            assert!(!rig.link.first_oack_ready_without_grant());
             let (advertisement, advertised) = publish(&mut rig.link).unwrap();
             assert!(matches!(advertisement, Published::ReceiveIntent(_)));
             assert!(word(&advertised, 8) >= 128);
+            #[cfg(feature = "sunfish-first-wrq-spare-oack")]
+            assert!(!rig.link.first_oack_ready_without_grant());
             assert_eq!(
                 publish(&mut rig.link).unwrap().0,
                 Published::IntentRequestAck { granted: true }
@@ -2356,6 +2389,8 @@ fn first_oack_borrows_one_fitting_intent_after_exact_ipa_publication() {
                     panic!("expected independent confirmed WRQ")
                 };
                 rig.link.finish_tftp_request(&other).unwrap();
+                #[cfg(feature = "sunfish-first-wrq-spare-oack")]
+                assert!(!rig.link.first_oack_ready_without_grant());
                 let (_, credit) = publish_until_data(&mut rig.link);
                 assert_eq!(word(&credit, 20), 7, "QRTR RESUME must keep its turn");
             }
@@ -2363,7 +2398,9 @@ fn first_oack_borrows_one_fitting_intent_after_exact_ipa_publication() {
         let mut attempts = 0;
         let mut published_oack = None;
         for _ in 0..32 {
-            let result = rig.link.publish_next(1, |frame| {
+            #[cfg(feature = "sunfish-first-wrq-spare-oack")]
+            let direct = bounded && attempts == 0;
+            let writer = |frame: &[u8]| {
                 assert_ne!(
                     word(frame, 0) & 0xffff,
                     7,
@@ -2381,7 +2418,16 @@ fn first_oack_borrows_one_fitting_intent_after_exact_ipa_publication() {
                     published_oack = Some(word(frame, 4));
                 }
                 Ok(())
-            });
+            };
+            #[cfg(feature = "sunfish-first-wrq-spare-oack")]
+            let result = if direct {
+                assert!(rig.link.first_oack_ready_without_grant());
+                rig.link.publish_oack_followup(1, qcom_glink_qmi::OackFollowup::FirstGrantReply, writer)
+            } else {
+                rig.link.publish_next(1, writer)
+            };
+            #[cfg(not(feature = "sunfish-first-wrq-spare-oack"))]
+            let result = rig.link.publish_next(1, writer);
             match result {
                 Ok(Some(_)) | Err(Error::WouldBlock) => {}
                 Ok(None) | Err(Error::NoRemoteIntent) => break,
@@ -2389,6 +2435,20 @@ fn first_oack_borrows_one_fitting_intent_after_exact_ipa_publication() {
             }
         }
         assert_eq!(attempts, usize::from(!scarce));
+        #[cfg(feature = "sunfish-post-reg-oack-turn")]
+        {
+            let turns = rig.link.post_reg_oack_turns().entries();
+            assert!(!turns.is_empty());
+            assert!(turns.windows(2).all(|pair| pair[0].at <= pair[1].at));
+            assert!(turns.iter().all(|turn| turn.at >= rig.link.ipa_registration_trace().unwrap().published_at.unwrap()));
+            if scarce {
+                assert!(turns.iter().all(|turn| turn.mask & 0x40 != 0));
+            } else {
+                let exact = turns.iter().find(|turn| turn.command == 0x109).unwrap();
+                assert_eq!(exact.mask, 0);
+                assert_eq!(exact.result, if blocked { 3 } else { 2 });
+            }
+        }
         assert!(
             rig.link
                 .ipa_registration_trace()
@@ -2397,8 +2457,22 @@ fn first_oack_borrows_one_fitting_intent_after_exact_ipa_publication() {
                 .is_none()
         );
         let gates = rig.link.first_oack_eligibility();
+        #[cfg(feature = "sunfish-post-reg-oack-turn")]
+        if scarce && close {
+            let initial = rig.link.post_reg_oack_turns().entries()[0].at;
+            for _ in 0..20 {
+                assert_eq!(rig.link.publish_next(1, |_| panic!("unexpected write without a fitting intent")),
+                    Err(Error::NoRemoteIntent));
+            }
+            let trace = rig.link.post_reg_oack_turns();
+            assert_eq!(trace.entries().len(), 12);
+            assert!(trace.omitted > 0);
+            assert_eq!(trace.entries()[0].at, initial);
+        }
         assert!(gates.queued_at.is_some() && gates.ipa_passes > 0);
-        assert_eq!(gates.ready_passes > 0, !scarce);
+        // This counter records ordinary arbitration passes. The bounded turn
+        // is checked independently in the post-registration writer trace.
+        assert_eq!(gates.ready_passes > 0, !scarce && !bounded);
         assert_eq!(gates.common & 0x40 != 0, scarce);
         if blocked {
             assert_ne!(gates.seen & 0x04, 0, "pending grant recorded");
@@ -2704,4 +2778,19 @@ fn replay_open_init_with_grant_pending_at_registration_publication() {
         assert!(rig.link.ipa_registration_trace().unwrap().completed_at.is_some());
         println!("{case}: queue={at_queue:#x} INIT turn={} advertisement={} ACK={} local intent={local_id:#x}", pos+1, ad+1, ack+1);
     }
+}
+
+#[cfg(feature = "sunfish-first-wrq-spare-oack")]
+#[test]
+fn spare_receive_target_ends_at_first_server_check() {
+    use crate::qcom_tftp_server_check as tftp;
+    let mut link = session();
+    link.enable_first_wrq_spare_oack();
+    link.prepare_tftp_server(1, tftp::SERVICE_PORT).unwrap();
+    let mut rig = LinuxRig::from_prepared_link(link, false);
+    assert_eq!(rig.available.len(), 3);
+    assert!(matches!(rig.input(&qrtr(1, 0x1f, tftp::SERVICE_PORT, false, tftp::REQUEST)),
+        Ok(Event::TftpRequest(_))));
+    assert_eq!(rig.link.receive_target(), 2);
+    assert!(!rig.link.first_oack_ready_without_grant());
 }

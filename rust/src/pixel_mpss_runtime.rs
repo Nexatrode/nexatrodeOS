@@ -154,6 +154,8 @@ impl RuntimeDomain {
             session.enable_ipa_before_first_oack();
             #[cfg(feature = "sunfish-first-oack-after-ipa-publish")]
             session.enable_first_oack_after_ipa_publish();
+            #[cfg(feature = "sunfish-first-wrq-spare-oack")]
+            session.enable_first_wrq_spare_oack();
             #[cfg(all(feature = "sunfish-tftp-first-oack-unheld", not(feature = "sunfish-ipa-reply-before-oack")))]
             session.observe_first_tftp_without_oack_hold();
             session
@@ -3686,14 +3688,289 @@ impl RuntimeDomain {
             (28, "IPA COMPLETE", u32::from(self.ipa_complete_seen)),
         ] { display.hex(row, label, value); }
         }
-        #[cfg(feature = "sunfish-ipa-post-init-wrq")]
+        #[cfg(feature = "sunfish-first-wrq-spare-oack")]
+        {
+            let prefix = owner.wrq_prefix();
+            let close = owner.init_close_fifo().bounds;
+            let ack = owner.tftp_final_ack_trace().filter(|ack| first.is_some_and(|t|
+                ack.destination == t.peer && ack.source.port == t.transfer_port && ack.block == 1));
+            display.replace_line(1, "FIRST WRQ SPARE OACK");
+            for (index, (label, value)) in [
+                ("RUNTIME ERROR", self.error),
+                ("ERROR DETAIL", self.detail),
+                ("FIRST PEER", first.map_or(u32::MAX, |t| t.peer.port)),
+                ("FIRST WRQ US", age(first.and_then(|t| t.wrq_at))),
+                ("OACK QUEUE US", age(gates.queued_at)),
+                ("REQ108 RX US", age(grant.request_108_at)),
+                ("GRANT MATCH", u32::from(owner.grant_buffer_reads().matched)),
+                ("REQ BYTES", owner.grant_buffer_reads().requested.unwrap_or(u32::MAX)),
+                ("BACKING AD US", age(grant.backing.advertised_at)),
+                ("GRANT ACK US", age(grant.ack_at)),
+                ("REG PUB US", age(reg.and_then(|t| t.published_at))),
+                ("DIRECT TURN", grant.direct_turn),
+                ("OACK HEAD US", age(prefix.oack_head)),
+                ("OACK TAIL US", age(tail)),
+                ("OACK DONE US", age(first.and_then(|t| t.oack_done_at))),
+                ("CLOSE ABSENT US", age(close.and_then(|b| b.last_absent))),
+                ("CLOSE VIS US", age(close.and_then(|b| b.first_visible))),
+                ("FIRST CLOSE US", age(first.and_then(|t| t.first_close_at))),
+                ("FIRST DATA US", age(first.and_then(|t| t.first_data_at))),
+                ("FINAL ACK US", age(ack.and_then(|t| t.published_at))),
+                ("ACK DONE US", age(ack.and_then(|t| t.done_at))),
+                ("INIT HEAD US", age(prefix.init_head)),
+                ("WRITES COMPLETE", self.server_check.completed_count() as u32),
+                ("IPA COMPLETE", u32::from(self.ipa_complete_seen)),
+                ("PD QUERY STATE", query[1]),
+                ("WLAN RRQ RX", owner.tftp_wire_counts()[2]),
+                ("WLFW SERVERS", query[7]),
+            ].into_iter().enumerate() { display.hex(index + 2, label, value); }
+        }
+        #[cfg(all(feature = "sunfish-grant-buffer-reads", not(feature = "sunfish-first-wrq-spare-oack")))]
+        {
+            let pool = owner.grant_buffer_reads();
+            let close = owner.init_close_fifo().bounds;
+            let prefix = owner.wrq_prefix();
+            display.replace_line(1, "GRANT BUFFER READS");
+            for (index, (label, value)) in [
+                ("RUNTIME ERROR", self.error),
+                ("FIRST PEER", first.map_or(u32::MAX, |t| t.peer.port)),
+                ("GRANT MATCH", u32::from(pool.matched)),
+                ("REQUEST BYTES", pool.requested.unwrap_or(u32::MAX)),
+                ("BACKING ID", pool.backing_id.unwrap_or(u32::MAX)),
+                ("REQ ABSENT US", age(pool.absent)),
+                ("REQ VISIBLE US", age(pool.visible)),
+                ("REQ DECODE US", age(pool.decoded)),
+                ("FIT AT DECODE", pool.fits.iter().flatten().count() as u32),
+                ("BACKING AD US", age(grant.backing.advertised_at)),
+                ("OACK HEAD US", age(prefix.oack_head)),
+                ("CLOSE VIS US", age(close.and_then(|b| b.first_visible))),
+            ].into_iter().enumerate() { display.hex(index + 2, label, value); }
+            display.replace_line(14, "ID SIZE OP AD US");
+            for (i, entry) in pool.fits.iter().enumerate() {
+                if let Some(row) = entry {
+                    display.header_row(15+i, false, &[(row.id,8), (row.size,4),
+                        (u32::from(row.command),2), (age(row.published),8)]);
+                    display.header_row(15+i, true, &[(age(row.last_short),8),
+                        (age(row.first_read),8), (row.order(pool.absent, pool.visible),1)]);
+                } else {
+                    display.header_row(15+i, false, &[]);
+                    display.header_row(15+i, true, &[]);
+                }
+            }
+            display.replace_line(23, "SHORT US READ US ORDER");
+            display.hex(24, "FIRST DATA US", age(first.and_then(|t| t.first_data_at)));
+            display.hex(25, "INIT HEAD US", age(prefix.init_head));
+            display.hex(26, "IPA COMPLETE", u32::from(self.ipa_complete_seen));
+            display.hex(27, "WLAN RRQ RX", owner.tftp_wire_counts()[2]);
+            display.hex(28, "WLFW SERVERS", query[7]);
+        }
+        #[cfg(all(feature = "sunfish-post-reg-oack-turn", not(feature = "sunfish-grant-buffer-reads")))]
+        {
+            let turns = owner.post_reg_oack_turns();
+            let entries = turns.entries();
+            let initial = entries.first();
+            let close = owner.init_close_fifo().bounds;
+            let visible = close.and_then(|bounds| bounds.first_visible);
+            let prefix = owner.wrq_prefix();
+            display.replace_line(1, "POST REG OACK TURNS");
+            for (index, (label, value)) in [
+                ("RUNTIME ERROR", self.error),
+                ("FIRST PEER", first.map_or(u32::MAX, |t| t.peer.port)),
+                ("OACK QUEUE US", age(gates.queued_at)),
+                ("REG PUB US", age(reg.and_then(|r| r.published_at))),
+                ("CLOSE ABSENT US", age(close.and_then(|bounds| bounds.last_absent))),
+                ("CLOSE VIS US", age(visible)),
+                ("FIRST CLOSE US", age(first.and_then(|t| t.first_close_at))),
+                ("FIRST TURN US", age(initial.map(|turn| turn.at))),
+                ("FIRST MASK", initial.map_or(u32::MAX, |turn| u32::from(turn.mask))),
+                ("SAVED PRE VIS", visible.map_or(u32::MAX, |at| entries.iter().filter(|t| t.at < at).count() as u32)),
+                ("TURNS OMITTED", turns.omitted),
+                ("BACKING AD US", age(grant.backing.advertised_at)),
+                ("GRANT ACK US", age(grant.ack_at)),
+                ("OACK HEAD US", age(prefix.oack_head)),
+                ("INIT HEAD US", age(prefix.init_head)),
+            ].into_iter().enumerate() { display.hex(index + 2, label, value); }
+            display.replace_line(17, "US PATH MASK CMD RESULT");
+            for i in 0..12 {
+                let row = 18 + i / 2;
+                if let Some(turn) = entries.get(i) {
+                    display.header_row(row, i % 2 != 0, &[(age(Some(turn.at)), 8),
+                        (turn.path.into(), 1), (turn.mask.into(), 3), (turn.command.into(), 3),
+                        (turn.result.into(), 1)]);
+                } else { display.header_row(row, i % 2 != 0, &[]); }
+            }
+            display.hex(24, "FIRST DATA US", age(first.and_then(|t| t.first_data_at)));
+            display.hex(25, "REG DONE US", age(reg.and_then(|r| r.completed_at)));
+            display.hex(26, "IPA COMPLETE", u32::from(self.ipa_complete_seen));
+            display.hex(27, "WLAN RRQ RX", owner.tftp_wire_counts()[2]);
+            display.hex(28, "WLFW SERVERS", query[7]);
+        }
+        #[cfg(all(feature = "sunfish-wrq-prefix-close", not(feature = "sunfish-post-reg-oack-turn")))]
+        {
+            let prefix = owner.wrq_prefix();
+            let (ready, wrq) = owner.ipa_wrq_timing();
+            let close = owner.init_close_fifo().bounds;
+            display.replace_line(1, if cfg!(feature = "sunfish-smmu-grouped-table-check") {
+                "WRQ CHECKED TABLES"
+            } else {
+                "WRQ PREFIX AND CLOSE"
+            });
+            for (index, (label, value)) in [
+                ("RUNTIME ERROR", self.error),
+                ("FIRST PEER", first.map_or(u32::MAX, |t| t.peer.port)),
+                ("ENDPT READY US", age(ready)),
+                ("WRQ VISIBLE US", age(wrq.and_then(|t| t.first_visible))),
+                ("WRQ BYTES AHEAD", wrq.and_then(|t| t.bytes_ahead).unwrap_or(u32::MAX)),
+                ("FIRST WRQ US", age(first.and_then(|t| t.wrq_at))),
+                ("PREFIX COMPLETE", u32::from(prefix.complete)),
+                ("PREFIX RECORDS", prefix.records),
+                ("PREFIX BYTES", prefix.bytes),
+                ("OACK QUEUE US", age(gates.queued_at)),
+                ("REG PUB US", age(reg.and_then(|r| r.published_at))),
+                ("OACK HEAD US", age(prefix.oack_head)),
+                ("INIT HEAD US", age(prefix.init_head)),
+                ("CLOSE ABSENT US", age(close.and_then(|c| c.last_absent))),
+                ("CLOSE VIS US", age(close.and_then(|c| c.first_visible))),
+                ("FIRST CLOSE US", age(first.and_then(|t| t.first_close_at))),
+            ].into_iter().enumerate() { display.hex(index + 2, label, value); }
+            display.replace_line(18, "CMD LEN ARG K SRC DST X");
+            for i in 0..12 {
+                let row = 19 + i / 2;
+                if let Some(h) = prefix.headers().get(i) {
+                    let [kind, src, dst] = h.qrtr.unwrap_or([u32::MAX; 3]);
+                    display.header_row(row, i % 2 != 0, &[(h.command.into(),2), (h.bytes.into(),4),
+                        (h.parameter,8), (kind,2), (src,8), (dst,8), (h.extra,8)]);
+                } else { display.header_row(row, i % 2 != 0, &[]); }
+            }
+            display.hex(25, "FIRST DATA US", age(first.and_then(|t| t.first_data_at)));
+            display.hex(26, "IPA COMPLETE", u32::from(self.ipa_complete_seen));
+            display.hex(27, "WLAN RRQ RX", owner.tftp_wire_counts()[2]);
+            display.hex(28, "WLFW SERVERS", query[7]);
+        }
+        #[cfg(all(feature = "sunfish-ipa-ingress-work", not(feature = "sunfish-wrq-prefix-close")))]
+        {
+            let work = owner.ipa_ingress_work();
+            let bounds = owner.ipa_announcement_rx();
+            let visible = bounds.and_then(|b| b.first_visible);
+            let accepted = owner.first_ipa_announcement().and_then(|a| a.1);
+            let (ready, wrq) = owner.ipa_wrq_timing();
+            display.replace_line(1, "IPA INGRESS WORK");
+            for (index, (label, value)) in [
+                ("RUNTIME ERROR", self.error),
+                ("IPA VISIBLE US", age(visible)),
+                ("IPA BYTES AHEAD", bounds.and_then(|b| b.bytes_ahead).unwrap_or(u32::MAX)),
+                ("NEW SERVER US", age(accepted)),
+                ("ENDPT READY US", age(ready)),
+                ("WRQ ABSENT US", age(wrq.and_then(|b| b.last_absent))),
+                ("WRQ VISIBLE US", age(wrq.and_then(|b| b.first_visible))),
+                ("WRQ BYTES AHEAD", wrq.and_then(|b| b.bytes_ahead).unwrap_or(u32::MAX)),
+                ("INIT PUB US", age(owner.ipa_init_trace().1.and_then(|t| t.published_at))),
+                ("FIRST CLOSE US", age(first.and_then(|t| t.first_close_at))),
+                ("FIRST DATA US", age(first.and_then(|t| t.first_data_at))),
+                ("HISTORY LOST", visible.map_or(u32::MAX, |t| u32::from(work.lost(t)))),
+            ].into_iter().enumerate() { display.hex(index + 2, label, value); }
+            display.replace_line(14, "K CMD LEN ID DIST FROM TO");
+            let mut records = visible.zip(accepted).into_iter().flat_map(|(lo, hi)| work.records(lo, hi));
+            for i in 0..24 {
+                let row = 15 + i / 2;
+                if let Some(e) = records.next() {
+                    display.header_row(row, i % 2 != 0, &[(e.kind.into(),1), (e.cmd.into(),2),
+                        (e.size.into(),4), (e.detail,8), (work.distance(e).unwrap_or(0xffff) as u32,4),
+                        (age(Some(e.start)),8), (age(Some(e.end)),8)]);
+                } else { display.header_row(row, i % 2 != 0, &[]); }
+            }
+            display.hex(27, "WLAN RRQ RX", owner.tftp_wire_counts()[2]);
+            display.hex(28, "WLFW SERVERS", query[7]);
+        }
+        #[cfg(all(feature = "sunfish-ipa-announcement-fifo", not(feature = "sunfish-ipa-ingress-work")))]
+        {
+            let announcement = owner.first_ipa_announcement();
+            let bounds = owner.ipa_announcement_rx();
+            let (ready, wrq) = owner.ipa_wrq_timing();
+            let (init, tx) = owner.ipa_init_trace();
+            display.replace_line(1, "IPA ANNOUNCEMENT FIFO");
+            for (index, (label, value)) in [
+                ("RUNTIME ERROR", self.error),
+                ("ERROR DETAIL", self.detail),
+                ("IPA MODEM PORT", announcement.map_or(u32::MAX, |a| a.0)),
+                ("IPA ABSENT US", age(bounds.and_then(|b| b.last_absent))),
+                ("IPA VISIBLE US", age(bounds.and_then(|b| b.first_visible))),
+                ("IPA BYTES AHEAD", bounds.and_then(|b| b.bytes_ahead).unwrap_or(u32::MAX)),
+                ("NEW SERVER US", age(announcement.and_then(|a| a.1))),
+                ("ENDPT READY US", age(ready)),
+                ("SVC PASS US", age(self.ipa_ready_service_at)),
+                ("IPA DISC US", age(init.and_then(|t| t.discovered_at))),
+                ("INIT PREP US", age(init.and_then(|t| t.prepared_at))),
+                ("INIT QUEUE US", age(tx.and_then(|t| t.queued_at))),
+                ("INIT PUB US", age(tx.and_then(|t| t.published_at))),
+                ("FIRST WRQ PEER", first.map_or(u32::MAX, |t| t.peer.port)),
+                ("WRQ ABSENT US", age(wrq.and_then(|b| b.last_absent))),
+                ("WRQ VISIBLE US", age(wrq.and_then(|b| b.first_visible))),
+                ("WRQ BYTES AHEAD", wrq.and_then(|b| b.bytes_ahead).unwrap_or(u32::MAX)),
+                ("FIRST WRQ US", age(first.and_then(|t| t.wrq_at))),
+                ("FIRST OACK US", age(first.and_then(|t| t.oack_at))),
+                ("FIRST DATA US", age(first.and_then(|t| t.first_data_at))),
+                ("FIRST CLOSE US", age(first.and_then(|t| t.first_close_at))),
+                ("REG PUB US", age(reg.and_then(|t| t.published_at))),
+                ("INIT RETIRE US", age(tx.and_then(|t| t.retired_at))),
+                ("IPA COMPLETE", u32::from(self.ipa_complete_seen)),
+                ("PD QUERY STATE", query[1]),
+                ("WLAN RRQ RX", owner.tftp_wire_counts()[2]),
+                ("WLFW SERVERS", query[7]),
+            ].into_iter().enumerate() {
+                display.hex(index + 2, label, value);
+            }
+        }
+        #[cfg(all(feature = "sunfish-reg-writer-timeline", not(feature = "sunfish-ipa-announcement-fifo")))]
+        {
+            let close = owner.init_close_fifo();
+            let (_, init) = owner.ipa_init_trace();
+            display.replace_line(1, "REG WRITER TIMELINE");
+            let rows = [
+                ("RUNTIME ERROR", self.error),
+                ("ERROR DETAIL", self.detail),
+                ("FIRST PEER", first.map_or(u32::MAX, |t| t.peer.port)),
+                ("FIRST WRQ US", age(first.and_then(|t| t.wrq_at))),
+                ("REG QUEUE US", age(reg.and_then(|r| r.queued_at))),
+                ("REQUEST BYTES", grant.backing.intent.map_or(u32::MAX, |_| grant.backing.requested)),
+                ("GRANT INTENT", grant.backing.intent.unwrap_or(u32::MAX)),
+                ("RESERVED US", age(grant.backing.reserved_at)),
+                ("REQ RXDONE US", age(reg.and_then(|r| r.tx.request_done_at))),
+                ("REG PASS US", age(reg.and_then(|r| r.tx.first_pass_at))),
+                ("REG SELECT US", age(reg.and_then(|r| r.tx.selected_at))),
+                ("REG WRITE US", age(reg.and_then(|r| r.tx.committed_write_start))),
+                ("WRITER END US", age(reg.filter(|r| r.published_at.is_some()).and_then(|r| r.tx.last_end))),
+                ("REG PUB US", age(reg.and_then(|r| r.published_at))),
+                ("REG BLOCKS", reg.map_or(u32::MAX, |r| r.tx.target_blocked)),
+                ("AD WRITER", grant.backing.writer.map_or(0, |w| w as u32)),
+                ("BACKING AD US", age(grant.backing.advertised_at)),
+                ("GRANT ACK US", age(grant.ack_at)),
+                ("LAST ABSENT US", age(close.bounds.and_then(|b| b.last_absent))),
+                ("CLOSE VIS US", age(close.bounds.and_then(|b| b.first_visible))),
+                ("FIRST CLOSE US", age(first.and_then(|t| t.first_close_at))),
+                ("FIRST OACK US", age(first.and_then(|t| t.oack_at))),
+                ("FIRST DATA US", age(first.and_then(|t| t.first_data_at))),
+                ("INIT PUB US", age(init.and_then(|t| t.published_at))),
+                ("IPA COMPLETE", u32::from(self.ipa_complete_seen)),
+                ("WLAN RRQ RX", owner.tftp_wire_counts()[2]),
+                ("WLFW SERVERS", query[7]),
+            ];
+            for (index, (label, value)) in rows.into_iter().enumerate() {
+                display.hex(index + 2, label, value);
+            }
+        }
+        #[cfg(all(feature = "sunfish-ipa-post-init-wrq", not(feature = "sunfish-reg-writer-timeline")))]
         {
             let (init, transport) = owner.ipa_init_trace();
             #[cfg(not(feature = "sunfish-ipa-init-close-visibility"))]
             let reads = owner.read_sequence();
             #[cfg(feature = "sunfish-ipa-init-close-visibility")]
             let close = owner.init_close_fifo();
-            #[cfg(feature = "sunfish-ipa-init-close-visibility")]
+            #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+            display.replace_line(1, "GRANT RESERVE AND AD");
+            #[cfg(all(feature = "sunfish-paired-oack-init", not(feature = "sunfish-grant-ad-writer-trace")))]
+            display.replace_line(1, "PAIRED OACK AND INIT");
+            #[cfg(all(feature = "sunfish-ipa-init-close-visibility", not(feature = "sunfish-paired-oack-init")))]
             display.replace_line(1, "INIT CLOSE VISIBILITY");
             #[cfg(not(feature = "sunfish-ipa-init-close-visibility"))]
             display.replace_line(1, "POST INIT FIRST WRQ");
@@ -3702,19 +3979,27 @@ impl RuntimeDomain {
                 (3, "ERROR DETAIL", self.detail),
                 (4, "FIRST PEER", first.map_or(u32::MAX, |t| t.peer.port)),
                 (5, "FIRST WRQ US", age(first.and_then(|t| t.wrq_at))),
-                #[cfg(feature = "sunfish-ipa-init-close-visibility")]
+                #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+                (6, "GRANT INTENT", grant.backing.intent.unwrap_or(u32::MAX)),
+                #[cfg(all(feature = "sunfish-ipa-init-close-visibility", not(feature = "sunfish-grant-ad-writer-trace")))]
                 (6, "FRESH RX BYTES", close.fresh_unread.unwrap_or(u32::MAX)),
                 #[cfg(not(feature = "sunfish-ipa-init-close-visibility"))]
                 (6, "OACK QUEUE US", age(gates.queued_at)),
-                #[cfg(feature = "sunfish-ipa-init-close-visibility")]
+                #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+                (7, "RESERVED US", age(grant.backing.reserved_at)),
+                #[cfg(all(feature = "sunfish-ipa-init-close-visibility", not(feature = "sunfish-grant-ad-writer-trace")))]
                 (7, "SAMPLE START US", age(close.sample_start)),
                 #[cfg(not(feature = "sunfish-ipa-init-close-visibility"))]
                 (7, "INIT QUEUE US", age(transport.and_then(|t| t.queued_at))),
-                #[cfg(feature = "sunfish-ipa-init-close-visibility")]
+                #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+                (8, "REG PUB US", age(reg.and_then(|t| t.published_at))),
+                #[cfg(all(feature = "sunfish-ipa-init-close-visibility", not(feature = "sunfish-grant-ad-writer-trace")))]
                 (8, "SAMPLE END US", age(close.sample_end)),
                 #[cfg(not(feature = "sunfish-ipa-init-close-visibility"))]
                 (8, "REG PUB US", age(reg.and_then(|t| t.published_at))),
-                #[cfg(feature = "sunfish-ipa-init-close-visibility")]
+                #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+                (9, "AD WRITER", grant.backing.writer.map_or(0, |w| w as u32)),
+                #[cfg(all(feature = "sunfish-ipa-init-close-visibility", not(feature = "sunfish-grant-ad-writer-trace")))]
                 (9, "CLOSE IN SAMPLE", close.visible_at_sample().map_or(u32::MAX, u32::from)),
                 #[cfg(not(feature = "sunfish-ipa-init-close-visibility"))]
                 (9, "REG DONE US", age(reg.and_then(|t| t.completed_at))),
@@ -3724,6 +4009,9 @@ impl RuntimeDomain {
                 (12, "LAST ABSENT US", age(close.bounds.and_then(|b| b.last_absent))),
                 #[cfg(not(feature = "sunfish-ipa-init-close-visibility"))]
                 (12, "INIT RESP US", age(init.and_then(|t| t.response_at))),
+                #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+                (13, "BACKING AD US", age(grant.backing.advertised_at)),
+                #[cfg(not(feature = "sunfish-grant-ad-writer-trace"))]
                 (13, "BACKING AD US", age(grant.advertisement_at)),
                 (14, "GRANT ACK US", age(grant.ack_at)),
                 (15, "FOLLOW RESULT", grant.outcome),
@@ -3737,7 +4025,9 @@ impl RuntimeDomain {
                 (22, "CLOSE VIS US", age(close.bounds.and_then(|b| b.first_visible))),
                 #[cfg(not(feature = "sunfish-ipa-init-close-visibility"))]
                 (22, "READ KIND MASK", reads.kinds),
-                #[cfg(feature = "sunfish-ipa-init-close-visibility")]
+                #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+                (23, "REQUEST BYTES", grant.backing.intent.map_or(u32::MAX, |_| grant.backing.requested)),
+                #[cfg(all(feature = "sunfish-ipa-init-close-visibility", not(feature = "sunfish-grant-ad-writer-trace")))]
                 (23, "RX BYTES AHEAD", close.bounds.and_then(|b| b.bytes_ahead).unwrap_or(u32::MAX)),
                 #[cfg(not(feature = "sunfish-ipa-init-close-visibility"))]
                 (23, "FIRST READ US", age(reads.first[0].and_then(|r| r.2))),

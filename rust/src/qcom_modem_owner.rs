@@ -2094,11 +2094,19 @@ impl<I: Io> Owner<I> {
         self.adapter.server_check_49()
     }
 
+    #[cfg(feature = "sunfish-grant-buffer-reads")]
+    pub fn grant_buffer_reads(&self) -> &fifo::GrantBufferReads { self.adapter.grant_buffer_reads() }
+
     #[cfg(feature = "sunfish-first-oack-grant-window")]
     pub fn first_grant_trace(&self) -> fifo::FirstGrantTrace { self.adapter.first_grant_trace() }
 
     #[cfg(feature = "sunfish-first-oack-grant-window")]
     pub fn first_oack_tail(&self) -> fifo::ServerCheckTail { self.adapter.first_server_check_tail() }
+
+    #[cfg(feature = "sunfish-post-reg-oack-turn")]
+    pub fn post_reg_oack_turns(&self) -> &crate::qcom_glink_qmi::PostRegOackTurns {
+        self.adapter.post_reg_oack_turns()
+    }
 
     #[cfg(feature = "sunfish-first-oack-after-ipa-publish")]
     pub fn first_oack_eligibility(&self) -> crate::qcom_glink_qmi::FirstOackEligibility {
@@ -2125,6 +2133,16 @@ impl<I: Io> Owner<I> {
     pub fn registration_rx_visibility(&self) -> Option<fifo::ServerCheckRxDone> {
         self.adapter.registration_rx_visibility()
     }
+    #[cfg(feature = "sunfish-ipa-ingress-work")]
+    pub fn ipa_ingress_work(&self) -> &fifo::IpaIngressWork { self.adapter.ipa_ingress_work() }
+    #[cfg(feature = "sunfish-wrq-prefix-close")]
+    pub fn wrq_prefix(&self) -> &fifo::WrqPrefix { self.adapter.wrq_prefix() }
+
+    #[cfg(feature = "sunfish-ipa-announcement-fifo")]
+    pub fn ipa_announcement_rx(&self) -> Option<fifo::ServerCheckRxDone> {
+        self.adapter.ipa_announcement_rx()
+    }
+
     #[cfg(feature = "sunfish-ipa-wrq-ready-fifo")]
     pub fn ipa_wrq_timing(&self) -> (Option<u64>, Option<fifo::ServerCheckRxDone>) {
         self.adapter.ipa_wrq_timing()

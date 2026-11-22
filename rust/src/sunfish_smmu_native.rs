@@ -1206,6 +1206,20 @@ impl<'a, F: FnMut(usize) -> Result<(), Error>> Native<'a, F> {
             let values = &image;
             #[cfg(feature = "sunfish-smmu-retained-table-expectation")]
             let values = &expectation[page];
+            #[cfg(feature = "sunfish-smmu-grouped-table-check")]
+            {
+                const GROUP_WORDS: usize = 32;
+                const { assert!(LPAE_ENTRIES_PER_TABLE % GROUP_WORDS == 0); }
+                for (group, words) in values.as_chunks::<GROUP_WORDS>().0.iter().enumerate() {
+                    for (offset, &expected) in words.iter().enumerate() {
+                        // SAFETY: each complete group lies within the retained table frame.
+                        if unsafe { pointer.add(group * GROUP_WORDS + offset).read_volatile() } != expected {
+                            return Err(Error::Tables);
+                        }
+                    }
+                }
+            }
+            #[cfg(not(feature = "sunfish-smmu-grouped-table-check"))]
             for (n, value) in values.iter().enumerate() {
                 // SAFETY: these exact eight frames were retained before staging.
                 if unsafe { pointer.add(n).read_volatile() } != *value {

@@ -1313,3 +1313,36 @@ fn late_barrier_status_loss_stops_before_cursor_or_doorbell_and_stays_quarantine
         }
     }
 }
+
+#[cfg(feature = "sunfish-grant-buffer-reads")]
+#[test]
+fn grant_read_trace_requires_the_last_byte_of_the_wrapped_offer() {
+    use core::sync::atomic::{AtomicU64, Ordering};
+    static NOW: AtomicU64 = AtomicU64::new(0);
+    let (peer, mut adapter) = adapter(0x3ff8, 0);
+    adapter.set_registry_ack_clock(|| NOW.fetch_add(1, Ordering::Relaxed));
+    adapter.track_first_wrq();
+    let id = adapter.offer_receive(1).unwrap();
+    assert_eq!(adapter.publish_next(1), Ok(Transmit::Session(Published::ReceiveIntent(id))));
+
+    // Only the first eight bytes of the advertisement have crossed the peer tail.
+    peer.0.borrow_mut().words[0] = 0;
+    adapter.revalidate(1).unwrap();
+    peer.push(&control(7, 2, 108));
+    assert_eq!(adapter.poll_receive(1), Ok(Receive::Session(Event::ReceiveIntentRequest { granted: true })));
+    adapter.revalidate(1).unwrap();
+    let capture = adapter.grant_buffer_reads();
+    let offer = capture.fits.iter().flatten().next().unwrap();
+    assert_eq!((offer.id, offer.size, offer.command), (id, 4096, 5));
+    assert_ne!(capture.backing_id, Some(id));
+    assert!(capture.absent.is_some() && capture.visible.is_some());
+    assert!(offer.first_read.is_none());
+    assert_eq!(offer.order(capture.absent, capture.visible), 2);
+
+    peer.0.borrow_mut().words[0] = 8;
+    adapter.revalidate(1).unwrap();
+    let capture = adapter.grant_buffer_reads();
+    let offer = capture.fits.iter().flatten().next().unwrap();
+    assert!(offer.first_read.unwrap() > capture.visible.unwrap());
+    assert_eq!(offer.order(capture.absent, capture.visible), 2);
+}

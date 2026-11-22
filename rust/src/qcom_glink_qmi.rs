@@ -148,6 +148,25 @@ pub struct IntentDenialDiagnostic {
     /// One four-bit receive-state code per slot, least-significant slot first.
     pub states: u32,
 }
+#[cfg(feature = "sunfish-grant-ad-writer-trace")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum GrantAdWriter {
+    Ordinary = 1,
+    Registration = 2,
+    OtherFollowup = 3,
+}
+
+#[cfg(feature = "sunfish-grant-ad-writer-trace")]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct GrantBackingTrace {
+    pub requested: u32,
+    pub intent: Option<u32>,
+    pub reserved_at: Option<u64>,
+    pub writer: Option<GrantAdWriter>,
+    pub advertised_at: Option<u64>,
+}
+
 #[cfg(feature = "sunfish-glink-intent-denial-snapshot")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IntentDenialSlots {
@@ -754,8 +773,12 @@ pub struct Session {
     ipa_before_first_oack: bool,
     #[cfg(feature = "sunfish-first-oack-after-ipa-publish")]
     first_oack_after_ipa_publish: bool,
+    #[cfg(feature = "sunfish-first-wrq-spare-oack")]
+    first_wrq_spare_oack: bool,
     #[cfg(feature = "sunfish-first-oack-after-ipa-publish")]
     first_oack_eligibility: FirstOackEligibility,
+    #[cfg(feature = "sunfish-post-reg-oack-turn")]
+    post_reg_turns: PostRegOackTurns,
     #[cfg(feature = "sunfish-tftp-first-oack-unheld")]
     first_tftp_unheld: bool,
     #[cfg(feature = "sunfish-wlan-elf-exchange-trace")]
@@ -805,6 +828,8 @@ pub struct Session {
     retry_full_intent: bool,
     #[cfg(feature = "sunfish-wlan-intent-ack-turn")]
     intent_ack_backing: Option<u32>,
+    #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+    pub(crate) grant_backing: GrantBackingTrace,
     #[cfg(feature = "sunfish-wlan-intent-ack-turn")]
     intent_ack_yield: bool,
     #[cfg(feature = "sunfish-wlan-intent-ack-turn")]
@@ -1306,6 +1331,10 @@ impl OackResources {
 #[derive(Clone, Copy)]
 pub(crate) enum OackFollowup {
     #[cfg(feature = "sunfish-first-oack-grant-window")]
+    FirstGrantAd,
+    #[cfg(feature = "sunfish-first-oack-grant-window")]
+    FirstGrantInit,
+    #[cfg(feature = "sunfish-first-oack-grant-window")]
     FirstGrantAck,
     #[cfg(feature = "sunfish-first-oack-grant-window")]
     FirstGrantReply,
@@ -1386,6 +1415,46 @@ pub struct OackSlotPacket {
     pub source: Option<Address>,
     pub destination: Option<Address>,
     pub opcode: Option<u32>,
+}
+
+/// One arbitration sample for the original OACK. The timestamp uses the same
+/// counter as the FIFO close bounds. Commands 0x109 and 0x209 distinguish the
+/// original OACK and QRTR credit from other GLINK DATA.
+#[cfg(feature = "sunfish-post-reg-oack-turn")]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PostRegOackTurn {
+    pub at: u64,
+    pub mask: u16,
+    pub command: u16,
+    pub path: u8,
+    // 0 no selection, 1 selected without a write, 2 committed,
+    // 3 known blocked write, 4 uncertain write.
+    pub result: u8,
+}
+
+#[cfg(feature = "sunfish-post-reg-oack-turn")]
+impl PostRegOackTurn {
+    fn written(&mut self, wire_command: u16, result: Result<(), WriteError>) {
+        self.command = (self.command & 0xff00) | wire_command;
+        self.result = match result {
+            Ok(()) => 2,
+            Err(WriteError::WouldBlock) => 3,
+            Err(WriteError::Uncertain) => 4,
+        };
+    }
+}
+
+#[cfg(feature = "sunfish-post-reg-oack-turn")]
+#[derive(Default)]
+pub struct PostRegOackTurns {
+    turns: [PostRegOackTurn; 12],
+    len: usize,
+    pub omitted: u32,
+}
+
+#[cfg(feature = "sunfish-post-reg-oack-turn")]
+impl PostRegOackTurns {
+    pub fn entries(&self) -> &[PostRegOackTurn] { &self.turns[..self.len] }
 }
 
 /// Ordinary writer opportunities for the first accepted WRQ. Masks contain
@@ -1637,6 +1706,8 @@ impl Session {
             retry_full_intent: false,
             #[cfg(feature = "sunfish-wlan-intent-ack-turn")]
             intent_ack_backing: None,
+            #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+            grant_backing: GrantBackingTrace::default(),
             #[cfg(feature = "sunfish-wlan-intent-ack-turn")]
             intent_ack_yield: false,
             #[cfg(feature = "sunfish-wlan-intent-ack-turn")]
@@ -1673,8 +1744,12 @@ impl Session {
             ipa_before_first_oack: false,
             #[cfg(feature = "sunfish-first-oack-after-ipa-publish")]
             first_oack_after_ipa_publish: false,
+            #[cfg(feature = "sunfish-first-wrq-spare-oack")]
+            first_wrq_spare_oack: false,
             #[cfg(feature = "sunfish-first-oack-after-ipa-publish")]
             first_oack_eligibility: FirstOackEligibility::default(),
+            #[cfg(feature = "sunfish-post-reg-oack-turn")]
+            post_reg_turns: PostRegOackTurns::default(),
             #[cfg(feature = "sunfish-tftp-first-oack-unheld")]
             first_tftp_unheld: false,
             #[cfg(feature = "sunfish-wlan-elf-host-credit-trace")]
@@ -2592,6 +2667,8 @@ impl Session {
         { self.ipa_endpoint_ready_at = None; }
         #[cfg(feature = "sunfish-first-oack-after-ipa-publish")]
         { self.first_oack_eligibility = FirstOackEligibility::default(); }
+        #[cfg(feature = "sunfish-post-reg-oack-turn")]
+        { self.post_reg_turns = PostRegOackTurns::default(); }
         #[cfg(feature = "sunfish-wlan-tftp-oack-compare")]
         {
             self.server_check_transfers = [None; crate::qcom_tftp_server_check::TRANSFER_COUNT];
@@ -2618,6 +2695,8 @@ impl Session {
             self.intent_ack_backing = None;
             self.intent_ack_yield = false;
             self.intent_ack_summary = (0, None);
+            #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+            { self.grant_backing = GrantBackingTrace::default(); }
         }
         #[cfg(feature = "sunfish-wlan-registry-ack-trace")]
         { self.intent_ack_started = None; }
@@ -2745,6 +2824,11 @@ impl Session {
         Some(RoutingDiagnostic { service, source: word(&rx.bytes, 12), destination: port, body_bytes: body_bytes as u32,
             kind: u32::from(rx.bytes[32]), message_id, transaction, tlvs })
     }
+    #[cfg(feature = "sunfish-grant-buffer-reads")]
+    pub(crate) fn grant_available_ids(&self) -> [Option<u32>; RX_SLOTS] {
+        ::core::array::from_fn(|i| (self.receive[i].state == RxState::Available).then_some(self.receive[i].id))
+    }
+
     pub fn receive_snapshot(&self) -> ReceiveSnapshot {
         let mut result = ReceiveSnapshot { states: 0, services: 0, replies: 0 };
         for (index, rx) in self.receive[..RX_SLOTS].iter().enumerate() {
@@ -4143,10 +4227,17 @@ impl Session {
                     }
                     self.intent_denial = Some(IntentDenialDiagnostic { requested: parameter, states });
                 }
+                #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+                { self.grant_backing = GrantBackingTrace { requested: parameter, ..Default::default() }; }
                 if granted {
                     let _id = self.offer_receive(generation)?;
                     #[cfg(feature = "sunfish-wlan-intent-ack-turn")]
                     { self.intent_ack_backing = Some(_id); }
+                    #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+                    {
+                        self.grant_backing.intent = Some(_id);
+                        self.grant_backing.reserved_at = self.intent_ack_clock.map(|now| now());
+                    }
                 }
                 #[cfg(feature = "sunfish-glink-retry-full-intent")]
                 { self.retry_full_intent = !granted && parameter != 0
@@ -5347,6 +5438,14 @@ impl Session {
         Ok(())
     }
 
+    pub(crate) fn receive_target(&self) -> usize {
+        #[cfg(feature = "sunfish-first-wrq-spare-oack")]
+        if self.first_wrq_spare_oack && self.first_server_check.is_none() {
+            return control::RECEIVE_TARGET + 1;
+        }
+        control::RECEIVE_TARGET
+    }
+
     fn maintain_receives(&mut self, generation: u64) -> Result<(), Error> {
         let available = self
             .receive
@@ -5358,7 +5457,7 @@ impl Session {
                 )
             })
             .count();
-        if available < control::RECEIVE_TARGET
+        if available < self.receive_target()
             && self.receive[..RX_SLOTS].iter().any(|rx| rx.state == RxState::Free)
         {
             self.offer_receive(generation)?;
@@ -6892,7 +6991,7 @@ impl Session {
         F: FnOnce(&[u8]) -> Result<(), WriteError>,
     {
         #[cfg(feature = "sunfish-first-oack-grant-window")]
-        if matches!(stage, OackFollowup::FirstGrantAck | OackFollowup::FirstGrantReply) {
+        if matches!(stage, OackFollowup::FirstGrantAd | OackFollowup::FirstGrantInit | OackFollowup::FirstGrantAck | OackFollowup::FirstGrantReply) {
             return self.publish_inner(generation, writer, Some(stage));
         }
         let result = self.publish_inner(generation, writer, Some(stage));
@@ -6983,7 +7082,7 @@ impl Session {
                 #[cfg(any(feature = "sunfish-tftp-oack-credit-early", all(test, feature = "sunfish-tftp-oack-credit-retry")))]
                 OackFollowup::CreditReplay => {},
                 #[cfg(feature = "sunfish-first-oack-grant-window")]
-                OackFollowup::FirstGrantAck | OackFollowup::FirstGrantReply => unreachable!(),
+                OackFollowup::FirstGrantAd | OackFollowup::FirstGrantInit | OackFollowup::FirstGrantAck | OackFollowup::FirstGrantReply => unreachable!(),
                 OackFollowup::Advertise => trace.followup_ad = status,
                 #[cfg(feature = "sunfish-tftp-oack-early-reserve")]
                 OackFollowup::EarlyReserve => unreachable!(),
@@ -7027,6 +7126,8 @@ impl Session {
         self.stage_wlfw_dynamic_feature_mask()?;
         #[cfg(feature = "sunfish-first-oack-after-ipa-publish")]
         let first_oack_ready = ordinary && self.observe_first_oack_pass();
+        #[cfg(feature = "sunfish-post-reg-oack-turn")]
+        let post_reg_turn = self.start_post_reg_oack_turn(followup);
         #[cfg(feature = "sunfish-glink-tftp-control-fairness-experiment")]
         if !self.transmit.iter().any(|tx| matches!(tx.kind, TxKind::TftpReply { .. }) && tx.len != 0 && tx.sent < tx.len) {
             self.tftp_control_turn_due = false;
@@ -7291,6 +7392,10 @@ impl Session {
                 #[cfg(feature = "sunfish-ipa-registration-tx-trace")]
                 let registration_writer = registration_target.and(self.intent_ack_clock).map(|clock| clock());
                 let result = writer(&record[..8]);
+                #[cfg(feature = "sunfish-post-reg-oack-turn")]
+                if let Some(i) = post_reg_turn {
+                    self.post_reg_turns.turns[i].written(7, result);
+                }
                 #[cfg(feature = "sunfish-ipa-registration-rxdone-trace")]
                 self.observe_registration_done_turn(6, result);
                 #[cfg(feature = "sunfish-ipa-registration-tx-trace")]
@@ -7553,6 +7658,17 @@ impl Session {
                 Ok(None)
             };
         };
+        #[cfg(feature = "sunfish-post-reg-oack-turn")]
+        if let Some(i) = post_reg_turn {
+            let tag = match &commit {
+                Commit::Data(slot, ..) if self.is_unpublished_first_oack(&self.transmit[*slot]) => 0x100,
+                Commit::Data(slot, ..) if matches!(self.transmit[*slot].kind, TxKind::Resume) => 0x200,
+                _ => 0,
+            };
+            let turn = &mut self.post_reg_turns.turns[i];
+            turn.command = tag | u16::from_le_bytes([record[0], record[1]]);
+            turn.result = 1;
+        }
         // These extra attempts may only publish the exact pair selected
         // by the ordinary arbiter. Pending grants and other work keep
         // their normal priority on the next receive/write iteration.
@@ -7568,7 +7684,7 @@ impl Session {
                         .map(|(_, peer)| peer.port)),
                 };
                 #[cfg(feature = "sunfish-first-oack-grant-window")]
-                let original = matches!(stage, OackFollowup::FirstGrantAck | OackFollowup::FirstGrantReply);
+                let original = matches!(stage, OackFollowup::FirstGrantAd | OackFollowup::FirstGrantInit | OackFollowup::FirstGrantAck | OackFollowup::FirstGrantReply);
                 #[cfg(not(feature = "sunfish-first-oack-grant-window"))]
                 let original = false;
                 if !original && let Some(trace) = self.oack_slot_follow.as_mut() {
@@ -7639,6 +7755,21 @@ impl Session {
                 }
             }
             let allowed = match (stage, &commit) {
+                #[cfg(feature = "sunfish-paired-oack-init")]
+                (OackFollowup::FirstGrantAd, Commit::Advertise(index)) =>
+                    self.first_oack_grant_trigger() == Some(Published::ReceiveIntent(self.receive[*index].id)),
+                #[cfg(feature = "sunfish-paired-oack-init")]
+                (OackFollowup::FirstGrantInit, Commit::Data(slot, _, chunk)) => {
+                    let tx = &self.transmit[*slot];
+                    self.queued_ipa_init_slot() == Some(*slot)
+                        && self.original_1f_close_count() == Some(0)
+                        && self.registration_reply_in_flight()
+                        && self.intent_request_ack.is_none()
+                        && self.next_transmit_in_order([1]).is_none()
+                        && tx.sent == 0 && *chunk == tx.len
+                        && !self.unsent_flow_predecessor(tx)
+                        && self.ready_remote_for_transmit(tx).is_some()
+                }
                 #[cfg(feature = "sunfish-first-oack-grant-window")]
                 (OackFollowup::FirstGrantAck, Commit::IntentAck) =>
                     self.first_oack_grant_trigger() == Some(Published::IntentRequestAck { granted: true }),
@@ -7787,6 +7918,10 @@ impl Session {
             self.first_oack_eligibility.ready_command = Some(u16::from_le_bytes([record[0], record[1]]));
         }
         let result = writer(&record[..size]);
+        #[cfg(feature = "sunfish-post-reg-oack-turn")]
+        if let Some(i) = post_reg_turn {
+            self.post_reg_turns.turns[i].written(u16::from_le_bytes([record[0], record[1]]), result);
+        }
         #[cfg(feature = "sunfish-tftp-oack-credit-retry")]
         if ordinary && let Some(oack) = self.reserved_oack.as_mut() && oack.retry_state == 2 {
             let category = match &commit {
@@ -7937,6 +8072,15 @@ impl Session {
                 self.observe_oack_intent_available(self.receive[index].id);
                 #[cfg(feature = "sunfish-wlan-intent-ack-turn")]
                 if self.intent_ack_backing == Some(self.receive[index].id) {
+                    #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+                    if self.grant_backing.intent == self.intent_ack_backing {
+                        self.grant_backing.writer = Some(match followup {
+                            None => GrantAdWriter::Ordinary,
+                            Some(OackFollowup::FirstGrantAd) => GrantAdWriter::Registration,
+                            Some(_) => GrantAdWriter::OtherFollowup,
+                        });
+                        self.grant_backing.advertised_at = self.intent_ack_clock.map(|now| now());
+                    }
                     #[cfg(feature = "sunfish-tftp-oack-slot-follow")]
                     self.follow_oack_slot_available(index, 2);
                     self.intent_ack_backing = None;
@@ -8049,6 +8193,11 @@ impl Session {
                     {
                         let id = self.offer_receive(generation)?;
                         self.intent_ack_backing = Some(id);
+                        #[cfg(feature = "sunfish-grant-ad-writer-trace")]
+                        {
+                            self.grant_backing.intent = Some(id);
+                            self.grant_backing.reserved_at = self.intent_ack_clock.map(|now| now());
+                        }
                         self.intent_request_ack = Some(true);
                         self.retry_full_intent = false;
                     }
@@ -8351,6 +8500,38 @@ impl Session {
         Ok(())
     }
 
+    #[cfg(feature = "sunfish-post-reg-oack-turn")]
+    pub(crate) fn post_reg_oack_turns(&self) -> &PostRegOackTurns { &self.post_reg_turns }
+
+    #[cfg(feature = "sunfish-post-reg-oack-turn")]
+    fn start_post_reg_oack_turn(&mut self, followup: Option<OackFollowup>) -> Option<usize> {
+        self.first_oack_eligibility.queued_at?;
+        self.ipa_registration_trace()?.published_at?;
+        let first = self.first_oack_transfer()?;
+        if first.peer != (Address { node: 0, port: 0x1f })
+            || first.first_close_at.is_some() || first.oack_at.is_some() {
+            return None;
+        }
+        let i = self.post_reg_turns.len;
+        if i == self.post_reg_turns.turns.len() {
+            self.post_reg_turns.omitted = self.post_reg_turns.omitted.saturating_add(1);
+            return None;
+        }
+        let at = (self.intent_ack_clock?)();
+        let mask = self.first_oack_blockers(first);
+        let path = match followup {
+            None => 0,
+            Some(OackFollowup::FirstGrantAd) => 1,
+            Some(OackFollowup::FirstGrantAck) => 2,
+            Some(OackFollowup::FirstGrantReply) => 3,
+            Some(OackFollowup::FirstGrantInit) => 4,
+            Some(_) => 5,
+        };
+        self.post_reg_turns.turns[i] = PostRegOackTurn { at, mask, path, ..Default::default() };
+        self.post_reg_turns.len += 1;
+        Some(i)
+    }
+
     #[cfg(feature = "sunfish-first-oack-after-ipa-publish")]
     pub(crate) fn first_oack_eligibility(&self) -> FirstOackEligibility {
         self.first_oack_eligibility
@@ -8385,6 +8566,19 @@ impl Session {
             mask |= 0x01;
         }
         mask
+    }
+
+    #[cfg(feature = "sunfish-first-wrq-spare-oack")]
+    pub fn enable_first_wrq_spare_oack(&mut self) {
+        self.first_wrq_spare_oack = true;
+    }
+
+    #[cfg(feature = "sunfish-first-wrq-spare-oack")]
+    pub(crate) fn first_oack_ready_without_grant(&self) -> bool {
+        self.first_wrq_spare_oack && self.first_oack_after_ipa_publish
+            && self.original_1f_close_count() == Some(0)
+            && self.first_oack_transfer().is_some_and(|first|
+                first.oack_at.is_none() && self.first_oack_blockers(first) == 0)
     }
 
     /// Match the ordinary commit that may open a bounded follow-up. The

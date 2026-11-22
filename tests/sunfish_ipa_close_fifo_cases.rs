@@ -183,6 +183,18 @@ fn exact_first_client_close_at_registration_tx_head() {
             router.dispatch(&mut r.owner).unwrap();
         }
         assert!(CLOSE_ARRIVAL.take().is_none(), "{stage}: injection was never delivered");
+        #[cfg(feature = "sunfish-wrq-prefix-close")]
+        {
+            let prefix = r.owner.wrq_prefix();
+            let init = r.owner.ipa_init_trace().1.and_then(|t| t.published_at);
+            let oack = r.owner.server_check_oacks()[0].and_then(|t| t.oack_at);
+            for (head, publication) in [(prefix.init_head, init), (prefix.oack_head, oack)] {
+                assert_eq!(head.is_some(), publication.is_some(), "{stage}");
+                if let Some((head, publication)) = head.zip(publication) {
+                    assert!(head < publication, "{stage}: timestamp must precede publication bookkeeping");
+                }
+            }
+        }
         #[cfg(feature = "sunfish-ipa-init-empty-rx")]
         if matches!(stage, "after_fresh" | "after_writer") {
             let close = r.owner.server_check_oacks()[0].unwrap().first_close_at.unwrap();
