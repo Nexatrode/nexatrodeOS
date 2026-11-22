@@ -43,6 +43,8 @@ fn init() -> NamespaceTest {
     #[cfg(feature = "utm-transcript-worker")]
     {
         sel4_microkit::debug_println!("MESSAGES LIVE_RECEIVE_WORKER_ABI_V1");
+        sel4_microkit::debug_println!("MESSAGES NAVIGATION_WORKER_ABI_V1");
+        sel4_microkit::debug_println!("MESSAGES SNAPSHOT_WORKER_ABI_V1");
         let ui = memory_region_symbol!(messages_ui_transfer: *mut BlobTransferPage);
         let worker = memory_region_symbol!(messages_worker_transfer: *mut BlobTransferPage);
         unsafe {

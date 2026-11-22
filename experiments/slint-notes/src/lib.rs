@@ -12,6 +12,8 @@ pub mod chat_refresh;
 pub mod chat_unread;
 #[cfg(feature = "utm-transcript-worker")]
 pub mod transcript_queue;
+pub mod navigation_selection;
+pub mod snapshot_refresh;
 #[cfg(feature = "utm-transcript-worker")]
 pub mod transcript_ipc;
 #[cfg(feature = "utm-transcript-worker")]

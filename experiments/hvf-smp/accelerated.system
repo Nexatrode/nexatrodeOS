@@ -14,6 +14,7 @@
     <memory_region name="wallet_view" size="0x1000" />
     <memory_region name="wallet_transfer" size="0x1000" />
     <memory_region name="wallet_identity_transfer" size="0x1000" />
+    <memory_region name="device_lock_transfer" size="0x1000" />
     <memory_region name="wallet_scan_job" size="0x1000" />
     <memory_region name="wallet_heap" size="0x2000000" page_size="0x200000" />
     <memory_region name="clock_view" size="0x1000" />
@@ -26,6 +27,8 @@
     <memory_region name="messages_worker_transfer" size="0x1000" />
     <memory_region name="transcript_mailbox" size="0x200000" page_size="0x200000" />
     <memory_region name="live_receive_mailbox" size="0x2000" />
+    <memory_region name="navigation_mailbox" size="0x1000" />
+    <memory_region name="snapshot_mailbox" size="0x2000" />
     <memory_region name="messages_net_tx" size="0x1000" />
     <memory_region name="settings_view" size="0x1000" />
     <memory_region name="phone_view" size="0x1000" />
@@ -37,7 +40,7 @@
         <program_image path="c_server.elf" />
         <map mr="c_reference_private" vaddr="0x41000000" perms="rw" />
     </protection_domain>
-    <protection_domain name="vault" priority="101" passive="true" stack_size="0x20000">
+    <protection_domain name="vault" priority="101" passive="true" stack_size="0x80000">
         <program_image path="rust_vault_disk.elf" />
         <map mr="vault_private" vaddr="0x42000000" perms="rw" setvar_vaddr="vault_private_start" />
         <map mr="notes_transfer" vaddr="0x45000000" perms="rw" cached="true" setvar_vaddr="notes_transfer" />
@@ -52,6 +55,7 @@
         <map mr="simplex_agent_transfer" vaddr="0x4c_000_000" perms="rw" cached="true" setvar_vaddr="simplex_agent_transfer" />
         <map mr="wallet_transfer" vaddr="0x4e_000_000" perms="rw" cached="true" setvar_vaddr="wallet_transfer" />
         <map mr="wallet_identity_transfer" vaddr="0x4e_001_000" perms="rw" cached="true" setvar_vaddr="wallet_identity_transfer" />
+        <map mr="device_lock_transfer" vaddr="0x4f000000" perms="rw" cached="true" setvar_vaddr="device_lock_transfer" />
     </protection_domain>
     <protection_domain name="notes_app" priority="100" passive="true" stack_size="0x10000">
         <program_image path="rust_vault_notes_test.elf" />
@@ -508,6 +512,8 @@
         <map mr="photo_read_mailbox" vaddr="0x60_000_000" perms="rw" cached="true" setvar_vaddr="photo_read_mailbox" />
         <map mr="transcript_mailbox" vaddr="0x66_000_000" perms="rw" cached="true" setvar_vaddr="transcript_mailbox" />
         <map mr="live_receive_mailbox" vaddr="0x68_000_000" perms="rw" cached="true" setvar_vaddr="live_receive_mailbox" />
+        <map mr="navigation_mailbox" vaddr="0x6a_000_000" perms="rw" cached="true" setvar_vaddr="navigation_mailbox" />
+        <map mr="snapshot_mailbox" vaddr="0x6c_000_000" perms="rw" cached="true" setvar_vaddr="snapshot_mailbox" />
         <map mr="ui_focus" vaddr="0x42_000_000" perms="rw" cached="true" setvar_vaddr="ui_focus" />
         <map mr="ui_pointer" vaddr="0x47_000_000" perms="r" cached="true" setvar_vaddr="ui_pointer" />
         <map mr="slint_frame" vaddr="0x4d_000_000" perms="rw" cached="true" setvar_vaddr="slint_frame" />
@@ -517,6 +523,7 @@
         <map mr="calendar_transfer" vaddr="0x4a_000_000" perms="rw" cached="true" setvar_vaddr="calendar_transfer" />
         <map mr="messages_transfer" vaddr="0x4b_000_000" perms="rw" cached="true" setvar_vaddr="messages_transfer" />
         <map mr="wallet_transfer" vaddr="0x4e_000_000" perms="rw" cached="true" setvar_vaddr="wallet_transfer" />
+        <map mr="device_lock_transfer" vaddr="0x6e000000" perms="rw" cached="true" setvar_vaddr="device_lock_transfer" />
         <map mr="haskell_tcp_io" vaddr="0x4f_000_000" perms="rw" cached="true" setvar_vaddr="haskell_tcp_page" />
     </protection_domain>
     <protection_domain name="photo_reader" priority="98" budget="2500" period="10000" stack_size="0x20000">
@@ -533,6 +540,8 @@
         <program_image path="slint_transcript_worker.elf" />
         <map mr="transcript_mailbox" vaddr="0x60_000_000" perms="rw" cached="true" setvar_vaddr="transcript_mailbox" />
         <map mr="live_receive_mailbox" vaddr="0x64_000_000" perms="rw" cached="true" setvar_vaddr="live_receive_mailbox" />
+        <map mr="navigation_mailbox" vaddr="0x66_000_000" perms="rw" cached="true" setvar_vaddr="navigation_mailbox" />
+        <map mr="snapshot_mailbox" vaddr="0x68_000_000" perms="rw" cached="true" setvar_vaddr="snapshot_mailbox" />
         <map mr="messages_worker_transfer" vaddr="0x62_000_000" perms="rw" cached="true" setvar_vaddr="messages_worker_transfer" />
     </protection_domain>
     <channel>
@@ -544,12 +553,28 @@
         <end pd="transcript_worker" id="2" notify="true" />
     </channel>
     <channel>
+        <end pd="slint_ui" id="13" notify="true" />
+        <end pd="transcript_worker" id="3" notify="true" />
+    </channel>
+    <channel>
+        <end pd="slint_ui" id="14" notify="true" />
+        <end pd="transcript_worker" id="4" notify="true" />
+    </channel>
+    <channel>
         <end pd="messages_app" id="7" notify="false" />
         <end pd="transcript_worker" id="1" pp="true" notify="false" />
     </channel>
     <channel>
         <end pd="vault" id="9" notify="false" />
         <end pd="photo_reader" id="1" pp="true" notify="false" />
+    </channel>
+    <channel>
+        <end pd="vault" id="10" notify="false" />
+        <end pd="slint_ui" id="15" pp="true" notify="false" />
+    </channel>
+    <channel>
+        <end pd="entropy_rng" id="4" notify="false" />
+        <end pd="slint_ui" id="16" pp="true" notify="false" />
     </channel>
     <protection_domain name="photo_worker" cpu="3" priority="101" budget="2500" period="10000" stack_size="0x20000">
         <program_image path="slint_photo_worker.elf" />

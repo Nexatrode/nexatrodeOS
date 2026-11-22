@@ -27,14 +27,29 @@ class PhotoBuildTest(unittest.TestCase):
             reader.write_bytes(b"reader")
             transcript = pds / "slint_transcript_worker.elf"
             messages = pds / "rust_messages_agent_app.elf"
+            entropy = pds / "rust_entropy_rng.elf"
+            entropy.write_bytes(b"ENTROPY|DEVICE_LOCK_V1")
             transcript.write_bytes(b"transcript_mailbox")
-            messages.write_bytes(b"messages_worker_transfer LIVE_RECEIVE_WORKER_ABI_V1")
+            messages.write_bytes(b"messages_worker_transfer LIVE_RECEIVE_WORKER_ABI_V1 NAVIGATION_WORKER_ABI_V1 SNAPSHOT_WORKER_ABI_V1")
             ui.write_bytes(b"photo_mailbox_region photo_read_mailbox transcript_mailbox")
             self.assertTrue(accelerated.ui_source_required(pds))
             ui.write_bytes(b"photo_mailbox_region photo_read_mailbox transcript_mailbox live_receive_mailbox")
             self.assertTrue(accelerated.ui_source_required(pds))
             transcript.write_bytes(b"transcript_mailbox live_receive_mailbox")
+            self.assertTrue(accelerated.ui_source_required(pds))
+            ui.write_bytes(b"photo_mailbox_region photo_read_mailbox transcript_mailbox live_receive_mailbox navigation_mailbox")
+            self.assertTrue(accelerated.ui_source_required(pds))
+            transcript.write_bytes(b"transcript_mailbox live_receive_mailbox navigation_mailbox")
+            self.assertTrue(accelerated.ui_source_required(pds))
+            ui.write_bytes(b"photo_mailbox_region photo_read_mailbox transcript_mailbox live_receive_mailbox navigation_mailbox snapshot_mailbox")
+            self.assertTrue(accelerated.ui_source_required(pds))
+            transcript.write_bytes(b"transcript_mailbox live_receive_mailbox navigation_mailbox snapshot_mailbox")
+            self.assertTrue(accelerated.ui_source_required(pds))
+            ui.write_bytes(b"photo_mailbox_region photo_read_mailbox transcript_mailbox live_receive_mailbox navigation_mailbox snapshot_mailbox device_lock_transfer")
             self.assertFalse(accelerated.ui_source_required(pds))
+            entropy.write_bytes(b"old entropy service")
+            self.assertTrue(accelerated.ui_source_required(pds))
+            entropy.write_bytes(b"ENTROPY|DEVICE_LOCK_V1")
             reader.unlink()
             self.assertTrue(accelerated.ui_source_required(pds))
 
@@ -63,7 +78,20 @@ class PhotoBuildTest(unittest.TestCase):
             vault.write_bytes(b"legacy vault")
             self.assertTrue(accelerated.vault_source_required(pds))
             vault.write_bytes(b"elf with photo_read_transfer")
+            self.assertTrue(accelerated.vault_source_required(pds))
+            vault.write_bytes(b"elf with photo_read_transfer device_lock_transfer")
             self.assertFalse(accelerated.vault_source_required(pds))
+
+    def test_device_lock_has_dedicated_vault_and_entropy_channels(self):
+        system = ET.parse(ROOT / "experiments/hvf-smp/accelerated.system")
+        self.assertIsNotNone(system.find("memory_region[@name='device_lock_transfer']"))
+        for name in ("vault", "slint_ui"):
+            self.assertIsNotNone(system.find(f"protection_domain[@name='{name}']/map[@mr='device_lock_transfer']"))
+        channels = system.findall("channel")
+        for peer, peer_id, ui_id in (("vault", "10", "15"), ("entropy_rng", "4", "16")):
+            self.assertTrue(any(any(end.get("pd") == peer and end.get("id") == peer_id for end in channel)
+                                and any(end.get("pd") == "slint_ui" and end.get("id") == ui_id and end.get("pp") == "true" for end in channel)
+                                for channel in channels))
 
 
 if __name__ == "__main__":

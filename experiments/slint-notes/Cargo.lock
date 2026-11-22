@@ -3041,6 +3041,7 @@ dependencies = [
  "sel4-microkit",
  "slint",
  "slint-build",
+ "zeroize",
  "zune-jpeg",
 ]
 

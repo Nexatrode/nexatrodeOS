@@ -19,6 +19,8 @@ const DMA_PHYSICAL_ADDRESS: u64 = 0x5fdc_0000;
 
 #[protection_domain]
 fn init() -> EntropyService {
+    #[cfg(feature = "utm-device-lock")]
+    debug_println!("ENTROPY|DEVICE_LOCK_V1");
     let registers = memory_region_symbol!(rng_regs: *mut u32);
     let dma = memory_region_symbol!(rng_dma: *mut u8);
     // Both mappings are private to this service and the DMA window is uncached.
@@ -52,10 +54,12 @@ impl Handler for EntropyService {
         channel: Channel,
         request: MessageInfo,
     ) -> Result<MessageInfo, Self::Error> {
-        if channel != CLIENT_CHANNEL
-            && channel != MESSAGES_CHANNEL
-            && channel != SIMPLEX_AGENT_CHANNEL
-            && channel != WALLET_CHANNEL
+        let authorized = channel == CLIENT_CHANNEL
+            || channel == MESSAGES_CHANNEL
+            || channel == SIMPLEX_AGENT_CHANNEL
+            || channel == WALLET_CHANNEL
+            || cfg!(feature = "utm-device-lock") && channel == Channel::new(4);
+        if !authorized
             || request.label() != REQUEST_BYTES
             || request.count() != 0
         {

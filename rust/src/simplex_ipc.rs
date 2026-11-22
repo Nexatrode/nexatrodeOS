@@ -14,6 +14,14 @@ pub fn chat_at_displayed_row(displayed: &[u64], live: &[u64], index: usize) -> O
     (handle != 0 && live.get(index) == Some(&handle)).then_some(handle)
 }
 
+/// Resolve a stable owner at dispatch time and reject ambiguous identities.
+pub fn live_chat_index(live: &[u64], owner: u64) -> Option<usize> {
+    if owner == 0 || owner == u64::MAX { return None; }
+    let mut matches = live.iter().enumerate().filter(|(_, handle)| **handle == owner);
+    let (index, _) = matches.next()?;
+    matches.next().is_none().then_some(index)
+}
+
 /// Resolve only the explicitly selected live direct contact.
 pub fn group_invitee(handles: &[u64], visible_chats: usize, group_mask: u16, index: usize) -> Option<u64> {
     if index >= visible_chats || index >= 16 || group_mask & (1u16 << index) != 0 { return None; }
@@ -394,6 +402,14 @@ const _: () = assert!(core::mem::offset_of!(AgentPage, payload) == HEADER_SIZE);
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn background_selection_requires_a_unique_live_owner() {
+        assert_eq!(super::live_chat_index(&[22, 11], 11), Some(1));
+        assert_eq!(super::live_chat_index(&[22, 11], 33), None);
+        assert_eq!(super::live_chat_index(&[0, 11], 0), None);
+        assert_eq!(super::live_chat_index(&[u64::MAX], u64::MAX), None);
+        assert_eq!(super::live_chat_index(&[11, 22, 11], 11), None);
+    }
     use super::{AgentPage, InvitationRequest, Operation, PAYLOAD_CAPACITY, Status};
 
     #[test]

@@ -22,6 +22,7 @@ utm-perf-trace = []
 utm-photo-worker = ["simplex-agent-ui"]
 utm-transcript-worker = ["simplex-agent-ui"]
 utm-pd = []
+utm-device-lock = ["personal-os-rust-server/utm-device-lock"]
 utm-nexawal-rpc-bridge = []
 full-suite-profile = ["full-suite-ui", "frame-timing"]
 full-suite-input-profile = ["full-suite-profile"]
@@ -73,6 +74,7 @@ required-features = ["utm-pd", "full-suite-ui"]
 slint = { version = "=1.18.1", default-features = false, features = ["renderer-software", "unsafe-single-threaded", "libm", "compat-1-18"] }
 zune-jpeg = { version = "=0.5.15", default-features = false }
 qrcodegen-no-heap = { version = "=1.8.1", default-features = false }
+zeroize = { version = "=1.9.0", default-features = false }
 
 [build-dependencies]
 slint-build = "=1.18.1"

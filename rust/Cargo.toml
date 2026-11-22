@@ -8,6 +8,7 @@ publish = false
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mpss_smp2p_tests)', 'cfg(mpss_glink_tests)', 'cfg(mpss_glink_transport_tests)'] }
 
 [features]
+utm-device-lock = []
 wallet-wide-rx = []
 iphone-shell = []
 utm-slint-input = []

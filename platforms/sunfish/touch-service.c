@@ -373,8 +373,9 @@ void init(void)
     if ((irq & CMD_DONE) &&
         !(irq & (CMD_FAILURE | I2C_NACK | I2C_BUS_PROTO | I2C_ARB_LOST)) &&
         (fifo_status & 0x01ffffffu) >= 2u) {
-        report("EVENT WORD0", read_reg(SE_GENI_RX_FIFO));
-        report("EVENT WORD1", read_reg(SE_GENI_RX_FIFO));
+        /* Drain the event without exposing raw touch data on the debug UART. */
+        (void)read_reg(SE_GENI_RX_FIFO);
+        (void)read_reg(SE_GENI_RX_FIFO);
     } else {
         goto reset;
     }
@@ -414,10 +415,9 @@ void init(void)
 
     ((volatile TouchState *)touch_shared_vaddr)->event_write = 0;
     microkit_dbg_puts("SUNFISH TOUCH PING TOUCH READY\r\n");
-    uint32_t interesting_events = 0;
     uint64_t last_frame_wake = 0;
     /* The screen stays up. A capped poll left later taps with no reader. */
-    for (uint32_t poll = 0;; ++poll) {
+    for (;;) {
         if (slint_frame_wake_poll((const uint64_t *)touch_frame_wake_request, &last_frame_wake)) {
             microkit_notify(0);
         }
@@ -478,21 +478,11 @@ void init(void)
         uint32_t word1 = read_reg(SE_GENI_RX_FIFO);
         uint32_t event = word0 & 0xffu;
         uint32_t tool = (word0 >> 8) & 0x0fu;
-        if (event != 0x03u && interesting_events++ < 8u) {
-            report("RAW WORD0", word0);
-            report("RAW WORD1", word1);
-            report("RAW POLL", poll);
-        }
         if ((event >> 4) == 1u && tool == 1u) {
             uint32_t x = ((word0 >> 24) & 0x0fu) << 8 |
                          ((word0 >> 16) & 0xffu);
             uint32_t y = (word1 & 0xffu) << 4 |
                          ((word0 >> 28) & 0x0fu);
-            report("TOUCH DOWN WORD0", word0);
-            report("TOUCH DOWN WORD1", word1);
-            report("TOUCH DOWN X", x);
-            report("TOUCH DOWN Y", y);
-            report("TOUCH DOWN POLL", poll);
             publish_contact(x, y);
         }
     }
