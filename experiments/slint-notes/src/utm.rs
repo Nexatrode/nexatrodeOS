@@ -3669,17 +3669,20 @@ impl SlintService {
         let dirty_chats = skia_guest::chat_dirty_mask();
         skia_guest::flush_chat_sprites();
         let page = self._ui.get_page();
+        // The passphrase surface must remain the topmost compositor layer,
+        // even if a background page changes while the device is locked.
+        let locked = self._ui.get_device_lock_screen();
         let (chrome_y, chrome_height) = skia_guest::page_chrome_band(page);
-        if skia_guest::take_chrome_page(page)
+        if !locked && (skia_guest::take_chrome_page(page)
             || full
-            || personal_os_slint_notes_spike::frame::bands_intersect(slint_y, slint_bottom, chrome_y, chrome_height)
+            || personal_os_slint_notes_spike::frame::bands_intersect(slint_y, slint_bottom, chrome_y, chrome_height))
         {
             if skia_guest::blit_skia_chrome(&mut self.rendered, page) {
                 let (y, height) = skia_guest::page_chrome_band(page);
                 band.cover(y, height);
             }
         }
-        if chat_rows > 0
+        if !locked && chat_rows > 0
             && page == 6
             && self._ui.get_message_service_ready()
             && !self._ui.get_message_view()
@@ -3702,7 +3705,7 @@ impl SlintService {
                 band.cover(top as u32, (bottom - top) as u32);
             }
         }
-        let open_chat = if page == 6 && self._ui.get_message_view() {
+        let open_chat = if !locked && page == 6 && self._ui.get_message_view() {
             self._ui.get_message_chat_index().max(0)
         } else {
             -1
@@ -6979,9 +6982,16 @@ impl SlintService {
                     };
                     self.window.window().dispatch_event(event);
                     self.publish_frame(); SLINT_INPUT.notify();
+                } else if device == DEVICE_TABLET && (event_type == EVENT_SYN || event_type == EVENT_ABS) {
+                    let ptr = self.pointer.as_ptr();
+                    let packed = POSTED_POSITION.load(Ordering::Relaxed);
+                    let x = if posted { (packed & 0xffff) as u32 } else { unsafe { core::ptr::addr_of!((*ptr).x).read_volatile() } };
+                    let y = if posted { (packed >> 16) as u32 } else { unsafe { core::ptr::addr_of!((*ptr).y).read_volatile() } };
+                    let position = slint::LogicalPosition::new(x as f32 / SCALE, y as f32 / SCALE);
+                    self.window.window().dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
                 } else if device == DEVICE_KEYBOARD && event_type == EVENT_KEY {
                     if matches!(code, 42 | 54) { self.shift_down = value != 0; }
-                    else if value != 0 {
+                    else if value != 0 && !(self._ui.get_device_lock_stage() == 1 && self._ui.get_device_lock_welcome()) {
                         if code == 28 { self._ui.invoke_device_lock_submit(); }
                         else if let Some(key) = hardware_character(code, self.shift_down) { self._ui.invoke_device_lock_key(key.into()); }
                         self.publish_frame(); SLINT_INPUT.notify();

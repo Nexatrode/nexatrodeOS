@@ -36,6 +36,11 @@ attempts. The credential uses a fresh salt and PBKDF2-SHA256. Lock settings are
 stored in authenticated redundant vault records that preserve the existing
 system scalar; unreadable or interrupted records fail closed.
 
+The locked welcome screen hides the passphrase keyboard until an upward
+swipe. Settings' Aurora Accents switch also controls its landscape artwork;
+that appearance choice is currently session-only. The welcome screen omits
+the time until a real clock is connected rather than showing a fixed time.
+
 The disposable UTM test exercised enrollment, wrong and correct passwords,
 navigation blocking, idle locking, persistence across reboot, interrupted and
 corrupted records, and disable. This does not establish security against an

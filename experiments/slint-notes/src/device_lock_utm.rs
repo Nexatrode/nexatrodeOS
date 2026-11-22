@@ -38,6 +38,7 @@ fn open_screen(ui: &NotesWindow, stage: u8, status: &str) {
     ui.set_page(14);
     ui.set_edit_target(0);
     ui.set_device_lock_stage(i32::from(stage));
+    ui.set_device_lock_welcome(stage == 1);
     ui.set_device_lock_setup_feedback(if matches!(stage, 2 | 3) { "0 characters entered" } else { "" }.into());
     ui.set_device_lock_status(status.into());
     ui.set_device_lock_screen(true);

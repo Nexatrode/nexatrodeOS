@@ -15,13 +15,14 @@ component AppCard inherits Rectangle {
     in property <color> accent;
     in property <bool> skia-label: false;
     callback chosen();
-    background: hit.pressed ? #1c4052 : (glyph == "" ? #0b1825 : #102333);
-    border-color: accent;
-    border-width: glyph == "" ? 1px : 2px;
+    background: hit.pressed ? #1c4052 : #102332;
+    border-color: hit.pressed ? accent : #244657;
+    border-width: 1px;
+    border-radius: 12px;
     if glyph != "": Rectangle {
         x: 10px; y: 17px; width: 38px; height: 38px;
         background: #173348;
-        border-color: accent; border-width: 1px;
+        border-color: #315369; border-width: 1px; border-radius: 9px;
         Image {
             x: 7px; y: 7px; width: 24px; height: 24px;
             source: icon; colorize: accent; image-fit: contain;
@@ -30,20 +31,20 @@ component AppCard inherits Rectangle {
     if !root.skia-label: Text {
         x: glyph == "" ? 10px : 58px; y: glyph == "" ? 10px : 12px;
         width: parent.width - (glyph == "" ? 20px : 66px);
-        text: label; color: accent; font-size: 18px; font-weight: 700;
+        text: label; color: #edf7fa; font-size: 16px; font-weight: 700; overflow: elide;
     }
     if !root.skia-label: Text {
         x: glyph == "" ? 10px : 58px; y: 43px;
-        width: parent.width - (glyph == "" ? 20px : 66px);
-        text: detail; color: #a9c1cf; font-size: 13px;
+        width: parent.width - (glyph == "" ? 20px : 66px); height: 35px;
+        text: detail; color: #a9c1cf; font-size: 12px; wrap: word-wrap;
     }
     if show-open-hint: Rectangle {
-        x: 58px; y: parent.height - 43px; width: parent.width - 76px; height: 1px;
-        background: accent;
+        x: 58px; y: parent.height - 43px; width: 28px; height: 2px;
+        background: accent; border-radius: 1px;
     }
     if show-open-hint && !root.skia-label: Text {
         x: 58px; y: parent.height - 34px; width: parent.width - 68px;
-        text: "TAP TO OPEN"; color: accent; font-size: 12px;
+        text: "OPEN  ›"; color: accent; font-size: 12px;
     }
     hit := TouchArea { width: parent.width; height: parent.height; clicked => { chosen(); } }
 }
@@ -56,6 +57,7 @@ component SimplexChatRow inherits Rectangle {
     callback chosen();
     height: 72px;
     background: hit.pressed ? #173544 : #050a12;
+    border-radius: 10px;
     border-width: 0px;
     Rectangle {
         x: 4px; y: 14px; width: 42px; height: 42px;
@@ -84,15 +86,16 @@ component SimplexChatRow inherits Rectangle {
 component SoftKey inherits Rectangle {
     in property <string> label;
     callback typed(string);
-    background: #10202d;
+    background: hit.pressed ? #244859 : #102734;
     border-color: #294454;
     border-width: 1px;
+    border-radius: 5px;
     Text {
         width: parent.width; height: parent.height;
         text: label; color: #e8f5fb; font-size: 17px;
         horizontal-alignment: center; vertical-alignment: center;
     }
-    TouchArea { width: parent.width; height: parent.height; clicked => { typed(label); } }
+    hit := TouchArea { width: parent.width; height: parent.height; clicked => { typed(label); } }
 }
 
 component TouchKeyboard inherits Rectangle {
@@ -104,6 +107,7 @@ component TouchKeyboard inherits Rectangle {
     background: #09141f;
     border-color: #203747;
     border-width: 2px;
+    border-radius: 9px;
 
     for key[index] in ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]: SoftKey {
         x: 5px + index * (parent.width - 10px) / 10;
@@ -159,6 +163,7 @@ component InvitationKeyboard inherits Rectangle {
     background: #09141f;
     border-color: #203747;
     border-width: 2px;
+    border-radius: 9px;
     for key[index] in ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]: SoftKey {
         x: 4px + index * (parent.width - 8px) / 10; y: 4px;
         width: (parent.width - 8px) / 10 - 2px; height: 34px;
@@ -429,6 +434,8 @@ export component NotesWindow inherits Window {
     in-out property <bool> device-lock-enabled: false;
     in-out property <bool> device-lock-screen: false;
     in-out property <int> device-lock-stage: 0;
+    in-out property <bool> device-lock-welcome: true;
+    in property <string> device-lock-clock: "";
     in-out property <string> device-lock-status: "Checking lock…";
     in-out property <string> device-lock-setup-feedback: "";
     callback device-lock-key(string);
@@ -553,10 +560,12 @@ export component NotesWindow inherits Window {
         Rectangle { x: parent.width - 51px; y: 14px; width: 11px; height: 6px; background: #9bb6c4; }
         Rectangle { x: parent.width - 35px; y: 15px; width: 2px; height: 4px; background: #9bb6c4; }
         Rectangle { x: 17px; y: 42px; width: parent.width - 34px; height: 1px; background: #174452; }
+        if root.page == 0: Text { x: 18px; y: 56px; width: parent.width - 36px;
+            text: "NEXATRODE"; color: #edf7fa; font-size: 21px; font-weight: 700; }
         // Standard NexaWal face: no shell HOME chrome (Android has bottom tabs only).
         if root.page != 0 && root.page != 14 && root.page != 16: Rectangle {
             x: parent.width - 110px; y: 113px; width: 94px; height: 45px;
-            background: #183a50; border-color: #68ddc2; border-width: 2px;
+            background: #123143; border-color: #396d79; border-width: 1px; border-radius: 9px;
             Text { width: parent.width; height: parent.height;
                 text: root.page == 1 && root.note-editing ? "LIST" :
                       root.page == 2 && root.contact-detail ? "LIST" :
@@ -570,7 +579,7 @@ export component NotesWindow inherits Window {
         }
         if root.page == 6 && !root.message-view && !root.message-join-view: Rectangle {
             x: parent.width - 214px; y: 113px; width: 94px; height: 45px;
-            background: #103143; border-color: #28d8e8; border-width: 1px;
+            background: #103143; border-color: #2b6875; border-width: 1px; border-radius: 9px;
             Text { width: parent.width; height: parent.height;
                 text: root.message-invitation-view && !root.message-join-view ? "CHECK" : "NEW LINK";
                 color: #28d8e8; font-size: 13px;
@@ -587,7 +596,7 @@ export component NotesWindow inherits Window {
         }
         if root.page == 6 && !root.message-view && !root.message-invitation-view && !root.message-join-view && root.message-service-ready: Rectangle {
             x: 17px; y: 113px; width: 78px; height: 45px;
-            background: #102b37; border-color: #7ee7f2; border-width: 1px;
+            background: #102b37; border-color: #2b6875; border-width: 1px; border-radius: 9px;
             Text { width: parent.width; height: parent.height; text: "ADDRESS"; color: #7ee7f2; font-size: 11px;
                 horizontal-alignment: center; vertical-alignment: center; }
             TouchArea { width: parent.width; height: parent.height; clicked => {
@@ -600,7 +609,7 @@ export component NotesWindow inherits Window {
         }
         if root.page == 6 && !root.message-view && !root.message-invitation-view && !root.message-join-view: Rectangle {
             x: parent.width - 320px; y: 113px; width: 94px; height: 45px;
-            background: #1e2541; border-color: #9279ff; border-width: 1px;
+            background: #1e2541; border-color: #675b99; border-width: 1px; border-radius: 9px;
             Text { width: parent.width; height: parent.height; text: "JOIN"; color: #c9baff; font-size: 14px;
                 horizontal-alignment: center; vertical-alignment: center; }
             TouchArea { width: parent.width; height: parent.height; clicked => {
@@ -611,7 +620,7 @@ export component NotesWindow inherits Window {
         }
         if root.page == 8: Rectangle {
             x: parent.width - 210px; y: 113px; width: 86px; height: 45px;
-            background: #102333; border-color: #28d8e8; border-width: 1px;
+            background: #102333; border-color: #2b6875; border-width: 1px; border-radius: 9px;
             Text { width: parent.width; height: parent.height; text: "QUICK"; color: #28d8e8; font-size: 14px;
                 horizontal-alignment: center; vertical-alignment: center; }
             TouchArea { width: parent.width; height: parent.height; clicked => { root.page = 11; } }
@@ -677,7 +686,7 @@ export component NotesWindow inherits Window {
             x: 18px; y: parent.height * 0.70;
             width: parent.width - 36px;
             text: "SECURE · PRIVATE · YOURS";
-            color: #ffffff; font-size: 17px; font-weight: 700;
+            color: #b7d3df; font-size: 15px; font-weight: 700;
         }
 
         // Aurora is an optional decorative layer in the open Home-screen footer.
@@ -1028,7 +1037,7 @@ export component NotesWindow inherits Window {
         }
 
         if root.page == 9: Rectangle { x: 17px; y: 176px; width: parent.width - 34px; height: 410px;
-            background: #081522; border-color: #ffcc55; border-width: 1px;
+            background: #0b1926; border-color: #294454; border-width: 1px; border-radius: 12px;
             Text { x: 14px; y: 10px; text: "ON DEVICE"; color: #dcebf2; font-size: 16px; }
             if root.files-test-import-enabled: Rectangle {
                 x: parent.width - 116px; y: 6px; width: 104px; height: 28px;
@@ -1083,7 +1092,7 @@ export component NotesWindow inherits Window {
             if root.note == "": Text { x: 16px; y: 18px; text: "NO NOTES YET"; color: #8299a7; font-size: 15px; }
             if root.note != "": Rectangle {
                 x: 0px; y: 0px; width: parent.width; height: 56px; background: #102433;
-                border-color: #68ddc2; border-width: 1px;
+                border-color: #315e60; border-width: 1px; border-radius: 10px;
                 Text { x: 16px; y: 16px; width: parent.width - 40px; height: 24px;
                     text: root.note; color: #e8f5fb; font-size: 16px; wrap: no-wrap; overflow: elide; }
                 TouchArea { width: parent.width; height: parent.height; clicked => {
@@ -1100,7 +1109,7 @@ export component NotesWindow inherits Window {
             }
         }
         if root.page == 1 && root.note-editing: Rectangle { x: 17px; y: 176px; width: parent.width - 34px; height: 216px;
-            background: #17394e; border-color: #68ddc2; border-width: 2px;
+            background: #102433; border-color: #315e60; border-width: 1px; border-radius: 12px;
             Text { x: 15px; y: 14px; width: parent.width - 30px; height: parent.height - 28px;
                 text: root.note == "" ? "TAP KEYS TO WRITE A NOTE" : root.note;
                 color: #ffffff; font-size: 22px; wrap: word-wrap; }
@@ -1112,12 +1121,12 @@ export component NotesWindow inherits Window {
 
         if root.page == 2 && !root.contact-detail: Rectangle {
             x: 17px; y: 176px; width: parent.width - 95px; height: 44px;
-            background: #0b1825; border-color: #174452; border-width: 1px;
+            background: #0b1825; border-color: #294454; border-width: 1px; border-radius: 9px;
             Text { x: 12px; y: 11px; text: "SEARCH CONTACTS"; color: #7f9aa9; font-size: 15px; }
         }
         if root.page == 2 && !root.contact-detail: Rectangle {
             x: parent.width - 67px; y: 176px; width: 50px; height: 44px;
-            background: #103143; border-color: #28d8e8; border-width: 1px;
+            background: #103143; border-color: #2b6875; border-width: 1px; border-radius: 9px;
             Text { width: parent.width; height: parent.height; text: "+"; color: #28d8e8;
                 font-size: 28px; horizontal-alignment: center; vertical-alignment: center; }
             TouchArea { width: parent.width; height: parent.height; clicked => {
@@ -1132,7 +1141,7 @@ export component NotesWindow inherits Window {
                 x: 0px; y: 0px; width: parent.width; height: 57px;
                 background: #0b2428;
                 Rectangle { x: 4px; y: 7px; width: 41px; height: 41px;
-                    background: #10382f; border-color: #23d398; border-width: 1px;
+                    background: #10382f; border-color: #346c60; border-width: 1px; border-radius: 10px;
                     Text { width: parent.width; height: parent.height; text: "S"; color: #23d398;
                         font-size: 19px; horizontal-alignment: center; vertical-alignment: center; }
                 }
@@ -1152,7 +1161,7 @@ export component NotesWindow inherits Window {
                 background: #050a12;
                 Rectangle { x: 4px; y: 7px; width: 41px; height: 41px;
                     background: index == 0 ? #103143 : (index == 1 ? #282044 : #252d37);
-                    border-color: index == 0 ? #28d8e8 : (index == 1 ? #b48cff : #8396a3); border-width: 1px;
+                    border-color: index == 0 ? #2b6875 : (index == 1 ? #675b99 : #526673); border-width: 1px; border-radius: 10px;
                     Text { width: parent.width; height: parent.height;
                         text: index == 0 ? "C" : (index == 1 ? "N" : (index == 2 ? "G" : (index == 3 ? "M" : (index == 4 ? "R" : "T"))));
                         color: #e8f5fb; font-size: 19px; horizontal-alignment: center; vertical-alignment: center; }
@@ -1171,14 +1180,14 @@ export component NotesWindow inherits Window {
                 color: #8299a7; font-size: 12px; }
         }
         if root.page == 2 && root.contact-detail: Rectangle { x: 17px; y: 176px; width: parent.width - 34px; height: 101px;
-            background: #282d4d; border-color: #b4a0ff; border-width: 2px;
+            background: #17243b; border-color: #675b99; border-width: 1px; border-radius: 12px;
             Text { x: 14px; y: 10px; text: "NAME"; color: #ffffff; font-size: 17px; }
             Text { x: 14px; y: 46px; text: root.contact-name == "" ? "TAP TO ENTER" : root.contact-name;
                 color: #ffffff; font-size: 22px; }
             TouchArea { width: parent.width; height: parent.height; clicked => { root.edit-target = 2; } }
         }
         if root.page == 2 && root.contact-detail: Rectangle { x: 17px; y: 287px; width: parent.width - 34px; height: 101px;
-            background: #282d4d; border-color: #b4a0ff; border-width: 2px;
+            background: #17243b; border-color: #675b99; border-width: 1px; border-radius: 12px;
             Text { x: 14px; y: 10px; text: "PHONE"; color: #ffffff; font-size: 17px; }
             Text { x: 14px; y: 46px; text: root.contact-phone == "" ? "TAP TO ENTER" : root.contact-phone;
                 color: #ffffff; font-size: 22px; }
@@ -1191,7 +1200,7 @@ export component NotesWindow inherits Window {
             chosen => { root.save-contact(root.contact-name, root.contact-phone); } }
 
         if root.page == 3: Rectangle { x: 17px; y: 176px; width: parent.width - 34px; height: 88px;
-            background: #282d4d; border-color: #ffcc55; border-width: 2px;
+            background: #102433; border-color: #6b613f; border-width: 1px; border-radius: 12px;
             Text { x: 15px; y: 10px; width: parent.width - 30px; height: parent.height - 20px;
                 text: root.calc-display; color: #ffffff; font-size: 34px;
                 horizontal-alignment: right; vertical-alignment: center; }
@@ -1208,7 +1217,7 @@ export component NotesWindow inherits Window {
         }
 
         if root.page == 4: Rectangle { x: 17px; y: 176px; width: parent.width - 34px; height: 322px;
-            background: #17394e; border-color: #68ddc2; border-width: 2px;
+            background: #102433; border-color: #315e60; border-width: 1px; border-radius: 12px;
             Text { x: 18px; y: 24px; text: "UTC TIME NOT AVAILABLE"; color: #ffffff; font-size: 22px; }
             Text { x: 18px; y: 78px; width: parent.width - 36px;
                 text: "THE IPHONE RTC IS NOT CONNECTED TO THIS IMAGE";
@@ -1216,7 +1225,7 @@ export component NotesWindow inherits Window {
         }
 
         if root.page == 5: Rectangle { x: 17px; y: 176px; width: parent.width - 34px; height: 216px;
-            background: #302c40; border-color: #ff9b68; border-width: 2px;
+            background: #222b3b; border-color: #785c51; border-width: 1px; border-radius: 12px;
             Text { x: 15px; y: 14px; text: "REMINDER"; color: #ffffff; font-size: 17px; }
             Text { x: 15px; y: 52px; width: parent.width - 30px; height: 145px;
                 text: root.calendar-item == "" ? "TAP KEYS TO ADD A REMINDER" : root.calendar-item;
@@ -1269,7 +1278,7 @@ export component NotesWindow inherits Window {
         if root.page == 6 && !root.message-view && !root.message-join-view && root.message-service-ready && !root.message-invitation-view: Rectangle {
             x: 17px; y: 168px; width: parent.width - 34px; height: 36px;
             background: root.edit-target == 13 ? #102b37 : #0b1825;
-            border-color: root.edit-target == 13 ? #28d8e8 : #294454; border-width: 1px;
+            border-color: root.edit-target == 13 ? #28d8e8 : #294454; border-width: 1px; border-radius: 9px;
             Text { x: 12px; width: parent.width - 24px; height: parent.height;
                 text: root.message-profile-name == "" ? "Your name" : root.message-profile-name;
                 color: root.message-profile-name == "" ? #7f9aa9 : #e8f5fb; font-size: 15px;
@@ -1282,7 +1291,7 @@ export component NotesWindow inherits Window {
             background: #050a12;
             Rectangle { x: 8px; y: 6px; width: parent.width - 16px; height: 36px;
                 background: root.edit-target == 10 ? #102b37 : #0b1825;
-                border-color: root.edit-target == 10 ? #28d8e8 : #294454; border-width: 1px;
+                border-color: root.edit-target == 10 ? #28d8e8 : #294454; border-width: 1px; border-radius: 9px;
                 Text { x: 12px; width: parent.width - (root.message-search == "" ? 24px : 56px); height: parent.height;
                     text: root.message-search == "" ? "Search chats" : root.message-search;
                     color: root.message-search == "" ? #7f9aa9 : #e8f5fb; font-size: 14px;
@@ -1591,7 +1600,7 @@ export component NotesWindow inherits Window {
             height: parent.height - 212px - root.keyboard-travel;
             background: #050a12;
             Rectangle { x: 0px; y: 0px; width: parent.width; height: 56px;
-                background: #0c1b27;
+                background: #0c1b27; border-radius: 10px;
                 Rectangle { x: 8px; y: 8px; width: 40px; height: 40px;
                     border-radius: 20px;
                     background: #28d8e8; }
@@ -2035,7 +2044,7 @@ export component NotesWindow inherits Window {
         }
 
         if root.page == 7: Rectangle { x: 17px; y: 176px; width: parent.width - 34px; height: 106px;
-            background: #17394e; border-color: #8fb5cc; border-width: 2px;
+            background: #102433; border-color: #315369; border-width: 1px; border-radius: 12px;
             Text { x: 15px; y: 16px; text: root.phone-status; color: #ffffff; font-size: 22px; }
             Text { x: 15px; y: 57px; text: root.phone-number; color: #ffffff; font-size: 22px; }
         }
@@ -2059,7 +2068,7 @@ export component NotesWindow inherits Window {
                 background: root.settings-selected == index ? #101e2a : #050a12;
                 Rectangle { x: 5px; y: 6px; width: 39px; height: 39px;
                     background: index == 1 || index == 3 ? #211c39 : #0c2531;
-                    border-color: index == 1 || index == 3 ? #9b7cff : #28d8e8; border-width: 1px;
+                    border-color: index == 1 || index == 3 ? #675b99 : #285263; border-width: 1px; border-radius: 9px;
                     Image { x: 7px; y: 7px; width: 24px; height: 24px;
                         source: index == 0 ? @image-url("../assets/icons/wifi.svg") :
                                 index == 1 ? @image-url("../assets/icons/lock.svg") :
@@ -2070,12 +2079,12 @@ export component NotesWindow inherits Window {
                                              @image-url("../assets/icons/info.svg");
                         colorize: index == 1 || index == 3 ? #b4a0ff : #28d8e8; image-fit: contain; }
                 }
-                Text { x: 54px; y: 6px; text: setting; color: #e8f5fb; font-size: 16px; }
-                Text { x: 54px; y: 29px;
+                Text { x: 54px; y: 6px; width: parent.width - 90px; text: setting; color: #e8f5fb; font-size: 16px; overflow: elide; }
+                Text { x: 54px; y: 29px; width: parent.width - 90px;
                     text: index == 0 ? "Wi-Fi, VPN, I2P" : (index == 1 ? (root.show-preview-privacy-controls ? "Receipts, pinned relays" : "Pinned relays") :
                           (index == 2 ? "Brightness, theme" : (index == 3 ? "Passphrase, export, import" :
                           (index == 4 ? "Volume, alerts" : (index == 5 ? "Power status" : "NexatrodeOS 0.1.0")))));
-                    color: #8fa9b8; font-size: 12px; }
+                    color: #8fa9b8; font-size: 12px; overflow: elide; }
                 Text { x: parent.width - 24px; y: 15px; text: "›"; color: #688493; font-size: 18px; }
                 Rectangle { x: 51px; y: 52px; width: parent.width - 51px; height: 1px; background: #142632; }
                 TouchArea { width: parent.width; height: parent.height; clicked => {
@@ -2093,9 +2102,9 @@ export component NotesWindow inherits Window {
                 } }
             }
             Rectangle { x: 0px; y: root.show-preview-privacy-controls ? 391px : 336px; width: parent.width; height: 61px;
-                background: #0b1825; border-color: root.aurora-accent ? #68ddc2 : #425766; border-width: 1px;
+                background: #102332; border-color: root.aurora-accent ? #396d79 : #425766; border-width: 1px; border-radius: 10px;
                 Text { x: 10px; y: 8px; text: "AURORA ACCENTS"; color: #dcebf2; font-size: 15px; }
-                Text { x: 10px; y: 33px; text: root.aurora-accent ? "ON · HOME BACKDROP ONLY" : "OFF · CLEAN BACKDROP";
+                Text { x: 10px; y: 33px; text: root.aurora-accent ? "ON · HOME AND LOCK BACKDROPS" : "OFF · CLEAN BACKDROP";
                     color: #a9c1cf; font-size: 12px; }
                 TouchArea { width: parent.width; height: parent.height; clicked => { root.aurora-accent = !root.aurora-accent; } }
             }
@@ -2161,6 +2170,7 @@ export component NotesWindow inherits Window {
                 background: quick-selected == control ? #102b37 : #0b1825;
                 border-color: index == 2 ? #23d398 : (index == 1 ? #9b7cff : #28d8e8);
                 border-width: quick-selected == control ? 2px : 1px;
+                border-radius: 12px;
                 Text { x: 12px; y: 16px; text: index == 0 ? "⌁" : (index == 1 ? "B" : (index == 2 ? "◆" : "◐"));
                     color: index == 2 ? #23d398 : (index == 1 ? #b4a0ff : #28d8e8); font-size: 24px; }
                 Text { x: 48px; y: 17px; text: control; color: #e8f5fb; font-size: 15px; }
@@ -2170,7 +2180,7 @@ export component NotesWindow inherits Window {
                 TouchArea { width: parent.width; height: parent.height; clicked => { root.quick-selected = control; } }
             }
             Rectangle { x: 0px; y: 220px; width: parent.width; height: 62px;
-                background: #0b1825; border-color: #294454; border-width: 1px;
+                background: #102332; border-color: #294454; border-width: 1px; border-radius: 10px;
                 Text { x: 13px; y: 21px; text: "☼  BRIGHTNESS"; color: #c6d8e1; font-size: 14px; }
                 Rectangle { x: parent.width - 170px; y: 25px; width: 145px; height: 10px;
                     background: #0a1822; border-color: #286a77; border-width: 1px; }
@@ -2193,7 +2203,7 @@ export component NotesWindow inherits Window {
                 } }
             }
             Rectangle { x: 0px; y: 400px; width: parent.width; height: 62px;
-                background: #0b1825; border-color: #294454; border-width: 1px;
+                background: #102332; border-color: #294454; border-width: 1px; border-radius: 10px;
                 Text { x: 13px; y: 21px; text: "◖  SOUND"; color: #c6d8e1; font-size: 14px; }
                 Rectangle { x: parent.width - 170px; y: 25px; width: 145px; height: 10px;
                     background: #0a1822; border-color: #286a77; border-width: 1px; }
@@ -2209,6 +2219,7 @@ export component NotesWindow inherits Window {
                 background: theme-choice == theme ? #102433 : #0b1825;
                 border-color: theme-choice == theme ? #28d8e8 : #294454;
                 border-width: theme-choice == theme ? 2px : 1px;
+                border-radius: 12px;
                 Rectangle { x: 12px; y: 16px; width: 132px; height: 92px;
                     background: index == 0 ? #071522 : (index == 1 ? #211d38 : #c9d6dd);
                     border-color: #28d8e8; border-width: 1px;
@@ -2252,7 +2263,7 @@ export component NotesWindow inherits Window {
                 text: "Public SMP/XFTP used by this guest. Tor and custom operators are not available here.";
                 color: #8fa9b8; font-size: 12px; wrap: word-wrap; }
             Rectangle { x: 0px; y: root.show-preview-privacy-controls ? 210px : 86px; width: parent.width; height: 110px;
-                background: #0b1825; border-color: #294454; border-width: 1px;
+                background: #102332; border-color: #294454; border-width: 1px; border-radius: 10px;
                 Text { x: 14px; y: 14px; text: "NETWORK"; color: #28d8e8; font-size: 12px; }
                 Text { x: 14px; y: 40px; width: parent.width - 28px; text: root.message-servers;
                     color: #e8f5fb; font-size: 13px; wrap: word-wrap; }
@@ -2261,7 +2272,7 @@ export component NotesWindow inherits Window {
             }
             if root.device-lock-available && !root.show-preview-privacy-controls: Rectangle {
                 x: 0px; y: 220px; width: parent.width; height: 52px;
-                background: #0b1825; border-color: #28d8e8; border-width: 1px;
+                background: #103143; border-color: #2b6875; border-width: 1px; border-radius: 9px;
                 Text { width: parent.width; height: parent.height;
                     text: root.device-lock-enabled ? "LOCK NOW" : "SET DEVICE PASSPHRASE";
                     color: #7ee7f2; font-size: 15px; horizontal-alignment: center; vertical-alignment: center; }
@@ -2269,7 +2280,7 @@ export component NotesWindow inherits Window {
             }
             if root.device-lock-available && root.device-lock-enabled && !root.show-preview-privacy-controls: Rectangle {
                 x: 0px; y: 282px; width: parent.width; height: 52px;
-                background: #0b1825; border-color: #294454; border-width: 1px;
+                background: #102332; border-color: #294454; border-width: 1px; border-radius: 9px;
                 Text { width: parent.width; height: parent.height; text: "DISABLE DEVICE LOCK";
                     color: #7ee7f2; font-size: 15px; horizontal-alignment: center; vertical-alignment: center; }
                 TouchArea { width: parent.width; height: parent.height; clicked => { root.device-lock-action(1); } }
@@ -2299,40 +2310,6 @@ export component NotesWindow inherits Window {
                 color: #28d8e8; font-size: 14px; horizontal-alignment: center; }
             TouchArea { x: 0px; y: 480px; width: parent.width; height: 82px;
                 clicked => { root.page = 0; root.edit-target = 0; } }
-        }
-
-        if root.device-lock-screen: Rectangle {
-            x: 0px; y: 0px; width: parent.width; height: parent.height;
-            background: #050a12;
-            TouchArea { width: parent.width; height: parent.height; }
-            Text { x: 17px; y: 105px; width: parent.width - 34px;
-                text: root.device-lock-stage == 2 ? "SET PASSPHRASE" :
-                      root.device-lock-stage == 3 ? "CONFIRM PASSPHRASE" :
-                      root.device-lock-stage == 4 ? "DISABLE DEVICE LOCK" : "UNLOCK";
-                color: #eef8fd; font-size: 22px; horizontal-alignment: center; }
-            Text { x: 17px; y: 150px; width: parent.width - 34px;
-                text: root.device-lock-status; color: #8fa9b8; font-size: 14px;
-                horizontal-alignment: center; wrap: word-wrap; }
-            if root.device-lock-stage == 2 || root.device-lock-stage == 3: Text {
-                x: 17px; y: 190px; width: parent.width - 34px;
-                text: root.device-lock-setup-feedback; color: #8fa9b8; font-size: 14px;
-                horizontal-alignment: center;
-            }
-            if root.device-lock-stage == 2 || root.device-lock-stage == 3 || root.device-lock-stage == 4: Rectangle {
-                x: 17px; y: parent.height - 327px; width: parent.width - 34px; height: 34px;
-                background: #0b1825;
-                Text { width: parent.width; height: parent.height; text: "CANCEL"; color: #7ee7f2;
-                    horizontal-alignment: center; vertical-alignment: center; }
-                TouchArea { width: parent.width; height: parent.height; clicked => { root.device-lock-action(2); } }
-            }
-            InvitationKeyboard { x: 17px; y: parent.height - 285px; width: parent.width - 34px; height: 228px;
-                typed(k) => { root.device-lock-key(k); } }
-            Rectangle { x: 17px; y: parent.height - 50px; width: parent.width - 34px; height: 42px;
-                background: #12384a; border-color: #7ee7f2; border-width: 1px;
-                Text { width: parent.width; height: parent.height; text: "CONTINUE"; color: #7ee7f2;
-                    horizontal-alignment: center; vertical-alignment: center; }
-                TouchArea { width: parent.width; height: parent.height; clicked => { root.device-lock-submit(); } }
-            }
         }
 
         if root.page == 6 && root.message-join-view && root.edit-target == 7: InvitationKeyboard {
@@ -2377,11 +2354,73 @@ export component NotesWindow inherits Window {
                   root.page == 3 ? "CALCULATOR RUNS IN THIS IMAGE" :
                   root.page == 14 ? "LOCK SCREEN · UI PREVIEW" :
                   "VOLATILE SESSION · NO SYNC";
-            color: #ffffff; font-size: 14px;
+            color: #819aa8; font-size: 11px;
         }
         if root.page == 14: Rectangle {
             x: (parent.width - 92px) / 2; y: parent.height - 9px;
             width: 92px; height: 3px; border-radius: 2px; background: #eef8fd;
         }
+        if root.device-lock-screen: Rectangle {
+            x: 0px; y: 0px; width: parent.width; height: parent.height;
+            background: #050a12;
+            TouchArea { width: parent.width; height: parent.height; }
+            if root.device-lock-stage == 1 && root.device-lock-welcome: Rectangle {
+                width: parent.width; height: parent.height; background: #050a12;
+                if root.aurora-accent: Image {
+                    width: parent.width; height: parent.height;
+                    source: @image-url("../assets/nexatrode-aurora-wallpaper.png");
+                    image-fit: cover;
+                }
+                Rectangle { width: parent.width; height: parent.height; background: #050a1260; }
+                Image { x: (parent.width - 28px) / 2; y: 96px; width: 28px; height: 28px;
+                    source: @image-url("../assets/icons/lock.svg"); colorize: #dcebf2; image-fit: contain; }
+                Text { x: 24px; y: 148px; width: parent.width - 48px;
+                    text: root.device-lock-clock == "" ? "NEXATRODE" : root.device-lock-clock;
+                    color: #eef8fd; font-size: root.device-lock-clock == "" ? 28px : 62px;
+                    font-weight: 700; horizontal-alignment: center; }
+                Text { x: 24px; y: 208px; width: parent.width - 48px; text: "DEVICE LOCKED";
+                    color: #b7d3df; font-size: 13px; horizontal-alignment: center; }
+                Text { x: 24px; y: parent.height - 122px; width: parent.width - 48px; text: "↑";
+                    color: #7ee7f2; font-size: 25px; horizontal-alignment: center; }
+                Text { x: 24px; y: parent.height - 80px; width: parent.width - 48px; text: "SWIPE UP TO UNLOCK";
+                    color: #9aeaf0; font-size: 14px; horizontal-alignment: center; }
+                TouchArea { width: parent.width; height: parent.height;
+                    pointer-event(event) => {
+                        if event.kind == PointerEventKind.up && self.pressed-y - self.mouse-y >= 60px {
+                            root.device-lock-welcome = false;
+                        }
+                    }
+                }
+            }
+            if root.device-lock-stage != 1 || !root.device-lock-welcome: Text { x: 17px; y: 105px; width: parent.width - 34px;
+                text: root.device-lock-stage == 2 ? "SET PASSPHRASE" :
+                      root.device-lock-stage == 3 ? "CONFIRM PASSPHRASE" :
+                      root.device-lock-stage == 4 ? "DISABLE DEVICE LOCK" : "UNLOCK";
+                color: #eef8fd; font-size: 22px; horizontal-alignment: center; }
+            if root.device-lock-stage != 1 || !root.device-lock-welcome: Text { x: 17px; y: 150px; width: parent.width - 34px;
+                text: root.device-lock-status; color: #8fa9b8; font-size: 14px;
+                horizontal-alignment: center; wrap: word-wrap; }
+            if root.device-lock-stage == 2 || root.device-lock-stage == 3: Text {
+                x: 17px; y: 190px; width: parent.width - 34px;
+                text: root.device-lock-setup-feedback; color: #8fa9b8; font-size: 14px;
+                horizontal-alignment: center;
+            }
+            if root.device-lock-stage == 2 || root.device-lock-stage == 3 || root.device-lock-stage == 4: Rectangle {
+                x: 17px; y: parent.height - 327px; width: parent.width - 34px; height: 34px;
+                background: #0b1825;
+                Text { width: parent.width; height: parent.height; text: "CANCEL"; color: #7ee7f2;
+                    horizontal-alignment: center; vertical-alignment: center; }
+                TouchArea { width: parent.width; height: parent.height; clicked => { root.device-lock-action(2); } }
+            }
+            if root.device-lock-stage >= 1 && (root.device-lock-stage != 1 || !root.device-lock-welcome): InvitationKeyboard { x: 17px; y: parent.height - 285px; width: parent.width - 34px; height: 228px;
+                typed(k) => { root.device-lock-key(k); } }
+            if root.device-lock-stage >= 1 && (root.device-lock-stage != 1 || !root.device-lock-welcome): Rectangle { x: 17px; y: parent.height - 50px; width: parent.width - 34px; height: 42px;
+                background: #12384a; border-color: #7ee7f2; border-width: 1px;
+                Text { width: parent.width; height: parent.height; text: "CONTINUE"; color: #7ee7f2;
+                    horizontal-alignment: center; vertical-alignment: center; }
+                TouchArea { width: parent.width; height: parent.height; clicked => { root.device-lock-submit(); } }
+            }
+        }
+
     }
 }

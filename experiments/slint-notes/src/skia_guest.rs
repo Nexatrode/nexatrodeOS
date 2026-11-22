@@ -449,6 +449,11 @@ pub fn blit_skia_chrome(frame: &mut [u8], page: i32) -> bool {
         return false;
     }
     let index = (page - 1) as usize;
+    // A page without a Skia title (such as the lock preview) owns its own
+    // background. Clearing an empty title would paint a solid band over it.
+    if TITLES[index].is_empty() {
+        return false;
+    }
     let origin_x = px(17.0);
     let origin_y = px(51.0);
     let ready = unsafe { core::ptr::addr_of!(TITLE_READY).cast::<bool>().add(index).read() };

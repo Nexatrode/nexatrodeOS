@@ -36,4 +36,8 @@ fn setup_shows_feedback_but_unlock_never_displays_it() {
     let unlock = render();
     ui.set_device_lock_setup_feedback("9 characters entered".into());
     assert_eq!(unlock, render(), "unlock must not display setup feedback");
+    ui.set_page(6);
+    assert!(unlock == render(), "the locked screen must cover content from every app");
+    ui.set_aurora_accent(false);
+    assert!(unlock != render(), "turning off Aurora Accents must remove the lock backdrop");
 }
