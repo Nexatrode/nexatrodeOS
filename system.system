@@ -40,7 +40,7 @@
         <program_image path="c_server.elf" />
         <map mr="c_reference_private" vaddr="0x41000000" perms="rw" />
     </protection_domain>
-    <protection_domain name="vault" priority="101" passive="true" stack_size="0x10000">
+    <protection_domain name="vault" priority="101" passive="true" stack_size="0x20000">
         <program_image path="rust_vault_disk.elf" />
         <map mr="vault_private" vaddr="0x42000000" perms="rw" setvar_vaddr="vault_private_start" />
         <map mr="notes_transfer" vaddr="0x45000000" perms="rw" cached="false" setvar_vaddr="notes_transfer" />
@@ -55,12 +55,12 @@
         <map mr="notes_transfer" vaddr="0x44_000_000" perms="rw" cached="false" setvar_vaddr="blob_transfer" />
         <map mr="notes_touch_mode" vaddr="0x47_000_000" perms="rw" cached="false" setvar_vaddr="notes_touch_mode" />
     </protection_domain>
-    <protection_domain name="contacts_app" priority="100" passive="true">
+    <protection_domain name="contacts_app" priority="100" passive="true" stack_size="0x10000">
         <program_image path="rust_vault_contacts_test.elf" />
         <map mr="contacts_view" vaddr="0x43_000_000" perms="rw" cached="false" setvar_vaddr="app_view" />
         <map mr="contacts_transfer" vaddr="0x44_000_000" perms="rw" cached="false" setvar_vaddr="blob_transfer" />
     </protection_domain>
-    <protection_domain name="calendar_app" priority="100" passive="true">
+    <protection_domain name="calendar_app" priority="100" passive="true" stack_size="0x10000">
         <program_image path="rust_calendar_app.elf" />
         <map mr="calendar_view" vaddr="0x43_000_000" perms="rw" cached="false" setvar_vaddr="calendar_view" />
         <map mr="calendar_transfer" vaddr="0x44_000_000" perms="rw" cached="false" setvar_vaddr="blob_transfer" />
@@ -90,7 +90,7 @@
             <program_image path="rust_crasher.elf" />
         </protection_domain>
     </protection_domain>
-    <protection_domain name="clock" priority="98" budget="1_000" period="10_000">
+    <protection_domain name="clock" priority="101" budget="1_000" period="10_000">
         <program_image path="rust_clock.elf" />
         <!-- QEMU virt's PL031 alarm is an independent one-second time source. -->
         <map mr="rtc" vaddr="0x50000000" perms="rw" cached="false" setvar_vaddr="rtc_regs" />
@@ -144,6 +144,15 @@
     <channel>
         <end pd="vault" id="6" notify="false" />
         <end pd="messages_app" id="0" pp="true" notify="false" />
+    </channel>
+    <!-- Messages' SQLCipher VFS gets only RTC time and bounded fresh entropy. -->
+    <channel>
+        <end pd="clock" id="3" notify="false" />
+        <end pd="messages_app" id="2" pp="true" notify="false" />
+    </channel>
+    <channel>
+        <end pd="entropy_rng" id="1" notify="false" />
+        <end pd="messages_app" id="3" pp="true" notify="false" />
     </channel>
     <channel>
         <end pd="client" id="7" pp="true" notify="false" />

@@ -36,7 +36,7 @@
         <program_image path="notes-volatile-vault.elf" />
     </protection_domain>
     <protection_domain name="touch_service" priority="90" budget="200000" period="200000"
-                       stack_size="0x4000" smc="true">
+                       stack_size="0x4000">
         <program_image path="touch-service.elf" />
         <map mr="touch_se7" vaddr="0x40000000" perms="rw" cached="false" setvar_vaddr="touch_i2c_vaddr" />
         <map mr="gcc_vote" vaddr="0x41000000" perms="rw" cached="false" setvar_vaddr="gcc_vote_vaddr" />

@@ -52,6 +52,13 @@ ld.lld -L"$sdk/board/sunfish/debug/lib" "$out_dir/slint-reset.o" \
 "$sdk/bin/microkit" "$port_dir/slint-display.system" \
     --search-path "$out_dir" --board sunfish --config debug \
     -o "$out_dir/loader.img" -r "$out_dir/report.txt"
+python3 "$port_dir/validate-slint-smc-policy.py" "$out_dir/report.txt"
+python3 "$port_dir/validate-wlan-resources.py" \
+    --dtb "$root_dir/.cache/pixel-sunfish/live-runtime.dtb" \
+    --dtb "$root_dir/.cache/microkit-src-2.3.1-sunfish/build/sunfish/debug/sel4/build/kernel.dtb"
+python3 "$port_dir/audit-capdl-memory.py" \
+    --dtb "$root_dir/.cache/microkit-src-2.3.1-sunfish/build/sunfish/debug/sel4/build/kernel.dtb" \
+    --report "$out_dir/report.txt"
 python3 "$port_dir/wrap-microkit-image.py" \
     "$out_dir/loader.img" "$out_dir/slint-display.Image"
 lz4 -z -f -q "$out_dir/slint-display.Image" "$out_dir/slint-display.Image.lz4"

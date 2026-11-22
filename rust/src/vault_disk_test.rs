@@ -15,17 +15,20 @@ use sel4_microkit::{
     debug_println, get_mr, memory_region_symbol, protection_domain, set_mr,
 };
 use vault_protocol::{
-    REPLY_NO_BLOB, REPLY_OK, REQUEST_READ, REQUEST_READ_BLOB, REQUEST_TEST_ADVANCE, REQUEST_WRITE,
-    REQUEST_WRITE_BLOB, TEST_VALUE,
+    REPLY_NO_BLOB, REPLY_OK, REQUEST_FILE_DELETE, REQUEST_FILE_READ, REQUEST_FILE_SIZE,
+    REQUEST_FILE_SYNC, REQUEST_FILE_WRITE, REQUEST_READ, REQUEST_READ_BLOB, REQUEST_TEST_ADVANCE,
+    REQUEST_WRITE, REQUEST_WRITE_BLOB, TEST_VALUE,
 };
 
 const VAULT_ENDPOINT: Channel = Channel::new(1);
 const NOTES_ENDPOINT: Channel = Channel::new(3);
+const MESSAGES_ENDPOINT: Channel = Channel::new(6);
 const ENTROPY_ENDPOINT: Channel = Channel::new(2);
 const INTERRUPTION_VALUE: MessageRegisterValue = 0x5253_544f_5245;
 const BASELINE_VALUE: MessageRegisterValue = TEST_VALUE;
 const BLOB_BASELINE: &[u8] = b"NOTES BASELINE";
 const BLOB_INTERRUPTION: &[u8] = b"NOTES COMMIT OK";
+const FILE_BASELINE: &[u8] = b"AGENT DB FILE PERSISTENCE CHECK v1\n";
 
 #[used]
 #[unsafe(link_section = ".storage_test_config")]
@@ -42,7 +45,9 @@ fn init() -> StorageTest {
     let interruption_point =
         unsafe { ptr::read_volatile(ptr::addr_of!(STORAGE_TEST_INTERRUPTION_POINT)) };
     let blob_transfer = memory_region_symbol!(blob_transfer: *mut BlobTransferPage);
+    let messages_transfer = memory_region_symbol!(messages_transfer: *mut BlobTransferPage);
     unsafe { blob_transfer.as_ptr().write(BlobTransferPage::new()) };
+    unsafe { messages_transfer.as_ptr().write(BlobTransferPage::new()) };
     let Some(entropy_fingerprint) = entropy_smoke_test() else {
         fail("VirtIO RNG did not return fresh samples");
     };
@@ -69,6 +74,7 @@ fn init() -> StorageTest {
         }
         _ => fail("unexpected persistent record"),
     }
+    run_file_smoke(unsafe { &mut *messages_transfer.as_ptr() });
     let Some((stage, generation)) = advance_test() else {
         fail("vault did not advance the interruption scenario");
     };
@@ -86,6 +92,93 @@ fn init() -> StorageTest {
         fail("vault returned an unknown interruption stage");
     }
     StorageTest
+}
+
+fn run_file_smoke(transfer: &mut BlobTransferPage) {
+    let db_exists = file_state(0).unwrap_or_else(|| fail("database file stat failed"));
+    if !db_exists.1 {
+        if !transfer.set_payload(FILE_BASELINE) || !write_file(0, 0, FILE_BASELINE.len(), transfer)
+        {
+            fail("could not write initial agent database file");
+        }
+        set_mr(0, 0);
+        if MESSAGES_ENDPOINT
+            .pp_call(MessageInfo::new(REQUEST_FILE_SYNC, 1))
+            .label()
+            != REPLY_OK
+        {
+            fail("could not sync initial agent database file");
+        }
+        debug_println!("STORAGE|FILE_COMMIT_OK: initial app-scoped database file synced");
+    } else if db_exists.0 != FILE_BASELINE.len() {
+        fail("agent database file length did not survive restart");
+    }
+
+    if !transfer.set_payload(&[]) {
+        fail("could not clear file transfer page before read");
+    }
+    set_mr(0, 0);
+    set_mr(1, 0);
+    set_mr(2, FILE_BASELINE.len() as MessageRegisterValue);
+    let reply = MESSAGES_ENDPOINT.pp_call(MessageInfo::new(REQUEST_FILE_READ, 3));
+    let Some(payload) = transfer.payload() else {
+        fail("vault returned an invalid file read length");
+    };
+    if reply.label() != REPLY_OK
+        || get_mr(0) as usize != FILE_BASELINE.len()
+        || payload != FILE_BASELINE
+    {
+        fail("agent database file contents did not survive restart");
+    }
+    debug_println!("STORAGE|FILE_REOPEN_OK: app-scoped file read after boot");
+
+    if !transfer.set_payload(b"JOURNAL") || !write_file(1, 0, 7, transfer) {
+        fail("could not write rollback-journal file");
+    }
+    set_mr(0, 1);
+    if MESSAGES_ENDPOINT
+        .pp_call(MessageInfo::new(REQUEST_FILE_SYNC, 1))
+        .label()
+        != REPLY_OK
+    {
+        fail("could not sync rollback-journal file");
+    }
+    set_mr(0, 1);
+    if MESSAGES_ENDPOINT
+        .pp_call(MessageInfo::new(REQUEST_FILE_DELETE, 1))
+        .label()
+        != REPLY_OK
+    {
+        fail("could not persist rollback-journal deletion");
+    }
+    let journal_state = file_state(1).unwrap_or_else(|| fail("journal stat failed"));
+    if journal_state.0 != 0 || journal_state.1 {
+        fail("deleted rollback journal still appears present");
+    }
+    debug_println!("STORAGE|JOURNAL_DELETE_OK: journal metadata committed");
+}
+
+fn file_state(file: u32) -> Option<(usize, bool)> {
+    set_mr(0, file as MessageRegisterValue);
+    let reply = MESSAGES_ENDPOINT.pp_call(MessageInfo::new(REQUEST_FILE_SIZE, 1));
+    if reply.label() != REPLY_OK || reply.count() != 2 {
+        return None;
+    }
+    Some((get_mr(0) as usize, get_mr(1) != 0))
+}
+
+fn write_file(file: u32, offset: usize, length: usize, transfer: &BlobTransferPage) -> bool {
+    if transfer
+        .payload()
+        .is_none_or(|payload| payload.len() != length)
+    {
+        return false;
+    }
+    set_mr(0, file as MessageRegisterValue);
+    set_mr(1, offset as MessageRegisterValue);
+    set_mr(2, length as MessageRegisterValue);
+    let reply = MESSAGES_ENDPOINT.pp_call(MessageInfo::new(REQUEST_FILE_WRITE, 3));
+    reply.label() == REPLY_OK
 }
 
 fn entropy_smoke_test() -> Option<u64> {

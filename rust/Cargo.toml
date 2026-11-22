@@ -264,6 +264,12 @@ budget-pressure = []
 development-crypto = []
 storage-test = ["development-crypto"]
 host-backup = ["development-crypto"]
+iphone-shell = []
+utm-slint-input = []
+simplex-agent = []
+simplex-agent-qemu-join-test = ["simplex-agent"]
+simplex-agent-qemu-external-cli-test = ["simplex-agent"]
+simplex-agent-vault = []
 
 [[bin]]
 name = "rust_sunfish_native_startup_preflight"
@@ -590,6 +596,19 @@ bench = false
 [[bin]]
 name = "rust_messages_app"
 path = "src/messages_app.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rust_messages_agent_app"
+path = "src/messages_app.rs"
+required-features = ["simplex-agent"]
+test = false
+bench = false
+
+[[bin]]
+name = "simplex_agent_rpc_client"
+path = "src/bin/simplex_agent_rpc_client.rs"
 test = false
 bench = false
 

@@ -47,18 +47,18 @@ impl SettingsService {
         unsafe { self.view.as_mut().set_display_text(&buffer[..length]) }
     }
 
-    fn set_alerts(&mut self, rings: MessageRegisterValue, sms: MessageRegisterValue) -> MessageInfo {
+    fn set_alerts(
+        &mut self,
+        rings: MessageRegisterValue,
+        sms: MessageRegisterValue,
+    ) -> MessageInfo {
         self.rings = rings;
         self.sms = sms;
         if !self.publish() {
             debug_println!("UIAPP|SETTINGS|ERROR: alert display rejected");
             return MessageInfo::new(REPLY_BAD_REQUEST, 0);
         }
-        debug_println!(
-            "UIAPP|SETTINGS|ALERTS|RING={} SMS={}",
-            self.rings,
-            self.sms
-        );
+        debug_println!("UIAPP|SETTINGS|ALERTS|RING={} SMS={}", self.rings, self.sms);
         MessageInfo::new(REPLY_OK, 0)
     }
 }

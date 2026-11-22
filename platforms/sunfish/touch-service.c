@@ -2,7 +2,6 @@
 #include <stdint.h>
 #include <microkit.h>
 
-#define PSCI_SYSTEM_RESET 0x84000009u
 #define SE_GENI_M_CLK_CFG 0x48u
 #define SE_GENI_CLK_CTRL_RO 0x60u
 #define SE_GENI_FIFO_DISABLE_RO 0x64u
@@ -492,11 +491,7 @@ void init(void)
     }
     microkit_dbg_puts("SUNFISH TOUCH PING TOUCH TIMEOUT\r\n");
 reset:
-    microkit_dbg_puts("SUNFISH TOUCH PING RESET REQUEST\r\n");
-    seL4_ARM_SMCContext args = {0};
-    seL4_ARM_SMCContext response = {0};
-    args.x0 = PSCI_SYSTEM_RESET;
-    microkit_arm_smc_call(&args, &response);
+    microkit_dbg_puts("SUNFISH TOUCH PING STOPPED; RESET WATCHDOG OWNS RESET\r\n");
 }
 
 void notified(microkit_channel channel) { (void)channel; }

@@ -20,6 +20,7 @@ import tarfile
 import tempfile
 import time
 import uuid
+import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parent
 LOCK = json.loads((ROOT / "toolchain.lock.json").read_text())
@@ -41,8 +42,11 @@ def run(args, **kwargs):
 
 
 def sha256(path):
+    digest = hashlib.sha256()
     with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def tool(name, llvm=False):
@@ -389,10 +393,10 @@ def qmp_hmp(stream, command_line):
     return result
 
 
-def storage_boot(expected, log_name, timeout):
+def storage_boot(expected, log_name, timeout, loader=None, disk=None):
     output = bytearray()
     master, slave = pty.openpty()
-    process = subprocess.Popen(storage_qemu_command(), cwd=STORAGE_BUILD,
+    process = subprocess.Popen(storage_qemu_command(loader=loader, disk=disk), cwd=STORAGE_BUILD,
                                stdin=slave, stdout=slave, stderr=subprocess.STDOUT,
                                close_fds=True)
     os.close(slave)
@@ -871,6 +875,88 @@ def storage_test(timeout):
     storage_snapshot_replay_test(timeout, pristine_disk)
     storage_snapshot_clone_test(timeout, pristine_disk)
     print("Storage test: PASS. Entropy delivery survived QEMU boots, four scalar and four blob QMP resets, a full VM snapshot restore, and independent VM clones; malformed slots were rejected and interrupted writes recovered a valid old or new record.")
+
+
+def sqlcipher_vault_test(timeout):
+    """Exercise SQLCipher through the production-shaped disk vault in QEMU."""
+    setup()
+    python = setup_sddf()
+    for name in ("make", "dtc", "gdisk", "mkfs.fat"):
+        tool(name)
+    STORAGE_BUILD.mkdir(parents=True, exist_ok=True)
+    board = SDK / "board" / LOCK["board"] / LOCK["configuration"]
+    env = os.environ.copy()
+    env["SEL4_INCLUDE_DIRS"] = str(board / "include")
+    env["PATH"] = os.pathsep.join([
+        "/opt/homebrew/opt/llvm/bin", "/opt/homebrew/sbin", env.get("PATH", "")
+    ])
+
+    cargo_target = STORAGE_BUILD / "rust-target"
+    run([tool("cargo"), "build", "--locked", "--release", "--target",
+         "aarch64-sel4-microkit", "--target-dir", cargo_target,
+         "--features", "storage-test", "--bin", "rust_vault_disk",
+         "--bin", "rust_vault_test_client", "--bin", "rust_entropy_rng"],
+        cwd=ROOT / "rust", env=env)
+    rust_release = cargo_target / "aarch64-sel4-microkit" / "release"
+    for component in ("rust_vault_disk", "rust_vault_test_client", "rust_entropy_rng"):
+        shutil.copy2(rust_release / f"{component}.elf", STORAGE_BUILD / f"{component}.elf")
+
+    ghc_make = [tool("make"), "-C", ROOT / "experiments/ghc-microkit",
+                "guest-simplex-sqlcipher-vault-client",
+                f"MICROKIT_SDK={SDK}", f"MICROKIT_BOARD={LOCK['board']}",
+                f"MICROKIT_CONFIG={LOCK['configuration']}", "BUILD_DIR=build"]
+    run(ghc_make, cwd=ROOT, env=env)
+    sqlcipher_client = (ROOT / "experiments/ghc-microkit/build/"
+                        "guest-simplex-sqlcipher-vault/sqlcipher_vault_probe.elf")
+    shutil.copy2(sqlcipher_client, STORAGE_BUILD / "sqlcipher_vault_probe.elf")
+
+    sddf_make = [tool("make"), "-C", SDDF / "examples/blk",
+                 f"MICROKIT_SDK={SDK}", f"MICROKIT_BOARD={LOCK['board']}",
+                 f"MICROKIT_CONFIG={LOCK['configuration']}", f"SDDF={SDDF}",
+                 f"PYTHON={python}", f"BUILD_DIR={STORAGE_BUILD}",
+                 f"METAPROGRAM={ROOT / 'tests/storage_meta.py'}",
+                 "SYSTEM_FILE=storage.system", "all"]
+    run(sddf_make, cwd=ROOT, env=env)
+    run([tool("llvm-objcopy", llvm=True), "--update-section",
+         f".blk_client_config={STORAGE_BUILD / 'blk_client_vault.data'}",
+         STORAGE_BUILD / "rust_vault_disk.elf"])
+
+    # Keep the normal storage meta-program and its capability wiring, changing
+    # only the tester image and its stack allowance for SQLCipher's PBKDF2.
+    system_path = STORAGE_BUILD / "storage.system"
+    tree = ET.parse(system_path)
+    tester = tree.getroot().find("protection_domain[@name='storage_test']")
+    if tester is None:
+        raise RuntimeError("storage meta-program did not emit the storage_test PD")
+    image = tester.find("program_image")
+    if image is None:
+        raise RuntimeError("storage_test PD has no program_image")
+    image.set("path", "sqlcipher_vault_probe.elf")
+    tester.set("stack_size", "0x20000")
+    tree.write(system_path, encoding="utf-8", xml_declaration=True)
+    run([SDK / "bin/microkit", system_path, "--search-path", STORAGE_BUILD,
+         "--board", LOCK["board"], "--config", LOCK["configuration"],
+         "-o", STORAGE_BUILD / "sqlcipher-vault-loader.img",
+         "-r", STORAGE_BUILD / "sqlcipher-vault-report.txt"])
+
+    disk = STORAGE_BUILD / "sqlcipher-vault-disk.img"
+    run([SDDF / "tools/mkvirtdisk", disk, "1", "512", "16777216", "GPT"],
+        cwd=STORAGE_BUILD, env=env)
+    # Retain the GPT but clear the filesystem payload of the raw vault partition.
+    with disk.open("r+b") as image_file:
+        image_file.seek(2048 * 512)
+        image_file.write(bytes(10 * 4096))
+        image_file.flush()
+        os.fsync(image_file.fileno())
+
+    loader = STORAGE_BUILD / "sqlcipher-vault-loader.img"
+    storage_boot(["SQLCIPHER_VAULT|CREATED_ENCRYPTED_DB",
+                  "SQLCIPHER_VAULT|WRONG_KEY_REJECTED"],
+                 "sqlcipher-vault-create.log", timeout, loader=loader, disk=disk)
+    storage_boot(["SQLCIPHER_VAULT|REOPENED_AFTER_REBOOT",
+                  "SQLCIPHER_VAULT|WRONG_KEY_REJECTED"],
+                 "sqlcipher-vault-reopen.log", timeout, loader=loader, disk=disk)
+    print("SQLCipher vault test: PASS. The SQLCipher database was encrypted with entropy from the Microkit RNG service, stored through the disk-backed vault, reopened after a QEMU reboot, and rejected a wrong key.")
 
 
 def integrated_graphics_test(timeout, gpu_build, expected_pixels, converter):
@@ -1804,6 +1890,217 @@ def graphics_test(timeout):
     integrated_graphics_test(timeout, gpu_build, expected_pixels, converter)
 
 
+def pixel4a_resolution_probe(timeout, output_bundle=None, slint_suite=False):
+    """Run a host-rendered Slint preview through the guest's VirtIO scanout."""
+    setup()
+    setup_sddf()
+    converter = shutil.which("magick") or tool("convert")
+    gpu_build = BUILD / "pixel4a-resolution-probe"
+    source = BUILD / ("utm-slint-suite-home.ppm" if slint_suite
+                      else "slint-notes-pixel4a-keyboard.ppm")
+    slint_command = [tool("cargo"), "run", "--quiet", "--locked", "--manifest-path",
+                     ROOT / "experiments/slint-notes/Cargo.toml"]
+    if slint_suite:
+        slint_command += ["--features", "full-suite-ui", "--bin",
+                          "personal-os-slint-notes-spike"]
+    slint_command += ["--", "1080", "2340", source, "2.75"]
+    if slint_suite:
+        slint_command += ["--page=home", "--exercise-suite", "--compare-line"]
+    else:
+        slint_command += ["--keyboard-inset=280", "--exercise-input"]
+    run(slint_command, cwd=ROOT)
+
+    overlay = gpu_build / "gpu-overlay"
+    include = overlay / "include"
+    include.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(SDDF / "examples/gpu/client.c", overlay / "client.c")
+    shutil.copy2(SDDF / "examples/gpu/fb_img.S", overlay / "fb_img.S")
+    config = (SDDF / "examples/gpu/include/gpu_config.h").read_text()
+    config = config.replace("#define GPU_DATA_REGION_SIZE_CLI0           0x200000",
+                            "#define GPU_DATA_REGION_SIZE_CLI0           0x1000000")
+    if "0x1000000" not in config:
+        raise RuntimeError("Could not enlarge the GPU client data region for a 1080x2340 frame")
+    (include / "gpu_config.h").write_text(config)
+    system = (SDDF / "examples/gpu/board/qemu_virt_aarch64/gpu.system").read_text()
+    system = system.replace(
+        '<memory_region name="gpu_client_data" size="0x200_000" page_size="0x200_000" />',
+        '<memory_region name="gpu_client_data" size="0x1000_000" page_size="0x200_000" />')
+    if 'name="gpu_client_data" size="0x1000_000"' not in system:
+        raise RuntimeError("Could not enlarge the GPU client memory region")
+    gpu_system = gpu_build / "pixel4a-gpu.system"
+    gpu_system.write_text(system)
+
+    env = os.environ.copy()
+    env["PATH"] = os.pathsep.join([
+        "/opt/homebrew/opt/llvm/bin", "/opt/homebrew/sbin", env.get("PATH", "")
+    ])
+    flags = (f"-mstrict-align -I{include} -I{ROOT / 'tools/sddf-gpu-compat'} "
+             f"-include {ROOT / 'tools/sddf-gpu-compat/ialloc_compat.h'}")
+    make_args = [
+        tool("make"), "-C", SDDF / "examples/gpu",
+        f"MICROKIT_SDK={SDK}", f"MICROKIT_BOARD={LOCK['board']}",
+        f"MICROKIT_CONFIG={LOCK['configuration']}", f"SDDF={SDDF}",
+        f"BUILD_DIR={gpu_build}", f"FB_IMG={source}", "BLOB=0",
+        f"CFLAGS_gpu={flags}", f"TOP={overlay}", f"SYSTEM_FILE={gpu_system}",
+    ]
+    run(make_args + ["all"], cwd=ROOT, env=env)
+
+    resource_size = 0x648
+    irq_array_offset = 0x608
+    resources = bytearray(resource_size)
+    resources[:7] = b"sDDF\x01\x00\x01"
+    resources[irq_array_offset] = 0
+    resource_blob = gpu_build / "timer_device_resources.data"
+    resource_blob.write_bytes(resources)
+    run([tool("llvm-objcopy", llvm=True), "--update-section",
+         f".device_resources={resource_blob}", gpu_build / "timer_driver.elf"])
+    loader = gpu_build / "loader.img"
+    run([SDK / "bin/microkit", gpu_system, "--search-path", gpu_build,
+         "--board", LOCK["board"], "--config", LOCK["configuration"],
+         "-o", loader, "-r", gpu_build / "report.txt"], cwd=ROOT)
+
+    serial_log = gpu_build / "serial.log"
+    qemu_log = gpu_build / "qemu.stderr"
+    frame_path = gpu_build / "pixel4a-frame.ppm"
+    qmp_path = Path(tempfile.gettempdir()) / f"ppixel-{uuid.uuid4().hex[:10]}.sock"
+    qemu_command = [
+        tool("qemu-system-aarch64"), "-machine", "virt,virtualization=on",
+        "-accel", "tcg", "-cpu", LOCK["cpu"], "-smp", "1", "-m", LOCK["memory"],
+        "-serial", f"file:{serial_log}", "-monitor", "none", "-nic", "none",
+        "-global", "virtio-mmio.force-legacy=false", "-device",
+        f"loader,file={loader},addr={LOCK['load_address']},cpu-num=0",
+        "-device", "virtio-gpu-device,edid=off,blob=off,max_outputs=1,indirect_desc=off,event_idx=off",
+        "-display", "none", "-d", "guest_errors",
+        "-qmp", f"unix:{qmp_path},server=on,wait=off",
+    ]
+    deadline = time.monotonic() + timeout
+    process = None
+    rendered = False
+    try:
+        with qemu_log.open("wb") as errors:
+            process = subprocess.Popen(qemu_command, stdout=subprocess.DEVNULL, stderr=errors)
+            while not qmp_path.exists():
+                if process.poll() is not None:
+                    raise RuntimeError(f"Pixel 4a probe QEMU exited; inspect {qemu_log}")
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("Timed out waiting for Pixel 4a probe QEMU")
+                time.sleep(0.05)
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as qmp_socket:
+                qmp_socket.settimeout(3)
+                qmp_socket.connect(str(qmp_path))
+                with qmp_socket.makefile("rwb", buffering=0) as stream:
+                    greeting = json.loads(stream.readline())
+                    if "QMP" not in greeting:
+                        raise RuntimeError("Pixel 4a probe QEMU returned an invalid QMP greeting")
+
+                    def qmp_command(command, arguments=None):
+                        request = {"execute": command}
+                        if arguments is not None:
+                            request["arguments"] = arguments
+                        stream.write(json.dumps(request).encode() + b"\r\n")
+                        while True:
+                            response = json.loads(stream.readline())
+                            if "event" in response:
+                                continue
+                            if "error" in response:
+                                raise RuntimeError(f"QEMU command failed: {response['error']}")
+                            if "return" in response:
+                                return response["return"]
+
+                    qmp_command("qmp_capabilities")
+                    while time.monotonic() < deadline:
+                        qmp_command("human-monitor-command", {
+                            "command-line": f"screendump {frame_path}"
+                        })
+                        frame = frame_path.read_bytes() if frame_path.exists() else b""
+                        parts = frame.split(b"\n", 3)
+                        if len(parts) == 4 and parts[0] == b"P6" and parts[2] == b"255":
+                            try:
+                                width, height = map(int, parts[1].split())
+                            except ValueError:
+                                width = height = 0
+                            if width == 1080 and height == 2340 and len(parts[3]) == width * height * 3:
+                                rendered = True
+                                break
+                        time.sleep(0.15)
+    finally:
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        qmp_path.unlink(missing_ok=True)
+    trace = serial_log.read_text(errors="replace") if serial_log.exists() else ""
+    source_pixels = source.read_bytes().split(b"\n", 3)[3]
+    rendered_pixels = frame_path.read_bytes().split(b"\n", 3)[3] if frame_path.exists() else b""
+    if (not rendered or rendered_pixels != source_pixels or
+            any(marker in trace for marker in ("faulting PD:", "Failed assertion", "MON|ERROR"))):
+        raise RuntimeError(f"Pixel 4a 1080x2340 GPU scanout failed; inspect {serial_log} and {qemu_log}")
+    screenshot = gpu_build / "pixel4a-frame.png"
+    run([converter, frame_path, screenshot], stdout=subprocess.DEVNULL)
+    print(f"Pixel 4a native-resolution scanout: PASS; guest rendered 1080x2340 ({screenshot})")
+
+    bundle_name = "Personal OS Slint Preview.utm" if slint_suite else "Personal OS Pixel 4a Probe.utm"
+    bundle = output_bundle or (ROOT / "dist" / bundle_name)
+    if not bundle.is_absolute():
+        bundle = ROOT / bundle
+    ensure_utm_bundle_stopped(bundle)
+    base_config = ROOT / "dist" / "Personal OS.utm" / "config.plist"
+    if not base_config.exists():
+        export_utm()
+    marker = ".personal-os-slint-preview" if slint_suite else ".personal-os-pixel4a-probe"
+    if bundle.exists() and not (bundle / marker).exists():
+        raise RuntimeError(f"Refusing to overwrite an unrelated bundle: {bundle}")
+    with base_config.open("rb") as stream:
+        profile = plistlib.load(stream)
+    profile["Information"]["Name"] = bundle.stem
+    profile["Information"]["UUID"] = str(uuid.uuid4()).upper()
+    profile["Information"]["Notes"] = (
+        "Static 1080x2340 Slint-rendered Home frame presented by the guest VirtIO GPU. "
+        "Slint rendering and touch input do not yet run in this UTM guest."
+        if slint_suite else
+        "Pixel 4a native-resolution GPU scanout probe (1080x2340). "
+        "Displays a Slint software-rendered Notes preview through the guest VirtIO GPU. "
+        "The Slint app itself is not yet running inside the guest."
+    )
+    profile["Display"] = [{
+        "DownscalingFilter": "Linear", "DynamicResolution": False,
+        "Hardware": "virtio-gpu-device", "NativeResolution": True,
+        "UpscalingFilter": "Nearest",
+    }]
+    ensure_utm_storage_profile(profile)
+    arguments = profile["QEMU"]["AdditionalArguments"]
+    gpu_defaults = [
+        "-global virtio-gpu-device.edid=off",
+        "-global virtio-gpu-device.indirect_desc=off",
+        "-global virtio-gpu-device.event_idx=off",
+    ]
+    for argument in gpu_defaults:
+        if argument not in arguments:
+            arguments.append(argument)
+    data = bundle / "Data"
+    data.mkdir(parents=True, exist_ok=True)
+    disk_image = data / "personal-os-disk.img"
+    if not disk_image.exists():
+        prepare_vault_disk(TEST_DISK, reset=True)
+        temporary_disk = disk_image.with_name(disk_image.name + ".new")
+        shutil.copy2(TEST_DISK, temporary_disk)
+        temporary_disk.replace(disk_image)
+    shutil.copy2(loader, data / "loader.elf.new")
+    (data / "loader.elf.new").replace(data / "loader.elf")
+    with (bundle / "config.plist.new").open("wb") as stream:
+        plistlib.dump(profile, stream)
+    (bundle / "config.plist.new").replace(bundle / "config.plist")
+    marker = ".personal-os-slint-preview" if slint_suite else ".personal-os-pixel4a-probe"
+    (bundle / marker).write_text(
+        "Generated by sel4-personal-os/dev; separate Slint preview.\n"
+        if slint_suite else
+        "Generated by sel4-personal-os/dev; separate native-resolution probe.\n")
+    print(f"Slint UTM preview: {bundle}" if slint_suite else f"Pixel 4a UTM probe: {bundle}")
+
+
 def input_frame_key(focus, text="", scroll_start_line=None, notes_mode="edit",
                     note_count=1, selected_note=0, delete_armed=False,
                     notes_field="body"):
@@ -2003,7 +2300,10 @@ def input_test(timeout, build_only=False):
     shutil.copy2(SDDF / "examples/gpu/fb_img.S", gpu_overlay / "fb_img.S")
     shutil.copy2(SDDF / "examples/gpu/include/gpu_config.h",
                  gpu_overlay / "include/gpu_config.h")
-    flags = f"-mstrict-align -I{compat} -include {compat / 'ialloc_compat.h'}"
+    shutil.copy2(ROOT / "tests" / "input" / "slint_frame.h",
+                 gpu_overlay / "include" / "slint_frame.h")
+    flags = (f"-mstrict-align -I{compat} -I{gpu_overlay / 'include'} "
+             f"-include {compat / 'ialloc_compat.h'}")
     graphics_env = os.environ.copy()
     graphics_env["PATH"] = os.pathsep.join([
         "/opt/homebrew/opt/llvm/bin", "/opt/homebrew/sbin",
@@ -2153,6 +2453,12 @@ def input_test(timeout, build_only=False):
          ROOT / "tests" / "input" / "ring_test.c", "-o", ring_test])
     run([ring_test])
     print("Input event ring: PASS; bounded overflow accounting and counter wrap verified")
+    slint_frame_test = gpu_build / "slint-frame-test"
+    run([tool("cc"), "-std=c11", "-Wall", "-Wextra", "-Werror",
+         "-I", ROOT / "tests" / "input",
+         ROOT / "tests" / "input" / "slint_frame_test.c", "-o", slint_frame_test])
+    run([slint_frame_test])
+    print("Slint frame surface: PASS; dimensions, stride, format, capacity, and seqlock verified")
     notes_test = gpu_build / "notes-model-test"
     run([tool("rustc"), "--edition=2024", "--test",
          ROOT / "tests" / "input" / "notes_model_test.rs", "-o", notes_test])
@@ -3006,6 +3312,353 @@ def input_test(timeout, build_only=False):
     time.sleep(2.0)
     verify_input_text_cold_boot(qemu_command, gpu_build, expected_pixels, timeout)
     print(f"VirtIO input integration: PASS; typed text appeared in its owning app, both encrypted app fields restored after a QEMU cold boot, focus changes preserved independent views, and input stayed isolated; frames saved to {png} and {', '.join(map(str, text_pngs))}")
+
+
+def slint_utm_test(timeout):
+    """Render the shared Slint suite in a guest PD and verify live VirtIO scanout."""
+    # This prepares the Slint-aware GPU client and the ordinary OS image.
+    input_test(timeout, build_only=True)
+    gpu_build = BUILD / "sddf-gpu-spike"
+    slint_build = ROOT / "experiments" / "slint-notes"
+    env = os.environ.copy()
+    env["SEL4_INCLUDE_DIRS"] = str(SDK / "board" / LOCK["board"] /
+                                   LOCK["configuration"] / "include")
+    run([tool("cargo"), "+nightly-2026-09-25", "build", "--locked", "--offline",
+         "--release", "--manifest-path", slint_build / "Cargo.toml",
+         "--features", "utm-pd,full-suite-ui", "--bin", "slint_notes_utm",
+         "--target", ROOT / "rust/targets/aarch64-sel4-microkit.json",
+         "-Z", "build-std=core,alloc", "-Z", "json-target-spec"], cwd=ROOT, env=env)
+    slint_elf = slint_build / "target/aarch64-sel4-microkit/release/slint_notes_utm.elf"
+    shutil.copy2(slint_elf, BUILD / "slint_notes_utm.elf")
+
+    run([tool("cargo"), "+nightly-2026-09-25", "build", "--locked", "--offline",
+         "--release", "--target", "aarch64-sel4-microkit", "--target-dir",
+         BUILD / "rust-target", "--features", "utm-slint-input", "--bin",
+         "rust_input_service"], cwd=ROOT / "rust", env=env)
+    slint_input_service = BUILD / "rust-target/aarch64-sel4-microkit/release/rust_input_service.elf"
+    shutil.copy2(slint_input_service, BUILD / "rust_input_service.elf")
+    shutil.copy2(slint_input_service, BUILD / "input_service.elf")
+
+    def render_reference(name, page, *extra_args):
+        output = gpu_build / f"slint-host-{name}.ppm"
+        run([tool("cargo"), "run", "--quiet", "--locked", "--manifest-path",
+             slint_build / "Cargo.toml", "--features", "full-suite-ui", "--bin",
+             "personal-os-slint-notes-spike", "--", "300", "400", output, str(400 / 736),
+             f"--page={page}", *extra_args], cwd=ROOT)
+        parts = output.read_bytes().split(b"\n", 3)
+        if len(parts) != 4 or parts[:3] != [b"P6", b"300 400", b"255"]:
+            raise RuntimeError(f"Host Slint {name} reference frame is not a 300x400 PPM")
+        return parts[3]
+
+    host_frames = {page: render_reference(page, page) for page in (
+        "home", "notes", "contacts", "calculator", "clock", "calendar",
+        "messages", "phone", "settings", "files", "tools", "quick-settings",
+        "appearance", "lockdown", "lock-screen")}
+    host_frames["messages"] = render_reference(
+        "messages-live-model", "messages", "--message-service-ready",
+        "--message-service-state=NO THREADS\nENTER TO ADD")
+    host_frames["lockdown_preview"] = render_reference(
+        "lockdown-preview", "lockdown", "--lockdown-preview")
+    host_frames["notes"] = render_reference("notes-loaded", "notes", "--status=LOADED FROM VAULT")
+    host_frames["notes_q"] = render_reference("notes-q", "notes", "--note=Q")
+    host_frames["notes_q_saved"] = render_reference(
+        "notes-q-saved", "notes", "--note=Q", "--status=SAVED THROUGH VAULT")
+    host_frames["notes_q_cold"] = render_reference(
+        "notes-q-cold", "notes", "--note=Q", "--status=LOADED FROM VAULT")
+    host_frames["contacts"] = render_reference(
+        "contacts-loaded", "contacts", "--contact-status=LOADED FROM VAULT")
+    host_frames["contacts_saved"] = render_reference(
+        "contacts-saved", "contacts", "--contact-name=Q", "--contact-phone=1",
+        "--contact-status=LOADED FROM VAULT")
+    host_frames["contacts_edit"] = render_reference(
+        "contacts-edit", "contacts", "--contact-detail")
+    host_frames["contacts_q"] = render_reference(
+        "contacts-q", "contacts", "--contact-detail", "--contact-name=Q",
+        "--contact-status=VOLATILE · NOT SAVED")
+    host_frames["contacts_q_phone"] = render_reference(
+        "contacts-q-phone", "contacts", "--contact-detail", "--contact-name=Q", "--contact-phone=1",
+        "--contact-status=VOLATILE · NOT SAVED")
+    host_frames["contacts_q_saved"] = render_reference(
+        "contacts-q-saved", "contacts", "--contact-detail", "--contact-name=Q", "--contact-phone=1",
+        "--contact-status=SAVED THROUGH VAULT")
+    host_frames["contacts_q_cold"] = render_reference(
+        "contacts-q-cold", "contacts", "--contact-detail", "--contact-name=Q", "--contact-phone=1",
+        "--contact-status=LOADED FROM VAULT")
+    host_frames["calendar"] = render_reference(
+        "calendar-loaded", "calendar", "--calendar-status=LOADED FROM VAULT")
+    host_frames["calendar_q"] = render_reference(
+        "calendar-q", "calendar", "--calendar-item=Q", "--calendar-status=VOLATILE · NOT SAVED")
+    host_frames["calendar_q_saved"] = render_reference(
+        "calendar-q-saved", "calendar", "--calendar-item=Q",
+        "--calendar-status=SAVED THROUGH VAULT")
+    host_frames["calendar_q_cold"] = render_reference(
+        "calendar-q-cold", "calendar", "--calendar-item=Q",
+        "--calendar-status=LOADED FROM VAULT")
+    host_frames["calculator_1"] = render_reference("calculator-1", "calculator", "--calc-display=1")
+    host_frames["calculator_2"] = render_reference("calculator-2", "calculator", "--calc-display=2")
+    host_frames["calculator_3"] = render_reference("calculator-3", "calculator", "--calc-display=3")
+    host_frames["messages_chat"] = render_reference(
+        "messages-chat", "messages", "--message-view", "--message-selected=Ch4113")
+    host_frames["messages_key_edit"] = render_reference(
+        "messages-key-edit", "messages", "--message-view", "--message-selected=Ch4113", "--edit-target=5")
+    host_frames["messages_q"] = render_reference(
+        "messages-q", "messages", "--message-view", "--message-selected=Ch4113",
+        "--edit-target=5", "--message-peer=Q")
+    host_frames["messages_compose"] = render_reference(
+        "messages-compose", "messages", "--message-view", "--message-selected=Ch4113",
+        "--edit-target=6", "--message-peer=Q")
+    host_frames["messages_qw"] = render_reference(
+        "messages-qw", "messages", "--message-view", "--message-selected=Ch4113",
+        "--edit-target=6", "--message-peer=Q", "--message-body=W")
+    host_frames["phone_dial"] = render_reference(
+        "phone-dial", "phone", "--phone-number=5", "--phone-status=DIAL")
+    host_frames["phone_call"] = render_reference(
+        "phone-call", "phone", "--phone-number=5", "--phone-status=NO MODEM · DEMO ONLY")
+    host_frames["files_private"] = render_reference(
+        "files-private", "files", "--files-status=Private")
+
+    def matches_with_cursor(frame, expected):
+        return (len(frame) == len(expected) and
+                sum(left != right for left, right in zip(frame, expected)) <= 512)
+
+    combined_component = gpu_build / "input-slint-system.system"
+    combined_root = ET.parse(ROOT / "tests/input/input.system").getroot()
+    for child in ET.parse(ROOT / "tests/input/slint_utm.system").getroot():
+        combined_root.append(child)
+    ET.ElementTree(combined_root).write(combined_component, encoding="UTF-8", xml_declaration=True)
+
+    slint_system = gpu_build / "slint-system.system"
+    run([tool("python3"), ROOT / "tests/merge_graphics_system.py",
+         "--base", BUILD / "system.system",
+         "--graphics", SDDF / "examples/gpu/board/qemu_virt_aarch64/gpu.system",
+         "--input", combined_component,
+         "--output", slint_system])
+    loader = gpu_build / "slint-loader.img"
+    run([SDK / "bin/microkit", slint_system, "--search-path", BUILD,
+         "--board", LOCK["board"], "--config", LOCK["configuration"],
+         "-o", loader, "-r", gpu_build / "slint-report.txt"])
+
+    prepare_vault_disk(TEST_DISK, reset=True)
+    serial_log = gpu_build / "slint-serial.log"
+    qemu_log = gpu_build / "slint-qemu.stderr"
+    screenshot = gpu_build / "slint-frame.ppm"
+    qmp_path = Path(tempfile.gettempdir()) / f"slint-utm-{uuid.uuid4().hex[:8]}.sock"
+    qemu = [tool("qemu-system-aarch64"), "-machine", "virt,virtualization=on",
+            "-accel", "tcg", "-cpu", LOCK["cpu"], "-smp", "1", "-m", LOCK["memory"],
+            "-serial", f"file:{serial_log}", "-monitor", "none", "-nic", "none",
+            "-global", "virtio-mmio.force-legacy=false", "-device",
+            f"loader,file={loader},addr={LOCK['load_address']},cpu-num=0",
+            "-device", "virtio-blk-device,drive=hd,bus=virtio-mmio-bus.1",
+            "-device", "virtio-rng-device,bus=virtio-mmio-bus.8",
+            "-device", "virtio-gpu-device,bus=virtio-mmio-bus.31,edid=off,blob=off,max_outputs=1,indirect_desc=off,event_idx=off",
+            "-device", "virtio-keyboard-device,bus=virtio-mmio-bus.30,indirect_desc=off,event_idx=off",
+            "-device", "virtio-tablet-device,bus=virtio-mmio-bus.29,indirect_desc=off,event_idx=off",
+            "-display", "none", "-d", "guest_errors", "-drive",
+            f"file={TEST_DISK},if=none,format=raw,id=hd", "-qmp",
+            f"unix:{qmp_path},server=on,wait=off"]
+    process = None
+    visible = False
+    # Each expected screen is observed before sending the next tap. This keeps
+    # asynchronous VirtIO scanout from turning a quick sequence into missed input.
+    steps = [
+        ("home", (220, 190)),
+        ("tools", (80, 118)),
+        ("notes", (26, 277)),
+        ("notes_q", (265, 224)),
+        ("notes_q_saved", (265, 74)),
+        ("home", (220, 118)),
+        ("contacts", (265, 110)),
+        ("contacts_edit", (26, 277)),
+        ("contacts_q", (25, 180)),
+        ("contacts_q", (25, 252)),
+        ("contacts_q_phone", (265, 224)),
+        ("contacts_q_saved", (265, 74)),
+        ("contacts_saved", (265, 74)),
+        ("home", (220, 190)),
+        ("tools", (220, 118)),
+        ("calculator", (44, 261)),
+        ("calculator_1", (256, 306)),
+        ("calculator_1", (115, 261)),
+        ("calculator_2", (185, 306)),
+        ("calculator_3", (265, 74)),
+        ("home", (220, 190)),
+        ("tools", (80, 167)),
+        ("clock", (265, 74)),
+        ("home", (220, 190)),
+        ("tools", (220, 167)),
+        ("calendar", (26, 277)),
+        ("calendar_q", (265, 224)),
+        ("calendar_q_saved", (265, 74)),
+        ("home", (80, 118)),
+        ("messages", (265, 74)),
+        ("home", (80, 190)),
+        ("files", (80, 247)),
+        ("files_private", (265, 74)),
+        ("home", (220, 190)),
+        ("tools", (80, 216)),
+        ("phone", (150, 225)),
+        ("phone_dial", (243, 315)),
+        ("phone_call", (265, 74)),
+        ("home", (150, 245)),
+        ("settings", (220, 74)),
+        ("quick-settings", (265, 74)),
+        ("home", (150, 245)),
+        ("settings", (80, 167)),
+        ("appearance", (265, 74)),
+        ("home", (150, 245)),
+        ("settings", (80, 140)),
+        ("lockdown", (150, 295)),
+        ("lockdown_preview", (265, 74)),
+        ("home", (247, 9)),
+        ("lock-screen", (150, 330)),
+        ("home", None),
+    ]
+    step_index = 0
+    deadline = time.monotonic() + max(timeout, 120)
+    try:
+        with qemu_log.open("wb") as errors:
+            process = subprocess.Popen(qemu, stdout=subprocess.DEVNULL, stderr=errors)
+            while not qmp_path.exists():
+                if process.poll() is not None:
+                    raise RuntimeError(f"Slint QEMU exited during startup; inspect {qemu_log}")
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("Timed out waiting for the Slint QEMU control socket")
+                time.sleep(0.05)
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as qmp_socket:
+                qmp_socket.settimeout(5)
+                qmp_socket.connect(str(qmp_path))
+                with qmp_socket.makefile("rwb", buffering=0) as qmp_stream:
+                    greeting = json.loads(qmp_stream.readline())
+                    if "QMP" not in greeting:
+                        raise RuntimeError("Slint QEMU returned an invalid QMP greeting")
+                    qmp_execute(qmp_stream, "qmp_capabilities")
+                    def tap_pixel(x, y):
+                        qmp_execute(qmp_stream, "input-send-event", {"events": [
+                            {"type": "abs", "data": {"axis": "x", "value": (x * 32767 + 149) // 299}},
+                            {"type": "abs", "data": {"axis": "y", "value": (y * 32767 + 199) // 399}},
+                            {"type": "btn", "data": {"down": True, "button": "left"}},
+                            {"type": "btn", "data": {"down": False, "button": "left"}},
+                        ]})
+
+                    while time.monotonic() < deadline:
+                        qmp_hmp(qmp_stream, f"screendump {screenshot}")
+                        trace = serial_log.read_text(errors="replace") if serial_log.exists() else ""
+                        parts = screenshot.read_bytes().split(b"\n", 3) if screenshot.exists() else []
+                        frame_matches = (len(parts) == 4 and parts[:3] == [b"P6", b"300 400", b"255"])
+                        frame = parts[3] if frame_matches else b""
+                        if ("SLINT UTM FRAME READY 300x400 STRIDE 900" in trace and
+                                step_index < len(steps) and frame_matches and
+                                matches_with_cursor(frame, host_frames[steps[step_index][0]])):
+                            expected_screen, tap = steps[step_index]
+                            step_index += 1
+                            if tap is None:
+                                visible = True
+                                break
+                            tap_pixel(*tap)
+                        if any(marker in trace for marker in ("faulting PD: slint_ui", "Failed assertion")):
+                            raise RuntimeError(f"Slint guest faulted; inspect {serial_log}")
+                        time.sleep(0.1)
+                    if visible:
+                        trace = serial_log.read_text(errors="replace") if serial_log.exists() else ""
+                        if "SLINT MESSAGES LOAD PASS" not in trace:
+                            raise RuntimeError(
+                                f"Slint did not load the Messages app snapshot; inspect {serial_log}")
+                        # Reboot the same guest and disk, then prove Notes and
+                        # Contacts and Calendar reload through their own services.
+                        qmp_execute(qmp_stream, "system_reset")
+                        deadline = max(deadline, time.monotonic() + 60)
+                        cold_stage = 0
+                        cold_boot_verified = False
+                        cold_frames = (
+                            "home", "tools", "notes_q_cold", "home", "contacts_saved",
+                            "contacts_q_cold", "contacts_saved", "home", "tools",
+                            "calendar_q_cold",
+                        )
+                        while time.monotonic() < deadline:
+                            qmp_hmp(qmp_stream, f"screendump {screenshot}")
+                            trace = serial_log.read_text(errors="replace") if serial_log.exists() else ""
+                            parts = screenshot.read_bytes().split(b"\n", 3) if screenshot.exists() else []
+                            frame_matches = (len(parts) == 4 and
+                                             parts[:3] == [b"P6", b"300 400", b"255"])
+                            frame = parts[3] if frame_matches else b""
+                            if frame_matches and cold_stage < len(cold_frames):
+                                (gpu_build / f"slint-cold-stage-{cold_stage}.ppm").write_bytes(
+                                    b"P6\n300 400\n255\n" + frame)
+                            if ("SLINT UTM FRAME READY 300x400 STRIDE 900" in trace and
+                                    frame_matches and cold_stage == 0 and
+                                    matches_with_cursor(frame, host_frames["home"])):
+                                tap_pixel(220, 190)
+                                cold_stage = 1
+                            elif (frame_matches and cold_stage == 1 and
+                                  matches_with_cursor(frame, host_frames["tools"])):
+                                tap_pixel(80, 118)
+                                cold_stage = 2
+                            elif (frame_matches and cold_stage == 2 and
+                                  matches_with_cursor(frame, host_frames["notes_q_cold"])):
+                                tap_pixel(265, 74)
+                                cold_stage = 3
+                            elif (frame_matches and cold_stage == 3 and
+                                  matches_with_cursor(frame, host_frames["home"])):
+                                tap_pixel(220, 118)
+                                cold_stage = 4
+                            elif (frame_matches and cold_stage == 4 and
+                                  matches_with_cursor(frame, host_frames["contacts_saved"])):
+                                tap_pixel(265, 139)
+                                cold_stage = 5
+                            elif (frame_matches and cold_stage == 5 and
+                                  matches_with_cursor(frame, host_frames["contacts_q_cold"])):
+                                tap_pixel(265, 74)
+                                cold_stage = 6
+                            elif (frame_matches and cold_stage == 6 and
+                                  matches_with_cursor(frame, host_frames["contacts_saved"])):
+                                tap_pixel(265, 74)
+                                cold_stage = 7
+                            elif (frame_matches and cold_stage == 7 and
+                                  matches_with_cursor(frame, host_frames["home"])):
+                                tap_pixel(220, 190)
+                                cold_stage = 8
+                            elif (frame_matches and cold_stage == 8 and
+                                  matches_with_cursor(frame, host_frames["tools"])):
+                                tap_pixel(220, 167)
+                                cold_stage = 9
+                            elif (frame_matches and cold_stage == 9 and
+                                  matches_with_cursor(frame, host_frames["calendar_q_cold"])):
+                                cold_boot_verified = True
+                                break
+                            if any(marker in trace for marker in (
+                                    "faulting PD: slint_ui", "Failed assertion")):
+                                raise RuntimeError(
+                                    f"Slint guest faulted after cold boot; inspect {serial_log}")
+                            time.sleep(0.1)
+                        qmp_execute(qmp_stream, "quit")
+    finally:
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        qmp_path.unlink(missing_ok=True)
+    if not visible:
+        trace = serial_log.read_text(errors="replace") if serial_log.exists() else ""
+        raise RuntimeError(f"Slint frame did not reach VirtIO scanout; inspect {serial_log}: {trace[-1500:]}")
+    if not cold_boot_verified:
+        trace = serial_log.read_text(errors="replace") if serial_log.exists() else ""
+        cold_target = cold_frames[cold_stage] if cold_stage < len(cold_frames) else "unknown"
+        cold_frame = gpu_build / f"slint-cold-stage-{cold_stage}.ppm"
+        cold_diff = "unavailable"
+        if cold_frame.exists():
+            parts = cold_frame.read_bytes().split(b"\n", 3)
+            if len(parts) == 4 and parts[:3] == [b"P6", b"300 400", b"255"]:
+                cold_diff = str(sum(left != right for left, right in
+                                    zip(parts[3], host_frames[cold_target])))
+        raise RuntimeError(
+            f"Saved app data did not reload after QEMU cold boot (stage {cold_stage}: "
+            f"{cold_target}, channel differences {cold_diff}); inspect {serial_log}: {trace[-1500:]}")
+    if not visible or step_index != len(steps):
+        raise RuntimeError("Slint guest touch did not navigate all eight apps and type through the on-screen keyboard")
+    print(f"Slint guest UI: PASS; all eight pages and app interactions match host references; Messages loaded its isolated app snapshot; Notes, Contacts, and Calendar save/readback survived a QEMU reboot: {screenshot}")
 
 
 def qemu_command(disk_image=TEST_DISK):
@@ -4023,10 +4676,11 @@ def crypto_unit_test():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["setup", "build", "run", "test", "test-storage",
-                                             "test-graphics", "test-input", "test-input-net",
+    parser.add_argument("command", choices=["setup", "build", "run", "test", "test-storage", "test-sqlcipher-vault",
+                                             "test-graphics", "test-input", "test-slint-utm", "test-input-net",
                                              "test-net",
                                              "utm-graphics", "utm-graphics-net", "utm-net",
+                                             "utm-pixel4a-probe", "utm-slint-preview",
                                              "backup-export", "backup-restore", "utm"])
     parser.add_argument("--timeout", type=float, default=20,
                         help="boot-test timeout in seconds (default: 20)")
@@ -4036,7 +4690,7 @@ def main():
     parser.add_argument("--output", type=Path,
                         help="new archive or disk-image path; existing files are not overwritten")
     parser.add_argument("--profile", type=Path,
-                        help="UTM output bundle path for utm-graphics / utm-graphics-net")
+                        help="UTM output bundle path for graphics or Pixel 4a probe exports")
     parser.add_argument("--allow-rollback", action="store_true",
                         help="explicitly restore generations older than the selected source disk")
     parser.add_argument("--budget-pressure", action="store_true",
@@ -4053,6 +4707,9 @@ def main():
     if args.command == "test-storage":
         storage_test(args.timeout)
         return
+    if args.command == "test-sqlcipher-vault":
+        sqlcipher_vault_test(args.timeout)
+        return
     if args.command == "test-graphics":
         graphics_test(args.timeout)
         return
@@ -4062,11 +4719,20 @@ def main():
     if args.command == "test-input":
         input_test(args.timeout)
         return
+    if args.command == "test-slint-utm":
+        slint_utm_test(args.timeout)
+        return
     if args.command == "test-input-net":
         input_net_test(args.timeout)
         return
     if args.command == "utm-graphics":
         export_utm_graphics(args.timeout, args.profile)
+        return
+    if args.command == "utm-pixel4a-probe":
+        pixel4a_resolution_probe(args.timeout, args.profile)
+        return
+    if args.command == "utm-slint-preview":
+        pixel4a_resolution_probe(args.timeout, args.profile, slint_suite=True)
         return
     if args.command == "utm-graphics-net":
         export_utm_graphics_net(args.timeout, args.profile)

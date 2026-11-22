@@ -31,6 +31,7 @@ net_queue_handle_t net_rx_handle;
 net_queue_handle_t net_tx_handle;
 
 uintptr_t messages_net_tx;
+uintptr_t haskell_tcp_page;
 
 #define LWIP_TICK_MS 100
 #define PENDING_TX_SLOTS 2
@@ -64,7 +65,9 @@ void netif_status_callback(char *ip_addr)
     /* Matches standalone echo_server wording so ./dev test-net can share markers. */
     sddf_printf("DHCP request finished, IP address for netif %s is: %s\n",
                 sddf_get_pd_name(), ip_addr);
-    start_dns_smoke();
+    haskell_tcp_network_ready();
+    if (haskell_tcp_page != 0) haskell_dns_configure_server();
+    else start_dns_smoke();
     /* Fragment-only guest B has no messages_net_tx; skip TLS so the host stub
      * stays free for the merged Personal OS guest. */
     if (messages_net_tx != 0) {
@@ -197,6 +200,13 @@ void init(void)
             page->reserved = 0;
         }
     }
+    if (haskell_tcp_page != 0) {
+        volatile struct haskell_tcp_page *page =
+            (volatile struct haskell_tcp_page *)haskell_tcp_page;
+        page->magic = HASKELL_TCP_MAGIC;
+        page->request_len = 0;
+        page->response_len = 0;
+    }
 
     sddf_lwip_maybe_notify();
 }
@@ -218,6 +228,19 @@ void notified(sddf_channel ch)
 
 microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
 {
+    if (ch == HASKELL_TCP_CHANNEL && haskell_tcp_page != 0) {
+        unsigned label = (unsigned)microkit_msginfo_get_label(msginfo);
+        unsigned result = HASKELL_TCP_ERROR;
+        if (label == HASKELL_TCP_OPEN) result = haskell_tcp_open();
+        else if (label == HASKELL_TCP_STATUS) result = haskell_tcp_status();
+        else if (label == HASKELL_TCP_SEND) result = haskell_tcp_send();
+        else if (label == HASKELL_TCP_RECV) result = haskell_tcp_recv();
+        else if (label == HASKELL_TCP_CLOSE) result = haskell_tcp_close();
+        else if (label == HASKELL_TCP_CANCEL) result = haskell_tcp_cancel();
+        else if (label == HASKELL_DNS_START) result = haskell_dns_start();
+        else if (label == HASKELL_DNS_POLL) result = haskell_dns_poll();
+        return microkit_msginfo_new(result, 0);
+    }
     if (ch != MESSAGES_NET_CHANNEL) {
         return microkit_msginfo_new(0, 0);
     }

@@ -13,6 +13,8 @@ pub const NOTES_APP_CHANNEL: Channel = Channel::new(3);
 pub const CONTACTS_APP_CHANNEL: Channel = Channel::new(4);
 pub const CALENDAR_APP_CHANNEL: Channel = Channel::new(5);
 pub const MESSAGES_APP_CHANNEL: Channel = Channel::new(6);
+/// Dedicated AgentStore caller; shares the Messages namespace during bring-up.
+pub const SIMPLEX_AGENT_CHANNEL: Channel = Channel::new(7);
 // Local app endpoint shared by the supervisor's explicit namespace test calls.
 pub const APP_TEST_SUPERVISOR_CHANNEL: Channel = Channel::new(1);
 pub const NAMESPACE_COUNT: usize = 5;
@@ -29,6 +31,17 @@ pub const REQUEST_TEST_ADVANCE: MessageLabel = 0x308;
 pub const REQUEST_NAMESPACE_TEST: MessageLabel = 0x309;
 pub const REQUEST_READ_BLOB: MessageLabel = 0x30b;
 pub const REQUEST_WRITE_BLOB: MessageLabel = 0x30c;
+/// Messages app fixed-file service: MR0=file ID, MR1=offset, MR2=length.
+pub const REQUEST_FILE_READ: MessageLabel = 0x430;
+pub const REQUEST_FILE_WRITE: MessageLabel = 0x431;
+/// MR0=file ID, MR1=new size.
+pub const REQUEST_FILE_TRUNCATE: MessageLabel = 0x432;
+/// MR0=file ID; flush data then durably commit file metadata.
+pub const REQUEST_FILE_SYNC: MessageLabel = 0x433;
+/// MR0=file ID; reply MR0=size, MR1=exists.
+pub const REQUEST_FILE_SIZE: MessageLabel = 0x434;
+/// MR0=file ID; rollback-journal deletion is persisted immediately.
+pub const REQUEST_FILE_DELETE: MessageLabel = 0x435;
 
 pub const REPLY_OK: MessageLabel = 0x300;
 pub const REPLY_BAD_REQUEST: MessageLabel = 0x303;

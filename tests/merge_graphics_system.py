@@ -43,16 +43,42 @@ def main():
             image.set("path", "gpu_client.elf")
             client_renamed = True
         if name in pd_names:
+            if name == "timer_driver":
+                # Reuse a base system's sDDF timer service (for example the
+                # SimpleX Agent guest) instead of mapping IRQ 30 twice.
+                existing = next(
+                    pd for pd in root.findall(".//protection_domain")
+                    if pd.get("name") == "timer_driver"
+                )
+                existing_image = existing.find("program_image")
+                component_image = component.find("program_image")
+                if (existing_image is None or component_image is None or
+                        existing_image.get("path") != component_image.get("path")):
+                    raise RuntimeError("graphics timer_driver conflicts with base system")
+                continue
             raise RuntimeError(f"duplicate protection domain while merging graphics: {name}")
         root.append(component)
         pd_names.add(name)
     if not client_renamed:
         raise RuntimeError("graphics system has no client protection domain")
 
+    used_timer_ids = {
+        int(endpoint.get("id"), 0)
+        for endpoint in root.findall(".//channel/end")
+        if endpoint.get("pd") == "timer_driver"
+    }
     for channel in graphics_root.findall("channel"):
         for endpoint in channel.findall("end"):
             if endpoint.get("pd") == "client":
                 endpoint.set("pd", "gpu_client")
+            if endpoint.get("pd") == "timer_driver":
+                endpoint_id = int(endpoint.get("id"), 0)
+                if endpoint_id in used_timer_ids:
+                    endpoint_id = 1
+                    while endpoint_id in used_timer_ids:
+                        endpoint_id += 1
+                    endpoint.set("id", str(endpoint_id))
+                used_timer_ids.add(endpoint_id)
         root.append(channel)
 
     if args.input is not None:
@@ -102,6 +128,24 @@ def main():
                 "perms": "r",
                 "cached": "false",
                 "setvar_vaddr": "ui_pointer",
+            }))
+        if "slint_frame" in memory_regions:
+            gpu_client = next(
+                (pd for pd in root.findall("protection_domain")
+                 if pd.get("name") == "gpu_client"),
+                None,
+            )
+            if gpu_client is None:
+                raise RuntimeError("Slint frame region requires the GPU client domain")
+            if any(mapping.get("mr") == "slint_frame"
+                   for mapping in gpu_client.findall("map")):
+                raise RuntimeError("GPU client already maps the Slint frame region")
+            gpu_client.append(ET.Element("map", {
+                "mr": "slint_frame",
+                "vaddr": "0x4d_000_000",
+                "perms": "r",
+                "cached": "false",
+                "setvar_vaddr": "slint_frame",
             }))
         app_view_mappings = {
             "notes_app": ("notes_view", "0x43_000_000", "app_view"),

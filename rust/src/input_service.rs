@@ -31,6 +31,10 @@ const CALCULATOR_INPUT: Channel = Channel::new(5);
 const CALENDAR_INPUT: Channel = Channel::new(6);
 const MESSAGES_INPUT: Channel = Channel::new(7);
 const PHONE_INPUT: Channel = Channel::new(8);
+#[cfg(feature = "utm-slint-input")]
+const SLINT_INPUT: Channel = Channel::new(9);
+#[cfg(feature = "utm-slint-input")]
+const REQUEST_SLINT_EVENT: u64 = 0x530;
 
 #[protection_domain]
 fn init() -> InputService {
@@ -39,21 +43,35 @@ fn init() -> InputService {
     let ui_pointer = memory_region_symbol!(ui_pointer: *mut UiPointerState);
     let notes_touch_mode = memory_region_symbol!(notes_touch_mode: *mut AtomicU32);
     unsafe {
-        ui_focus
-            .as_ref()
-            .store(focus_value(FocusTarget::None), Ordering::Release);
+        ui_focus.as_ref().store(
+            focus_value(if cfg!(feature = "utm-slint-input") {
+                FocusTarget::Notes
+            } else {
+                FocusTarget::None
+            }),
+            Ordering::Release,
+        );
         ui_pointer.as_ptr().write(UiPointerState::new());
     };
     debug_println!(
-        "UIINPUT|READY: bounded event service capacity={} focus=none touch-surfaces=notes,contacts,calculator,clock,calendar,messages pointer=guest-cursor",
-        EVENT_CAPACITY
+        "UIINPUT|READY: bounded event service capacity={} focus={} touch-surfaces=notes,contacts,calculator,clock,calendar,messages pointer=guest-cursor",
+        EVENT_CAPACITY,
+        focus_name(if cfg!(feature = "utm-slint-input") {
+            FocusTarget::Notes
+        } else {
+            FocusTarget::None
+        })
     );
     InputService {
         ring,
         ui_focus,
         ui_pointer,
         notes_touch_mode,
-        focus: FocusTarget::None,
+        focus: if cfg!(feature = "utm-slint-input") {
+            FocusTarget::Notes
+        } else {
+            FocusTarget::None
+        },
         tablet_x: None,
         tablet_y: None,
         key_owners: KeyOwners::new(),
@@ -123,6 +141,33 @@ impl InputService {
             }
         }
 
+        #[cfg(feature = "utm-slint-input")]
+        {
+            if event.device == DEVICE_TABLET
+                && (event.event_type == EVENT_ABS || event.event_type == EVENT_SYN)
+            {
+                return;
+            }
+            if (event.device == DEVICE_TABLET
+                && event.event_type == EVENT_KEY
+                && event.code == BTN_LEFT)
+                || (event.device == DEVICE_KEYBOARD && event.event_type == EVENT_KEY)
+            {
+                set_mr(0, event.device as u64);
+                set_mr(1, ((event.event_type as u64) << 32) | event.code as u64);
+                set_mr(2, event.value as u64);
+                let reply = SLINT_INPUT.pp_call(MessageInfo::new(REQUEST_SLINT_EVENT, 3));
+                if reply.label() != REQUEST_SLINT_EVENT + 1 {
+                    self.call_errors = self.call_errors.saturating_add(1);
+                }
+                self.gpu_dirty = true;
+                return;
+            }
+            if event.event_type == EVENT_SYN {
+                return;
+            }
+        }
+
         // Tab is a system-level focus shortcut. Consume press, repeat, and
         // release so it cannot be typed into either app's private field.
         if event.device == input_protocol::DEVICE_KEYBOARD
@@ -180,11 +225,7 @@ impl InputService {
                 if let Some(code) = touch_contacts_action(self.focus, pixel_x, pixel_y) {
                     if event.value == 1 {
                         self.dispatch_virtual_key(code);
-                        debug_println!(
-                            "UIROUTER|VKEY: {} code={}",
-                            focus_name(self.focus),
-                            code
-                        );
+                        debug_println!("UIROUTER|VKEY: {} code={}", focus_name(self.focus), code);
                     }
                     return;
                 }

@@ -12,9 +12,7 @@ use input_protocol::{
     DEVICE_KEYBOARD, EVENT_KEY, KEY_F5, KEY_F6, KEY_F7, REPLY_ROUTED_EVENT_BAD,
     REPLY_ROUTED_EVENT_OK, REQUEST_ROUTED_EVENT, decode_routed_event,
 };
-use modem_protocol::{
-    DIAL_MAX_BYTES, REPLY_OK as MODEM_OK, REQUEST_DIAL, PHONE_DIAL_CHANNEL,
-};
+use modem_protocol::{DIAL_MAX_BYTES, PHONE_DIAL_CHANNEL, REPLY_OK as MODEM_OK, REQUEST_DIAL};
 use personal_os_rust_server::phone::{PHONE_TEXT_CAPACITY, Phone};
 use phone_protocol::{REPLY_BAD_REQUEST, REPLY_OK, REQUEST_SET_ALERTS};
 use sel4_microkit::{
@@ -59,17 +57,17 @@ impl PhoneService {
         unsafe { self.view.as_mut().set_display_text(text) }
     }
 
-    fn set_alerts(&mut self, rings: MessageRegisterValue, sms: MessageRegisterValue) -> MessageInfo {
+    fn set_alerts(
+        &mut self,
+        rings: MessageRegisterValue,
+        sms: MessageRegisterValue,
+    ) -> MessageInfo {
         self.phone.set_alerts(rings as u64, sms as u64);
         if !self.publish() {
             debug_println!("UIAPP|PHONE|ERROR: alert display rejected");
             return MessageInfo::new(REPLY_BAD_REQUEST, 0);
         }
-        debug_println!(
-            "UIAPP|PHONE|ALERTS|RING={} SMS={}",
-            rings,
-            sms
-        );
+        debug_println!("UIAPP|PHONE|ALERTS|RING={} SMS={}", rings, sms);
         MessageInfo::new(REPLY_OK, 0)
     }
 

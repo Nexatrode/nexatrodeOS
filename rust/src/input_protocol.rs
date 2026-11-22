@@ -100,7 +100,11 @@ impl UiPointerState {
         if self.visible == 1 && self.x == x && self.y == y {
             return false;
         }
-        let odd = self.revision.load(core::sync::atomic::Ordering::Relaxed).wrapping_add(1) | 1;
+        let odd = self
+            .revision
+            .load(core::sync::atomic::Ordering::Relaxed)
+            .wrapping_add(1)
+            | 1;
         self.revision
             .store(odd, core::sync::atomic::Ordering::SeqCst);
         self.x = x;
@@ -652,26 +656,14 @@ mod tests {
             next_focus_target(FocusTarget::Calculator),
             FocusTarget::Clock
         );
-        assert_eq!(
-            next_focus_target(FocusTarget::Clock),
-            FocusTarget::Calendar
-        );
+        assert_eq!(next_focus_target(FocusTarget::Clock), FocusTarget::Calendar);
         assert_eq!(
             next_focus_target(FocusTarget::Calendar),
             FocusTarget::Messages
         );
-        assert_eq!(
-            next_focus_target(FocusTarget::Messages),
-            FocusTarget::Phone
-        );
-        assert_eq!(
-            next_focus_target(FocusTarget::Phone),
-            FocusTarget::Settings
-        );
-        assert_eq!(
-            next_focus_target(FocusTarget::Settings),
-            FocusTarget::Notes
-        );
+        assert_eq!(next_focus_target(FocusTarget::Messages), FocusTarget::Phone);
+        assert_eq!(next_focus_target(FocusTarget::Phone), FocusTarget::Settings);
+        assert_eq!(next_focus_target(FocusTarget::Settings), FocusTarget::Notes);
     }
 
     #[test]

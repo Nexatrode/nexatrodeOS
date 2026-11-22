@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<system>
+    <memory_region name="spmi_core" size="0x2000" page_size="0x1000"
+                   phys_addr="0xc440000" />
+    <memory_region name="spmi_config" size="0x1000" page_size="0x1000"
+                   phys_addr="0xc40a000" />
+    <memory_region name="spmi_gpio4_observer" size="0x1000" page_size="0x1000"
+                   phys_addr="0xe607000" />
+    <memory_region name="spmi_gpio4_writer" size="0x1000" page_size="0x1000"
+                   phys_addr="0xd440000" />
+    <protection_domain name="touch_spmi_probe" priority="99" smc="true">
+        <program_image path="touch-spmi-probe.elf" />
+        <map mr="spmi_core" vaddr="0x43000000" perms="r" cached="false"
+             setvar_vaddr="spmi_core_vaddr" />
+        <map mr="spmi_config" vaddr="0x43002000" perms="r" cached="false"
+             setvar_vaddr="spmi_config_vaddr" />
+        <map mr="spmi_gpio4_observer" vaddr="0x44000000" perms="rw" cached="false"
+             setvar_vaddr="spmi_gpio4_observer_vaddr" />
+        <map mr="spmi_gpio4_writer" vaddr="0x45000000" perms="rw" cached="false"
+             setvar_vaddr="spmi_gpio4_writer_vaddr" />
+    </protection_domain>
+    <protection_domain name="touch_watchdog" priority="1" smc="true">
+        <program_image path="slint-reset.elf" />
+    </protection_domain>
+</system>

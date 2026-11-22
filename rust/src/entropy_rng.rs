@@ -12,6 +12,8 @@ use sel4_microkit::{
 use virtio_rng::VirtioRng;
 
 const CLIENT_CHANNEL: Channel = Channel::new(0);
+const MESSAGES_CHANNEL: Channel = Channel::new(1);
+const SIMPLEX_AGENT_CHANNEL: Channel = Channel::new(2);
 const DMA_PHYSICAL_ADDRESS: u64 = 0x5fdc_0000;
 
 #[protection_domain]
@@ -49,7 +51,12 @@ impl Handler for EntropyService {
         channel: Channel,
         request: MessageInfo,
     ) -> Result<MessageInfo, Self::Error> {
-        if channel != CLIENT_CHANNEL || request.label() != REQUEST_BYTES || request.count() != 0 {
+        if channel != CLIENT_CHANNEL
+            && channel != MESSAGES_CHANNEL
+            && channel != SIMPLEX_AGENT_CHANNEL
+            || request.label() != REQUEST_BYTES
+            || request.count() != 0
+        {
             return Ok(MessageInfo::new(REPLY_UNAVAILABLE, 0));
         }
         let mut bytes = [0u8; SAMPLE_BYTES];

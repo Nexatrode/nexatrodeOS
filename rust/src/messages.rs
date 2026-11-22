@@ -80,11 +80,7 @@ impl Messages {
                     if index > 0 {
                         offset = write(buffer, offset, b"\n");
                     }
-                    let marker = if index == self.selected {
-                        b"- "
-                    } else {
-                        b"  "
-                    };
+                    let marker = if index == self.selected { b"- " } else { b"  " };
                     offset = write(buffer, offset, marker);
                     offset = write(buffer, offset, b"KEY ");
                     offset = write(buffer, offset, &self.peers[index].key);
@@ -579,10 +575,7 @@ mod tests {
         let mut encoded = [0; MESSAGES_BLOB_CAPACITY];
         let length = app.encode(&mut encoded).unwrap();
         let restored = Messages::decode(&encoded[..length]).unwrap();
-        assert_eq!(
-            restored.display(&mut buffer),
-            b"- KEY BE12CD34\n  SEALED 1"
-        );
+        assert_eq!(restored.display(&mut buffer), b"- KEY BE12CD34\n  SEALED 1");
         assert_eq!(restored.peers[0].sealed_count, 1);
         assert!(restored.peers[0].sealed_len as usize >= message_seal::HEADER_SIZE);
         assert_eq!(&restored.peers[0].sealed[..4], b"PSL1");

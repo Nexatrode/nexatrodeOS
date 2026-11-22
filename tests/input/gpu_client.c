@@ -12,6 +12,7 @@
 #include <sddf/gpu/events.h>
 #include <sddf/timer/client.h>
 #include <gpu_config.h>
+#include "slint_frame.h"
 
 /* Uncomment this to enable debug logging */
 // #define DEBUG_GPU_CLIENT
@@ -71,6 +72,7 @@ uintptr_t calendar_view;
 uintptr_t messages_view;
 uintptr_t settings_view;
 uintptr_t phone_view;
+uintptr_t slint_frame;
 
 typedef struct {
     uint32_t revision;
@@ -93,6 +95,7 @@ static bool pending_display_info_request = false;
 static uint32_t rendered_focus = UINT32_MAX;
 static uint32_t rendered_view_revision = UINT32_MAX;
 static uint32_t rendered_pointer_revision = UINT32_MAX;
+static uint32_t rendered_slint_frame_revision = UINT32_MAX;
 
 static const uint8_t font_5x7[26][7] = {
     {0x0e, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11},
@@ -1017,14 +1020,24 @@ static void do_draw_state(void)
                                      &notes_field)) {
         return;
     }
+    const slint_frame_header_t *slint_surface = (const slint_frame_header_t *)slint_frame;
+    uint32_t slint_revision = 0;
+    bool slint_frame_ready = focus == 1 && slint_frame != 0 &&
+        FB_IMG_WIDTH == SLINT_FRAME_WIDTH && FB_IMG_HEIGHT == SLINT_FRAME_HEIGHT &&
+        slint_frame_header_valid(slint_surface, SLINT_FRAME_REGION_BYTES, &slint_revision);
     if (focus != rendered_focus || view_revision != rendered_view_revision
-        || pointer.revision != rendered_pointer_revision) {
+        || pointer.revision != rendered_pointer_revision
+        || (slint_frame_ready && slint_revision != rendered_slint_frame_revision)) {
         uint8_t *frame = (uint8_t *)(gpu_data + DISPLAY_INFO_DATA_OFFSET);
         size_t frame_size = FB_IMG_WIDTH * FB_IMG_HEIGHT * GPU_BPP_2D;
         memcpy(frame, _fb_img, frame_size);
 
-        if (focus == 1 || focus == 2 || focus == 3 || focus == 4 || focus == 5
-            || focus == 6 || focus == 7 || focus == 8) {
+        bool drew_slint_frame = slint_frame_ready &&
+            slint_frame_copy_to_bgra(slint_surface,
+                                     (const uint8_t *)slint_surface + sizeof(*slint_surface),
+                                     SLINT_FRAME_REGION_BYTES, frame, frame_size);
+        if (!drew_slint_frame && (focus == 1 || focus == 2 || focus == 3 || focus == 4 || focus == 5
+            || focus == 6 || focus == 7 || focus == 8)) {
             draw_app_page(frame, focus, app_text, app_text_length, scroll_start_line,
                           notes_mode, selected_note, note_count, notes_delete_armed,
                           notes_field);
@@ -1065,6 +1078,7 @@ static void do_draw_state(void)
         rendered_focus = focus;
         rendered_view_revision = view_revision;
         rendered_pointer_revision = pointer.revision;
+        rendered_slint_frame_revision = drew_slint_frame ? slint_revision : UINT32_MAX;
         microkit_notify(VIRT_CH);
     }
 }

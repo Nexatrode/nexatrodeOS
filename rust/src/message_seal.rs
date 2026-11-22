@@ -77,7 +77,13 @@ pub fn unseal(key: &[u8; KEY_SIZE], packet: &mut [u8]) -> Option<usize> {
     let cipher_end = 28 + pt_len;
     let mut tag = [0u8; TAG_SIZE];
     tag.copy_from_slice(&packet[cipher_end..cipher_end + TAG_SIZE]);
-    if !record_crypto::decrypt(key, &nonce, &aad(&key_id), &mut packet[28..cipher_end], &tag) {
+    if !record_crypto::decrypt(
+        key,
+        &nonce,
+        &aad(&key_id),
+        &mut packet[28..cipher_end],
+        &tag,
+    ) {
         return None;
     }
     Some(pt_len)
@@ -85,14 +91,7 @@ pub fn unseal(key: &[u8; KEY_SIZE], packet: &mut [u8]) -> Option<usize> {
 
 /// Build the fixed UDP demo packet used by host Python and the guest smoke.
 pub fn demo_udp_packet(output: &mut [u8; MAX_PACKET]) -> usize {
-    seal(
-        &DEMO_KEY,
-        &DEMO_KEY_ID,
-        &DEMO_NONCE,
-        DEMO_PLAINTEXT,
-        output,
-    )
-    .expect("demo seal")
+    seal(&DEMO_KEY, &DEMO_KEY_ID, &DEMO_NONCE, DEMO_PLAINTEXT, output).expect("demo seal")
 }
 
 #[cfg(test)]

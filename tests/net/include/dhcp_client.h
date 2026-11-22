@@ -9,6 +9,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <os/sddf.h>
+#include "haskell_tcp_protocol.h"
 
 #define UDP_ECHO_PORT 1235
 #define UDP_SEAL_PORT 1236
@@ -23,6 +24,18 @@
 
 #define REQUEST_NET_TX 0x413
 #define REPLY_NET_TX_OK 0x414
+
+extern uintptr_t haskell_tcp_page;
+void haskell_tcp_network_ready(void);
+void haskell_dns_configure_server(void);
+unsigned haskell_dns_start(void);
+unsigned haskell_dns_poll(void);
+unsigned haskell_tcp_open(void);
+unsigned haskell_tcp_status(void);
+unsigned haskell_tcp_send(void);
+unsigned haskell_tcp_recv(void);
+unsigned haskell_tcp_close(void);
+unsigned haskell_tcp_cancel(void);
 
 /* messages_net_tx.reserved: also send the datagram over the open TLS session. */
 #define MESSAGES_NET_TX_TLS 0x1u

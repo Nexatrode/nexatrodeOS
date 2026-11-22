@@ -3,19 +3,22 @@
 
 mod app_view;
 
+use app_view::AppViewState;
 use core::{ptr, ptr::NonNull};
+use personal_os_rust_server::clock_display::{UTC_CLOCK_TEXT_LENGTH, format_utc_clock};
 use sel4_microkit::{
     Channel, ChannelSet, Handler, Infallible, MessageInfo, MessageLabel, MessageRegisterValue,
     debug_println, memory_region_symbol, protection_domain, set_mr,
 };
-use app_view::AppViewState;
-use personal_os_rust_server::clock_display::{UTC_CLOCK_TEXT_LENGTH, format_utc_clock};
 
 const TIMER_IRQ: Channel = Channel::new(0);
 const TIMER_TO_CONSOLE: Channel = Channel::new(1);
 const CLOCK_TO_CONSOLE: Channel = Channel::new(2);
+const TIME_TO_MESSAGES: Channel = Channel::new(3);
+const TIME_TO_SIMPLEX_AGENT: Channel = Channel::new(4);
 
 const REQUEST_CLOCK_STATUS: MessageLabel = 0x204;
+const REQUEST_UNIX_TIME: MessageLabel = 0x205;
 const REPLY_OK: MessageLabel = 0x100;
 const REPLY_CONSOLE_ERROR: MessageLabel = 0x2ff;
 
@@ -110,6 +113,14 @@ impl Handler for Clock {
         channel: Channel,
         request: MessageInfo,
     ) -> Result<MessageInfo, Self::Error> {
+        if (channel == TIME_TO_MESSAGES || channel == TIME_TO_SIMPLEX_AGENT)
+            && request.label() == REQUEST_UNIX_TIME
+            && request.count() == 0
+        {
+            set_mr(0, self.rtc.read(RTC_DR) as MessageRegisterValue);
+            return Ok(MessageInfo::new(REPLY_OK, 1));
+        }
+
         if channel != CLOCK_TO_CONSOLE
             || request.label() != REQUEST_CLOCK_STATUS
             || request.count() != 0

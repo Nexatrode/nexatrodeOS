@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<system>
+    <!-- Only the service and observer can inspect the test state. -->
+    <memory_region name="policy_state" size="0x1000" page_size="0x1000" />
+
+    <protection_domain name="policy_vault" priority="100" passive="true">
+        <program_image path="policy-vault.elf" />
+        <map mr="policy_state" vaddr="0x40000000" perms="rw" cached="false" />
+    </protection_domain>
+    <protection_domain name="policy_writer" priority="99" budget="200000" period="200000">
+        <program_image path="policy-writer.elf" />
+    </protection_domain>
+    <protection_domain name="policy_reader" priority="98" budget="200000" period="200000">
+        <program_image path="policy-reader.elf" />
+    </protection_domain>
+    <protection_domain name="policy_intruder" priority="97" budget="200000" period="200000">
+        <program_image path="policy-intruder.elf" />
+    </protection_domain>
+    <protection_domain name="policy_witness" priority="1" budget="200000" period="200000" smc="true">
+        <program_image path="policy-witness.elf" />
+        <map mr="policy_state" vaddr="0x40000000" perms="r" cached="false" />
+    </protection_domain>
+
+    <channel>
+        <end pd="policy_vault" id="0" />
+        <end pd="policy_writer" id="0" pp="true" />
+    </channel>
+    <channel>
+        <end pd="policy_vault" id="1" />
+        <end pd="policy_reader" id="0" pp="true" />
+    </channel>
+</system>

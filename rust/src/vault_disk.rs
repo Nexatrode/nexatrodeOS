@@ -10,6 +10,7 @@ use core::{
 use personal_os_rust_server::vault_blob_record::{self, DecodedBlob};
 use personal_os_rust_server::vault_blob_transfer::BlobTransferPage;
 use personal_os_rust_server::vault_crypto::DevelopmentCryptoProvider;
+use personal_os_rust_server::vault_file::{self, FileMetadata, VaultFileId};
 use personal_os_rust_server::vault_record::{self, DecodedRecord, RecordFormat, SLOT_SIZE};
 use sel4_microkit::{
     Channel, ChannelSet, Handler, Infallible, MessageInfo, MessageLabel, MessageRegisterValue,
@@ -19,10 +20,12 @@ use sel4_microkit::{
 use vault_protocol::REQUEST_TEST_ADVANCE;
 use vault_protocol::{
     CALENDAR_APP_CHANNEL, CALENDAR_NAMESPACE, CONTACTS_APP_CHANNEL, CONTACTS_NAMESPACE,
-    MESSAGES_APP_CHANNEL, MESSAGES_NAMESPACE, NAMESPACE_COUNT, NOTES_APP_CHANNEL,
-    NOTES_NAMESPACE, REPLY_BAD_REQUEST, REPLY_CONFLICT, REPLY_CORRUPT, REPLY_DENIED,
-    REPLY_NAMESPACE_TEST, REPLY_NO_BLOB, REPLY_OK, REPLY_STORAGE, REQUEST_NAMESPACE_TEST,
-    REQUEST_READ, REQUEST_READ_BLOB, REQUEST_WRITE, REQUEST_WRITE_BLOB, SYSTEM_NAMESPACE,
+    MESSAGES_APP_CHANNEL, MESSAGES_NAMESPACE, NAMESPACE_COUNT, NOTES_APP_CHANNEL, NOTES_NAMESPACE,
+    REPLY_BAD_REQUEST, REPLY_CONFLICT, REPLY_CORRUPT, REPLY_DENIED, REPLY_NAMESPACE_TEST,
+    REPLY_NO_BLOB, REPLY_OK, REPLY_STORAGE, REQUEST_FILE_DELETE, REQUEST_FILE_READ,
+    REQUEST_FILE_SIZE, REQUEST_FILE_SYNC, REQUEST_FILE_TRUNCATE, REQUEST_FILE_WRITE,
+    REQUEST_NAMESPACE_TEST, REQUEST_READ, REQUEST_READ_BLOB, REQUEST_WRITE, REQUEST_WRITE_BLOB,
+    SIMPLEX_AGENT_CHANNEL, SYSTEM_NAMESPACE,
 };
 
 const BLOCK_SIZE: usize = 4096;
@@ -213,7 +216,30 @@ impl RecordSlot {
 #[repr(C)]
 struct VaultState {
     slots: [[RecordSlot; SLOT_COUNT]; NAMESPACE_COUNT],
+    files: [PersistentFileState; vault_file::FILE_COUNT],
     loaded: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct PersistentFileState {
+    generation: u64,
+    length: u32,
+    active_slot: u32,
+    exists: bool,
+    loaded: bool,
+    dirty: bool,
+}
+
+impl PersistentFileState {
+    const UNLOADED: Self = Self {
+        generation: 0,
+        length: 0,
+        active_slot: 1,
+        exists: false,
+        loaded: false,
+        dirty: false,
+    };
 }
 
 #[protection_domain]
@@ -228,11 +254,15 @@ fn init() -> Vault {
         memory_region_symbol!(calendar_transfer: *mut BlobTransferPage).as_ptr();
     let messages_transfer =
         memory_region_symbol!(messages_transfer: *mut BlobTransferPage).as_ptr();
+    #[cfg(feature = "simplex-agent-vault")]
+    let simplex_agent_transfer =
+        memory_region_symbol!(simplex_agent_transfer: *mut BlobTransferPage).as_ptr();
     unsafe {
         ptr::write_volatile(
             state,
             VaultState {
                 slots: [[RecordSlot::INVALID; SLOT_COUNT]; NAMESPACE_COUNT],
+                files: [PersistentFileState::UNLOADED; vault_file::FILE_COUNT],
                 loaded: 0,
             },
         );
@@ -249,6 +279,8 @@ fn init() -> Vault {
             calendar_transfer,
             messages_transfer,
         ],
+        #[cfg(feature = "simplex-agent-vault")]
+        simplex_agent_transfer,
     }
 }
 
@@ -257,6 +289,8 @@ struct Vault {
     block: BlockClient,
     crypto: DevelopmentCryptoProvider,
     blob_transfer: [*mut BlobTransferPage; NAMESPACE_COUNT],
+    #[cfg(feature = "simplex-agent-vault")]
+    simplex_agent_transfer: *mut BlobTransferPage,
 }
 
 impl Vault {
@@ -459,6 +493,271 @@ impl Vault {
         Ok(next_generation)
     }
 
+    fn file_state(&self, file: VaultFileId) -> PersistentFileState {
+        unsafe { ptr::read_volatile(ptr::addr_of!((*self.state).files[file.index()])) }
+    }
+
+    fn set_file_state(&mut self, file: VaultFileId, state: PersistentFileState) {
+        unsafe { ptr::write_volatile(ptr::addr_of_mut!((*self.state).files[file.index()]), state) }
+    }
+
+    fn check_file_region(&self) -> Result<(), MessageLabel> {
+        if self.block.capacity_blocks()? < vault_file::REQUIRED_BLOCKS {
+            return Err(REPLY_STORAGE);
+        }
+        Ok(())
+    }
+
+    fn load_file_state(&mut self, file: VaultFileId) -> Result<PersistentFileState, MessageLabel> {
+        let cached = self.file_state(file);
+        if cached.loaded {
+            return Ok(cached);
+        }
+        self.check_file_region()?;
+        let mut decoded: Option<(usize, FileMetadata)> = None;
+        let mut any_nonzero = false;
+        for slot in 0..vault_file::METADATA_SLOT_COUNT {
+            let block = file.metadata_block(slot).ok_or(REPLY_BAD_REQUEST)?;
+            let raw = self.read_disk_block(block)?;
+            any_nonzero |= raw.iter().any(|byte| *byte != 0);
+            let mut authenticated = raw;
+            if let Some(metadata) =
+                vault_file::decode_metadata(&self.crypto, file, &mut authenticated)
+                    .map_err(|_| REPLY_STORAGE)?
+            {
+                if decoded.is_none_or(|(_, current)| metadata.generation > current.generation) {
+                    decoded = Some((slot, metadata));
+                }
+            }
+        }
+        let state = match decoded {
+            Some((active_slot, metadata)) => PersistentFileState {
+                generation: metadata.generation,
+                length: metadata.length,
+                active_slot: active_slot as u32,
+                exists: metadata.exists,
+                loaded: true,
+                dirty: false,
+            },
+            None if !any_nonzero => PersistentFileState {
+                loaded: true,
+                ..PersistentFileState::UNLOADED
+            },
+            None => return Err(REPLY_CORRUPT),
+        };
+        self.set_file_state(file, state);
+        Ok(state)
+    }
+
+    fn read_disk_block(&mut self, block: usize) -> Result<[u8; BLOCK_SIZE], MessageLabel> {
+        self.block.transfer_at(BLOCK_READ, block, 0, 1)?;
+        let mut bytes = [0; BLOCK_SIZE];
+        unsafe {
+            bytes.copy_from_slice(&ptr::read_volatile(
+                self.block.data.cast::<[u8; BLOCK_SIZE]>(),
+            ));
+        }
+        Ok(bytes)
+    }
+
+    fn write_disk_block(
+        &mut self,
+        block: usize,
+        bytes: &[u8; BLOCK_SIZE],
+    ) -> Result<(), MessageLabel> {
+        unsafe {
+            ptr::copy_nonoverlapping(bytes.as_ptr(), self.block.data, BLOCK_SIZE);
+        }
+        fence(Ordering::Release);
+        self.block.transfer_at(BLOCK_WRITE, block, 0, 1)
+    }
+
+    fn file_size(&mut self, file: VaultFileId) -> Result<PersistentFileState, MessageLabel> {
+        self.load_file_state(file)
+    }
+
+    fn read_file(
+        &mut self,
+        file: VaultFileId,
+        offset: usize,
+        requested: usize,
+        channel: Channel,
+    ) -> Result<usize, MessageLabel> {
+        if requested > vault_file::FILE_TRANSFER_MAX {
+            return Err(REPLY_BAD_REQUEST);
+        }
+        let state = self.load_file_state(file)?;
+        let page = self.file_transfer_page(channel)?;
+        if (unsafe { &*page }).payload().is_none() {
+            return Err(REPLY_BAD_REQUEST);
+        }
+        let length = if offset >= state.length as usize {
+            0
+        } else {
+            requested.min(state.length as usize - offset)
+        };
+        let mut output = [0; vault_file::FILE_TRANSFER_MAX];
+        let mut copied = 0;
+        while copied < length {
+            let position = offset + copied;
+            let logical_block = position / BLOCK_SIZE;
+            let within_block = position % BLOCK_SIZE;
+            let count = (BLOCK_SIZE - within_block).min(length - copied);
+            let physical = file
+                .physical_block(logical_block)
+                .ok_or(REPLY_BAD_REQUEST)?;
+            let block = self.read_disk_block(physical)?;
+            output[copied..copied + count]
+                .copy_from_slice(&block[within_block..within_block + count]);
+            copied += count;
+        }
+        if !(unsafe { &mut *page }).set_payload(&output[..length]) {
+            return Err(REPLY_BAD_REQUEST);
+        }
+        Ok(length)
+    }
+
+    fn write_file_range(
+        &mut self,
+        file: VaultFileId,
+        offset: usize,
+        bytes: &[u8],
+        visible_length: &mut usize,
+    ) -> Result<(), MessageLabel> {
+        let end = offset.checked_add(bytes.len()).ok_or(REPLY_BAD_REQUEST)?;
+        if end > vault_file::FILE_CAPACITY {
+            return Err(REPLY_BAD_REQUEST);
+        }
+        let mut copied = 0;
+        while copied < bytes.len() {
+            let position = offset + copied;
+            let logical_block = position / BLOCK_SIZE;
+            let within_block = position % BLOCK_SIZE;
+            let count = (BLOCK_SIZE - within_block).min(bytes.len() - copied);
+            let physical = file
+                .physical_block(logical_block)
+                .ok_or(REPLY_BAD_REQUEST)?;
+            let block_start = logical_block * BLOCK_SIZE;
+            let mut block = if within_block == 0 && count == BLOCK_SIZE {
+                [0; BLOCK_SIZE]
+            } else if block_start < *visible_length {
+                self.read_disk_block(physical)?
+            } else {
+                [0; BLOCK_SIZE]
+            };
+            if *visible_length > block_start && *visible_length < block_start + BLOCK_SIZE {
+                block[*visible_length - block_start..].fill(0);
+            }
+            block[within_block..within_block + count]
+                .copy_from_slice(&bytes[copied..copied + count]);
+            self.write_disk_block(physical, &block)?;
+            copied += count;
+            *visible_length = (*visible_length).max(position + count);
+        }
+        Ok(())
+    }
+
+    fn write_file(
+        &mut self,
+        file: VaultFileId,
+        offset: usize,
+        length: usize,
+        channel: Channel,
+    ) -> Result<(), MessageLabel> {
+        if length > vault_file::FILE_TRANSFER_MAX {
+            return Err(REPLY_BAD_REQUEST);
+        }
+        let page = self.file_transfer_page(channel)?;
+        let input = (unsafe { &*page }).payload().ok_or(REPLY_BAD_REQUEST)?;
+        if input.len() != length {
+            return Err(REPLY_BAD_REQUEST);
+        }
+        let mut bytes = [0; vault_file::FILE_TRANSFER_MAX];
+        bytes[..length].copy_from_slice(input);
+        let mut state = self.load_file_state(file)?;
+        let mut visible_length = state.length as usize;
+        if offset > visible_length {
+            let zeros = [0; vault_file::FILE_TRANSFER_MAX];
+            let mut gap = visible_length;
+            while gap < offset {
+                let count = (offset - gap).min(zeros.len());
+                self.write_file_range(file, gap, &zeros[..count], &mut visible_length)?;
+                gap += count;
+            }
+        }
+        self.write_file_range(file, offset, &bytes[..length], &mut visible_length)?;
+        state.length = visible_length as u32;
+        state.exists = true;
+        state.dirty = true;
+        self.set_file_state(file, state);
+        Ok(())
+    }
+
+    fn truncate_file(&mut self, file: VaultFileId, new_length: usize) -> Result<(), MessageLabel> {
+        if new_length > vault_file::FILE_CAPACITY {
+            return Err(REPLY_BAD_REQUEST);
+        }
+        let mut state = self.load_file_state(file)?;
+        let mut visible_length = state.length as usize;
+        if new_length > visible_length {
+            let zeros = [0; vault_file::FILE_TRANSFER_MAX];
+            let mut position = visible_length;
+            while position < new_length {
+                let count = (new_length - position).min(zeros.len());
+                self.write_file_range(file, position, &zeros[..count], &mut visible_length)?;
+                position += count;
+            }
+        }
+        state.length = new_length as u32;
+        state.exists = true;
+        state.dirty = true;
+        self.set_file_state(file, state);
+        Ok(())
+    }
+
+    fn sync_file(&mut self, file: VaultFileId) -> Result<(), MessageLabel> {
+        let mut state = self.load_file_state(file)?;
+        self.block.flush()?;
+        if !state.dirty {
+            return Ok(());
+        }
+        let next_generation = state.generation.checked_add(1).ok_or(REPLY_CONFLICT)?;
+        let target = 1 - state.active_slot as usize;
+        let metadata = FileMetadata {
+            generation: next_generation,
+            length: state.length,
+            exists: state.exists,
+        };
+        let mut staged = vault_file::encode_metadata(&self.crypto, file, metadata, false)
+            .map_err(|_| REPLY_STORAGE)?
+            .ok_or(REPLY_BAD_REQUEST)?;
+        let block = file.metadata_block(target).ok_or(REPLY_BAD_REQUEST)?;
+        self.write_disk_block(block, &staged)?;
+        self.block.flush()?;
+        if !vault_file::set_metadata_committed(&mut staged) {
+            return Err(REPLY_CORRUPT);
+        }
+        self.write_disk_block(block, &staged)?;
+        self.block.flush()?;
+        state.generation = next_generation;
+        state.active_slot = target as u32;
+        state.dirty = false;
+        self.set_file_state(file, state);
+        Ok(())
+    }
+
+    fn delete_file(&mut self, file: VaultFileId) -> Result<(), MessageLabel> {
+        if file != VaultFileId::AgentJournal {
+            return Err(REPLY_DENIED);
+        }
+        let mut state = self.load_file_state(file)?;
+        state.length = 0;
+        state.exists = false;
+        state.dirty = true;
+        self.set_file_state(file, state);
+        self.sync_file(file)
+    }
+
     fn transfer_page(&self, namespace: usize) -> Result<*mut BlobTransferPage, MessageLabel> {
         let page = self
             .blob_transfer
@@ -466,9 +765,26 @@ impl Vault {
             .copied()
             .ok_or(REPLY_DENIED)?;
         if page.is_null() {
+            debug_println!("VAULT|TRANSFER_PAGE_MISSING|namespace={}", namespace);
             return Err(REPLY_DENIED);
         }
         Ok(page)
+    }
+
+    fn file_transfer_page(&self, channel: Channel) -> Result<*mut BlobTransferPage, MessageLabel> {
+        if channel == SIMPLEX_AGENT_CHANNEL {
+            #[cfg(feature = "simplex-agent-vault")]
+            {
+                if self.simplex_agent_transfer.is_null() {
+                    debug_println!("VAULT|TRANSFER_PAGE_MISSING|SimpleX Agent");
+                    return Err(REPLY_DENIED);
+                }
+                return Ok(self.simplex_agent_transfer);
+            }
+            #[cfg(not(feature = "simplex-agent-vault"))]
+            return Err(REPLY_DENIED);
+        }
+        self.transfer_page(MESSAGES_NAMESPACE)
     }
 
     fn read_blob_to_transfer(
@@ -610,6 +926,11 @@ impl Vault {
         const TEST_VALUE: MessageRegisterValue = 0x5253_544f_5245;
         const STAGE_DONE: MessageRegisterValue = 5;
 
+        // Other capabilities (including the app-scoped SQLite files) reuse
+        // the block client's DMA staging area. Re-read the system slot here
+        // instead of assuming the last unrelated transfer left it in memory.
+        self.block
+            .transfer(BLOCK_READ, NAMESPACE_FIRST_BLOCK[SYSTEM_NAMESPACE], 1)?;
         let raw = unsafe { ptr::read_volatile(self.block.data.cast::<[u8; SLOT_SIZE]>()) };
         let valid_staged =
             vault_record::encode(&self.crypto, SYSTEM_NAMESPACE, 2, TEST_VALUE, false)
@@ -797,6 +1118,9 @@ impl Handler for Vault {
         channel: Channel,
         request: MessageInfo,
     ) -> Result<MessageInfo, Self::Error> {
+        if request.label() == REQUEST_FILE_READ {
+            debug_println!("VAULT|FILE_READ|channel={:?} file={}", channel, get_mr(0));
+        }
         let namespace = if channel == vault_protocol::OWNER_CHANNEL {
             SYSTEM_NAMESPACE
         } else if channel == NOTES_APP_CHANNEL {
@@ -805,7 +1129,7 @@ impl Handler for Vault {
             CONTACTS_NAMESPACE
         } else if channel == CALENDAR_APP_CHANNEL {
             CALENDAR_NAMESPACE
-        } else if channel == MESSAGES_APP_CHANNEL {
+        } else if channel == MESSAGES_APP_CHANNEL || channel == SIMPLEX_AGENT_CHANNEL {
             MESSAGES_NAMESPACE
         } else {
             return Ok(MessageInfo::new(REPLY_DENIED, 0));
@@ -869,6 +1193,92 @@ impl Handler for Vault {
                     Err(label) => Ok(MessageInfo::new(label, 0)),
                 }
             }
+            (REQUEST_FILE_READ, 3)
+                if channel == MESSAGES_APP_CHANNEL || channel == SIMPLEX_AGENT_CHANNEL =>
+            {
+                let Some(file) = VaultFileId::from_u32(get_mr(0) as u32) else {
+                    return Ok(MessageInfo::new(REPLY_BAD_REQUEST, 0));
+                };
+                let (Ok(offset), Ok(length)) =
+                    (usize::try_from(get_mr(1)), usize::try_from(get_mr(2)))
+                else {
+                    return Ok(MessageInfo::new(REPLY_BAD_REQUEST, 0));
+                };
+                match self.read_file(file, offset, length, channel) {
+                    Ok(length) => {
+                        set_mr(0, length as MessageRegisterValue);
+                        Ok(MessageInfo::new(REPLY_OK, 1))
+                    }
+                    Err(label) => Ok(MessageInfo::new(label, 0)),
+                }
+            }
+            (REQUEST_FILE_WRITE, 3)
+                if channel == MESSAGES_APP_CHANNEL || channel == SIMPLEX_AGENT_CHANNEL =>
+            {
+                let Some(file) = VaultFileId::from_u32(get_mr(0) as u32) else {
+                    return Ok(MessageInfo::new(REPLY_BAD_REQUEST, 0));
+                };
+                let (Ok(offset), Ok(length)) =
+                    (usize::try_from(get_mr(1)), usize::try_from(get_mr(2)))
+                else {
+                    return Ok(MessageInfo::new(REPLY_BAD_REQUEST, 0));
+                };
+                match self.write_file(file, offset, length, channel) {
+                    Ok(()) => Ok(MessageInfo::new(REPLY_OK, 0)),
+                    Err(label) => Ok(MessageInfo::new(label, 0)),
+                }
+            }
+            (REQUEST_FILE_TRUNCATE, 2)
+                if channel == MESSAGES_APP_CHANNEL || channel == SIMPLEX_AGENT_CHANNEL =>
+            {
+                let Some(file) = VaultFileId::from_u32(get_mr(0) as u32) else {
+                    return Ok(MessageInfo::new(REPLY_BAD_REQUEST, 0));
+                };
+                let Ok(length) = usize::try_from(get_mr(1)) else {
+                    return Ok(MessageInfo::new(REPLY_BAD_REQUEST, 0));
+                };
+                match self.truncate_file(file, length) {
+                    Ok(()) => Ok(MessageInfo::new(REPLY_OK, 0)),
+                    Err(label) => Ok(MessageInfo::new(label, 0)),
+                }
+            }
+            (REQUEST_FILE_SYNC, 1)
+                if channel == MESSAGES_APP_CHANNEL || channel == SIMPLEX_AGENT_CHANNEL =>
+            {
+                let Some(file) = VaultFileId::from_u32(get_mr(0) as u32) else {
+                    return Ok(MessageInfo::new(REPLY_BAD_REQUEST, 0));
+                };
+                match self.sync_file(file) {
+                    Ok(()) => Ok(MessageInfo::new(REPLY_OK, 0)),
+                    Err(label) => Ok(MessageInfo::new(label, 0)),
+                }
+            }
+            (REQUEST_FILE_SIZE, 1)
+                if channel == MESSAGES_APP_CHANNEL || channel == SIMPLEX_AGENT_CHANNEL =>
+            {
+                let Some(file) = VaultFileId::from_u32(get_mr(0) as u32) else {
+                    return Ok(MessageInfo::new(REPLY_BAD_REQUEST, 0));
+                };
+                match self.file_size(file) {
+                    Ok(state) => {
+                        set_mr(0, state.length as MessageRegisterValue);
+                        set_mr(1, MessageRegisterValue::from(state.exists));
+                        Ok(MessageInfo::new(REPLY_OK, 2))
+                    }
+                    Err(label) => Ok(MessageInfo::new(label, 0)),
+                }
+            }
+            (REQUEST_FILE_DELETE, 1)
+                if channel == MESSAGES_APP_CHANNEL || channel == SIMPLEX_AGENT_CHANNEL =>
+            {
+                let Some(file) = VaultFileId::from_u32(get_mr(0) as u32) else {
+                    return Ok(MessageInfo::new(REPLY_BAD_REQUEST, 0));
+                };
+                match self.delete_file(file) {
+                    Ok(()) => Ok(MessageInfo::new(REPLY_OK, 0)),
+                    Err(label) => Ok(MessageInfo::new(label, 0)),
+                }
+            }
             (REQUEST_NAMESPACE_TEST, 0) => match self.run_namespace_test(namespace) {
                 Ok((generation, value)) => {
                     set_mr(0, generation);
@@ -902,6 +1312,7 @@ struct BlockClient {
     request_queue: *mut u8,
     response_queue: *mut u8,
     capacity: usize,
+    data_size: usize,
     data: *mut u8,
     channel: Channel,
     next_id: u32,
@@ -914,6 +1325,7 @@ impl BlockClient {
             request_queue: config.virt.request_queue.vaddr,
             response_queue: config.virt.response_queue.vaddr,
             capacity: config.virt.num_buffers as usize,
+            data_size: config.data.size as usize,
             data: config.data.vaddr,
             channel: Channel::new(config.virt.id as usize),
             next_id: 0,
@@ -937,9 +1349,52 @@ impl BlockClient {
         self.transfer(BLOCK_FLUSH, 0, 0)
     }
 
+    fn capacity_blocks(&self) -> Result<usize, MessageLabel> {
+        self.wait_until_ready()?;
+        if self.storage_info.is_null() {
+            return Err(REPLY_STORAGE);
+        }
+        // blk_storage_info_t.capacity is an aligned u64 at byte offset 80 and
+        // counts sDDF's 4 KiB transfer blocks.
+        fence(Ordering::Acquire);
+        let capacity = unsafe { ptr::read_volatile(self.storage_info.add(80).cast::<u64>()) };
+        usize::try_from(capacity).map_err(|_| REPLY_STORAGE)
+    }
+
     fn transfer(&mut self, code: u32, block_number: usize, count: u16) -> Result<(), MessageLabel> {
+        let data_offset = block_number.checked_mul(BLOCK_SIZE).ok_or(REPLY_STORAGE)?;
+        self.transfer_from(code, block_number, data_offset, count)
+    }
+
+    fn transfer_at(
+        &mut self,
+        code: u32,
+        block_number: usize,
+        data_offset: usize,
+        count: u16,
+    ) -> Result<(), MessageLabel> {
+        self.transfer_from(code, block_number, data_offset, count)
+    }
+
+    fn transfer_from(
+        &mut self,
+        code: u32,
+        block_number: usize,
+        data_offset: usize,
+        count: u16,
+    ) -> Result<(), MessageLabel> {
         self.wait_until_ready()?;
         if self.capacity == 0 {
+            return Err(REPLY_STORAGE);
+        }
+        let data_end = data_offset
+            .checked_add(
+                (count as usize)
+                    .checked_mul(BLOCK_SIZE)
+                    .ok_or(REPLY_STORAGE)?,
+            )
+            .ok_or(REPLY_STORAGE)?;
+        if data_end > self.data_size {
             return Err(REPLY_STORAGE);
         }
         let request_header = self.request_queue.cast::<RequestQueueHeader>();
@@ -962,7 +1417,7 @@ impl BlockClient {
                 request,
                 BlockRequest {
                     code,
-                    io_or_offset: (block_number * BLOCK_SIZE) as u64,
+                    io_or_offset: data_offset as u64,
                     block_number: block_number as u64,
                     count,
                     id: request_id,
