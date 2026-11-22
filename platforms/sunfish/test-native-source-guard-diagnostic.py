@@ -199,7 +199,8 @@ int main(void) {
         result = audit.audit_guard_control_flow(
             rows, entry=0, relocation_call=32, stop=28,
             allowed_helpers={"loader_checkpoint_hex"})
-        self.assertTrue(result["all_paths_stop_before_relocation"])
+        self.assertTrue(result["all_failure_paths_stop_before_relocation"])
+        self.assertFalse(result["pass_path_reaches_relocation"])
         self.assertEqual(result["stop_loop_address"], "0x1c")
         for address, bad_row in (
             (8, ("b", "0x20", 32, None, "_text")),

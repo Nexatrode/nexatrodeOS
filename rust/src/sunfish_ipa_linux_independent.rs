@@ -96,7 +96,7 @@ impl LinuxRuntime {
         Ok(None)
     }
 
-    fn step_server<I: Io>(
+    pub(super) fn step_server<I: Io>(
         &mut self, adapter: &mut Adapter<I>, requests: &mut [Option<RequestHandle>; MAX_REQUESTS], now: u64,
     ) -> Result<Option<LinuxIpaProgress>, Error> {
         let core = self.core.as_mut().unwrap();

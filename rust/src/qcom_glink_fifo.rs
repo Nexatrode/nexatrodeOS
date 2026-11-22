@@ -20,6 +20,8 @@ pub use boot::{BootDrive, BootIo, BootPhase, BootReport, BootTransport};
 mod grant_reads;
 #[cfg(feature = "sunfish-grant-buffer-reads")]
 pub use grant_reads::GrantBufferReads;
+#[cfg(feature = "sunfish-oack-grant-outcome")]
+pub use grant_reads::OackGrantTrace;
 
 use crate::qcom_glink_qmi::{
     self as core, Event, Published, Reply, RequestHandle, Session, TftpHandle, WriteError,
@@ -59,6 +61,13 @@ pub enum Barrier {
 /// serialized with all AP writers, IRQ handlers, mapping changes, and resets.
 /// A failing operation may have taken effect; errors are never retried here.
 pub trait Io {
+    /// Diagnostic timestamps only; never reuses authority or performs I/O.
+    #[cfg(feature = "sunfish-wrq-validation-path")]
+    fn validation_cost_begin(&mut self, _clock: Option<fn()->u64>) {}
+    #[cfg(feature = "sunfish-wrq-validation-path")]
+    fn validation_cost_end(&mut self) -> Option<[[u64;4];3]> {None}
+    #[cfg(feature="sunfish-wrq-domain-costs")]
+    fn validation_cost_parts(&self)->Option<[[[u64;7];2];3]> {None}
     /// Copy existing CPU-side counters only, with no hardware observation.
     #[cfg(feature = "sunfish-wlan-elf-phase-io")]
     fn elf_io_totals(&self) -> Option<[u64; 12]> { None }
@@ -262,6 +271,8 @@ pub struct IpaIngressRecord {
     pub size: u16,
     pub cmd: u8,
     pub kind: u8,
+    #[cfg(feature = "sunfish-wrq-stage-costs")]
+    pub protocol: Option<[u32; 4]>,
 }
 
 #[cfg(feature = "sunfish-ipa-ingress-work")]
@@ -296,6 +307,79 @@ impl IpaIngressWork {
     }
 }
 
+#[cfg(feature = "sunfish-spare-wrq-ingress")]
+pub struct WrqReceiveWork {
+    #[cfg(feature = "sunfish-wrq-validation-path")]
+    pub validation: WrqValidationWork,
+    pub records: IpaIngressWork,
+    rx_start: Option<u64>,
+    samples: [(u64, u64); 96],
+    sample_index: usize,
+    evicted_sample_end: Option<u64>,
+    #[cfg(feature = "sunfish-wrq-stage-costs")]
+    pub finished: Option<u64>,
+}
+
+#[cfg(feature = "sunfish-spare-wrq-ingress")]
+impl Default for WrqReceiveWork {
+    fn default() -> Self {
+        Self {
+            #[cfg(feature = "sunfish-wrq-validation-path")] validation:Default::default(),
+            records: Default::default(), rx_start: None, samples: [(0, 0); 96],
+            sample_index: 0, evicted_sample_end: None,
+            #[cfg(feature = "sunfish-wrq-stage-costs")] finished: None }
+    }
+}
+
+#[cfg(feature = "sunfish-spare-wrq-ingress")]
+impl WrqReceiveWork {
+    fn sample(&mut self, start: u64, end: u64) {
+        #[cfg(feature = "sunfish-wrq-stage-costs")]
+        if self.finished.is_some() { return; }
+        let slot = &mut self.samples[self.sample_index];
+        if slot.1 > slot.0 { self.evicted_sample_end = Some(slot.1); }
+        *slot = (start, end);
+        self.sample_index = (self.sample_index + 1) % self.samples.len();
+    }
+
+    /// Count and sum only the part of each validated sample inside the window.
+    pub fn checks(&self, from: u64, to: u64) -> (u32, u64, bool) {
+        let mut count = 0;
+        let mut ticks = 0;
+        for &(a, b) in &self.samples {
+            let overlap = b.min(to).saturating_sub(a.max(from));
+            if overlap > 0 {
+                count += 1;
+                ticks += overlap;
+            }
+        }
+        (count, ticks, self.evicted_sample_end.is_some_and(|end| end > from))
+    }
+
+    fn record(&mut self, start: u64, end: u64, kind: u8, bytes: &[u8]) {
+        #[cfg(feature = "sunfish-wrq-stage-costs")]
+        let protocol = if bytes.len() >= 8 {
+            let header = RegistrationHeader::read(bytes, kind == 1, Some(start));
+            header.qrtr.map(|[packet, source, destination]| {
+                let tag = if matches!(packet, 4 | 5) && bytes.len() >= 56 && word(bytes, 8) >= 40 {
+                    word(bytes, 52)
+                } else { header.qmi.map_or(u32::MAX, |(_, _, message)| u32::from(message)) };
+                [packet, source, destination, tag]
+            })
+        } else { None };
+        let detail = if bytes.len() >= 8 { word(bytes, 4) } else { 0 };
+        let record=IpaIngressRecord { start, end, kind, cmd: bytes.first().copied().unwrap_or(0xff),
+            size: bytes.len() as u16, detail, position: None,
+            #[cfg(feature = "sunfish-wrq-stage-costs")] protocol,
+        };
+        #[cfg(feature = "sunfish-wrq-validation-path")]
+        self.validation.record(record);
+        #[cfg(feature = "sunfish-wrq-stage-costs")]
+        if self.finished.is_some() { return; }
+        self.records.push(record);
+    }
+}
+
 #[cfg(feature = "sunfish-wrq-prefix-close")]
 #[derive(Clone, Copy, Default)]
 pub struct WrqPrefixHeader {
@@ -304,6 +388,126 @@ pub struct WrqPrefixHeader {
     pub parameter: u32,
     pub extra: u32,
     pub qrtr: Option<[u32; 3]>,
+}
+
+#[cfg(feature = "sunfish-wrq-prefix-close")]
+impl WrqPrefixHeader {
+    fn read(record: &[u8]) -> Self {
+        let header = RegistrationHeader::read(record, false, None);
+        Self {
+            command: header.command, bytes: header.bytes, parameter: header.parameter,
+            qrtr: header.qrtr,
+            extra: if header.command == 5 && record.len() >= 16 {
+                word(record, 8)
+            } else if let Some([_, port]) = header.del_client {
+                port
+            } else if let Some([kind @ (4 | 5), _, _]) = header.qrtr
+                && word(record, 8) == 52 && word(record, 12) == 0
+                && word(record, 36) == 20 && word(record, 48) == kind
+            {
+                word(record, 52) // NEW_SERVER or DEL_SERVER service ID
+            } else {
+                header.qmi.map_or(u32::MAX, |(_, txn, id)| u32::from(txn) << 16 | u32::from(id))
+            },
+        }
+    }
+}
+
+/// Metadata from an already validated record overlapping the captured window.
+#[cfg(feature = "sunfish-wrq-return-headers")]
+#[derive(Clone, Copy)]
+pub struct WrqWindowHeader {
+    pub offset: u32,
+    pub header: WrqPrefixHeader,
+    pub channel: u16,
+    pub qmi_kind: u8,
+    pub name: u32,
+    pub checked: Option<u64>,
+    pub clear: Option<u64>,
+}
+
+/// The byte interval already visible at the original WRQ return. Follow only
+/// the AP-owned tail. A later peer append cannot extend this interval.
+#[cfg(feature = "sunfish-wrq-return-pending")]
+pub struct WrqReturnPending {
+    pub bytes: u32,
+    pub early: u32,
+    pub first: Option<WrqPrefixHeader>,
+    pub first_at: Option<u64>,
+    pub first_clear: Option<u64>,
+    pub backlog_clear: Option<u64>,
+    tail: u32,
+    remaining: u32,
+    #[cfg(feature = "sunfish-wrq-return-headers")]
+    headers: [Option<WrqWindowHeader>; 13],
+    #[cfg(feature = "sunfish-wrq-return-headers")]
+    pub header_count: u32,
+    #[cfg(feature = "sunfish-wrq-return-headers")]
+    pub header_omitted: u32,
+}
+
+#[cfg(feature = "sunfish-wrq-return-pending")]
+impl WrqReturnPending {
+    fn new(tail: u32, bytes: u32, early: u32) -> Self {
+        Self { tail, bytes, early, remaining: bytes, first: None,
+            first_at: None, first_clear: None, backlog_clear: None,
+            #[cfg(feature = "sunfish-wrq-return-headers")]
+            headers: [None; 13],
+            #[cfg(feature = "sunfish-wrq-return-headers")]
+            header_count: 0,
+            #[cfg(feature = "sunfish-wrq-return-headers")]
+            header_omitted: 0,
+        }
+    }
+
+    #[cfg(feature = "sunfish-wrq-return-headers")]
+    pub fn headers(&self) -> impl Iterator<Item = &WrqWindowHeader> {
+        self.headers.iter().flatten()
+    }
+
+    #[cfg(feature = "sunfish-wrq-return-headers")]
+    fn record_header(&mut self, record: &[u8], at: Option<u64>) {
+        if self.remaining == 0 { return; }
+        let offset = self.bytes - self.remaining;
+        if self.headers.iter().flatten().any(|h| h.offset == offset) { return; }
+        let header = RegistrationHeader::read(record, false, at);
+        let name = if header.command == 2 && record.len() >= 12 {
+            u32::from_be_bytes(record[8..12].try_into().unwrap())
+        } else { u32::MAX };
+        let entry = WrqWindowHeader {
+            offset, header: WrqPrefixHeader::read(record), channel: header.channel,
+            qmi_kind: header.qmi.map_or(u8::MAX, |(kind, _, _)| kind),
+            name, checked: at, clear: None,
+        };
+        if let Some(slot) = self.headers.get_mut(self.header_count as usize) {
+            *slot = Some(entry);
+        } else {
+            self.header_omitted = self.header_omitted.saturating_add(1);
+        }
+        self.header_count = self.header_count.saturating_add(1);
+    }
+
+    fn follows(&self, tail: u32) -> bool {
+        self.remaining != 0 && self.tail == tail
+    }
+
+    fn advanced(&mut self, next: u32, bytes: u32, at: Option<u64>) {
+        #[cfg(feature = "sunfish-wrq-return-headers")]
+        {
+            let offset = self.bytes - self.remaining;
+            if let Some(entry) = self.headers.iter_mut().flatten().find(|h| h.offset == offset) {
+                entry.clear = at;
+            }
+        }
+        if self.remaining == self.bytes {
+            self.first_clear = at;
+        }
+        self.tail = next;
+        self.remaining = self.remaining.saturating_sub(bytes);
+        if self.remaining == 0 {
+            self.backlog_clear = at;
+        }
+    }
 }
 
 #[cfg(feature = "sunfish-wrq-prefix-close")]
@@ -328,23 +532,7 @@ impl WrqPrefix {
 
     fn consumed(&mut self, record: &[u8]) {
         if let Some(entry) = self.entries.get_mut(self.records as usize) {
-            let header = RegistrationHeader::read(record, false, None);
-            *entry = WrqPrefixHeader {
-                command: header.command, bytes: header.bytes, parameter: header.parameter,
-                qrtr: header.qrtr,
-                extra: if header.command == 5 && record.len() >= 16 {
-                    word(record, 8)
-                } else if let Some([_, port]) = header.del_client {
-                    port
-                } else if let Some([kind @ (4 | 5), _, _]) = header.qrtr
-                    && word(record, 8) == 52 && word(record, 12) == 0
-                    && word(record, 36) == 20 && word(record, 48) == kind
-                {
-                    word(record, 52) // NEW_SERVER or DEL_SERVER service ID
-                } else {
-                    header.qmi.map_or(u32::MAX, |(_, txn, id)| u32::from(txn) << 16 | u32::from(id))
-                },
-            };
+            *entry = WrqPrefixHeader::read(record);
         }
         self.records = self.records.saturating_add(1);
         self.bytes = self.bytes.saturating_add(record.len() as u32);
@@ -1083,7 +1271,31 @@ impl RegistrationCloseFifo {
     }
 }
 
+#[cfg(feature = "sunfish-grant-rx-open")]
+#[derive(Default)]
+pub struct GrantReceiveTrace {
+    awaiting_ack: bool,
+    #[cfg(feature = "sunfish-wrq-grant-turns")]
+    pub turn_count: u32,
+    #[cfg(feature = "sunfish-wrq-grant-turns")]
+    pub turn_ack: u32,
+    #[cfg(feature = "sunfish-wrq-grant-turns")]
+    pub primary_checked: u32,
+    pub ack_count: u32,
+    pub ack_at: Option<u64>,
+    pub taken: bool,
+    pub turn_at: Option<u64>,
+    pub open: Option<(u16, u16)>,
+    pub byte_bounds: Option<ServerCheckRxDone>,
+    pub open_bounds: Option<ServerCheckRxDone>,
+    pub return_tail: Option<ServerCheckTail>,
+}
+
 struct Ring<I> {
+    #[cfg(feature = "sunfish-grant-rx-open")]
+    grant_receive: GrantReceiveTrace,
+    #[cfg(feature = "sunfish-wrq-return-pending")]
+    wrq_return_pending: Option<WrqReturnPending>,
     #[cfg(feature = "sunfish-grant-buffer-reads")]
     grant_reads: grant_reads::GrantReadLedger,
     #[cfg(feature = "sunfish-grant-buffer-reads")]
@@ -1129,6 +1341,8 @@ struct Ring<I> {
     registration_rx: Option<ServerCheckRxWindow>,
     #[cfg(feature = "sunfish-ipa-ingress-work")]
     ipa_ingress_work: IpaIngressWork,
+    #[cfg(feature = "sunfish-spare-wrq-ingress")]
+    wrq_work: WrqReceiveWork,
     #[cfg(feature = "sunfish-wrq-prefix-close")]
     wrq_prefix: WrqPrefix,
     #[cfg(feature = "sunfish-ipa-announcement-fifo")]
@@ -1219,6 +1433,8 @@ impl<I: Io> Ring<I> {
     }
 
     fn sample(&mut self) -> Result<(), Error> {
+        #[cfg(feature = "sunfish-wrq-stage-costs")]
+        let wrq_sample_start = self.wrq_work_clock();
         #[cfg(feature = "sunfish-tftp-oack-peer-tail")]
         let oack_sample_start = self.oack_peer_tail.as_ref().filter(|trace| trace.pending_bytes != 0)
             .and(self.first_server_check_clock).map(|clock| clock());
@@ -1249,11 +1465,17 @@ impl<I: Io> Ring<I> {
         #[cfg(feature = "sunfish-ipa-registration-rx-visibility")]
         let registration_start = track_registration.then_some(self.first_server_check_clock)
             .flatten().map(|clock| clock());
+        #[cfg(feature = "sunfish-wrq-validation-path")]
+        self.io.validation_cost_begin(wrq_sample_start.and(self.first_server_check_clock));
         self.observation()?;
+        #[cfg(feature = "sunfish-wrq-validation-path")]
+        let status_end=self.wrq_work_clock();
         #[cfg(feature = "sunfish-glink-combined-cursor-sample")]
         let (rx, words) = self.io.cursor_snapshot()?;
         #[cfg(not(feature = "sunfish-glink-combined-cursor-sample"))]
         let rx = self.io.rx_length()?;
+        #[cfg(feature = "sunfish-wrq-validation-path")]
+        let cursor_end=self.wrq_work_clock();
         if self.rx_bytes.is_some() && rx != self.rx_bytes {
             return Err(Error::IdentityChanged);
         }
@@ -1296,6 +1518,26 @@ impl<I: Io> Ring<I> {
         self.words = new;
         self.rx_bytes = rx;
         self.barrier_observation(Barrier::Acquire)?;
+        #[cfg(feature = "sunfish-wrq-validation-path")]
+        {
+            let end=self.wrq_work_clock();
+            #[cfg(feature="sunfish-wrq-domain-costs")]
+            let parts=self.io.validation_cost_parts();
+            let domains=self.io.validation_cost_end();
+            if let (Some(a),Some(b),Some(c),Some(d))=(wrq_sample_start,status_end,cursor_end,end) {
+                #[cfg(not(feature="sunfish-wrq-domain-costs"))]
+                self.wrq_work.validation.sample([a,b,c,d],domains);
+                #[cfg(feature="sunfish-wrq-domain-costs")]
+                self.wrq_work.validation.sample_parts([a,b,c,d],domains,parts);
+            }
+        }
+        #[cfg(feature = "sunfish-spare-wrq-ingress")]
+        if let (Some(start), Some(end)) = (
+            { #[cfg(feature = "sunfish-wrq-stage-costs")] { wrq_sample_start }
+              #[cfg(not(feature = "sunfish-wrq-stage-costs"))] { registration_start } },
+            self.wrq_work_clock()) {
+            self.wrq_work.sample(start, end);
+        }
         #[cfg(feature = "sunfish-grant-buffer-reads")]
         self.grant_reads.sample(consumed, registration_start, self.first_server_check_clock);
         #[cfg(feature = "sunfish-ipa-registration-reply-path")]
@@ -1362,6 +1604,12 @@ impl<I: Io> Ring<I> {
         #[cfg(feature = "sunfish-tftp-oack-peer-tail")]
         if let Some(trace) = self.oack_peer_tail.as_mut().filter(|trace| trace.pending_bytes != 0) {
             trace.observe(consumed, oack_sample_start, self.first_server_check_clock.map(|clock| clock()));
+        }
+        #[cfg(feature = "sunfish-grant-rx-open")]
+        if let Some(ServerCheckTail::Pending(remaining)) = self.grant_receive.return_tail {
+            self.grant_receive.return_tail = Some(if consumed >= remaining {
+                ServerCheckTail::Consumed(self.first_server_check_clock.map(|clock| clock()))
+            } else { ServerCheckTail::Pending(remaining - consumed) });
         }
         #[cfg(feature = "sunfish-wlan-first-server-check-tail")]
         if let ServerCheckTail::Pending(remaining) = self.first_server_check_tail {
@@ -1477,6 +1725,15 @@ impl<I: Io> Ring<I> {
         self.adjacent_barrier_observation(Barrier::Release)?;
         let next = ring_advance(self.words[2], size, self.rx_bytes.ok_or(Error::NotReady)?);
         self.io.store_rx_tail(next)?;
+        #[cfg(feature = "sunfish-oack-grant-ack-turn")]
+        if self.grant_reads.pending_active(self.words[2]) {
+            self.grant_reads.advance_pending(self.words[2], next, size as u32,
+                self.first_server_check_clock.map(|clock| clock()));
+        }
+        #[cfg(feature = "sunfish-wrq-return-pending")]
+        if let Some(trace) = self.wrq_return_pending.as_mut().filter(|trace| trace.follows(self.words[2])) {
+            trace.advanced(next, size as u32, self.first_server_check_clock.map(|clock| clock()));
+        }
         self.words[2] = next;
         self.io.barrier(Barrier::Complete)?;
         self.sample()?;
@@ -1501,14 +1758,23 @@ impl<I: Io> Ring<I> {
     fn write_checked(&mut self, record: &[u8], reserve: usize, yield_to_rx: bool) -> Result<bool, Error> {
         #[cfg(feature = "sunfish-ipa-ingress-work")]
         let start = self.ingress_clock();
+        #[cfg(feature = "sunfish-spare-wrq-ingress")]
+        let wrq_start = self.wrq_work_clock();
         let result = self.write_checked_inner(record, reserve, yield_to_rx);
+        #[cfg(feature = "sunfish-spare-wrq-ingress")]
+        if let (Some(start), Some(end)) = (wrq_start, self.wrq_work_clock()) {
+            let kind = match result { Ok(true) => 1, Ok(false) => 2, Err(Error::WouldBlock) => 3, Err(_) => 6 };
+            self.wrq_work.record(start, end, kind, record);
+        }
         #[cfg(feature = "sunfish-ipa-ingress-work")]
         if let (Some(start), Some(end)) = (start, self.ingress_clock()) && record.len() >= 8 {
             let kind = match result {
                 Ok(true) => 1, Ok(false) => 2, Err(Error::WouldBlock) => 3, Err(_) => 6,
             };
             self.ipa_ingress_work.push(IpaIngressRecord { start, end, position: None,
-                kind, cmd: record[0], size: record.len() as u16, detail: word(record, 4) });
+                kind, cmd: record[0], size: record.len() as u16, detail: word(record, 4),
+            #[cfg(feature = "sunfish-wrq-stage-costs")] protocol: None,
+        });
         }
         result
     }
@@ -1516,6 +1782,21 @@ impl<I: Io> Ring<I> {
     #[cfg(feature = "sunfish-ipa-ingress-work")]
     fn ingress_clock(&self) -> Option<u64> {
         self.track_ipa_announcement.then_some(self.first_server_check_clock).flatten().map(|clock| clock())
+    }
+
+    #[cfg(feature = "sunfish-spare-wrq-ingress")]
+    fn wrq_work_clock(&self) -> Option<u64> {
+        #[cfg(feature = "sunfish-wrq-stage-costs")]
+        {
+            return ((self.track_first_wrq || self.registration_rx.is_some())
+                && {
+                    #[cfg(feature = "sunfish-wrq-validation-path")] {self.wrq_work.validation.finished.is_none()}
+                    #[cfg(not(feature = "sunfish-wrq-validation-path"))] {self.wrq_work.finished.is_none()}
+                }).then_some(self.first_server_check_clock)
+                .flatten().map(|clock| clock());
+        }
+        #[cfg(not(feature = "sunfish-wrq-stage-costs"))]
+        self.track_first_wrq.then_some(self.first_server_check_clock).flatten().map(|clock| clock())
     }
 
     fn write_checked_inner(&mut self, record: &[u8], reserve: usize, yield_to_rx: bool) -> Result<bool, Error> {
@@ -1554,6 +1835,22 @@ impl<I: Io> Ring<I> {
         #[cfg(feature = "sunfish-grant-buffer-reads")]
         let before_head = (offer && self.grant_reads.clock_armed).then_some(self.first_server_check_clock).flatten().map(|now| now());
         self.io.store_tx_head(next)?;
+        #[cfg(feature = "sunfish-oack-grant-outcome")]
+        if self.grant_session_write {
+            let oack = self.grant_reads.oack_pool.is_some() && record.len() >= 50
+                && record[0] == 9 && word(record, 28) == 0x5001
+                && word(record, 44) == 0x1f && record[48..50] == [0, 6];
+            if oack || self.grant_reads.watches_grant_head(record) {
+                let at = self.first_server_check_clock.map(|clock| clock());
+                self.grant_reads.record_grant_head(record, distance(self.words[0], next), at);
+                if oack && let Some((ids, states)) = self.grant_reads.oack_pool.take() {
+                    let unread = self.rx_bytes.map_or(0, |length| ring_distance(self.words[2], self.words[3], length));
+                    self.grant_reads.capture_oack(ids, states, unread as u32, at);
+                    #[cfg(feature = "sunfish-oack-grant-ack-turn")]
+                    self.grant_reads.start_pending(self.words[2]);
+                }
+            }
+        }
         #[cfg(feature = "sunfish-grant-buffer-reads")]
         if offer {
             let end = self.grant_reads.clock_armed.then_some(self.first_server_check_clock).flatten().map(|now| now());
@@ -1607,6 +1904,12 @@ pub struct SessionFailureDiagnostic {
 #[cfg(feature = "sunfish-first-oack-grant-window")]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FirstGrantTrace {
+    #[cfg(feature = "sunfish-first-wrq-return-oack")]
+    pub wrq_return_outcome: u8,
+    #[cfg(feature = "sunfish-first-wrq-return-oack")]
+    pub wrq_return_mask: Option<u16>,
+    #[cfg(feature = "sunfish-first-wrq-return-oack")]
+    pub wrq_return_fitting: Option<u8>,
     #[cfg(feature = "sunfish-first-wrq-spare-oack")]
     pub direct_turn: u32,
     #[cfg(feature = "sunfish-first-wrq-spare-oack")]
@@ -1711,6 +2014,10 @@ impl<I: Io> Adapter<I> {
                 generation,
                 identity: observation.identity,
                 words,
+                #[cfg(feature = "sunfish-grant-rx-open")]
+                grant_receive: Default::default(),
+                #[cfg(feature = "sunfish-wrq-return-pending")]
+                wrq_return_pending: None,
                 read_notification_end: None,
                 record: [0; MAX_RX_RECORD],
                 #[cfg(feature = "sunfish-ipa-init-close-visibility")]
@@ -1756,6 +2063,8 @@ impl<I: Io> Adapter<I> {
                 ipa_announcement_rx: None,
                 #[cfg(feature = "sunfish-ipa-ingress-work")]
                 ipa_ingress_work: Default::default(),
+                #[cfg(feature = "sunfish-spare-wrq-ingress")]
+                wrq_work: Default::default(),
                 #[cfg(feature = "sunfish-wrq-prefix-close")]
                 wrq_prefix: Default::default(),
                 #[cfg(feature = "sunfish-ipa-announcement-fifo")]
@@ -2533,6 +2842,8 @@ impl<I: Io> Adapter<I> {
             self.quarantined = false;
             return Ok(Receive::Session(event));
         }
+        #[cfg(feature = "sunfish-spare-wrq-ingress")]
+        { self.ring.wrq_work.rx_start = self.ring.wrq_work_clock(); }
         #[cfg(feature = "sunfish-ipa-ingress-work")]
         let ingress_start = self.ring.ingress_clock();
         let size = match self.ring.peek()? {
@@ -2545,12 +2856,21 @@ impl<I: Io> Adapter<I> {
                         _ => (8, 0, 0),
                     };
                     self.ring.ipa_ingress_work.push(IpaIngressRecord {
-                        start, end, kind, cmd: 0xff, detail, size, position: None });
+                        start, end, kind, cmd: 0xff, detail, size, position: None,
+            #[cfg(feature = "sunfish-wrq-stage-costs")] protocol: None,
+        });
                 }
                 self.quarantined = false;
                 return Ok(state);
             }
         };
+        #[cfg(feature = "sunfish-wrq-return-pending")]
+        if let Some(trace) = self.ring.wrq_return_pending.as_mut()
+            .filter(|trace| trace.follows(self.ring.words[2]) && trace.first.is_none())
+        {
+            trace.first_at = self.ring.first_server_check_clock.map(|clock| clock());
+            trace.first = Some(WrqPrefixHeader::read(&self.ring.record[..size]));
+        }
         #[cfg(feature = "sunfish-tftp-oack-ahead-headers")]
         if let (Some(length), Some(window), Some(capture)) =
             (self.ring.rx_bytes, self.ring.reserved_oack_rx.as_ref(), self.ring.reserved_oack_ahead.as_mut())
@@ -2569,6 +2889,19 @@ impl<I: Io> Adapter<I> {
             if let Err(error) = channels.open(&self.ring.record[..size], true) {
                 self.ring.open_diagnostic = Some(channels.open_diagnostic(&self.ring.record[..size], 2));
                 return Err(error);
+            }
+            #[cfg(feature = "sunfish-grant-rx-open")]
+            if size == 16 && word(&self.ring.record, 4) & 0xffff == 3
+                && self.ring.grant_receive.open.is_none() && self.ring.first_wrq_rx.is_some()
+                && self.session.original_1f_close_count() == Some(0)
+                && let (Some(length), Some(history)) = (self.ring.rx_bytes, self.ring.registration_rx.as_ref())
+            {
+                let bytes = &self.ring.record;
+                let unread = ring_distance(self.ring.words[2], self.ring.words[3], length);
+                self.ring.grant_receive.byte_bounds = history.bounds(unread, 1);
+                self.ring.grant_receive.open_bounds = history.bounds(unread, size);
+                self.ring.grant_receive.open = Some((u16::from_le_bytes([bytes[2], bytes[3]]),
+                    u16::from_be_bytes([bytes[8], bytes[9]])));
             }
             #[cfg(feature = "sunfish-ipa-registration-reply-headers")]
             self.ring.capture_registration_rx(size, false, &Receive::Control);
@@ -2635,6 +2968,15 @@ impl<I: Io> Adapter<I> {
             self.ring.grant_reads.capture(word(&self.ring.record, 4), self.session.grant_backing.intent,
                 self.session.grant_available_ids(), bounds.and_then(|b| b.last_absent),
                 bounds.and_then(|b| b.first_visible), self.ring.first_server_check_clock.map(|now| now()));
+        }
+        #[cfg(feature = "sunfish-oack-grant-outcome")]
+        if let Receive::Session(core::Event::ReceiveIntentRequest { granted }) = event
+            && word(&self.ring.record, 4) == 108
+            && let Some(window) = self.ring.wrq_return_pending.as_ref().filter(|w| w.follows(self.ring.words[2]))
+        {
+            let backing = self.session.grant_backing;
+            self.ring.grant_reads.capture_108(window.bytes - window.remaining, granted,
+                backing.intent, backing.reserved_at, self.ring.first_server_check_clock.map(|clock| clock()));
         }
         #[cfg(feature = "sunfish-ipa-tftp-slot-snapshot")]
         self.observe_tftp_slot_release(occupied_before);
@@ -2796,7 +3138,9 @@ impl<I: Io> Adapter<I> {
                 _ => (0, word(&self.ring.record, 4)),
             };
             IpaIngressRecord { start, end: start, kind, detail, size: size as u16,
-                cmd: self.ring.record[0], position }
+                cmd: self.ring.record[0], position,
+            #[cfg(feature = "sunfish-wrq-stage-costs")] protocol: None,
+        }
         });
         self.consume_received(size, notification)?;
         #[cfg(feature = "sunfish-wrq-prefix-close")]
@@ -2825,14 +3169,34 @@ impl<I: Io> Adapter<I> {
             trace.end = Some(trace.consumed);
             trace.record_bytes = Some(size as u32);
         }
+        #[cfg(feature = "sunfish-grant-rx-open")]
+        if let Receive::Session(core::Event::ReceiveIntentRequest { granted }) = event {
+            self.ring.grant_receive.awaiting_ack = granted && word(&self.ring.record, 4) == 52;
+        }
         self.quarantined = false;
         Ok(event)
     }
 
     fn consume_received(&mut self, size: usize, notification: bool) -> Result<(), Error> {
+        #[cfg(feature = "sunfish-oack-grant-ack-turn")]
+        if self.ring.grant_reads.pending_active(self.ring.words[2]) {
+            self.ring.grant_reads.check_pending(self.ring.words[2], &self.ring.record[..size],
+                self.ring.first_server_check_clock.map(|clock| clock()));
+            #[cfg(feature = "sunfish-oack-retry-close")]
+            self.ring.grant_reads.pending_repeat_identity(self.ring.words[2],
+                self.session.first_tftp_repeat_on_intent(word(&self.ring.record, 4)));
+        }
+        #[cfg(feature = "sunfish-wrq-return-headers")]
+        if let Some(trace) = self.ring.wrq_return_pending.as_mut().filter(|t| t.follows(self.ring.words[2])) {
+            trace.record_header(&self.ring.record[..size], self.ring.first_server_check_clock.map(|clock| clock()));
+        }
         #[cfg(feature = "sunfish-first-oack-yield-rx")]
         let start = self.ring.words[2];
         self.ring.consume(size, notification)?;
+        #[cfg(feature = "sunfish-spare-wrq-ingress")]
+        if let (Some(start), Some(clock)) = (self.ring.wrq_work.rx_start.take(), self.ring.first_server_check_clock) {
+            self.ring.wrq_work.record(start, clock(), 0, &self.ring.record[..size]);
+        }
         #[cfg(feature = "sunfish-wrq-prefix-close")]
         if self.ring.wrq_prefix.active {
             self.ring.wrq_prefix.consumed(&self.ring.record[..size]);
@@ -2873,7 +3237,9 @@ impl<I: Io> Adapter<I> {
                 Ok(Transmit::Blocked { .. }) => 2, Ok(Transmit::Session(_)) => 3, Err(_) => 4,
             };
             self.ring.ipa_ingress_work.push(IpaIngressRecord {
-                start, end, kind: 7, cmd: 0xff, detail, size: 0, position: None });
+                start, end, kind: 7, cmd: 0xff, detail, size: 0, position: None,
+            #[cfg(feature = "sunfish-wrq-stage-costs")] protocol: None,
+        });
         }
         result
     }
@@ -2881,8 +3247,38 @@ impl<I: Io> Adapter<I> {
     #[cfg(feature = "sunfish-first-oack-grant-window")]
     pub(crate) fn first_grant_trace(&self) -> FirstGrantTrace { self.first_grant }
 
+    #[cfg(feature = "sunfish-grant-rx-open")]
+    pub(crate) fn grant_receive_trace(&self) -> &GrantReceiveTrace { &self.ring.grant_receive }
+
+    #[cfg(feature = "sunfish-wrq-grant-turns")]
+    pub(crate) fn mark_primary_grant(&mut self) {
+        self.ring.grant_receive.primary_checked = self.ring.grant_receive.ack_count;
+    }
+
+    #[cfg(feature = "sunfish-grant-rx-open")]
+    pub(crate) fn take_grant_receive_turn(&mut self) -> bool {
+        #[cfg(feature = "sunfish-wrq-grant-turns")]
+        {
+            let grant = &mut self.ring.grant_receive;
+            if grant.ack_count == grant.turn_ack { return false; }
+            grant.turn_ack = grant.ack_count;
+            grant.turn_count += 1;
+        }
+        #[cfg(not(feature = "sunfish-wrq-grant-turns"))]
+        if self.ring.grant_receive.taken { return false; }
+        self.ring.grant_receive.taken = true;
+        self.ring.grant_receive.turn_at = self.ring.first_server_check_clock.map(|clock| clock());
+        true
+    }
+
+    #[cfg(feature = "sunfish-wrq-return-pending")]
+    pub(crate) fn wrq_return_pending(&self) -> Option<&WrqReturnPending> { self.ring.wrq_return_pending.as_ref() }
+
     #[cfg(feature = "sunfish-grant-buffer-reads")]
     pub(crate) fn grant_buffer_reads(&self) -> &GrantBufferReads { &self.ring.grant_reads.request }
+    #[cfg(feature = "sunfish-oack-grant-outcome")]
+    pub(crate) fn oack_grant_outcome(&self) -> &OackGrantTrace { &self.ring.grant_reads.outcome }
+
 
     /// The ordinary writer must commit the exact grant's advertisement or ACK.
     /// Only its remaining positive ACK and original OACK may borrow turns.
@@ -2898,7 +3294,78 @@ impl<I: Io> Adapter<I> {
         }
         #[cfg(feature = "sunfish-paired-oack-init")]
         let awaiting_registration = self.registration_close_fifo().is_none();
+        #[cfg(feature = "sunfish-first-wrq-return-oack")]
+        let wrq_done_before = self.session.server_check_oacks()[0].and_then(|first| first.wrq_done_at);
         let ordinary = self.publish_next(generation)?;
+        #[cfg(feature = "sunfish-first-oack-spare-buffer")]
+        if let Transmit::Session(Published::ReceiveIntent(id)) = ordinary {
+            if self.session.oack_resources(0x5001).is_some_and(|resources| resources.primed_intent == Some(id)) {
+                // Only this successful fresh advertisement opens one ordinary
+                // checked writer call. A blocked or uncertain write cannot do so.
+                self.ring.grant_reads.capture_primed(id);
+                if self.session.original_1f_close_count() == Some(0) {
+                    let followup = self.publish_next(generation)?;
+                    let progress = matches!(followup, Transmit::Session(_)
+                        | Transmit::Blocked { read_notification_sent: true });
+                    return Ok((ordinary, u32::from(progress)));
+                }
+            }
+        }
+        #[cfg(feature = "sunfish-oack-grant-ack-turn")]
+        if let Transmit::Session(Published::ReceiveIntent(id)) = ordinary {
+            let trace = &self.ring.grant_reads.outcome;
+            if trace.oack_captured && trace.intent == Some(id)
+                && trace.advertisement.is_some_and(|offer| offer.id == id)
+                && trace.ack.is_none() && self.session.grant_backing.requested == 108
+                && self.session.grant_backing.intent == Some(id)
+                && self.session.original_1f_close_count() == Some(0)
+            {
+                // The committed exact advertisement opens one post-OACK turn.
+                // Use the ordinary selector and checked writer so an earlier
+                // protocol obligation or blocked write keeps its normal fallback.
+                let followup = self.publish_next(generation)?;
+                let progress = matches!(followup, Transmit::Session(_)
+                    | Transmit::Blocked { read_notification_sent: true });
+                return Ok((ordinary, u32::from(progress)));
+            }
+        }
+        #[cfg(feature = "sunfish-first-wrq-return-oack")]
+        if self.first_grant.wrq_return_outcome == 0 && wrq_done_before.is_none()
+            && self.session.server_check_oacks()[0].is_some_and(|first| first.wrq_done_at.is_some())
+        {
+            #[cfg(feature = "sunfish-wrq-return-pending")]
+            if self.session.server_check_oacks()[0].is_some_and(|first| first.peer.port == 0x1f)
+                && let Some((bytes, early)) = self.tftp_rx_snapshot()
+            {
+                #[cfg(feature = "sunfish-grant-rx-open")]
+                {
+                    let remaining = distance(self.ring.words[0], self.ring.words[1]);
+                    self.ring.grant_receive.return_tail = Some(if remaining == 0 {
+                        ServerCheckTail::Consumed(self.ring.first_server_check_clock.map(|clock| clock()))
+                    } else { ServerCheckTail::Pending(remaining) });
+                }
+                self.ring.wrq_return_pending = Some(WrqReturnPending::new(self.ring.words[2], bytes, early));
+            }
+            self.first_grant.wrq_return_outcome = 1;
+            if let Some((mask, fitting)) = self.session.wrq_return_oack_candidate() {
+                self.first_grant.wrq_return_mask = Some(mask);
+                self.first_grant.wrq_return_fitting = Some(fitting as u8);
+                // Cached RX can veto the opportunity. Admission and publication still
+                // require the ordinary fresh FIFO samples, readback and head commit.
+                if self.tftp_rx_snapshot() != Some((0, 0)) {
+                    self.first_grant.wrq_return_outcome = 2;
+                } else if mask == 0x02 && fitting >= 2 {
+                    self.session.wrq_return_writer = true;
+                    let result = self.publish_inner(generation, Some(FirstGrantReply));
+                    self.session.wrq_return_writer = false;
+                    self.first_grant.wrq_return_outcome = 3;
+                    if matches!(result?, Transmit::Session(Published::Data { last_fragment: true, .. })) {
+                        self.first_grant.wrq_return_outcome = 4;
+                        return Ok((ordinary, 1));
+                    }
+                }
+            }
+        }
         let mut extra = 0;
         #[cfg(feature = "sunfish-paired-oack-init")]
         let expected = if awaiting_registration && self.registration_close_fifo().is_some()
@@ -3063,6 +3530,14 @@ impl<I: Io> Adapter<I> {
         let oack_pending = self.ring.wrq_prefix.oack_head.is_none()
             && self.session.first_server_check().is_some_and(|t| t.exact_wrq && t.peer.node == 0
                 && t.peer.port == 0x1f && t.oack.phase == 2);
+        #[cfg(feature = "sunfish-oack-grant-outcome")]
+        {
+            if self.session.grant_backing.requested == 108 {
+                self.ring.grant_reads.sync_108(self.session.grant_backing.intent, self.session.grant_backing.reserved_at);
+            }
+            self.ring.grant_reads.oack_pool = (oack_pending && !self.ring.grant_reads.outcome.oack_captured)
+                .then(|| (self.session.grant_available_ids(), self.session.receive_snapshot().states));
+        }
         let writer = |record: &[u8]| {
             #[cfg(feature = "sunfish-tftp-reserved-writer-io")]
             let before = watch_reserved.then(|| self.ring.io.reserved_io_totals()).flatten();
@@ -3107,6 +3582,8 @@ impl<I: Io> Adapter<I> {
         };
         #[cfg(not(feature = "sunfish-tftp-oack-followup"))]
         let result = self.session.publish_next(generation, writer);
+        #[cfg(feature = "sunfish-oack-grant-outcome")]
+        { self.ring.grant_reads.oack_pool = None; }
         if let Some(error) = failure {
             return Err(error);
         }
@@ -3155,6 +3632,26 @@ impl<I: Io> Adapter<I> {
                 return Err(error.into());
             }
         };
+        #[cfg(feature = "sunfish-wrq-stage-costs")]
+        if let Some(first) = self.session.server_check_oacks()[0]
+            && first.peer.port == 0x1f && let Some(returned) = first.wrq_done_at
+        { self.ring.wrq_work.finish(returned); }
+        #[cfg(feature = "sunfish-wrq-validation-path")]
+        if self.session.server_check_oacks()[0].is_some_and(|first|first.peer.port==0x1f && first.oack_at.is_some())
+            && let Some(end)=self.ring.wrq_work_clock()
+        {self.ring.wrq_work.validation.finish(end);}
+        #[cfg(feature = "sunfish-grant-rx-open")]
+        if let Transmit::Session(Published::IntentRequestAck { granted }) = result {
+            let matched = ::core::mem::take(&mut self.ring.grant_receive.awaiting_ack);
+            #[cfg(not(feature = "sunfish-wrq-grant-turns"))]
+            let track = !self.ring.grant_receive.taken;
+            #[cfg(feature = "sunfish-wrq-grant-turns")]
+            let track = self.session.original_server_check().is_none();
+            if granted && matched && track {
+                self.ring.grant_receive.ack_count = self.ring.grant_receive.ack_count.saturating_add(1);
+                self.ring.grant_receive.ack_at = self.ring.first_server_check_clock.map(|clock| clock());
+            }
+        }
         #[cfg(feature = "sunfish-ipa-init-close-visibility")]
         if init_pending && matches!(result, Transmit::Session(core::Published::Data { last_fragment: true, .. }))
             && self.session.ipa_init_transport_trace().is_some_and(|t| t.published_at.is_some())
@@ -3374,6 +3871,13 @@ impl<I: Io> Adapter<I> {
         self.session.reserved_oack()
     }
 
+    #[cfg(feature = "sunfish-spare-reg-admission")]
+    pub(crate) fn original_oack_awaits_registration(&self) -> bool {
+        self.session.original_1f_close_count() == Some(0)
+            && self.session.first_oack_eligibility().queued_at.is_some()
+            && self.session.server_check_oacks()[0].is_some_and(|first| first.oack_at.is_none())
+    }
+
     #[cfg(feature = "sunfish-ipa-init-empty-rx")]
     pub(crate) fn ready_for_init_at_registration(&self) -> bool {
         self.ring.reg_close.as_ref().is_some_and(|trace| trace.fresh == Some(0))
@@ -3391,6 +3895,12 @@ impl<I: Io> Adapter<I> {
     #[cfg(feature = "sunfish-ipa-registration-reply-path")]
     pub(crate) fn registration_reply_fifo(&self) -> Option<RegistrationReplyFifo> {
         self.ring.registration_reply
+    }
+
+    #[cfg(feature = "sunfish-spare-oack-completions")]
+    pub(crate) fn registration_completion_window(&self) -> (Option<u64>, Option<ServerCheckRxDone>) {
+        self.ring.registration_reply.as_ref()
+            .map(|trace| (trace.peer_tail_at, trace.completion_visibility)).unwrap_or_default()
     }
 
     /// Existing cursor samples observed the peer advance its TX tail through
@@ -3427,6 +3937,8 @@ impl<I: Io> Adapter<I> {
 
     #[cfg(feature = "sunfish-ipa-ingress-work")]
     pub(crate) fn ipa_ingress_work(&self) -> &IpaIngressWork { &self.ring.ipa_ingress_work }
+    #[cfg(feature = "sunfish-spare-wrq-ingress")]
+    pub(crate) fn wrq_receive_work(&self) -> &WrqReceiveWork { &self.ring.wrq_work }
     #[cfg(feature = "sunfish-wrq-prefix-close")]
     pub(crate) fn wrq_prefix(&self) -> &WrqPrefix { &self.ring.wrq_prefix }
 
@@ -3490,6 +4002,10 @@ impl<I: Io> Adapter<I> {
         { self.first_grant = FirstGrantTrace::default(); }
         #[cfg(feature = "sunfish-grant-buffer-reads")]
         { self.ring.grant_reads = Default::default(); }
+        #[cfg(feature = "sunfish-grant-rx-open")]
+        { self.ring.grant_receive = Default::default(); }
+        #[cfg(feature = "sunfish-wrq-return-pending")]
+        { self.ring.wrq_return_pending = None; }
         self.ring.generation = generation;
         self.ring.words = words;
         self.ring.read_notification_end = None;
@@ -3520,6 +4036,8 @@ impl<I: Io> Adapter<I> {
         { self.ring.ipa_announcement_rx = None; self.ring.track_ipa_announcement = false; }
         #[cfg(feature = "sunfish-ipa-ingress-work")]
         { self.ring.ipa_ingress_work = Default::default(); }
+        #[cfg(feature = "sunfish-spare-wrq-ingress")]
+        { self.ring.wrq_work = Default::default(); }
         #[cfg(feature = "sunfish-wrq-prefix-close")]
         { self.ring.wrq_prefix = Default::default(); }
         #[cfg(feature = "sunfish-ipa-registration-reply-path")]
@@ -3536,3 +4054,458 @@ impl<I: Io> Adapter<I> {
         Ok(())
     }
 }
+
+#[cfg(all(test, feature = "sunfish-wrq-return-headers"))]
+mod wrq_window_tests {
+    use super::*;
+    fn open() -> [u8; 16] {
+        [2, 0, 7, 0, 3, 0, 0, 0, b'D', b'S', 0, 0, 0, 0, 0, 0]
+    }
+    #[test]
+    fn original_window_keeps_every_header_and_excludes_later_append() {
+        let mut trace = WrqReturnPending::new(0, 104, 0);
+        trace.record_header(&open(), Some(10));
+        trace.advanced(16, 16, Some(11));
+        let mut data = [0u8; 72];
+        data[0] = 9;
+        data[2] = 2;
+        data[8] = 52;
+        trace.record_header(&data, Some(12));
+        trace.advanced(88, 72, Some(13));
+        let done = [14, 0, 2, 0, 42, 0, 0, 0];
+        trace.record_header(&done, Some(14));
+        trace.advanced(96, 8, Some(15));
+        trace.record_header(&done, Some(16));
+        trace.advanced(104, 8, Some(17));
+        trace.record_header(&open(), Some(18));
+        assert_eq!((trace.header_count, trace.header_omitted), (4, 0));
+        assert_eq!(
+            trace
+                .headers()
+                .map(|header| header.offset)
+                .collect::<std::vec::Vec<_>>(),
+            [0, 16, 88, 96]
+        );
+        let header = trace.headers().next().unwrap();
+        assert_eq!(
+            (header.channel, header.name, header.checked, header.clear),
+            (7, 0x44530000, Some(10), Some(11))
+        );
+        assert_eq!(trace.backlog_clear, Some(17));
+    }
+    #[test]
+    fn window_overlap_keeps_full_length_and_uncertain_tail_unconfirmed() {
+        let mut trace = WrqReturnPending::new(4088, 8, 0);
+        assert!(trace.follows(4088));
+        trace.record_header(&open(), Some(20));
+        trace.record_header(&open(), Some(21));
+        assert_eq!(trace.header_count, 1);
+        assert_eq!(trace.headers().next().unwrap().clear, None);
+        assert_eq!(trace.backlog_clear, None);
+        trace.advanced(8, 16, Some(22));
+        assert_eq!(trace.headers().next().unwrap().header.bytes, 16);
+        assert_eq!(trace.backlog_clear, Some(22));
+        assert!(!trace.follows(8));
+        let empty = WrqReturnPending::new(0, 0, 0);
+        assert_eq!(empty.headers().count(), 0);
+    }
+    #[test]
+    fn full_capture_reports_overflow_and_does_not_overwrite_opening() {
+        let mut trace = WrqReturnPending::new(0, 128, 0);
+        let notice = [13, 0, 0, 0, 0, 0, 0, 0];
+        for i in 0..16 {
+            trace.record_header(&notice, Some(i));
+            trace.advanced((i as u32 + 1) * 8, 8, Some(i + 1));
+        }
+        assert_eq!((trace.header_count, trace.header_omitted), (16, 3));
+        assert_eq!(trace.headers().count(), 13);
+        assert_eq!(trace.headers().next().unwrap().offset, 0);
+    }
+}
+
+#[cfg(all(test, feature = "sunfish-oack-grant-outcome"))]
+mod oack_grant_fifo_tests {
+    use super::*;
+
+    fn clock() -> u64 { 100 }
+
+    #[cfg(feature = "sunfish-oack-grant-ack-turn")]
+    fn after_oack() -> (Adapter<crate::Fake>, crate::Fake) {
+        let peer = crate::Fake::new(0, 0);
+        let mut session = crate::session();
+        session.prepare_tftp_server(1, 0x5000).unwrap();
+        let mut adapter = Adapter::attach(peer.clone(), session, 1).unwrap();
+        adapter.start_control(1).unwrap();
+        let mut first_id = None;
+        let mut wrq_id = None;
+        for _ in 0..6 {
+            let id = adapter.offer_receive(1).unwrap();
+            if first_id.is_some() && wrq_id.is_none() { wrq_id = Some(id); }
+            first_id = first_id.or(Some(id));
+            adapter.publish_next(1).unwrap();
+            peer.take_tx();
+        }
+        let mut intents = crate::control(5, 2, 4);
+        for id in 50u32..54 {
+            intents.extend(4096u32.to_le_bytes());
+            intents.extend(id.to_le_bytes());
+        }
+        peer.push(&intents);
+        adapter.poll_receive(1).unwrap();
+        let mut hello = std::vec::Vec::new();
+        for value in [1u32, 2, 0, 0xffff_fffe, 0, 20, 1, 0xffff_fffe, 2, 0, 0, 0, 0] {
+            hello.extend(value.to_le_bytes());
+        }
+        peer.push(&crate::data(first_id.unwrap(), &hello));
+        adapter.poll_receive(1).unwrap();
+        for _ in 0..8 {
+            let tx = adapter.publish_next(1).unwrap();
+            peer.take_tx();
+            if let Transmit::Session(Published::Data { remote_intent, .. }) = tx {
+                peer.push(&crate::control(6, 2, remote_intent));
+                adapter.poll_receive(1).unwrap();
+            }
+        }
+        let request = crate::qcom_tftp_server_check::REQUEST;
+        let mut packet = std::vec::Vec::new();
+        for value in [1u32, 1, 0, 0x1f, 0, request.len() as u32, 1, 0x5000] {
+            packet.extend(value.to_le_bytes());
+        }
+        packet.extend(request);
+        packet.resize((packet.len() + 3) & !3, 0);
+        peer.push(&crate::data(wrq_id.unwrap(), &packet));
+        assert!(matches!(adapter.poll_receive(1).unwrap(), Receive::Session(Event::TftpRequest { .. })));
+        assert_eq!(adapter.session.original_1f_close_count(), Some(0));
+        // The full publication observer is tested separately. Here it arms the
+        // post-OACK guard so the real grant writer and FIFO faults can be replayed.
+        adapter.ring.first_server_check_clock = Some(clock);
+        adapter.ring.grant_reads.clock_armed = true;
+        adapter.ring.grant_reads.capture_oack([None; core::RX_SLOTS], 0, 0, Some(100));
+        adapter.ring.wrq_return_pending = Some(WrqReturnPending::new(peer.0.borrow().words[2], 8, 0));
+        peer.push(&[7, 0, 2, 0, 108, 0, 0, 0]);
+        assert_eq!(adapter.poll_receive(1).unwrap(), Receive::Session(Event::ReceiveIntentRequest { granted: true }));
+        (adapter, peer)
+    }
+
+    #[cfg(feature = "sunfish-oack-grant-ack-turn")]
+    #[test]
+    fn post_oack_advertisement_gets_one_normal_ack_turn() {
+        let (mut adapter, peer) = after_oack();
+        let id = adapter.oack_grant_outcome().intent.unwrap();
+        assert_eq!(adapter.publish_first_grant_turn(1).unwrap(),
+            (Transmit::Session(Published::ReceiveIntent(id)), 1));
+        let trace = adapter.oack_grant_outcome();
+        assert_eq!(trace.advertisement.unwrap().id, id);
+        assert_eq!(trace.ack_granted, Some(true));
+        let bytes = peer.take_tx();
+        assert_eq!((bytes[0], bytes[16]), (5, 8));
+    }
+
+    #[cfg(feature = "sunfish-oack-grant-ack-turn")]
+    #[test]
+    fn blocked_extra_ack_keeps_pending_grant_for_normal_retry() {
+        let (mut adapter, peer) = after_oack();
+        for _ in 0..(FIFO_BYTES - 32) / 8 {
+            adapter.ring.write(&[13, 0, 0, 0, 0, 0, 0, 0], FULL_RESERVE).unwrap();
+        }
+        let id = adapter.oack_grant_outcome().intent.unwrap();
+        let (ordinary, extra) = adapter.publish_first_grant_turn(1).unwrap();
+        assert_eq!(ordinary, Transmit::Session(Published::ReceiveIntent(id)));
+        assert_eq!(extra, 1, "the bounded blocked-write notification counts as progress");
+        assert!(adapter.oack_grant_outcome().ack.is_none());
+        peer.take_tx();
+        assert_eq!(adapter.publish_next(1).unwrap(),
+            Transmit::Session(Published::IntentRequestAck { granted: true }));
+        assert_eq!(adapter.oack_grant_outcome().ack_granted, Some(true));
+    }
+
+    #[cfg(feature = "sunfish-oack-grant-ack-turn")]
+    #[test]
+    fn extra_ack_head_faults_preserve_quarantine_without_claiming_commit() {
+        for failure in ["ack_head_before", "ack_head_after"] {
+            let (mut adapter, peer) = after_oack();
+            peer.0.borrow_mut().fail = Some(failure);
+            assert!(adapter.publish_first_grant_turn(1).is_err(), "{failure}");
+            assert!(adapter.oack_grant_outcome().advertisement.is_some());
+            assert!(adapter.oack_grant_outcome().ack.is_none());
+            peer.0.borrow_mut().fail = None;
+            assert!(adapter.publish_next(1).is_err(), "{failure}");
+        }
+    }
+
+    #[cfg(feature = "sunfish-oack-grant-ack-turn")]
+    #[test]
+    fn unrelated_or_pre_oack_grant_does_not_borrow_a_turn() {
+        for post_oack in [true, false] {
+            let (mut adapter, _) = after_oack();
+            if post_oack { adapter.ring.grant_reads.outcome.intent = Some(999); }
+            else { adapter.ring.grant_reads.outcome.oack_captured = false; }
+            let (ordinary, extra) = adapter.publish_first_grant_turn(1).unwrap();
+            assert!(matches!(ordinary, Transmit::Session(Published::ReceiveIntent(_))));
+            assert_eq!(extra, 0);
+            assert!(adapter.oack_grant_outcome().ack.is_none());
+        }
+    }
+
+    #[cfg(feature = "sunfish-oack-grant-ack-turn")]
+    #[test]
+    fn processed_original_close_prevents_extra_ack_turn() {
+        let (mut adapter, peer) = after_oack();
+        let mut close = std::vec::Vec::new();
+        for value in [1u32, 6, 0, 0xffff_fffe, 0, 20, 1, 0xffff_fffe, 6, 0, 0x1f, 0, 0] {
+            close.extend(value.to_le_bytes());
+        }
+        let available = adapter.session.grant_available_ids().into_iter().flatten().next().unwrap();
+        peer.push(&crate::data(available, &close));
+        adapter.poll_receive(1).unwrap();
+        assert_eq!(adapter.session.original_1f_close_count(), Some(1));
+        let (_, extra) = adapter.publish_first_grant_turn(1).unwrap();
+        assert_eq!(extra, 0);
+        assert!(adapter.oack_grant_outcome().ack.is_none());
+    }
+
+    #[cfg(feature = "sunfish-oack-grant-ack-turn")]
+    #[test]
+    fn pending_use_tail_fault_does_not_claim_consumption() {
+        let (mut adapter, peer) = prepared(7, false);
+        adapter.poll_receive(1).unwrap();
+        let record = crate::query(1);
+        let mut ids = [None; core::RX_SLOTS];
+        ids[0] = Some(1);
+        adapter.ring.grant_reads.capture_oack(ids, 0, record.len() as u32, Some(100));
+        adapter.ring.grant_reads.start_pending(peer.0.borrow().words[2]);
+        peer.push(&record);
+        peer.0.borrow_mut().fail = Some("tail");
+        assert!(adapter.poll_receive(1).is_err());
+        let trace = adapter.oack_grant_outcome();
+        assert!(trace.used[0].unwrap().clear.is_none());
+        assert!(trace.pending_clear.is_none());
+    }
+
+    #[cfg(feature = "sunfish-oack-retry-close")]
+    #[test]
+    fn pending_metadata_matches_only_the_first_repeat_datagram() {
+        let (mut adapter, peer) = after_oack();
+        for first_repeat in [true, false] {
+            let id = adapter.session.grant_available_ids().into_iter().flatten().next().unwrap();
+            let body = crate::qcom_tftp_server_check::REQUEST;
+            let mut packet = std::vec::Vec::new();
+            for value in [1u32, 1, 0, 0x1f, 0, body.len() as u32, 1, 0x5000] { packet.extend(value.to_le_bytes()); }
+            packet.extend(body);
+            packet.resize((packet.len() + 3) & !3, 0);
+            let record = crate::data(id, &packet);
+            let mut ids = [None; core::RX_SLOTS]; ids[0] = Some(id);
+            adapter.ring.grant_reads = grant_reads::GrantReadLedger::default();
+            adapter.ring.grant_reads.capture_oack(ids, 0, record.len() as u32, Some(100));
+            adapter.ring.grant_reads.start_pending(peer.0.borrow().words[2]);
+            peer.push(&record);
+            assert!(matches!(adapter.poll_receive(1).unwrap(), Receive::Session(Event::TftpRequest(_))));
+            let trace = adapter.oack_grant_outcome();
+            let meta = trace.pending_tftp[0].unwrap();
+            assert!(meta.exact_wrq);
+            assert_eq!(meta.first_repeat, first_repeat);
+            assert!(trace.used[0].unwrap().clear.is_some());
+        }
+    }
+
+    fn prepared(offers: usize, full: bool) -> (Adapter<crate::Fake>, crate::Fake) {
+        let peer = crate::Fake::new(0, 0);
+        let mut adapter = Adapter::attach(peer.clone(), crate::session(), 1).unwrap();
+        for _ in 0..offers {
+            adapter.offer_receive(1).unwrap();
+            adapter.publish_next(1).unwrap();
+            peer.take_tx();
+        }
+        if full {
+            for _ in 0..(FIFO_BYTES - FULL_RESERVE) / 8 {
+                adapter.ring.write(&[13, 0, 0, 0, 0, 0, 0, 0], FULL_RESERVE).unwrap();
+            }
+        }
+        adapter.ring.first_server_check_clock = Some(clock);
+        adapter.ring.grant_reads.clock_armed = true;
+        adapter.ring.wrq_return_pending = Some(WrqReturnPending::new(0, 8, 0));
+        peer.push(&[7, 0, 2, 0, 108, 0, 0, 0]);
+        (adapter, peer)
+    }
+
+    #[test]
+    fn negative_ack_is_matched_without_inventing_an_advertisement() {
+        let (mut adapter, _) = prepared(8, false);
+        assert_eq!(adapter.poll_receive(1).unwrap(),
+            Receive::Session(Event::ReceiveIntentRequest { granted: false }));
+        assert_eq!(adapter.publish_next(1).unwrap(),
+            Transmit::Session(Published::IntentRequestAck { granted: false }));
+        let trace = adapter.oack_grant_outcome();
+        assert_eq!(trace.initial_granted, Some(false));
+        assert_eq!(trace.ack_granted, Some(false));
+        assert!(trace.ack.unwrap().published.is_some());
+        assert!(trace.intent.is_none() && trace.advertisement.is_none());
+    }
+
+    #[test]
+    fn blocked_advertisement_and_uncertain_ack_head_keep_capture_honest() {
+        let (mut adapter, peer) = prepared(7, true);
+        assert_eq!(adapter.poll_receive(1).unwrap(),
+            Receive::Session(Event::ReceiveIntentRequest { granted: true }));
+        assert!(matches!(adapter.publish_next(1).unwrap(), Transmit::Blocked { .. }));
+        assert!(adapter.oack_grant_outcome().advertisement.is_none());
+        {
+            let mut memory = peer.0.borrow_mut();
+            memory.words[0] = memory.words[1];
+        }
+        let intent = adapter.oack_grant_outcome().intent.unwrap();
+        assert_eq!(adapter.publish_next(1).unwrap(),
+            Transmit::Session(Published::ReceiveIntent(intent)));
+        peer.0.borrow_mut().fail_after_store = true;
+        assert!(adapter.publish_next(1).is_err());
+        let trace = adapter.oack_grant_outcome();
+        assert_eq!(trace.advertisement.unwrap().id, intent);
+        assert!(trace.ack.is_none() && trace.ack_granted.is_none());
+        assert!(adapter.publish_next(1).is_err());
+    }
+}
+
+#[cfg(all(test, feature = "sunfish-first-oack-spare-buffer"))]
+mod first_spare_fifo_tests {
+    use super::*;
+    #[test]
+    fn blocked_fresh_advertisement_keeps_ordinary_fallback() {
+        let (peer, owner, _, _) = crate::first_oack_spare_tests::prepared(false);
+        let mut adapter = owner.into_spare_test_adapter();
+        // Publish the WRQ return, then fill using actual checked writes so
+        // cached and peer cursors describe the same legitimate history.
+        for _ in 0..4 {
+            if adapter.session.server_check_oacks()[0].unwrap().wrq_done_at.is_some() { break; }
+            adapter.publish_next(1).unwrap();
+        }
+        peer.take_tx();
+        while FIFO_BYTES - distance(adapter.ring.words[0], adapter.ring.words[1]) > 24 {
+            adapter.ring.write(&[13,0,0,0,0,0,0,0], FULL_RESERVE).unwrap();
+        }
+        let (ordinary, extra) = adapter.publish_first_grant_turn(1).unwrap();
+        assert!(matches!(ordinary, Transmit::Blocked { .. }));
+        assert_eq!(extra, 0);
+        assert!(adapter.oack_grant_outcome().primed_offer.is_none());
+        assert_eq!(adapter.session.oack_resources(0x5001).unwrap().primed_intent, None);
+        assert!(adapter.server_check_oacks()[0].unwrap().oack_at.is_none());
+        peer.take_tx();
+        let (ordinary, extra) = adapter.publish_first_grant_turn(1).unwrap();
+        assert!(matches!(ordinary, Transmit::Session(Published::ReceiveIntent(_))));
+        assert_eq!(extra, 1);
+        assert!(adapter.oack_grant_outcome().primed_offer.is_some());
+        assert!(adapter.server_check_oacks()[0].unwrap().oack_at.is_some());
+    }
+    #[test]
+    fn processed_client_close_prevents_fresh_advertisement_and_extra_turn() {
+        let (peer, owner, _, _) = crate::first_oack_spare_tests::prepared(false);
+        let mut adapter = owner.into_spare_test_adapter();
+        let id = adapter.session.grant_available_ids().into_iter().flatten().next().unwrap();
+        peer.push(&crate::data(id, &crate::owner_control_frame(6, [0, 0x1f, 0, 0])));
+        adapter.poll_receive(1).unwrap();
+        let (_, extra) = adapter.publish_first_grant_turn(1).unwrap();
+        assert_eq!(extra, 0);
+        assert_eq!(adapter.session.oack_resources(0x5001).unwrap().primed_intent, None);
+    }
+    #[test]
+    fn later_grant_cannot_rearm_priming_after_108_was_decoded() {
+        let (_, owner, _, _) = crate::first_oack_spare_tests::prepared(false);
+        let mut adapter = owner.into_spare_test_adapter();
+        for size in [108, 52] {
+            adapter.session.ingest(1, &crate::control(7, 2, size)).unwrap();
+            let mut ack = false;
+            for _ in 0..8 {
+                let tx = adapter.publish_next(1).unwrap();
+                if matches!(tx, Transmit::Session(Published::IntentRequestAck { .. })) { ack = true; break; }
+            }
+            assert!(ack);
+            assert!(adapter.server_check_oacks()[0].unwrap().oack_at.is_none());
+        }
+        for _ in 0..8 { adapter.publish_first_grant_turn(1).unwrap(); }
+        assert_eq!(adapter.session.oack_resources(0x5001).unwrap().primed_intent, None);
+    }
+}
+
+#[cfg(all(test, feature = "sunfish-wrq-stage-costs"))]
+mod wrq_stage_cost_tests {
+    use super::*;
+    #[test]
+    fn wrq_checks_continue_after_registration_and_close_histories_finish() {
+        use ::core::sync::atomic::{AtomicU64,Ordering};
+        static CLOCK:AtomicU64=AtomicU64::new(1000);
+        CLOCK.store(1000,Ordering::Relaxed);
+        let (_,owner,_,_)=crate::first_oack_spare_tests::prepared(false);
+        let mut a=owner.into_spare_test_adapter();
+        a.ring.track_first_wrq=false;a.ring.track_ipa_announcement=false;
+        a.ring.registration_rx.as_mut().unwrap().done=Some(ServerCheckRxDone {
+            last_absent:Some(1),first_visible:Some(2),visible_at_close:Some(true),bytes_ahead:Some(0)});
+        a.ring.init_close.close_end=Some(3);
+        a.ring.first_server_check_clock=Some(||CLOCK.fetch_add(1,Ordering::Relaxed));
+        let before=a.ring.wrq_work.checks(0,u64::MAX).0;
+        a.ring.sample().unwrap();
+        assert_eq!(a.ring.wrq_work.checks(0,u64::MAX).0,before+1);
+    }
+    #[test]
+    fn stages_clip_nested_checks_and_record_spans_and_freeze_at_return() {
+        let mut w = WrqReceiveWork::default();
+        w.sample(5,15); w.sample(18,22); w.sample(25,35);
+        w.record(4,16,0,&crate::control(7,2,52));
+        w.record(17,24,1,&crate::control(8,1,1));
+        w.record(24,34,1,&crate::control(14,1,0x20));
+        w.finish(30);
+        w.sample(31,40); w.record(31,40,1,&crate::control(5,1,1));
+        let a=w.cost(10,20); let b=w.cost(20,30); let c=w.cost(30,40);
+        assert_eq!((a.total,a.check_count,a.check_ticks,a.rx,a.tx,a.lost),(10,2,7,6,3,0));
+        assert_eq!((b.total,b.check_count,b.check_ticks,b.rx,b.tx,b.lost),(10,2,7,0,10,0));
+        assert_eq!((c.total,c.check_count,c.rx,c.tx),(0,0,0,0));
+        assert_eq!(w.records.records(0,100).count(),3);
+        w.finish(40); assert_eq!(w.finished,Some(30));
+    }
+    #[test]
+    fn overflow_reports_history_loss_and_qrtr_prefix_identity() {
+        let mut w=WrqReceiveWork::default();
+        for n in 0..100 {w.sample(n*2,n*2+1);}
+        for n in 0..30 {w.record(n*2,n*2+1,0,&crate::control(7,2,n as u32));}
+        assert_eq!(w.cost(0,200).lost,3);
+        let mut p=crate::data(0x20,&crate::owner_control_frame(4,[0x31,0x201,0,0x1d]));
+        w.record(201,202,0,&p);
+        let r=w.records.records(201,202).last().unwrap();
+        assert_eq!(r.protocol,Some([4,0xffff_fffe,0xffff_fffe,0x31]));
+        p[8..12].copy_from_slice(&8u32.to_le_bytes());p.truncate(24);
+        w.record(203,204,0,&p);
+        assert_eq!(w.records.records(203,204).last().unwrap().protocol,None);
+    }
+}
+
+#[cfg(feature = "sunfish-wrq-stage-costs")]
+#[derive(Default)]
+pub struct WrqStageCost {
+    pub total: u64,
+    pub check_count: u32,
+    pub check_ticks: u64,
+    pub rx: u64,
+    pub tx: u64,
+    pub lost: u32,
+}
+
+#[cfg(feature = "sunfish-wrq-stage-costs")]
+impl WrqReceiveWork {
+    fn finish(&mut self, at: u64) { self.finished.get_or_insert(at); }
+    pub fn cost(&self, from: u64, to: u64) -> WrqStageCost {
+        let to = to.min(self.finished.unwrap_or(to));
+        if to <= from { return WrqStageCost::default(); }
+        let (check_count, check_ticks, lost) = self.checks(from, to);
+        let mut cost = WrqStageCost { total: to-from, check_count, check_ticks,
+            lost: u32::from(self.records.lost(from)) | (u32::from(lost)<<1), ..Default::default() };
+        for r in self.records.records(from,to) {
+            let overlap=r.end.min(to).saturating_sub(r.start.max(from));
+            match r.kind {0=>cost.rx+=overlap, 1|2|3|6=>cost.tx+=overlap, _=>{}}
+        }
+        cost
+    }
+}
+
+#[cfg(feature = "sunfish-wrq-validation-path")]
+#[path = "qcom_glink_wrq_cost.rs"]
+mod wrq_validation_cost;
+#[cfg(feature = "sunfish-wrq-validation-path")]
+pub use wrq_validation_cost::*;

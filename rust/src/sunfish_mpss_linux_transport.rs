@@ -249,12 +249,18 @@ impl<I: BootIo> BootTransport<I> {
                 ipa_announcement_rx: None,
                 #[cfg(feature = "sunfish-ipa-ingress-work")]
                 ipa_ingress_work: Default::default(),
+                #[cfg(feature = "sunfish-spare-wrq-ingress")]
+                wrq_work: Default::default(),
                 #[cfg(feature = "sunfish-wrq-prefix-close")]
                 wrq_prefix: Default::default(),
                 #[cfg(feature = "sunfish-ipa-announcement-fifo")]
                 track_ipa_announcement: false,
                 #[cfg(feature = "sunfish-ipa-wrq-ready-fifo")]
                 track_first_wrq: false,
+                #[cfg(feature = "sunfish-grant-rx-open")]
+                grant_receive: Default::default(),
+                #[cfg(feature = "sunfish-wrq-return-pending")]
+                wrq_return_pending: None,
                 read_notification_end: None,
                 record: [0; MAX_RX_RECORD],
                 control: None,

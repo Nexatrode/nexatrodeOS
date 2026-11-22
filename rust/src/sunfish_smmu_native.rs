@@ -497,17 +497,25 @@ impl<'a, F: FnMut(usize) -> Result<(), Error>> Native<'a, F> {
             &mut crate::sunfish_ipa_shared_memory::Smp<'a>,
         ) -> Result<T, crate::sunfish_mpss_linux_smp2p::GlinkError>,
         mut observe: impl FnMut(usize),
+        #[cfg(feature="sunfish-wrq-domain-costs")]
+        mut stage:impl FnMut(usize,RetainedDomainStage,usize),
     ) -> Result<T, Error> {
         if self.modem_quarantined { return Err(Error::State); }
         self.modem_quarantined = true;
         observe(0);
+        #[cfg(not(feature="sunfish-wrq-domain-costs"))]
         let checked = self.retained_receive_domain();
+        #[cfg(feature="sunfish-wrq-domain-costs")]
+        let checked = self.retained_receive_domain_with(|s,i|stage(0,s,i));
         observe(1);
         checked?;
         let result = self.shared_memory.as_mut().ok_or(Error::State)?
             .glink(action).map_err(Error::SharedMemory)?;
         observe(2);
+        #[cfg(not(feature="sunfish-wrq-domain-costs"))]
         let checked = self.retained_receive_domain();
+        #[cfg(feature="sunfish-wrq-domain-costs")]
+        let checked = self.retained_receive_domain_with(|s,i|stage(1,s,i));
         observe(3);
         checked?;
         self.modem_quarantined = false;

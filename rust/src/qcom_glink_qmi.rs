@@ -773,8 +773,12 @@ pub struct Session {
     ipa_before_first_oack: bool,
     #[cfg(feature = "sunfish-first-oack-after-ipa-publish")]
     first_oack_after_ipa_publish: bool,
+    #[cfg(feature = "sunfish-first-wrq-return-oack")]
+    pub(crate) wrq_return_writer: bool,
     #[cfg(feature = "sunfish-first-wrq-spare-oack")]
     first_wrq_spare_oack: bool,
+    #[cfg(feature = "sunfish-first-oack-spare-buffer")]
+    first_oack_108_seen: bool,
     #[cfg(feature = "sunfish-first-oack-after-ipa-publish")]
     first_oack_eligibility: FirstOackEligibility,
     #[cfg(feature = "sunfish-post-reg-oack-turn")]
@@ -1744,8 +1748,12 @@ impl Session {
             ipa_before_first_oack: false,
             #[cfg(feature = "sunfish-first-oack-after-ipa-publish")]
             first_oack_after_ipa_publish: false,
+            #[cfg(feature = "sunfish-first-wrq-return-oack")]
+            wrq_return_writer: false,
             #[cfg(feature = "sunfish-first-wrq-spare-oack")]
             first_wrq_spare_oack: false,
+            #[cfg(feature = "sunfish-first-oack-spare-buffer")]
+            first_oack_108_seen: false,
             #[cfg(feature = "sunfish-first-oack-after-ipa-publish")]
             first_oack_eligibility: FirstOackEligibility::default(),
             #[cfg(feature = "sunfish-post-reg-oack-turn")]
@@ -3084,6 +3092,14 @@ impl Session {
             .map(|first| first.timing.closes)
     }
 
+    /// Correlate the just-ingested wire intent with the retained first repeat's
+    /// per-datagram identity before its receive state can be finished or reused.
+    #[cfg(feature = "sunfish-oack-retry-close")]
+    pub(crate) fn first_tftp_repeat_on_intent(&self, intent: u32) -> bool {
+        self.first_server_check.and_then(|write| write.repeat).and_then(|repeat| repeat.request)
+            .is_some_and(|handle| self.tftp_index(&handle).is_ok_and(|index| self.receive[index].id == intent))
+    }
+
     #[cfg(feature = "sunfish-wlan-first-server-check-trace")]
     pub(crate) fn first_server_check(&self) -> Option<ElfServerCheckTrace> {
         self.first_server_check
@@ -3220,10 +3236,28 @@ impl Session {
 
     // Limit the intervention to the original peer 0x49 OACK.
     #[cfg(feature = "sunfish-tftp-oack-prime-rx")]
-    fn server_check_prime_target(&self, next: Option<(usize, usize)>) -> Option<usize>
+    fn server_check_prime_target(&self, next: Option<(usize, usize)>,
+        #[cfg(feature = "sunfish-first-oack-spare-buffer")] ordinary: bool) -> Option<usize>
     {
         let tx = &self.transmit[next?.0];
         let intent = tx.server_check_wrq?;
+        #[cfg(feature = "sunfish-first-oack-spare-buffer")]
+        if ordinary && self.is_unpublished_first_oack(tx)
+            && matches!(tx.kind, TxKind::TftpReply { source, destination }
+                if source.port == 0x5001 && destination == (Address { node: self.config.peer_node, port: 0x1f }))
+            && !self.first_oack_108_seen
+            && self.first_server_check.is_some_and(|first| first.before_elf && first.exact_wrq
+                && first.peer.port == 0x1f && first.timing.first_close_at.is_none())
+        {
+            // This first-client experiment can use only unowned capacity.
+            // In particular it must never enter the older Control-slot release.
+            if !self.receive[..RX_SLOTS].iter().any(|rx|
+                matches!(rx.state, RxState::Free | RxState::Advertising)) { return None; }
+            let transfer = self.server_check_transfers.iter().position(|trace|
+                trace.is_some_and(|trace| trace.intent == intent && trace.first_close_at.is_none()
+                    && trace.ready_at_oack.is_none()))?;
+            return self.server_check_resources[transfer].primed_intent.is_none().then_some(transfer);
+        }
         if tx.sent != 0 || !matches!(tx.kind, TxKind::TftpReply { destination, .. }
                 if destination.port == 0x49)
             || self.receive[..RX_SLOTS].iter().any(|rx| rx.state == RxState::Available)
@@ -4226,6 +4260,10 @@ impl Session {
                         states |= rx.state.diagnostic_code() << (4 * i);
                     }
                     self.intent_denial = Some(IntentDenialDiagnostic { requested: parameter, states });
+                }
+                #[cfg(feature = "sunfish-first-oack-spare-buffer")]
+                if parameter == 108 && self.first_server_check.is_some() {
+                    self.first_oack_108_seen = true;
                 }
                 #[cfg(feature = "sunfish-grant-ad-writer-trace")]
                 { self.grant_backing = GrantBackingTrace { requested: parameter, ..Default::default() }; }
@@ -7479,7 +7517,8 @@ impl Session {
         let prime_target = if !prefer_ack && ack.is_none() && done_before_ack.is_none()
             && priority_wrq_done.is_none() && priority_registration_done.is_none()
         {
-            self.server_check_prime_target(priority_data.or_else(|| self.next_transmit()))
+            self.server_check_prime_target(priority_data.or_else(|| self.next_transmit()),
+                #[cfg(feature = "sunfish-first-oack-spare-buffer")] ordinary)
         } else {
             None
         };
@@ -7904,7 +7943,7 @@ impl Session {
         #[cfg(feature = "sunfish-first-oack-after-ipa-publish")]
         if let Commit::Data(slot, ..) = &commit {
             let tx = &self.transmit[*slot];
-            if self.holds_first_oack(tx) && self.can_attempt_first_oack(tx)
+            if !self.in_wrq_return_writer() && self.holds_first_oack(tx) && self.can_attempt_first_oack(tx)
                 && let Some(intent) = tx.server_check_wrq
                 && let Some(first) = self.server_check_trace_for_intent(intent)
             {
@@ -8619,6 +8658,30 @@ impl Session {
         mask == 0
     }
 
+    #[cfg(feature = "sunfish-first-wrq-return-oack")]
+    pub(crate) fn wrq_return_oack_candidate(&self) -> Option<(u16, usize)> {
+        let first = self.first_oack_transfer()?;
+        if !self.first_oack_after_ipa_publish || first.peer != (Address { node: 0, port: 0x1f })
+            || first.wrq_done_at.is_none() || first.oack_at.is_some()
+            || first.first_close_at.is_some()
+            || self.ipa_registration_trace().is_some_and(|reg| reg.queued_at.is_some())
+        {
+            return None;
+        }
+        // The server-check OACK occupies 72 bytes including its QRTR header.
+        let fitting = self.remote.iter().flatten()
+            .filter(|intent| !intent.busy && intent.capacity >= 72).count();
+        Some((self.first_oack_blockers(first), fitting))
+    }
+
+    #[cfg(feature = "sunfish-first-oack-after-ipa-publish")]
+    fn in_wrq_return_writer(&self) -> bool {
+        #[cfg(feature = "sunfish-first-wrq-return-oack")]
+        { self.wrq_return_writer }
+        #[cfg(not(feature = "sunfish-first-wrq-return-oack"))]
+        { false }
+    }
+
     #[cfg(feature = "sunfish-first-oack-after-ipa-publish")]
     fn can_attempt_first_oack(&self, tx: &Transmit) -> bool {
         let TxKind::TftpReply { source, destination } = tx.kind else { return false };
@@ -8628,7 +8691,7 @@ impl Session {
             && tx.sent == 0 && tx.len <= TX_CHUNK_BYTES
             && self.intent_request_ack.is_none()
             && !self.transmit.iter().any(|other| matches!(other.kind, TxKind::Resume) && other.sent < other.len)
-            && self.registration_reply_in_flight()
+            && (self.registration_reply_in_flight() || self.in_wrq_return_writer())
     }
 
     fn ready_remote_for_transmit(&self, tx: &Transmit) -> Option<usize> {

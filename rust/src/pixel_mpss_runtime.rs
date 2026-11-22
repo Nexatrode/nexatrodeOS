@@ -683,6 +683,9 @@ impl RuntimeDomain {
             let started = counter();
             #[cfg(feature = "sunfish-ipa-schedule-trace")]
             self.ipa_schedule.observe(started, 7, ipa_schedule_milestones(owner));
+            #[cfg(feature = "sunfish-grant-rx-open")]
+            let dispatched = self.router.dispatch_with_grant_receive_turn(owner);
+            #[cfg(not(feature = "sunfish-grant-rx-open"))]
             let dispatched = self.router.dispatch(owner);
             self.ipa_report = owner.linux_ipa_report();
             self.ipa_complete_seen |= self.ipa_report.is_some_and(|r| r.protocol_complete);
@@ -3688,7 +3691,593 @@ impl RuntimeDomain {
             (28, "IPA COMPLETE", u32::from(self.ipa_complete_seen)),
         ] { display.hex(row, label, value); }
         }
-        #[cfg(feature = "sunfish-first-wrq-spare-oack")]
+        #[cfg(all(feature = "sunfish-grant-rx-open", not(feature = "sunfish-wrq-return-headers")))]
+        {
+            let rx = owner.grant_receive_trace();
+            let visible = owner.ipa_wrq_timing().1.and_then(|bounds| bounds.first_visible);
+            let head = owner.wrq_prefix().oack_head;
+            let returned = match rx.return_tail {
+                Some(qcom_glink_fifo::ServerCheckTail::Consumed(at)) => at, _ => None,
+            };
+            #[cfg(feature = "sunfish-wrq-grant-turns")]
+            display.replace_line(1, "WRQ GRANT RX TURNS");
+            #[cfg(not(feature = "sunfish-wrq-grant-turns"))]
+            display.replace_line(1, "GRANT RX OPEN WINDOW");
+            for (row, (label, value)) in [
+                ("RUNTIME ERROR", self.error),
+                #[cfg(feature = "sunfish-wrq-grant-turns")]
+                ("52 ACK COUNT", rx.ack_count),
+                #[cfg(not(feature = "sunfish-wrq-grant-turns"))]
+                ("ERROR DETAIL", self.detail),
+                ("FIRST PEER", first.map_or(u32::MAX, |t| t.peer.port)),
+                ("GRANT ACK US", age(rx.ack_at)),
+                #[cfg(feature = "sunfish-wrq-grant-turns")]
+                ("RX TURN COUNT", rx.turn_count),
+                #[cfg(not(feature = "sunfish-wrq-grant-turns"))]
+                ("RX TURN COUNT", u32::from(rx.taken)),
+                ("RX TURN US", age(rx.turn_at)),
+                ("WRQ VISIBLE US", age(visible)),
+                ("WRQ RXDONE US", age(first.and_then(|t| t.wrq_done_at))),
+                ("WRQ TAIL US", age(returned)),
+                ("RETURN TURN", u32::from(grant.wrq_return_outcome)),
+                ("PENDING BYTES", owner.wrq_return_pending().map_or(u32::MAX, |t| t.bytes)),
+                ("OPEN CHANNEL", rx.open.map_or(u32::MAX, |(id, _)| u32::from(id))),
+                ("OPEN NAME HEX", rx.open.map_or(u32::MAX, |(_, name)| u32::from(name))),
+                #[cfg(feature = "sunfish-wrq-grant-turns")]
+                ("PRIMARY ACK NUM", rx.primary_checked),
+                #[cfg(not(feature = "sunfish-wrq-grant-turns"))]
+                ("BYTE ABSENT US", age(rx.byte_bounds.and_then(|b| b.last_absent))),
+                #[cfg(feature = "sunfish-wrq-grant-turns")]
+                ("TURN ACK NUM", rx.turn_ack),
+                #[cfg(not(feature = "sunfish-wrq-grant-turns"))]
+                ("BYTE VISIBLE US", age(rx.byte_bounds.and_then(|b| b.first_visible))),
+                ("OPEN ABSENT US", age(rx.open_bounds.and_then(|b| b.last_absent))),
+                ("OPEN VISIBLE US", age(rx.open_bounds.and_then(|b| b.first_visible))),
+                ("OACK HEAD US", age(head)),
+                ("OACK TAIL US", age(tail)),
+                ("WRQ TO HEAD US", self.time_from_us(visible, head)),
+                ("WRQ TO TAIL US", self.time_from_us(visible, tail)),
+                ("REG PUB US", age(reg.and_then(|t| t.published_at))),
+                ("FIRST DATA US", age(first.and_then(|t| t.first_data_at))),
+                ("FIRST CLOSE US", age(first.and_then(|t| t.first_close_at))),
+                ("IPA COMPLETE", u32::from(self.ipa_complete_seen)),
+                ("WLAN RRQ RX", owner.tftp_wire_counts()[2]),
+                ("WLFW SERVERS", query[7]),
+            ].into_iter().enumerate() { display.hex(row + 2, label, value); }
+        }
+        #[cfg(all(feature = "sunfish-wrq-return-headers", not(feature = "sunfish-oack-grant-outcome")))]
+        {
+            let pending = owner.wrq_return_pending();
+            display.replace_line(1, "WRQ RETURN HEADERS");
+            for (row, (label, value)) in [
+                ("RUNTIME ERROR", self.error),
+                ("PENDING BYTES", pending.map_or(u32::MAX, |t| t.bytes)),
+                ("EARLY RECORDS", pending.map_or(u32::MAX, |t| t.early)),
+                ("HEADER COUNT", pending.map_or(0, |t| t.header_count)),
+                ("HEADERS OMITTED", pending.map_or(0, |t| t.header_omitted)),
+                ("WRQ VISIBLE US", age(owner.ipa_wrq_timing().1.and_then(|b| b.first_visible))),
+                ("WRQ RXDONE US", age(first.and_then(|t| t.wrq_done_at))),
+                ("BACKLOG CLR US", age(pending.and_then(|t| t.backlog_clear))),
+            ].into_iter().enumerate() { display.hex(row + 2, label, value); }
+            display.replace_line(10, "RX WINDOW HEADERS");
+            let mut records = pending.into_iter().flat_map(|t| t.headers());
+            for row in 11..24 {
+                if let Some(entry) = records.next() {
+                    let h = &entry.header;
+                    let q = h.qrtr.unwrap_or([u32::MAX; 3]);
+                    display.header_row(row, false, &[
+                        (entry.offset, 4), (u32::from(h.command), 2),
+                        (u32::from(entry.channel), 4), (u32::from(h.bytes), 4),
+                        (h.parameter, 8), (age(entry.checked), 8), (age(entry.clear), 8),
+                    ]);
+                    display.header_row(row, true, &[
+                        (q[0], 2), (q[1], 8), (q[2], 8), (h.extra, 8),
+                        (u32::from(entry.qmi_kind), 2), (entry.name, 8),
+                    ]);
+                } else {
+                    display.replace_line(row, "");
+                }
+            }
+            for (row, label, value) in [
+                (24, "OACK HEAD US", age(owner.wrq_prefix().oack_head)),
+                (25, "FIRST DATA US", age(first.and_then(|t| t.first_data_at))),
+                (26, "FIRST CLOSE US", age(first.and_then(|t| t.first_close_at))),
+                (27, "WLAN RRQ RX", owner.tftp_wire_counts()[2]),
+                (28, "WLFW SERVERS", query[7]),
+            ] { display.hex(row, label, value); }
+        }
+        #[cfg(all(feature = "sunfish-oack-grant-outcome", not(feature = "sunfish-oack-retry-close")))]
+        {
+            let trace = owner.oack_grant_outcome();
+            let tail = match owner.first_oack_tail() {
+                qcom_glink_fifo::ServerCheckTail::Consumed(at) => at, _ => None,
+            };
+            #[cfg(not(feature = "sunfish-oack-grant-ack-turn"))]
+            let (title, pending_label, pending_value) = ("OACK 108 GRANT OUTCOME", "PRE TX STATES",
+                if trace.oack_captured {trace.states_before_writer} else {u32::MAX});
+            #[cfg(feature = "sunfish-oack-grant-ack-turn")]
+            let (title, pending_label, pending_value) = ("OACK 108 ACK TURN", "PENDING CLR US", age(trace.pending_clear));
+            display.replace_line(1, title);
+            for (row, (label, value)) in [
+                ("RUNTIME ERROR", self.error),
+                ("OACK HEAD US", age(trace.oack_at)),
+                ("OACK TAIL US", age(tail)),
+                ("OACK DONE US", age(first.and_then(|t| t.oack_done_at))),
+                ("REQ 108 US", age(trace.request_at)),
+                ("GRANT INTENT", trace.intent.unwrap_or(u32::MAX)),
+                ("INITIAL GRANT", trace.initial_granted.map_or(u32::MAX, u32::from)),
+                ("AD HEAD US", age(trace.advertisement.and_then(|a| a.published))),
+                ("AD TAIL US", age(trace.advertisement.and_then(|a| a.first_read))),
+                ("ACK HEAD US", age(trace.ack.and_then(|a| a.published))),
+                ("ACK TAIL US", age(trace.ack.and_then(|a| a.first_read))),
+                ("ACK GRANTED", trace.ack_granted.map_or(u32::MAX, u32::from)),
+                (pending_label, pending_value),
+                ("OACK RX BYTES", if trace.oack_captured {trace.rx_at_oack} else {u32::MAX}),
+            ].into_iter().enumerate() { display.hex(row + 2, label, value); }
+            display.replace_line(16, "ID SIZE OP PUB READ SEEN");
+            for (slot, offer) in trace.available.iter().enumerate() {
+                let row = 17 + slot;
+                if let Some(offer) = offer {
+                    display.header_row(row, false, &[
+                        (offer.id, 8), (offer.size, 4), (u32::from(offer.command), 2),
+                        (age(offer.published), 8), (age(offer.first_read), 8),
+                        ((trace.read_at_oack >> slot) & 1, 1),
+                    ]);
+                    #[cfg(not(feature = "sunfish-oack-grant-ack-turn"))]
+                    display.header_row(row, true, &[]);
+                    #[cfg(feature = "sunfish-oack-grant-ack-turn")]
+                    if let Some(used) = trace.used[slot] {
+                        let [kind, source, destination] = used.header.qrtr.unwrap_or([u32::MAX; 3]);
+                        display.header_row(row, true, &[
+                            (used.offset, 4), (u32::from(used.header.command), 2),
+                            (u32::from(used.header.bytes), 4), (trace.use_prefix_bytes[slot], 4),
+                            (kind, 2), (source, 8), (destination, 8), (age(used.clear), 8),
+                        ]);
+                    } else {
+                        display.header_row(row, true, &[]);
+                    }
+                } else {
+                    display.replace_line(row, "");
+                }
+            }
+            for (row, label, value) in [
+                (25, "FIRST DATA US", age(first.and_then(|t| t.first_data_at))),
+                (26, "FIRST CLOSE US", age(first.and_then(|t| t.first_close_at))),
+                (27, "WLAN RRQ RX", owner.tftp_wire_counts()[2]),
+                (28, "WLFW SERVERS", query[7]),
+            ] { display.hex(row, label, value); }
+        }
+        #[cfg(all(feature = "sunfish-oack-retry-close", not(feature = "sunfish-first-oack-spare-buffer")))]
+        {
+            let trace = owner.oack_grant_outcome();
+            let packet = trace.pending_tftp.iter().enumerate().find_map(|(slot, meta)| meta.map(|meta| (slot, meta)));
+            let used = packet.and_then(|(slot, _)| trace.used[slot]);
+            let repeat = packet.filter(|(_, meta)| meta.first_repeat).and_then(|_| owner.service_registry_trace()
+                .first_server_check.and_then(|write| write.repeat));
+            let close = owner.init_close_fifo().bounds;
+            let tail = match owner.first_oack_tail() {
+                qcom_glink_fifo::ServerCheckTail::Consumed(at) => at, _ => None,
+            };
+            display.replace_line(1, "OACK RETRY CLOSE");
+            for (index, (label, value)) in [
+                ("RUNTIME ERROR", self.error),
+                ("OACK HEAD US", age(trace.oack_at)),
+                ("OACK READ US", age(tail)),
+                ("ACK READ US", age(trace.ack.and_then(|ack| ack.first_read))),
+                ("PKT INTENT", packet.and_then(|(slot, _)| trace.available[slot]).map_or(u32::MAX, |offer| offer.id)),
+                ("PKT OP KIND", packet.map_or(u32::MAX, |(_, meta)| u32::from(meta.opcode) << 16 | u32::from(meta.path_kind))),
+                ("PKT BYTES", packet.map_or(u32::MAX, |(_, meta)| u32::from(meta.bytes))),
+                ("PKT EXACT WRQ", packet.map_or(u32::MAX, |(_, meta)| u32::from(meta.exact_wrq))),
+                ("PKT IS RETRY", packet.map_or(u32::MAX, |(_, meta)| u32::from(meta.first_repeat))),
+                ("PKT CHECKED US", age(used.and_then(|used| used.checked))),
+                ("PKT CLEARED US", age(used.and_then(|used| used.clear))),
+                ("RETRY COALESCED", repeat.map_or(u32::MAX, |repeat| u32::from(repeat.coalesced))),
+                ("RETRY DISP US", age(repeat.and_then(|repeat| repeat.dispatch_at))),
+                ("RETRY RESULT", repeat.and_then(|repeat| repeat.result).unwrap_or(u32::MAX)),
+                ("RETRY QUEUE US", age(repeat.and_then(|repeat| repeat.queued_at))),
+                ("RETRY HEAD US", age(repeat.and_then(|repeat| repeat.oack.published_at))),
+                ("RETRY DONE US", age(repeat.and_then(|repeat| repeat.oack.done_at))),
+                ("RETRY FLOW BUSY", repeat.map_or(u32::MAX, |repeat| repeat.flow_busy)),
+                ("RETRY NO CAP", repeat.map_or(u32::MAX, |repeat| repeat.no_capacity)),
+                ("RETRY CLOSE", repeat.map_or(u32::MAX, |repeat| (u32::from(repeat.cancelled) << 8)
+                    | u32::from(repeat.close_phase.unwrap_or(0xff)))),
+                ("CLOSE ABSENT US", age(close.and_then(|close| close.last_absent))),
+                ("CLOSE VIS US", age(close.and_then(|close| close.first_visible))),
+                ("FIRST CLOSE US", age(first.and_then(|first| first.first_close_at))),
+                ("OACK DONE US", age(first.and_then(|first| first.oack_done_at))),
+                ("FIRST DATA US", age(first.and_then(|first| first.first_data_at))),
+                ("WLAN RRQ RX", owner.tftp_wire_counts()[2]),
+                ("WLFW SERVERS", query[7]),
+            ].into_iter().enumerate() { display.hex(index + 2, label, value); }
+        }
+        #[cfg(all(feature = "sunfish-first-oack-spare-buffer", not(feature = "sunfish-wrq-stage-costs")))]
+        {
+            let trace = owner.oack_grant_outcome();
+            let spare = trace.primed_offer;
+            let slot = spare.and_then(|offer| trace.available.iter().position(|entry|
+                entry.is_some_and(|entry| entry.id == offer.id)));
+            let used = slot.and_then(|slot| trace.used[slot]);
+            let pending = if used.is_some() { 1 }
+                else if slot.is_some() && trace.pending_clear.is_some() { 0 }
+                else { u32::MAX };
+            let close = owner.init_close_fifo().bounds;
+            let resources = first.and_then(|first| owner.oack_resources(first.transfer_port));
+            let final_ack = owner.tftp_final_ack_trace().filter(|ack|
+                ack.destination.node == 0 && ack.destination.port == 0x1f && ack.source.port == 0x5001);
+            let read = match owner.first_oack_tail() {
+                qcom_glink_fifo::ServerCheckTail::Consumed(at) => at, _ => None,
+            };
+            display.replace_line(1, "FIRST OACK SPARE");
+            for (index, (label, value)) in [
+                ("RUNTIME ERROR", self.error),
+                ("FIRST PEER", first.map_or(u32::MAX, |first| first.peer.port)),
+                ("SPARE ID", spare.map_or(u32::MAX, |offer| offer.id)),
+                ("SPARE SIZE", spare.map_or(u32::MAX, |offer| offer.size)),
+                ("SPARE HEAD US", age(spare.and_then(|offer| offer.published))),
+                ("SPARE READ US", age(spare.and_then(|offer| offer.first_read))),
+                ("SPARE PENDING", pending),
+                ("SPARE USE CMD", used.map_or(u32::MAX, |used| u32::from(used.header.command))),
+                ("SPARE USE SRC", used.and_then(|used| used.header.qrtr).map_or(u32::MAX, |q| q[1])),
+                ("WRQ VISIBLE US", age(owner.ipa_wrq_timing().1.and_then(|bounds| bounds.first_visible))),
+                ("WRQ RXDONE US", age(first.and_then(|first| first.wrq_done_at))),
+                ("OACK HEAD US", age(trace.oack_at)),
+                ("OACK READ US", age(read)),
+                ("GRANT 108 ID", trace.intent.unwrap_or(u32::MAX)),
+                ("ACK READ US", age(trace.ack.and_then(|ack| ack.first_read))),
+                ("CLOSE ABSENT US", age(close.and_then(|close| close.last_absent))),
+                ("CLOSE VIS US", age(close.and_then(|close| close.first_visible))),
+                ("FIRST CLOSE US", age(first.and_then(|first| first.first_close_at))),
+                ("OACK DONE US", age(first.and_then(|first| first.oack_done_at))),
+                ("FIRST DATA US", age(first.and_then(|first| first.first_data_at))),
+                ("DATA INTENT", resources.and_then(|resources| resources.data_intent).unwrap_or(u32::MAX)),
+                ("FINAL ACK FLAGS", final_ack.map_or(0, |ack| ack.flags)),
+                ("FINAL ACK US", age(final_ack.and_then(|ack| ack.published_at))),
+                ("ACK DONE US", age(final_ack.and_then(|ack| ack.done_at))),
+                ("IPA COMPLETE", u32::from(self.ipa_complete_seen)),
+                ("WLAN RRQ RX", owner.tftp_wire_counts()[2]),
+                ("WLFW SERVERS", query[7]),
+            ].into_iter().enumerate() { display.hex(index + 2, label, value); }
+        }
+        #[cfg(all(feature = "sunfish-wrq-stage-costs",not(feature = "sunfish-wrq-validation-path")))]
+        {
+            let work = owner.wrq_receive_work();
+            let visible = owner.ipa_wrq_timing().1.and_then(|b| b.first_visible);
+            let accepted = first.and_then(|t| t.wrq_at);
+            let queued = gates.queued_at;
+            let returned = work.finished;
+            let close = owner.init_close_fifo().bounds;
+            let read = match owner.first_oack_tail() {
+                qcom_glink_fifo::ServerCheckTail::Consumed(at) => at, _ => None,
+            };
+            display.replace_line(1, "WRQ STAGE COSTS");
+            for (i, (label, value)) in [
+                ("RUNTIME ERROR", self.error), ("WRQ VISIBLE US", age(visible)),
+                ("WRQ ACCEPT US", age(accepted)), ("OACK QUEUE US", age(queued)),
+                ("WRQ RXDONE US", age(returned)),
+                ("OACK HEAD US", age(owner.oack_grant_outcome().oack_at)),
+                ("OACK READ US", age(read)),
+                ("CLOSE ABSENT US", age(close.and_then(|c| c.last_absent))),
+                ("CLOSE VIS US", age(close.and_then(|c| c.first_visible))),
+            ].into_iter().enumerate() { display.hex(i+2,label,value); }
+            display.replace_line(11, "PHASE TOTAL CK RX TX");
+            let mut lost = 0;
+            for (i, (from,to)) in [(visible,accepted),(accepted,queued),(queued,returned)].into_iter().enumerate() {
+                if returned.is_some() && let Some((a,b)) = from.zip(to).filter(|(a,b)| a<=b) {
+                    let c = work.cost(a,b); lost |= c.lost;
+                    let us = |ticks| self.time_from_us(Some(0),Some(ticks));
+                    display.header_row(i+12,false,&[(i as u32+1,2),(us(c.total),8),
+                        (us(c.check_ticks),8),(us(c.rx),8),(us(c.tx),8)]);
+                    let other = c.rx.checked_add(c.tx).and_then(|sum| c.total.checked_sub(sum));
+                    display.header_row(i+12,true,&[(c.check_count,8),(c.lost,2),
+                        (other.map_or(u32::MAX,us),8),(age(from),8),(age(to),8)]);
+                } else {
+                    lost = u32::MAX;
+                    display.header_row(i+12,false,&[(i as u32+1,2),(u32::MAX,8),
+                        (u32::MAX,8),(u32::MAX,8),(u32::MAX,8)]);
+                    display.header_row(i+12,true,&[]);
+                }
+            }
+            display.replace_line(15, "RECORD HEADERS");
+            let mut count=0;
+            if returned.is_some() && let Some((a,b))=visible.zip(returned).filter(|(a,b)| a<=b) {
+                for r in work.records.records(a,b) {
+                    if count<8 {
+                        let q=r.protocol.unwrap_or([u32::MAX;4]);
+                        display.header_row(count+16,false,&[
+                            ((u32::from(r.kind)<<8)|u32::from(r.cmd),4),(u32::from(r.size),4),
+                            (r.detail,8),(q[0],2),(q[1],8),(q[2],8),(q[3],8)]);
+                        display.header_row(count+16,true,&[(age(Some(r.start)),8),(age(Some(r.end)),8)]);
+                    }
+                    count+=1;
+                }
+            }
+            for i in count.min(8)..8 { display.replace_line(i+16,""); }
+            for (row,label,value) in [
+                (24,"HISTORY LOST",lost),
+                (25,"RECORDS OMITTED",if returned.is_some(){count.saturating_sub(8) as u32}else{u32::MAX}),
+                (26,"FIRST DATA US",age(first.and_then(|t|t.first_data_at))),
+                (27,"WLAN RRQ RX",owner.tftp_wire_counts()[2]), (28,"WLFW SERVERS",query[7]),
+            ] { display.hex(row,label,value); }
+        }
+        #[cfg(feature = "sunfish-wrq-validation-path")]
+        {
+            let work=owner.wrq_receive_work();let path=&work.validation;
+            let visible=owner.ipa_wrq_timing().1.and_then(|b|b.first_visible);
+            let returned=work.finished;let head=owner.oack_grant_outcome().oack_at;
+            let read=match owner.first_oack_tail(){qcom_glink_fifo::ServerCheckTail::Consumed(t)=>t,_=>None};
+            let close=owner.init_close_fifo().bounds;
+            display.replace_line(1,"WRQ VALIDATION PATH");
+            for(i,(label,value))in [
+                ("RUNTIME ERROR",self.error),("WRQ VISIBLE US",age(visible)),
+                ("WRQ RXDONE US",age(returned)),("REG PREP US",age(reg.and_then(|r|r.prepared_at))),
+                ("REG QUEUE US",age(reg.and_then(|r|r.queued_at))),("REG PUB US",age(reg.and_then(|r|r.published_at))),
+                ("OACK HEAD US",age(head)),("OACK READ US",age(read)),
+                ("CLOSE ABSENT US",age(close.and_then(|c|c.last_absent))),
+                ("CLOSE VIS US",age(close.and_then(|c|c.first_visible))),
+            ].into_iter().enumerate(){display.hex(i+2,label,value);}
+            display.replace_line(12,"PHASE TOTAL CK RX TX");
+            #[cfg(not(feature="sunfish-wrq-domain-costs"))]
+            display.replace_line(15,"CHECK OBS CUR ACQ");
+            let mut lost=0;
+            for(i,(from,to))in [(visible,returned),(returned,head)].into_iter().enumerate(){
+                if path.finished.is_some() && let Some((a,b))=from.zip(to).filter(|(a,b)|a<=b){
+                    let c=path.cost(a,b);lost|=c.lost;
+                    let us=|t|self.time_from_us(Some(0),Some(t));
+                    let checks=c.operations.iter().sum();
+                    display.header_row(i+13,false,&[(i as u32+1,2),(us(c.total),8),(us(checks),8),(us(c.rx),8),(us(c.tx),8)]);
+                    let other=c.rx.checked_add(c.tx).and_then(|t|c.total.checked_sub(t));
+                    display.header_row(i+13,true,&[(c.count,4),(c.lost,2),(other.map_or(u32::MAX,us),8),(age(from),8),(age(to),8)]);
+                    #[cfg(not(feature="sunfish-wrq-domain-costs"))]
+                    {
+                    display.header_row(i+16,false,&[(i as u32+1,2),(us(c.operations[0]),8),(us(c.operations[1]),8),(us(c.operations[2]),8)]);
+                    display.header_row(i+16,true,&[(us(c.domains[0]),8),(us(c.domains[1]),8),(us(c.domains[2]),8),(c.missing,4),(c.domain_count,4)]);
+                    }
+                }else{
+                    lost=u32::MAX;
+                    for row in [i+13,i+16]{display.header_row(row,false,&[(i as u32+1,2),(u32::MAX,8),(u32::MAX,8),(u32::MAX,8),(u32::MAX,8)]);display.header_row(row,true,&[]);}
+                }
+            }
+            let mut count:usize=0;
+            #[cfg(not(feature="sunfish-wrq-domain-costs"))]
+            {
+            display.replace_line(18,"POST RETURN RECORDS");
+
+            if path.finished.is_some() && let Some((a,b))=returned.zip(head).filter(|(a,b)|a<=b){
+                for r in path.records.records(a,b){
+                    if count<7 {let q=r.protocol.unwrap_or([u32::MAX;4]);
+                        display.header_row(count+19,false,&[((u32::from(r.kind)<<8)|u32::from(r.cmd),4),(u32::from(r.size),4),(r.detail,8),(q[0],2),(q[1],8),(q[2],8),(q[3],8)]);
+                        display.header_row(count+19,true,&[(age(Some(r.start)),8),(age(Some(r.end)),8)]);
+                    }count+=1;
+                }
+            }
+            for row in count.min(7)..7{display.replace_line(row+19,"");}
+            }
+            #[cfg(feature="sunfish-wrq-domain-costs")]
+            {
+                display.replace_line(1,"WRQ DOMAIN COSTS");
+                display.replace_line(15,"FAULT ASID ROUTE REG");
+                display.replace_line(18,"DOMAIN PRE BODY POST");
+                for (i,(from,to)) in [(visible,returned),(returned,head)].into_iter().enumerate(){
+                    if path.finished.is_some() && let Some((a,b))=from.zip(to).filter(|(a,b)|a<=b){
+                        let c=path.cost(a,b);let us=|t|self.time_from_us(Some(0),Some(t));
+                        display.header_row(i+16,false,&[(i as u32+1,2),(us(c.parts[0]),8),(us(c.parts[1]),8),(us(c.parts[2]),8),(us(c.parts[3]),8)]);
+                        display.header_row(i+16,true,&[(us(c.parts[4]),8),(us(c.parts[5]),8),(c.parts_missing,4),(c.parts_count,4)]);
+                        display.header_row(i+19,false,&[(i as u32+1,2),(us(c.domains[0]),8),(us(c.domains[1]),8),(us(c.domains[2]),8)]);
+                        let outer=c.domains[0].saturating_add(c.domains[2]);
+                        let parts=c.parts.iter().sum::<u64>();
+                        display.header_row(i+19,true,&[(us(parts),8),(us(outer),8),(outer.checked_sub(parts).map_or(u32::MAX,us),8),(c.missing,4)]);
+                    }else{
+                        for row in [i+16,i+19]{display.header_row(row,false,&[(i as u32+1,2),(u32::MAX,8),(u32::MAX,8),(u32::MAX,8),(u32::MAX,8)]);display.header_row(row,true,&[]);}
+                    }
+                }
+                let late=|at:Option<u64>| at.zip(close.and_then(|c|c.first_visible)).and_then(|(a,b)|a.checked_sub(b))
+                    .map_or(u32::MAX,|t|self.time_from_us(Some(0),Some(t)));
+                for(row,label,value) in [(21,"OACK LATE US",late(head)),(22,"READ LATE US",late(read)),
+                    (23,"IPA COMPLETE",u32::from(self.ipa_complete_seen)),(24,"WLAN RRQ RX",owner.tftp_wire_counts()[2]),(25,"WLFW SERVERS",query[7])]
+                {display.hex(row,label,value);}
+            }
+            display.hex(26,"HISTORY LOST",lost);
+            display.hex(27,"FIRST DATA US",age(first.and_then(|f|f.first_data_at)));
+            display.replace_line(28,"");
+            display.header_row(28,false,&[(owner.tftp_wire_counts()[2],8),(query[7],8),(u32::from(self.ipa_complete_seen),2),(count.saturating_sub(7) as u32,4)]);
+            display.header_row(28,true,&[]);
+        }
+        #[cfg(all(feature = "sunfish-wrq-return-pending", not(feature = "sunfish-grant-rx-open")))]
+        {
+            let pending = owner.wrq_return_pending();
+            let record = pending.and_then(|trace| trace.first);
+            let qrtr = record.and_then(|header| header.qrtr);
+            let visible = owner.ipa_wrq_timing().1.and_then(|bounds| bounds.first_visible);
+            let returned = first.and_then(|trace| trace.wrq_done_at);
+            let cleared = pending.and_then(|trace| trace.first_clear);
+            let head = owner.wrq_prefix().oack_head;
+            display.replace_line(1, "WRQ RETURN PENDING RX");
+            for (row, (label, value)) in [
+                ("RUNTIME ERROR", self.error),
+                ("ERROR DETAIL", self.detail),
+                ("FIRST PEER", first.map_or(u32::MAX, |trace| trace.peer.port)),
+                ("WRQ VISIBLE US", age(visible)),
+                ("WRQ RXDONE US", age(returned)),
+                ("RETURN TURN", u32::from(grant.wrq_return_outcome)),
+                ("PENDING BYTES", pending.map_or(u32::MAX, |trace| trace.bytes)),
+                ("EARLY RECORDS", pending.map_or(u32::MAX, |trace| trace.early)),
+                ("GLINK CMD", record.map_or(u32::MAX, |h| u32::from(h.command))),
+                ("GLINK PARAM", record.map_or(u32::MAX, |h| h.parameter)),
+                ("RECORD BYTES", record.map_or(u32::MAX, |h| u32::from(h.bytes))),
+                ("RECORD DETAIL", record.map_or(u32::MAX, |h| h.extra)),
+                ("QRTR TYPE", qrtr.map_or(u32::MAX, |q| q[0])),
+                ("QRTR SRC PORT", qrtr.map_or(u32::MAX, |q| q[1])),
+                ("QRTR DST PORT", qrtr.map_or(u32::MAX, |q| q[2])),
+                ("CHECKED US", age(pending.and_then(|trace| trace.first_at))),
+                ("RECORD CLEAR US", age(cleared)),
+                ("RETURN TO CLEAR", self.time_from_us(returned, cleared)),
+                ("BACKLOG CLR US", age(pending.and_then(|trace| trace.backlog_clear))),
+                ("OACK HEAD US", age(head)),
+                ("OACK TAIL US", age(tail)),
+                ("WRQ TO HEAD US", self.time_from_us(visible, head)),
+                ("FIRST DATA US", age(first.and_then(|trace| trace.first_data_at))),
+                ("FIRST CLOSE US", age(first.and_then(|trace| trace.first_close_at))),
+                ("IPA COMPLETE", u32::from(self.ipa_complete_seen)),
+                ("WLAN RRQ RX", owner.tftp_wire_counts()[2]),
+                ("WLFW SERVERS", query[7]),
+            ].into_iter().enumerate() { display.hex(row + 2, label, value); }
+        }
+        #[cfg(all(feature = "sunfish-first-wrq-return-oack", not(feature = "sunfish-wrq-return-pending")))]
+        {
+            let visible = owner.ipa_wrq_timing().1.and_then(|bounds| bounds.first_visible);
+            let head = owner.wrq_prefix().oack_head;
+            let close = owner.init_close_fifo().bounds;
+            let data_at = first.and_then(|trace| trace.first_data_at);
+            let close_at = first.and_then(|trace| trace.first_close_at);
+            display.replace_line(1, "WRQ RETURN EARLY OACK");
+            for (row, (label, value)) in [
+                ("RUNTIME ERROR", self.error),
+                ("ERROR DETAIL", self.detail),
+                ("FIRST PEER", first.map_or(u32::MAX, |trace| trace.peer.port)),
+                ("TRANSFER PORT", first.map_or(u32::MAX, |trace| trace.transfer_port)),
+                ("WRQ VISIBLE US", age(visible)),
+                ("FIRST WRQ US", age(first.and_then(|trace| trace.wrq_at))),
+                ("OACK QUEUE US", age(gates.queued_at)),
+                ("WRQ RXDONE US", age(first.and_then(|trace| trace.wrq_done_at))),
+                ("RETURN TURN", u32::from(grant.wrq_return_outcome)),
+                ("BLOCK MASK", grant.wrq_return_mask.map_or(u32::MAX, u32::from)),
+                ("FITTING INTENTS", grant.wrq_return_fitting.map_or(u32::MAX, u32::from)),
+                ("OACK HEAD US", age(head)),
+                ("OACK TAIL US", age(tail)),
+                ("WRQ TO HEAD US", self.time_from_us(visible, head)),
+                ("WRQ TO TAIL US", self.time_from_us(visible, tail)),
+                ("REG PUB US", age(reg.and_then(|trace| trace.published_at))),
+                ("OACK DONE US", age(first.and_then(|trace| trace.oack_done_at))),
+                ("REPEAT WRQ US", age(first.and_then(|trace| trace.first_repeat_at))),
+                ("FIRST DATA US", age(data_at)),
+                ("CLOSE ABSENT US", age(close.and_then(|bounds| bounds.last_absent))),
+                ("CLOSE VIS US", age(close.and_then(|bounds| bounds.first_visible))),
+                ("FIRST CLOSE US", age(close_at)),
+                ("DATA BEFORE CLOSE", close_at.map_or(u32::MAX, |closed|
+                    u32::from(data_at.is_some_and(|data| data < closed)))),
+                ("WRITES COMPLETE", self.server_check.completed_count() as u32),
+                ("IPA COMPLETE", u32::from(self.ipa_complete_seen)),
+                ("WLAN RRQ RX", owner.tftp_wire_counts()[2]),
+                ("WLFW SERVERS", query[7]),
+            ].into_iter().enumerate() { display.hex(row + 2, label, value); }
+        }
+        #[cfg(all(feature = "sunfish-spare-wrq-ingress", not(feature = "sunfish-first-wrq-return-oack")))]
+        {
+            let work = owner.wrq_receive_work();
+            let bounds = owner.ipa_wrq_timing().1;
+            let visible = bounds.and_then(|b| b.first_visible);
+            let accepted = first.and_then(|t| t.wrq_at);
+            let window = visible.zip(accepted).filter(|(a,b)| a <= b);
+            let checks = window.map(|(a,b)| work.checks(a,b));
+            display.replace_line(1, "SPARE WRQ INGRESS");
+            for (row,(label,value)) in [
+                ("RUNTIME ERROR", self.error),
+                ("FIRST PEER", first.map_or(u32::MAX, |t| t.peer.port)),
+                ("WRQ VISIBLE US", age(visible)),
+                ("BYTES AHEAD", bounds.and_then(|b| b.bytes_ahead).unwrap_or(u32::MAX)),
+                ("FIRST WRQ US", age(accepted)),
+                ("CHECK COUNT", checks.map_or(u32::MAX, |c| c.0)),
+                ("CHECK US", self.time_from_us(Some(0), checks.map(|c| c.1))),
+                ("HISTORY LOST", window.zip(checks).map_or(u32::MAX, |((a,_),c)|
+                    u32::from(work.records.lost(a)) | (u32::from(c.2) << 1))),
+                ("REG PUB US", age(reg.and_then(|r| r.published_at))),
+                ("OACK HEAD US", age(owner.wrq_prefix().oack_head)),
+                ("OACK TAIL US", age(tail)),
+            ].into_iter().enumerate() { display.hex(row + 2, label, value); }
+            display.replace_line(13, "K CMD LEN ARG START END");
+            let mut records = window.into_iter().flat_map(|(a,b)| work.records.records(a,b));
+            for i in 0..24 {
+                let row = 14 + i / 2;
+                if let Some(e) = records.next() {
+                    display.header_row(row, i % 2 != 0, &[(e.kind.into(),1),(e.cmd.into(),2),
+                        (e.size.into(),4),(e.detail,8),(age(Some(e.start)),8),(age(Some(e.end)),8)]);
+                } else { display.header_row(row, i % 2 != 0, &[]); }
+            }
+            display.hex(26, "FIRST DATA US", age(first.and_then(|t| t.first_data_at)));
+            display.hex(27, "WLAN RRQ RX", owner.tftp_wire_counts()[2]);
+            display.hex(28, "WLFW SERVERS", query[7]);
+        }
+        #[cfg(all(feature = "sunfish-spare-oack-completions", not(feature = "sunfish-spare-wrq-ingress")))]
+        {
+            let (reg_tail, reg_done) = owner.registration_completion_window();
+            let oack_done = owner.first_oack_rx_done();
+            let close = owner.init_close_fifo().bounds;
+            let wrq = owner.ipa_wrq_timing().1;
+            display.replace_line(1, "SPARE OACK COMPLETIONS");
+            for (index, (label, value)) in [
+                ("RUNTIME ERROR", self.error),
+                ("FIRST PEER", first.map_or(u32::MAX, |t| t.peer.port)),
+                ("TRANSFER PORT", first.map_or(u32::MAX, |t| t.transfer_port)),
+                ("WRQ VISIBLE US", age(wrq.and_then(|s| s.first_visible))),
+                ("FIRST WRQ US", age(first.and_then(|t| t.wrq_at))),
+                ("WRQ RXDONE US", age(first.and_then(|t| t.wrq_done_at))),
+                ("REG PUB US", age(reg.and_then(|r| r.published_at))),
+                ("REG TAIL US", age(reg_tail)),
+                ("REG DONE ABS US", age(reg_done.and_then(|s| s.last_absent))),
+                ("REG DONE VIS US", age(reg_done.and_then(|s| s.first_visible))),
+                ("REG DONE US", age(reg.and_then(|r| r.completed_at))),
+                ("OACK HEAD US", age(owner.wrq_prefix().oack_head)),
+                ("OACK TAIL US", age(tail)),
+                ("OACK DONE ABS US", age(oack_done.and_then(|s| s.last_absent))),
+                ("OACK DONE VIS US", age(oack_done.and_then(|s| s.first_visible))),
+                ("OACK DONE US", age(first.and_then(|t| t.oack_done_at))),
+                ("REPEAT WRQ US", age(first.and_then(|t| t.first_repeat_at))),
+                ("FIRST DATA US", age(first.and_then(|t| t.first_data_at))),
+                ("CLOSE ABSENT US", age(close.and_then(|s| s.last_absent))),
+                ("CLOSE VIS US", age(close.and_then(|s| s.first_visible))),
+                ("FIRST CLOSE US", age(first.and_then(|t| t.first_close_at))),
+                ("REQ108 RX US", age(grant.request_108_at)),
+                ("SAME TURN US", age(owner.registration_admission_at())),
+                ("WRITES COMPLETE", self.server_check.completed_count() as u32),
+                ("IPA COMPLETE", u32::from(self.ipa_complete_seen)),
+                ("WLAN RRQ RX", owner.tftp_wire_counts()[2]),
+                ("WLFW SERVERS", query[7]),
+            ].into_iter().enumerate() { display.hex(index + 2, label, value); }
+        }
+        #[cfg(all(feature = "sunfish-spare-reg-timeline", not(feature = "sunfish-spare-oack-completions")))]
+        {
+            let rx = owner.registration_rx_visibility();
+            let close = owner.init_close_fifo().bounds;
+            let prefix = owner.wrq_prefix();
+            display.replace_line(1, if cfg!(feature = "sunfish-spare-reg-admission") {
+                "SPARE IPA REG ADMISSION"
+            } else {
+                "SPARE IPA REG TIMELINE"
+            });
+            for (index, (label, value)) in [
+                ("RUNTIME ERROR", self.error),
+                ("ERROR DETAIL", self.detail),
+                ("FIRST PEER", first.map_or(u32::MAX, |t| t.peer.port)),
+                ("FIRST WRQ US", age(first.and_then(|t| t.wrq_at))),
+                ("OACK QUEUE US", age(gates.queued_at)),
+                ("REG ABSENT US", age(rx.and_then(|b| b.last_absent))),
+                ("REG VISIBLE US", age(rx.and_then(|b| b.first_visible))),
+                ("REG RX AHEAD", rx.and_then(|b| b.bytes_ahead).unwrap_or(u32::MAX)),
+                ("REG RX US", age(reg.and_then(|r| r.received_at))),
+                ("REG ROUTE US", age(reg.and_then(|r| r.routed_at))),
+                ("REG PREP US", age(reg.and_then(|r| r.prepared_at))),
+                #[cfg(feature = "sunfish-spare-reg-admission")]
+                ("SAME TURN US", age(owner.registration_admission_at())),
+                ("REG Q TRY US", age(reg.and_then(|r| r.first_queue_attempt_at))),
+                ("REG QUEUE US", age(reg.and_then(|r| r.queued_at))),
+                ("REQ RXDONE US", age(reg.and_then(|r| r.tx.request_done_at))),
+                ("REG PUB US", age(reg.and_then(|r| r.published_at))),
+                ("CLOSE ABSENT US", age(close.and_then(|b| b.last_absent))),
+                ("CLOSE VIS US", age(close.and_then(|b| b.first_visible))),
+                ("FIRST CLOSE US", age(first.and_then(|t| t.first_close_at))),
+                ("REQ108 RX US", age(grant.request_108_at)),
+                ("DIRECT TURN", grant.direct_turn),
+                ("OACK HEAD US", age(prefix.oack_head)),
+                ("OACK TAIL US", age(tail)),
+                ("FIRST DATA US", age(first.and_then(|t| t.first_data_at))),
+                #[cfg(not(feature = "sunfish-spare-reg-admission"))]
+                ("REG DONE US", age(reg.and_then(|r| r.completed_at))),
+                ("IPA COMPLETE", u32::from(self.ipa_complete_seen)),
+                ("WLAN RRQ RX", owner.tftp_wire_counts()[2]),
+                ("WLFW SERVERS", query[7]),
+            ].into_iter().enumerate() { display.hex(index + 2, label, value); }
+        }
+        #[cfg(all(feature = "sunfish-first-wrq-spare-oack", not(feature = "sunfish-spare-reg-timeline")))]
         {
             let prefix = owner.wrq_prefix();
             let close = owner.init_close_fifo().bounds;

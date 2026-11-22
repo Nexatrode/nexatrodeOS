@@ -158,6 +158,8 @@ pub(super) struct LinuxRuntime {
     registration_turn_times: [Option<u64>; 2],
     #[cfg(feature = "sunfish-ipa-registration-cold-handoff")]
     cold_registration_handoff: Option<bool>,
+    #[cfg(feature = "sunfish-spare-reg-admission")]
+    registration_admission_at: Option<u64>,
     #[cfg(feature = "sunfish-ipa-registration-owner-trace")]
     registration_owner_trace: Option<IpaRegistrationOwnerTrace>,
     #[cfg(feature = "sunfish-ipa-init-continuation")]
@@ -204,6 +206,8 @@ impl LinuxRuntime {
             registration_turn_times: [None; 2],
             #[cfg(feature = "sunfish-ipa-registration-cold-handoff")]
             cold_registration_handoff: None,
+            #[cfg(feature = "sunfish-spare-reg-admission")]
+            registration_admission_at: None,
             #[cfg(feature = "sunfish-ipa-registration-owner-trace")]
             registration_owner_trace: None,
             #[cfg(feature = "sunfish-ipa-init-continuation")]
@@ -291,6 +295,7 @@ impl LinuxRuntime {
         adapter: &mut Adapter<I>,
         requests: &mut [Option<RequestHandle>; MAX_REQUESTS],
         now: u64,
+        #[cfg(feature = "sunfish-spare-reg-admission")] registration_only: bool,
     ) -> Result<LinuxIpaProgress, Error> {
         #[cfg(feature = "sunfish-ipa-independent-server-experiment")]
         { self.last_progress_client = false; }
@@ -345,7 +350,16 @@ impl LinuxRuntime {
             return Err(failure(LinuxIpaError::Timeout));
         }
         #[cfg(feature = "sunfish-ipa-independent-server-experiment")]
-        { self.step_independent(adapter, requests, now, peer) }
+        {
+            #[cfg(feature = "sunfish-spare-reg-admission")]
+            if registration_only {
+                // Run the normal clock, peer, response and timeout checks above.
+                // Leave the client its ordinary next turn even on backpressure.
+                return self.step_server(adapter, requests, now)?
+                    .ok_or(Error::LinuxIpa(LinuxIpaError::Configuration));
+            }
+            self.step_independent(adapter, requests, now, peer)
+        }
         #[cfg(not(feature = "sunfish-ipa-independent-server-experiment"))]
         {
         if let Some(pending) = self.pending.as_mut() {
@@ -478,6 +492,11 @@ impl<I: Io> Owner<I> {
     #[cfg(feature = "sunfish-ipa-reg-close-fifo")]
     pub fn registration_close_fifo(&self) -> Option<crate::qcom_glink_fifo::RegistrationCloseFifo> {
         self.adapter.registration_close_fifo()
+    }
+
+    #[cfg(feature = "sunfish-spare-oack-completions")]
+    pub fn registration_completion_window(&self) -> (Option<u64>, Option<crate::qcom_glink_fifo::ServerCheckRxDone>) {
+        self.adapter.registration_completion_window()
     }
 
     #[cfg(feature = "sunfish-ipa-registration-reply-path")]
@@ -900,7 +919,12 @@ impl<I: Io> Owner<I> {
         }
         Ok(())
     }
-    /// One bounded protocol action after native transport/handler work. `now`
+    #[cfg(feature = "sunfish-spare-reg-admission")]
+    pub fn registration_admission_at(&self) -> Option<u64> {
+        self.linux_ipa.as_ref()?.registration_admission_at
+    }
+
+    /// Bounded IPA service after native transport and handler work. `now`
     /// must come from the same physical counter described by counter_hz.
     /// Arrange a timer wake for report.next_deadline when the peer is silent;
     /// waiting on completion does not reschedule a busy-spin continuation.
@@ -909,6 +933,29 @@ impl<I: Io> Owner<I> {
         now: u64,
         interrupts: &mut impl Interrupts,
     ) -> Result<LinuxIpaProgress, Error> {
+        let progress = self.checked_ipa_step(now, interrupts, #[cfg(feature = "sunfish-spare-reg-admission")] false)?;
+        #[cfg(feature = "sunfish-spare-reg-admission")]
+        if progress == LinuxIpaProgress::Prepared
+            && let Some(runtime) = self.linux_ipa.as_mut()
+            && !runtime.last_progress_client && runtime.cold_registration_handoff.is_none()
+            && self.adapter.original_oack_awaits_registration()
+            && let Some(trace) = self.adapter.ipa_registration_trace()
+            && runtime.server_pending.as_ref().is_some_and(|p| !p.queued && p.handle == Some(trace.request))
+            && let Some(clock) = self.rmtfs_event_clock
+        {
+            let started = clock();
+            runtime.registration_admission_at = Some(started);
+            self.checked_ipa_step(started, interrupts, true)?;
+        }
+        Ok(progress)
+    }
+
+    fn checked_ipa_step(
+        &mut self,
+        now: u64,
+        interrupts: &mut impl Interrupts,
+        #[cfg(feature = "sunfish-spare-reg-admission")] registration_only: bool,
+    ) -> Result<LinuxIpaProgress, Error> {
         self.check()?;
         self.stopped = true;
         let result = match self.linux_ipa.as_mut() {
@@ -916,7 +963,8 @@ impl<I: Io> Owner<I> {
                 #[cfg(feature = "sunfish-ipa-init-continuation")]
                 let pending_init = runtime.pending.as_ref()
                     .is_some_and(|pending| pending.message_id() == Some(ipa::INIT_DRIVER));
-                let result = runtime.step(&mut self.adapter, &mut self.requests, now);
+                let result = runtime.step(&mut self.adapter, &mut self.requests, now,
+                    #[cfg(feature = "sunfish-spare-reg-admission")] registration_only);
                 #[cfg(feature = "sunfish-ipa-init-continuation")]
                 match result.as_ref() {
                     Ok(LinuxIpaProgress::Discovered) => {

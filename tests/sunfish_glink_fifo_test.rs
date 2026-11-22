@@ -234,7 +234,19 @@ impl Io for Fake {
     fn store_tx_head(&mut self, value: u32) -> Result<(), Fault> {
         self.op("head", Op::Head(value))?;
         let mut m = self.0.borrow_mut();
+        #[cfg(feature = "sunfish-oack-grant-ack-turn")]
+        let ack = m.tx[m.words[1] as usize] == 8;
+        #[cfg(feature = "sunfish-oack-grant-ack-turn")]
+        if ack && m.fail == Some("ack_head_before") { return Err(Fault); }
+        #[cfg(feature = "sunfish-first-oack-spare-buffer")]
+        let advertisement = m.tx[m.words[1] as usize] == 5;
+        #[cfg(feature = "sunfish-first-oack-spare-buffer")]
+        if advertisement && m.fail == Some("intent_head_before") { return Err(Fault); }
         m.words[1] = value;
+        #[cfg(feature = "sunfish-first-oack-spare-buffer")]
+        if advertisement && m.fail == Some("intent_head_after") { return Err(Fault); }
+        #[cfg(feature = "sunfish-oack-grant-ack-turn")]
+        if ack && m.fail == Some("ack_head_after") { return Err(Fault); }
         if m.fail_after_store {
             return Err(Fault);
         }
@@ -576,6 +588,47 @@ fn partial_header_body_and_padding_leave_rx_cursor_and_core_unchanged() {
         assert!(writes(&peer.log()).is_empty());
         peer.push(&record[size..]);
         receive_handle(&mut a);
+    }
+}
+
+#[cfg(feature = "sunfish-grant-rx-open")]
+#[test]
+fn grant_receive_turn_tracks_only_the_committed_positive_52_byte_ack() {
+    for size in [0, 52, 53] {
+        let (peer, mut adapter) = adapter(0, 0);
+        peer.push(&control(7, 2, size));
+        let granted = size != 0;
+        assert_eq!(adapter.poll_receive(1), Ok(Receive::Session(Event::ReceiveIntentRequest { granted })));
+        if granted {
+            assert!(matches!(adapter.publish_next(1), Ok(Transmit::Session(Published::ReceiveIntent(_)))));
+            assert_eq!(peer.take_tx()[0], 5);
+        }
+        assert_eq!(adapter.grant_receive_trace().ack_count, 0);
+        assert_eq!(adapter.publish_next(1), Ok(Transmit::Session(Published::IntentRequestAck { granted })));
+        assert_eq!(peer.take_tx()[0], 8);
+        assert_eq!(adapter.grant_receive_trace().ack_count, u32::from(size == 52));
+        if size == 52 {
+            assert!(adapter.take_grant_receive_turn());
+            assert!(!adapter.take_grant_receive_turn());
+        }
+    }
+}
+
+#[cfg(feature = "sunfish-wrq-grant-turns")]
+#[test]
+fn separate_startup_grants_each_get_one_opportunity_after_its_own_ack() {
+    let (peer, mut adapter) = adapter(0, 0);
+    for count in 1..=2 {
+        peer.push(&control(7, 2, 52));
+        assert!(matches!(adapter.poll_receive(1), Ok(Receive::Session(Event::ReceiveIntentRequest { granted: true }))));
+        assert!(matches!(adapter.publish_next(1), Ok(Transmit::Session(Published::ReceiveIntent(_)))));
+        assert!(!adapter.take_grant_receive_turn());
+        assert_eq!(peer.take_tx()[0], 5);
+        assert_eq!(adapter.publish_next(1), Ok(Transmit::Session(Published::IntentRequestAck { granted: true })));
+        assert_eq!(peer.take_tx()[0], 8);
+        assert_eq!(adapter.grant_receive_trace().ack_count, count);
+        assert!(adapter.take_grant_receive_turn());
+        assert!(!adapter.take_grant_receive_turn());
     }
 }
 

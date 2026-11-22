@@ -34,6 +34,14 @@ pub struct Retained<'memory, F: FnMut(usize) -> Result<(), domain::Error>> {
     clock: Option<fn() -> u64>,
     #[cfg(feature = "sunfish-native-startup-mpss-runtime")]
     timing: IoTiming,
+    #[cfg(feature = "sunfish-wrq-validation-path")]
+    validation_clock: Option<fn()->u64>,
+    #[cfg(feature = "sunfish-wrq-validation-path")]
+    validation_samples: [[Option<u64>;4];3],
+    #[cfg(feature = "sunfish-wrq-validation-path")]
+    validation_count: usize,
+    #[cfg(feature="sunfish-wrq-domain-costs")]
+    validation_parts:[[fifo::DomainEdges;2];3],
     auth: Option<ManuallyDrop<AuthReturned>>,
     failed: bool,
     diagnostic: u32,
@@ -56,6 +64,10 @@ pub fn start_live<'m, F: FnMut(usize) -> Result<(), domain::Error>>(
             clock: None,
             #[cfg(feature = "sunfish-native-startup-mpss-runtime")]
             timing: IoTiming::default(),
+            #[cfg(feature = "sunfish-wrq-validation-path")] validation_clock:None,
+            #[cfg(feature = "sunfish-wrq-validation-path")] validation_samples:[[None;4];3],
+            #[cfg(feature = "sunfish-wrq-validation-path")] validation_count:0,
+            #[cfg(feature="sunfish-wrq-domain-costs")] validation_parts:[[fifo::DomainEdges::default();2];3],
             auth: Some(ManuallyDrop::new(auth)),
             failed: false,
             diagnostic: 0,
@@ -131,6 +143,12 @@ impl<'m, F: FnMut(usize) -> Result<(), domain::Error>> Retained<'m, F> {
         let mut crash_evidence = None;
         #[cfg(feature = "sunfish-tftp-barrier-domain-observer")]
         let mut samples = [None; 4];
+        #[cfg(feature = "sunfish-wrq-validation-path")]
+        let validation_clock=self.validation_clock;
+        #[cfg(feature = "sunfish-wrq-validation-path")]
+        let mut validation_samples=[None;4];
+        #[cfg(feature="sunfish-wrq-domain-costs")]
+        let mut parts=[fifo::DomainEdges::default();2];
         let result = self.gate.try_borrow_mut(|native| {
             let action = |owner: &mut Owner<'m>| {
                 let result = action(owner);
@@ -141,14 +159,48 @@ impl<'m, F: FnMut(usize) -> Result<(), domain::Error>> Retained<'m, F> {
                 }
                 result
             };
+            #[cfg(feature = "sunfish-wrq-validation-path")]
+            if validation_clock.is_some() {
+                #[cfg(feature="sunfish-wrq-domain-costs")]
+                let stage_capture=|which:usize,stage:domain::RetainedDomainStage,_index:usize| {
+                    use domain::RetainedDomainStage as S;
+                    let category=match stage {
+                        S::Entry|S::GlobalFaultStatus|S::ContextControl|S::ContextControlValue|S::ContextFaultStatus|S::ContextFaultStatusValue=>0,
+                        S::AsidBank=>1,S::RouteSlot=>2,S::Register=>3,S::TableSetup=>4,S::TablePage=>5,S::Complete=>6,
+                        _=>return,
+                    };
+                    if parts[which].needs_stamp(category) && let Some(clock)=validation_clock {parts[which].mark(category,clock());}
+                };
+                return native.with_glink_observed(action,|index| {
+                    if let Some(clock)=domain_clock {samples[index]=Some(clock());}
+                    if let Some(clock)=validation_clock {validation_samples[index]=Some(clock());}
+                },
+                #[cfg(feature="sunfish-wrq-domain-costs")]
+                stage_capture,
+                );
+            }
             #[cfg(feature = "sunfish-tftp-barrier-domain-observer")]
             if let Some(clock) = domain_clock {
-                return native.with_glink_observed(action, |index| samples[index] = Some(clock()));
+                #[cfg(feature="sunfish-wrq-domain-costs")]
+                let no_stage=|_,_,_|{};
+                return native.with_glink_observed(action, |index| samples[index] = Some(clock()),
+                    #[cfg(feature="sunfish-wrq-domain-costs")]
+                    no_stage,
+                );
             }
             native.with_glink(action)
         });
         #[cfg(feature = "sunfish-tftp-barrier-domain-observer")]
         self.timing.record_barrier_domains(samples);
+        #[cfg(feature = "sunfish-wrq-validation-path")]
+        if self.validation_clock.is_some() {
+            if self.validation_count<3 {
+                self.validation_samples[self.validation_count]=validation_samples;
+                #[cfg(feature="sunfish-wrq-domain-costs")]
+                {self.validation_parts[self.validation_count]=parts;}
+            }
+            self.validation_count=self.validation_count.saturating_add(1);
+        }
         #[cfg(feature = "sunfish-native-startup-mpss-runtime")]
         { if crash_evidence.is_some() { self.crash_evidence = crash_evidence; } }
         match result {
@@ -205,6 +257,29 @@ impl<F: FnMut(usize) -> Result<(), domain::Error>> fifo::Io for Retained<'_, F> 
     #[cfg(feature = "sunfish-tftp-reserved-writer-io")]
     fn reserved_io_totals(&self) -> Option<[u64; 12]> {
         self.timing.enabled().then(|| self.elf_io_totals()).flatten()
+    }
+    #[cfg(feature = "sunfish-wrq-validation-path")]
+    fn validation_cost_begin(&mut self, clock:Option<fn()->u64>) {
+        self.validation_clock=clock;self.validation_samples=[[None;4];3];self.validation_count=0;
+        #[cfg(feature="sunfish-wrq-domain-costs")]
+        {self.validation_parts=[[fifo::DomainEdges::default();2];3];}
+    }
+    #[cfg(feature="sunfish-wrq-domain-costs")]
+    fn validation_cost_parts(&self)->Option<[[[u64;7];2];3]> {
+        if self.validation_clock.is_none() || self.validation_count!=3 {return None;}
+        let mut out=[[[0;7];2];3];
+        for (i,groups) in self.validation_parts.iter().enumerate(){for (j,g) in groups.iter().enumerate(){out[i][j]=g.complete()?;}}
+        Some(out)
+    }
+    #[cfg(feature = "sunfish-wrq-validation-path")]
+    fn validation_cost_end(&mut self)->Option<[[u64;4];3]> {
+        let active=self.validation_clock.take().is_some();
+        if !active || self.validation_count!=3 {return None;}
+        let mut result=[[0;4];3];
+        for (i,group) in self.validation_samples.iter().enumerate() {
+            for (j,t) in group.iter().enumerate() {result[i][j]=(*t)?;}
+        }
+        Some(result)
     }
     fn diagnostic(&self) -> u32 {
         self.diagnostic

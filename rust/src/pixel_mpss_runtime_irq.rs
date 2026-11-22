@@ -207,6 +207,22 @@ impl<K: Kernel> Router<K> {
         }
     }
 
+    #[cfg(feature = "sunfish-grant-rx-open")]
+    pub fn dispatch_with_grant_receive_turn<I: Io>(&mut self, owner: &mut Owner<I>) -> Result<(), Error> {
+        let before = owner.grant_receive_trace().ack_count;
+        self.dispatch(owner)?;
+        #[cfg(feature = "sunfish-wrq-grant-turns")]
+        if owner.grant_receive_trace().ack_count != before { owner.mark_primary_grant(); }
+        // Dispatch at most once here. An ACK in a service pass or in the extra dispatch cannot recurse.
+        // Consume only a continuation earned by a pass that committed the matching ACK.
+        if self.continuation && self.other == 0 && self.error.is_none() && !self.busy
+            && owner.grant_receive_trace().ack_count != before && owner.take_grant_receive_turn()
+        {
+            self.dispatch(owner)?;
+        }
+        Ok(())
+    }
+
     /// Service the cold registration and give a newly queued reply one
     /// normal dispatch before the runtime proceeds to other services.
     #[cfg(feature = "sunfish-ipa-registration-cold-handoff")]

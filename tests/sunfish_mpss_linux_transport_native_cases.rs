@@ -421,3 +421,65 @@ fn status_cursor_pair_can_read_after_mid_pair_domain_corruption() {
         });
     }
 }
+
+#[cfg(all(feature = "sunfish-wrq-validation-path",feature = "sunfish-glink-combined-cursor-sample",feature = "sunfish-glink-barrier-observe-pair"))]
+#[test]
+fn native_wrq_cost_scope_keeps_native_domains_and_legacy_clock_separate() {
+    use crate::qcom_glink_fifo::{Barrier,Io};
+    std::thread_local! {static COST:std::cell::Cell<u64>=const{std::cell::Cell::new(0)};
+        static LEGACY:std::cell::Cell<u64>=const{std::cell::Cell::new(0)};}
+    fn cost()->u64{COST.replace(COST.get()+1)}
+    fn legacy()->u64{LEGACY.replace(LEGACY.get()+100)}
+    with_native(|gate,peer,apcs,auth| {
+        let mut boot=live::start_live(gate,auth,session(),19_200_000);boot.step(0).unwrap();
+        peer.allocate_rx(4096,0);COST.set(1);LEGACY.set(1000);
+        let before=peer.read(0x11d000,0x7c000);let door=unsafe{apcs.read()};
+        boot.with_io(|io| {
+            io.owner_timing_clock(legacy);io.owner_timing_enable(true);
+            io.validation_cost_begin(Some(cost));
+            io.observe().unwrap();io.cursor_snapshot().unwrap();io.barrier_observe(Barrier::Acquire).unwrap();
+            #[cfg(feature="sunfish-wrq-domain-costs")]
+            let parts=io.validation_cost_parts().expect("all six domain stage sequences complete");
+            let groups=io.validation_cost_end().unwrap();
+            #[cfg(feature="sunfish-wrq-domain-costs")]
+            {
+                for i in 0..3 {for side in 0..2 {
+                    let g=parts[i][side];assert!(g.windows(2).all(|w|w[0]<=w[1]));
+                    assert!(groups[i][side*2]<=g[0] && g[6]<=groups[i][side*2+1]);
+                    assert!(g[5]<g[6],"table comparison interval was observed");
+                }}
+                assert_eq!(io.validation_cost_parts(),None,"scope ends with ordinary timing");
+            }
+            assert!(groups.iter().all(|g|g.windows(2).all(|w|w[0]<w[1])));
+            assert!(groups.windows(2).all(|g|g[0][3]<g[1][0]));
+            let timing=io.owner_timing();assert_eq!(timing.barrier_domain_calls,[1,1]);
+            assert_eq!(timing.barrier_domain_total,[100,100]);
+            assert_eq!(io.validation_cost_end(),None);
+            io.validation_cost_begin(None);assert_eq!(io.validation_cost_end(),None);
+            io.validation_cost_begin(Some(cost));io.observe().unwrap();
+            #[cfg(feature="sunfish-wrq-domain-costs")]
+            assert_eq!(io.validation_cost_parts(),None);
+            assert_eq!(io.validation_cost_end(),None,"partial scope cannot claim a complete sample");
+        });
+        assert_eq!(peer.read(0x11d000,0x7c000),before);assert_eq!(unsafe{apcs.read()},door);assert_eq!(peer.free_lock(),0);
+    });
+}
+
+#[cfg(all(feature = "sunfish-wrq-validation-path",feature = "sunfish-glink-combined-cursor-sample",feature = "sunfish-glink-barrier-observe-pair"))]
+#[test]
+fn native_wrq_cost_scope_preserves_pre_and_post_fault_quarantine() {
+    use crate::qcom_glink_fifo::Io;
+    for post in [false,true] {with_native(|gate,peer,_,auth| {
+        let (word,old)=gate.try_borrow_mut(|n|{let word=unsafe{n.table_pointers[0].add(511)};(word,unsafe{word.read()})}).unwrap();
+        let mut boot=live::start_live(gate,auth,session(),19_200_000);boot.step(0).unwrap();peer.allocate_rx(4096,0);
+        let before=peer.read(0x11d000,0x7c000);
+        if post {PAIR_TABLE_CHANGE.set(Some(word));} else {unsafe{word.write(old^1);}}
+        boot.with_io(|io| {
+            io.validation_cost_begin(Some(||1));assert!(io.observe().is_err());
+            assert_eq!(io.validation_cost_end(),None);
+        });
+        unsafe{word.write(old);}
+        boot.with_io(|io|{assert!(io.cursor_snapshot().is_err());assert!(io.write_tx(0,b"12345678").is_err());assert!(io.gate_quarantined());});
+        assert_eq!(peer.read(0x11d000,0x7c000),before);assert_eq!(peer.free_lock(),0);
+    });}
+}

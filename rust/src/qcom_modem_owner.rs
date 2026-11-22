@@ -2096,9 +2096,33 @@ impl<I: Io> Owner<I> {
 
     #[cfg(feature = "sunfish-grant-buffer-reads")]
     pub fn grant_buffer_reads(&self) -> &fifo::GrantBufferReads { self.adapter.grant_buffer_reads() }
+    #[cfg(feature = "sunfish-oack-grant-outcome")]
+    pub fn oack_grant_outcome(&self) -> &fifo::OackGrantTrace { self.adapter.oack_grant_outcome() }
+
 
     #[cfg(feature = "sunfish-first-oack-grant-window")]
     pub fn first_grant_trace(&self) -> fifo::FirstGrantTrace { self.adapter.first_grant_trace() }
+
+    #[cfg(feature = "sunfish-grant-rx-open")]
+    pub fn grant_receive_trace(&self) -> &fifo::GrantReceiveTrace { self.adapter.grant_receive_trace() }
+
+    #[cfg(feature = "sunfish-wrq-grant-turns")]
+    pub fn mark_primary_grant(&mut self) { self.adapter.mark_primary_grant(); }
+
+    #[cfg(feature = "sunfish-grant-rx-open")]
+    pub fn take_grant_receive_turn(&mut self) -> bool {
+        #[cfg(feature = "sunfish-tftp-close-handoff-prototype")]
+        if self.pending_tftp_close().is_some() { return false; }
+        self.pending_tftp_request().is_none() && !self.has_pending_tftp_reply()
+            && self.pending_firmware_close().is_none()
+            && self.adapter.ipa_registration_trace().is_none()
+            && self.adapter.server_check_oacks()[0].is_none()
+            && self.adapter.tftp_rx_snapshot().is_some_and(|(bytes, early)| bytes != 0 || early != 0)
+            && self.adapter.take_grant_receive_turn()
+    }
+
+    #[cfg(feature = "sunfish-wrq-return-pending")]
+    pub fn wrq_return_pending(&self) -> Option<&fifo::WrqReturnPending> { self.adapter.wrq_return_pending() }
 
     #[cfg(feature = "sunfish-first-oack-grant-window")]
     pub fn first_oack_tail(&self) -> fifo::ServerCheckTail { self.adapter.first_server_check_tail() }
@@ -2135,6 +2159,8 @@ impl<I: Io> Owner<I> {
     }
     #[cfg(feature = "sunfish-ipa-ingress-work")]
     pub fn ipa_ingress_work(&self) -> &fifo::IpaIngressWork { self.adapter.ipa_ingress_work() }
+    #[cfg(feature = "sunfish-spare-wrq-ingress")]
+    pub fn wrq_receive_work(&self) -> &fifo::WrqReceiveWork { self.adapter.wrq_receive_work() }
     #[cfg(feature = "sunfish-wrq-prefix-close")]
     pub fn wrq_prefix(&self) -> &fifo::WrqPrefix { self.adapter.wrq_prefix() }
 
@@ -3024,6 +3050,9 @@ impl<I: Io> Owner<I> {
         }
         self.schedule(interrupts)
     }
+    #[cfg(all(test, feature = "sunfish-first-oack-spare-buffer"))]
+    pub(crate) fn into_spare_test_adapter(self) -> Adapter<I> { self.adapter }
+
     pub fn offer_receive(&mut self) -> Result<u32, Error> {
         self.check()?;
         match self.adapter.offer_receive(self.generation) {

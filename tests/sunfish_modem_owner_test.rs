@@ -5657,3 +5657,128 @@ fn elf_host_credit_and_first_tftp_request_follow_exact_transport_boundaries() {
         }
     }
 }
+
+#[cfg(feature = "sunfish-first-oack-spare-buffer")]
+mod first_oack_spare_tests {
+    use super::*;
+    pub(crate) fn prepared(full: bool) -> (Fake, Owner<Fake>, Irqs, qcom_tftp_server_check::ServerCheck) {
+        let peer = Fake::new(0, 0);
+        let mut s = session();
+        s.enable_ipa_before_first_oack();
+        s.observe_first_tftp_without_oack_hold();
+        let adapter = Adapter::attach(peer.clone(), s, 1).unwrap();
+        let mut owner = Owner::attach(adapter, 1).unwrap();
+        owner.set_rmtfs_event_clock(|| 100);
+        let mut irqs = Irqs::default();
+        owner.prepare_tftp_server(0x5000).unwrap();
+        owner.start_control().unwrap();
+        let mut intents = control(5, 2, 12);
+        for id in 0u32..12 { intents.extend(4096u32.to_le_bytes()); intents.extend(id.to_le_bytes()); }
+        peer.push(&intents);
+        owner.notified(8, &mut irqs).unwrap();
+        take_owner_datagrams(&peer, &mut owner, &mut irqs);
+        owner_control_peer_hello(&peer, &mut owner, &mut irqs);
+        take_owner_datagrams(&peer, &mut owner, &mut irqs);
+        let first = owner.offer_receive().unwrap();
+        if full {
+            while (0..8).any(|slot| (owner.receive_snapshot().states >> (slot * 4)) & 15 == 0) {
+                owner.offer_receive().unwrap();
+            }
+        }
+        owner.notified(8, &mut irqs).unwrap();
+        peer.take_tx();
+        peer.push(&data(first, &tftp_qrtr(qcom_tftp_server_check::REQUEST, 0x1f, 0x5000)));
+        owner.notified(1, &mut irqs).unwrap();
+        let mut server = qcom_tftp_server_check::ServerCheck::new();
+        assert_eq!(owner.service_tftp_server_check_step(&mut server, &mut irqs),
+            Ok(qcom_modem_owner::TftpServiceProgress::ResponseQueued));
+        (peer, owner, irqs, server)
+    }
+    #[test]
+    fn fresh_advertisement_precedes_original_oack_once() {
+        let (peer, mut owner, mut irqs, _) = prepared(false);
+        owner.notified(8, &mut irqs).unwrap();
+        let id = owner.oack_resources(0x5001).unwrap().primed_intent
+            .expect("first OACK should advertise a fresh free buffer");
+        let wire = peer.take_tx();
+        let mut at = 0; let mut advertisement = None; let mut oack = None;
+        while at < wire.len() {
+            let cmd = owner_word(&wire, at) & 0xffff;
+            let len = match cmd {
+                5 => { if owner_word(&wire, at+12) == id { advertisement = Some(at); } 16 },
+                9 | 12 => { let n = owner_word(&wire, at+8) as usize;
+                    let body = &wire[at+16..at+16+n];
+                    if n >= 34 && owner_word(body, 28) == 0x1f && body[32..34] == [0,6] { oack = Some(at); }
+                    (16+n+7)&!7 }, _ => 8,
+            }; at += len;
+        }
+        assert!(advertisement.unwrap() < oack.unwrap());
+        owner.notified(8, &mut irqs).unwrap();
+        assert_eq!(owner.oack_resources(0x5001).unwrap().primed_intent, Some(id));
+        assert!(peer.take_tx().is_empty(), "follow-up must not prime repeatedly");
+    }
+    #[test]
+    fn full_pool_does_not_steal_a_receive_slot() {
+        let (peer, mut owner, mut irqs, _) = prepared(true);
+        owner.notified(8, &mut irqs).unwrap();
+        assert_eq!(owner.oack_resources(0x5001).unwrap().primed_intent, None);
+        assert!(owner_complete_datagrams(&peer.take_tx()).iter().any(|packet|
+            packet.len() >= 34 && owner_word(packet, 28) == 0x1f && packet[32..34] == [0,6]));
+    }
+    #[test]
+    fn uncertain_advertisement_head_seals_without_followup() {
+        for failure in ["intent_head_before", "intent_head_after"] {
+            let (peer, mut owner, mut irqs, _) = prepared(false);
+            peer.0.borrow_mut().fail = Some(failure);
+            assert!(owner.notified(8, &mut irqs).is_err());
+            assert!(owner.oack_grant_outcome().primed_offer.is_none());
+            assert!(owner.server_check_oacks()[0].unwrap().oack_at.is_none());
+            peer.0.borrow_mut().fail = None;
+            let before = peer.0.borrow().words;
+            assert!(owner.notified(8, &mut irqs).is_err());
+            assert_eq!(peer.0.borrow().words, before);
+        }
+    }
+
+}
+
+#[cfg(feature = "sunfish-wrq-stage-costs")]
+#[test]
+fn wrq_stage_history_freezes_only_after_exact_checked_return() {
+    let (peer,mut owner,mut irqs,_) = first_oack_spare_tests::prepared(false);
+    use ::core::sync::atomic::{AtomicU64,Ordering};
+    static CLOCK:AtomicU64=AtomicU64::new(1000);
+    CLOCK.store(1000,Ordering::Relaxed);
+    owner.set_rmtfs_event_clock(||CLOCK.fetch_add(1,Ordering::Relaxed));
+    assert_eq!(owner.wrq_receive_work().finished,None);
+    owner.notified(8,&mut irqs).unwrap();
+    let at=owner.server_check_oacks()[0].unwrap().wrq_done_at.unwrap();
+    let work=owner.wrq_receive_work();
+    assert_eq!(work.finished,Some(at));
+    let before:Vec<_>=work.records.records(0,u64::MAX).map(|r|(r.start,r.end,r.kind,r.cmd,r.detail,r.protocol)).collect();
+    assert!(before.iter().any(|r|r.2==1 && r.3==14 && r.1>r.0 && r.1<=at));
+    let cost=work.cost(100,at);
+    assert!(cost.check_count>0 && cost.check_ticks>0 && cost.tx>0);
+    #[cfg(feature = "sunfish-wrq-validation-path")]
+    {
+        let path=&work.validation;
+        let head=owner.server_check_oacks()[0].unwrap().oack_at.unwrap();
+        assert!(at<head && head<=path.finished.unwrap(),"new history freezes after OACK, not WRQ return");
+        assert!(path.cost(100,at).count>0);
+        let after_return=path.cost(at,head);
+        assert!(after_return.count>0 && after_return.tx>0);
+    }
+    peer.take_tx();peer.push(&control(7,2,108));
+    owner.notified(8,&mut irqs).unwrap();
+    let after:Vec<_>=owner.wrq_receive_work().records.records(0,u64::MAX)
+        .map(|r|(r.start,r.end,r.kind,r.cmd,r.detail,r.protocol)).collect();
+    assert_eq!(before,after);
+    assert_eq!(owner.wrq_receive_work().finished,Some(at));
+    #[cfg(feature = "sunfish-wrq-validation-path")]
+    {
+        let path=&owner.wrq_receive_work().validation;
+        let end=path.finished.unwrap();
+        assert!(path.records.records(at,u64::MAX).all(|r|r.end<=end));
+        assert!(!path.records.records(end+1,u64::MAX).any(|r|r.cmd==7));
+    }
+}

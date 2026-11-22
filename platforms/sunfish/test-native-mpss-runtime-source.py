@@ -30,6 +30,19 @@ class ManifestExtension(unittest.TestCase):
                 fields = re.findall(r'^\s*\((\d+), "([^"]+)",', panel, re.MULTILINE)
                 self.assertEqual([int(row) for row, _ in fields], list(range(2, 29)))
                 self.assertEqual([label for _, label in fields if len(label.encode()) > 15], [])
+    def test_wrq_return_pending_panel_fits_the_display(self):
+        source = (ROOT / 'rust/src/pixel_mpss_runtime.rs').read_text()
+        for title in ('WRQ RETURN PENDING RX', 'GRANT RX OPEN WINDOW', 'WRQ GRANT RX TURNS'):
+            with self.subTest(title=title):
+                panel = source.split(f'display.replace_line(1, "{title}");', 1)[1]
+                panel = panel.split('].into_iter().enumerate()', 1)[0]
+                feature = 'feature = "sunfish-wrq-grant-turns"'
+                inactive = f'not({feature})' if title == 'WRQ GRANT RX TURNS' else feature
+                panel = re.sub(r'^[ \t]*#\[cfg\(' + re.escape(inactive) + r'\)\]\n.*$', '', panel, flags=re.MULTILINE)
+                labels = re.findall(r'^\s*\("([^"]+)",', panel, re.MULTILINE)
+                self.assertEqual(len(labels), 27)
+                self.assertLessEqual(max(map(len, labels)), 15)
+
     def test_wlan_listener_is_opt_in_and_cannot_restart(self):
         owner = (ROOT / 'rust/src/qcom_modem_owner.rs').read_text()
         probe = owner[owner.index('pub struct WlanStateListener'):]
