@@ -1432,6 +1432,7 @@ impl<I: Io> Ring<I> {
         }
     }
 
+    #[cfg_attr(feature="sunfish-wrq-post-return-callers",track_caller)]
     fn sample(&mut self) -> Result<(), Error> {
         #[cfg(feature = "sunfish-wrq-stage-costs")]
         let wrq_sample_start = self.wrq_work_clock();
@@ -1527,8 +1528,13 @@ impl<I: Io> Ring<I> {
             if let (Some(a),Some(b),Some(c),Some(d))=(wrq_sample_start,status_end,cursor_end,end) {
                 #[cfg(not(feature="sunfish-wrq-domain-costs"))]
                 self.wrq_work.validation.sample([a,b,c,d],domains);
-                #[cfg(feature="sunfish-wrq-domain-costs")]
+                #[cfg(all(feature="sunfish-wrq-domain-costs",not(feature="sunfish-wrq-post-return-callers")))]
                 self.wrq_work.validation.sample_parts([a,b,c,d],domains,parts);
+                #[cfg(feature="sunfish-wrq-post-return-callers")]
+                {
+                    let pending=self.rx_bytes.map(|length|ring_distance(self.words[2],self.words[3],length) as u32);
+                    self.wrq_work.validation.sample_parts_at([a,b,c,d],domains,parts,SampleSite::caller(),pending);
+                }
             }
         }
         #[cfg(feature = "sunfish-spare-wrq-ingress")]
@@ -2353,6 +2359,7 @@ impl<I: Io> Adapter<I> {
         self.ring.io.crash_evidence()
     }
 
+    #[cfg_attr(feature="sunfish-wrq-post-return-callers",track_caller)]
     fn gate(&mut self, generation: u64) -> Result<(), Error> {
         self.check(generation)?;
         self.quarantined = true; // Remains set on IO failure or unwinding IO.
@@ -2784,6 +2791,7 @@ impl<I: Io> Adapter<I> {
     }
 
     /// Read-only lifecycle/cursor check for the serialized IRQ owner.
+    #[cfg_attr(feature="sunfish-wrq-post-return-callers",track_caller)]
     pub fn revalidate(&mut self, generation: u64) -> Result<(), Error> {
         self.gate(generation)
     }
@@ -4428,6 +4436,21 @@ mod first_spare_fifo_tests {
 #[cfg(all(test, feature = "sunfish-wrq-stage-costs"))]
 mod wrq_stage_cost_tests {
     use super::*;
+    #[cfg(feature="sunfish-wrq-post-return-callers")]
+    #[test]
+    fn actual_adapter_gate_propagates_its_callers_sample_identity() {
+        use ::core::sync::atomic::{AtomicU64,Ordering};
+        static CLOCK:AtomicU64=AtomicU64::new(1000);
+        let (_,owner,_,_)=crate::first_oack_spare_tests::prepared(false);
+        let mut a=owner.into_spare_test_adapter();
+        a.ring.wrq_work.validation=WrqValidationWork::default();
+        a.ring.first_server_check_clock=Some(||CLOCK.fetch_add(1,Ordering::Relaxed));
+        let line=line!()+1;
+        a.revalidate(1).unwrap();
+        let c=a.ring.wrq_work.validation.callsite_costs([Some((0,u64::MAX)),None,None]);
+        assert_eq!(c.len,1);assert_eq!(c.entries[0].site,SampleSite{file:SampleSite::file_id(file!()),line});
+        assert_eq!(c.entries[0].count,[1,0,0]);assert_eq!(c.unknown_site,[0;3]);
+    }
     #[test]
     fn wrq_checks_continue_after_registration_and_close_histories_finish() {
         use ::core::sync::atomic::{AtomicU64,Ordering};

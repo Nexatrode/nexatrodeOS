@@ -7,6 +7,8 @@ struct ValidationSample {
     domains: Option<[[u64;4];3]>,
     #[cfg(feature="sunfish-wrq-domain-costs")]
     parts:Option<[[[u64;7];2];3]>,
+    #[cfg(feature="sunfish-wrq-post-return-callers")]
+    site:Option<(SampleSite,Option<u32>)>,
 }
 
 pub struct WrqValidationWork {
@@ -44,7 +46,8 @@ impl WrqValidationWork {
         let old=self.samples[self.next];
         if old.edges[3]>old.edges[0] {self.evicted=Some(old.edges[3]);}
         self.samples[self.next]=ValidationSample {edges,domains,
-            #[cfg(feature="sunfish-wrq-domain-costs")] parts:None};
+            #[cfg(feature="sunfish-wrq-domain-costs")] parts:None,
+            #[cfg(feature="sunfish-wrq-post-return-callers")] site:None};
         self.next=(self.next+1)%self.samples.len();
     }
     #[cfg(feature="sunfish-wrq-domain-costs")]
@@ -186,3 +189,59 @@ impl DomainEdges {
 
 #[cfg(feature="sunfish-wrq-domain-costs")]
 const _:()=assert!(::core::mem::size_of::<WrqValidationWork>()<=128*1024);
+
+#[cfg(feature="sunfish-wrq-post-return-callers")]
+#[path="qcom_glink_wrq_callsite.rs"]
+mod callsite;
+#[cfg(feature="sunfish-wrq-post-return-callers")]
+pub use callsite::*;
+
+#[cfg(all(test,feature="sunfish-wrq-post-return-callers"))]
+mod callsite_tests {
+    use super::*;
+    #[track_caller]
+    fn forwarded_site()->SampleSite {SampleSite::caller()}
+    #[test]
+    fn caller_capture_preserves_forwarded_location_and_basename() {
+        let line=line!()+1;
+        let site=forwarded_site();
+        assert_eq!(site.line,line);
+        assert_eq!(site.file,SampleSite::file_id(file!()));
+        assert_eq!(SampleSite::file_id("/a/qcom_glink_fifo.rs"),SampleSite::file_id("/b/qcom_glink_fifo.rs"));
+    }
+    #[test]
+    fn callsites_clip_three_windows_and_retain_validated_rx_metadata() {
+        let mut w=WrqValidationWork::default();
+        let a=SampleSite{file:1,line:10};let b=SampleSite{file:1,line:20};
+        w.sample_parts_at([10,20,30,40],None,None,a,Some(0));
+        w.sample_parts_at([40,50,60,70],None,None,b,Some(24));
+        let mut c=w.callsite_costs([Some((15,45)),Some((45,65)),Some((65,70))]);
+        assert_eq!(c.len,2);assert_eq!(c.lost,0);
+        let x=c.entries.iter().find(|x|x.site==a).unwrap();
+        assert_eq!(x.count,[1,0,0]);assert_eq!(x.ticks,[25,0,0]);assert_eq!(x.empty_rx,[1,0,0]);
+        let x=c.entries.iter().find(|x|x.site==b).unwrap();
+        assert_eq!(x.count,[1,1,1]);assert_eq!(x.ticks,[5,20,5]);assert_eq!(x.max_rx,24);
+        c.rank();assert_eq!(c.entries[0].site,b);
+    }
+    #[test]
+    fn capacity_unknown_sites_unknown_rx_and_freeze_stay_explicit() {
+        let mut w=WrqValidationWork::default();
+        for i in 0..33 {let t=u64::from(i)*10;
+            w.sample_parts_at([t,t+3,t+6,t+10],None,None,SampleSite{file:1,line:i+1},None);
+        }
+        let c=w.callsite_costs([Some((0,330)),None,Some((40,40))]);
+        assert_eq!(c.len,32);assert_eq!(c.overflow_count,[1,0,0]);assert_eq!(c.overflow_ticks,[10,0,0]);
+        assert_eq!(c.entries[0].unknown_rx,[1,0,0]);
+        w.finish(330);w.sample_parts_at([330,333,336,340],None,None,SampleSite{file:2,line:1},Some(0));
+        assert_eq!(w.cost(0,400).count,33);
+        let mut unknown=WrqValidationWork::default();unknown.sample([1,2,3,4],None);
+        let c=unknown.callsite_costs([Some((0,5)),None,None]);assert_eq!(c.unknown_site,[1,0,0]);
+    }
+    #[test]
+    fn eviction_and_unusable_windows_are_reported() {
+        let mut w=WrqValidationWork::default();
+        for i in 0..200 {w.sample_parts_at([i*10,i*10+2,i*10+4,i*10+6],None,None,SampleSite{file:1,line:1},Some(0));}
+        let c=w.callsite_costs([Some((0,2000)),Some((1990,2000)),Some((20,10))]);
+        assert_ne!(c.lost,0);assert_eq!(c.entries[0].count[1],1);assert_eq!(c.entries[0].count[2],0);
+    }
+}

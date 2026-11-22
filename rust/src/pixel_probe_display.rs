@@ -124,6 +124,12 @@ impl Display {
         self.line(row, text);
     }
 
+    #[cfg(feature="sunfish-wrq-post-return-callers")]
+    pub fn header_label(&self,row:usize,text:&str) {
+        self.replace_line(row,"");
+        self.line_scaled(row,text,3,0);
+    }
+
     #[cfg(feature = "sunfish-ipa-registration-reply-headers")]
     pub fn header_row(&self, row: usize, second: bool, fields: &[(u32, usize)]) {
         let mut line = [b' '; 64];

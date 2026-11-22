@@ -1387,6 +1387,7 @@ impl<I: Io> Owner<I> {
     }
     /// Revalidate the live FIFO lifecycle without polling or publishing data.
     /// A failed observation permanently suspends this owner.
+    #[cfg_attr(feature="sunfish-wrq-post-return-callers",track_caller)]
     pub fn revalidate(&mut self) -> Result<(), Error> {
         self.check()?;
         match self.adapter.revalidate(self.generation) {

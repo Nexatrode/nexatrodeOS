@@ -13,6 +13,9 @@ use personal_os_rust_server::{
 use sel4_microkit::Channel;
 #[path = "pixel_mpss_runtime_diagnostic.rs"]
 mod diagnostic;
+#[cfg(feature="sunfish-wrq-post-return-callers")]
+#[path="pixel_mpss_wrq_callers.rs"]
+mod wrq_callers;
 
 #[cfg(all(feature = "sunfish-ipa-independent-server-experiment", not(feature = "sunfish-ipa-independent-server-runtime")))]
 compile_error!("independent IPA server experiment is offline only; native composition not validated");
@@ -4877,6 +4880,8 @@ impl RuntimeDomain {
                 (28, "WLFW SERVERS", query[7]),
             ] { display.hex(row, label, value); }
         }
+        #[cfg(feature="sunfish-wrq-post-return-callers")]
+        self.show_wrq_callers(display,owner);
     }
 
     #[cfg(feature = "sunfish-first-oack-after-ipa-publish")]

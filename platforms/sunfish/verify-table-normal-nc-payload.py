@@ -29,6 +29,12 @@ def main():
     parser.add_argument('profile', type=Path)
     args = parser.parse_args()
     out = args.profile.resolve()
+    # Object counts change with PD code pages. Bind the expected count to the
+    # actual audited CapDL input, rather than a particular diagnostic's size.
+    capdl = out / 'capdl.json'
+    audit = json.loads((out / 'final-capability-audit.json').read_text())
+    assert audit['input_sha256'][str(capdl.resolve())] == hashlib.sha256(capdl.read_bytes()).hexdigest()
+    object_count = len(json.loads(capdl.read_text())['objects'])
     subprocess.run(['python3', str(ROOT / 'platforms/sunfish/build-table-normal-nc-sdk.py'),
                     '--prepare-only'], check=True)
     fresh_sdk = out / 'microkit-source/release/microkit-sdk-2.3.1-sunfish-table-normal-nc'
@@ -89,13 +95,13 @@ def main():
     lock = out / 'microkit-source/Cargo.lock'
     (work / 'Cargo.lock').write_bytes(lock.read_bytes())
     subprocess.run(['cargo', '+nightly-2026-09-25', 'run', '--offline', '--manifest-path',
-                    str(work / 'Cargo.toml'), '--', str(work / 'packed-spec.bin')],
+                    str(work / 'Cargo.toml'), '--', str(work / 'packed-spec.bin'), str(object_count)],
                    check=True, env=dict(os.environ))
     result = {'sdk_elf_sha256': hashes, 'whole_loader_capdl_report_reproduced': True,
               'rebuilt_sdk_components_equal': True, 'compiled_tool_equal': True,
               'packed_spec_sha256': hashlib.sha256(matches[0]).hexdigest(),
               'packed_spec_bytes': len(matches[0]), 'packed_spec_physical': hex(physical),
-              'actual_archive_nc_caps': 8, 'actual_archive_objects': 24533}
+              'actual_archive_nc_caps': 8, 'actual_archive_objects': object_count}
     (out / 'sdk-payload-audit.json').write_text(json.dumps(result, indent=2) + '\n')
     print(json.dumps(result, indent=2))
 
