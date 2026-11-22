@@ -3100,6 +3100,17 @@ impl Session {
             .is_some_and(|handle| self.tftp_index(&handle).is_ok_and(|index| self.receive[index].id == intent))
     }
 
+    /// Original accepted transfer only; never substitute another completed peer.
+    /// Read-only metadata: no clock, validation token or transport operation.
+    #[cfg(feature = "sunfish-first-data-ack-elf-trace")]
+    pub(crate) fn original_tftp_write_trace(&self) -> Option<ElfServerCheckTrace> {
+        let first = self.server_check_oacks()[0]?;
+        self.first_server_check.filter(|write|
+            write.request.owner == self.owner && write.request.generation == self.generation
+                && write.request.intent == first.intent && write.peer == first.peer
+                && write.transfer_port == Some(first.transfer_port))
+    }
+
     #[cfg(feature = "sunfish-wlan-first-server-check-trace")]
     pub(crate) fn first_server_check(&self) -> Option<ElfServerCheckTrace> {
         self.first_server_check
@@ -8718,3 +8729,7 @@ impl Session {
         self.remote_for_transmit(tx)
     }
 }
+
+#[cfg(all(test, feature = "sunfish-first-data-ack-elf-trace"))]
+#[path = "qcom_tftp_completion_test.rs"]
+mod completion_identity_tests;

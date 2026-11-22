@@ -2226,6 +2226,10 @@ impl<I: Io> Adapter<I> {
     pub(crate) fn server_check_oacks(&self) -> [Option<core::ServerCheckOackTrace>; 2] {
         self.session.server_check_oacks()
     }
+    #[cfg(feature = "sunfish-first-data-ack-elf-trace")]
+    pub(crate) fn original_tftp_write_trace(&self) -> Option<core::ElfServerCheckTrace> {
+        self.session.original_tftp_write_trace()
+    }
     #[cfg(feature = "sunfish-wlan-first-wrq-window")]
     pub(crate) fn first_wrq_window(&self) -> core::FirstWrqWindow {
         self.session.first_wrq_window()

@@ -16,6 +16,9 @@ mod diagnostic;
 #[cfg(feature="sunfish-wrq-post-return-callers")]
 #[path="pixel_mpss_wrq_callers.rs"]
 mod wrq_callers;
+#[cfg(feature="sunfish-first-data-ack-elf-trace")]
+#[path="pixel_mpss_tftp_completion.rs"]
+mod tftp_completion;
 
 #[cfg(all(feature = "sunfish-ipa-independent-server-experiment", not(feature = "sunfish-ipa-independent-server-runtime")))]
 compile_error!("independent IPA server experiment is offline only; native composition not validated");

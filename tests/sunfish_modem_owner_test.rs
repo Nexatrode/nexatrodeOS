@@ -4334,6 +4334,8 @@ fn post_elf_oack_uses_one_early_router_turn_and_preserves_irq_ownership() {
         assert_eq!(completed.timing.peer_rx.data.count, 1);
         assert_eq!(completed.final_block, Some(1));
         assert_eq!(completed.ack.phase, 4);
+        #[cfg(feature="sunfish-first-data-ack-elf-trace")]
+        assert_eq!(owner.original_tftp_write_trace(), Some(completed));
         assert!(completed.ack.done_at > completed.oack.done_at);
         #[cfg(feature = "sunfish-wlan-elf-tftp-timeline")]
         {

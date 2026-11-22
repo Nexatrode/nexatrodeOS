@@ -1,6 +1,7 @@
 //! Settled read-only caller attribution for the original OACK window.
 use super::*;
 impl RuntimeDomain {
+    #[cfg(not(feature="sunfish-first-data-ack-elf-trace"))]
     pub(super) fn show_wrq_callers(&self,display:&Display,owner:&ModemOwner) {
         let reg=owner.ipa_registration_trace();
         let work=owner.wrq_receive_work();let path=&work.validation;
@@ -55,5 +56,12 @@ impl RuntimeDomain {
         display.hex(26,"IPA COMPLETE",u32::from(self.ipa_complete_seen));
         display.hex(27,"WLAN RRQ RX",owner.tftp_wire_counts()[2]);
         display.hex(28,"WLFW SERVERS",self.wlan_query.snapshot(owner)[7]);
+    }
+}
+
+#[cfg(feature="sunfish-first-data-ack-elf-trace")]
+impl RuntimeDomain {
+    pub(super) fn show_wrq_callers(&self, display:&Display, owner:&ModemOwner) {
+        self.show_tftp_completion(display, owner);
     }
 }

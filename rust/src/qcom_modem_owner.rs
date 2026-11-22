@@ -2036,6 +2036,10 @@ impl<I: Io> Owner<I> {
         if self.peer_tftp_replies.iter().any(Option::is_some) { return true; }
         self.pending_tftp_reply.is_some()
     }
+    #[cfg(feature = "sunfish-first-data-ack-elf-trace")]
+    pub fn original_tftp_write_trace(&self) -> Option<crate::qcom_glink_qmi::ElfServerCheckTrace> {
+        self.adapter.original_tftp_write_trace()
+    }
     #[cfg(feature = "sunfish-native-tftp-server-check")]
     pub fn tftp_queue_snapshot(&self) -> (crate::qcom_glink_qmi::TftpQueueSnapshot, bool) {
         (self.adapter.tftp_queue_snapshot(), self.has_pending_tftp_reply())
