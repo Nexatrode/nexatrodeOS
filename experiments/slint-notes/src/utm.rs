@@ -76,7 +76,13 @@ const TRANSCRIPT_WORKER: Channel = Channel::new(11);
 #[cfg(feature = "utm-transcript-worker")]
 const LIVE_RECEIVE_WORKER: Channel = Channel::new(12);
 #[cfg(feature = "utm-transcript-worker")]
+const NAVIGATION_WORKER: Channel = Channel::new(13);
+#[cfg(feature = "utm-transcript-worker")]
+const SNAPSHOT_WORKER: Channel = Channel::new(14);
+#[cfg(feature = "utm-transcript-worker")]
 const _: () = assert!(core::mem::size_of::<personal_os_slint_notes_spike::photo_mailbox::Mailbox<1, 4096>>() <= 0x2000);
+#[cfg(feature = "utm-transcript-worker")]
+const _: () = assert!(core::mem::size_of::<personal_os_slint_notes_spike::photo_mailbox::Mailbox<8, 1>>() <= 0x1000);
 /// Diagnostic: shell→dhcp STATUS (channel 7). Proves whether dhcp PPC replies to anyone.
 const DHCP_TCP_PROBE: Channel = Channel::new(7);
 const REQUEST_WALLET_STATUS: u64 = 0x501;
@@ -666,6 +672,20 @@ struct MessagesServiceClient {
     live_receive_start_requested: Cell<bool>,
     #[cfg(feature = "utm-transcript-worker")]
     live_receive_inflight_start: Cell<bool>,
+    #[cfg(feature = "utm-transcript-worker")]
+    navigation_mailbox: &'static personal_os_slint_notes_spike::photo_mailbox::Mailbox<8, 1>,
+    #[cfg(feature = "utm-transcript-worker")]
+    navigation_queue: RefCell<personal_os_slint_notes_spike::navigation_selection::Selection>,
+    #[cfg(feature = "utm-transcript-worker")]
+    navigation_ticket: Cell<Option<personal_os_slint_notes_spike::navigation_selection::Ticket>>,
+    #[cfg(feature = "utm-transcript-worker")]
+    navigation_legacy_photo_pending: Cell<bool>,
+    #[cfg(feature = "utm-transcript-worker")]
+    snapshot_mailbox: &'static personal_os_slint_notes_spike::photo_mailbox::Mailbox<1, 4096>,
+    #[cfg(feature = "utm-transcript-worker")]
+    snapshot_refresh: RefCell<personal_os_slint_notes_spike::snapshot_refresh::Refresh>,
+    #[cfg(feature = "utm-transcript-worker")]
+    snapshot_ticket: Cell<Option<personal_os_slint_notes_spike::snapshot_refresh::Ticket>>,
 }
 
 #[cfg(feature = "utm-transcript-worker")]
@@ -675,6 +695,66 @@ enum TranscriptCompletion {
 }
 
 impl MessagesServiceClient {
+    #[cfg(feature = "utm-transcript-worker")]
+    fn request_snapshot(&self) {
+        if !self.snapshot_mailbox.available() { return; }
+        let Some(ticket) = self.snapshot_refresh.borrow_mut().start() else { return; };
+        if self.snapshot_mailbox.submit(|out| { out[0] = 1; Some(1) }) {
+            self.snapshot_ticket.set(Some(ticket));
+            SNAPSHOT_WORKER.notify();
+        } else {
+            self.snapshot_refresh.borrow_mut().finish(ticket);
+        }
+    }
+
+    #[cfg(feature = "utm-transcript-worker")]
+    fn take_snapshot(&self) -> Option<Result<String, &'static str>> {
+        use personal_os_slint_notes_spike::photo_mailbox::Completion;
+        let ticket = self.snapshot_ticket.get()?;
+        let result = self.snapshot_mailbox.take(|data| {
+            data.strip_prefix(&[1]).and_then(|data| core::str::from_utf8(data).ok()).map(String::from)
+        });
+        if matches!(result, Completion::Waiting) { return None; }
+        self.snapshot_ticket.set(None);
+        if !self.snapshot_refresh.borrow_mut().finish(ticket) { return None; }
+        match result {
+            Completion::Ready(Some(text)) => { self.apply_snapshot_owners(&text); Some(Ok(text)) }
+            _ => Some(Err("Messages background snapshot failed")),
+        }
+    }
+
+    #[cfg(feature = "utm-transcript-worker")]
+    fn apply_snapshot_owners(&self, text: &str) {
+        let owners = personal_os_slint_notes_spike::transcript_queue::owners_from_snapshot(text);
+        if *self.transcript_owners.borrow() != owners {
+            *self.transcript_owners.borrow_mut() = owners;
+            self.transcript_queue.borrow_mut().invalidate();
+            *self.history_cache.borrow_mut() = core::array::from_fn(|_| None);
+        }
+    }
+    #[cfg(feature = "utm-transcript-worker")]
+    fn start_navigation(&self) {
+        let Some(ticket) = self.navigation_queue.borrow_mut().start() else { return; };
+        if self.navigation_mailbox.submit(|out| {
+            out.copy_from_slice(&ticket.owner.to_le_bytes());
+            Some(8)
+        }) {
+            self.navigation_ticket.set(Some(ticket));
+            NAVIGATION_WORKER.notify();
+        } else {
+            // No second job may own this slot. Fail closed if the state is
+            // unexpectedly inconsistent rather than select the wrong peer.
+            self.navigation_queue.borrow_mut().finish(ticket, false);
+        }
+    }
+
+    #[cfg(feature = "utm-transcript-worker")]
+    fn request_navigation(&self, index: usize) -> bool {
+        let owner = self.transcript_owners.borrow().get(index).copied().unwrap_or(0);
+        if !self.navigation_queue.borrow_mut().request(owner, index) { return false; }
+        self.start_navigation();
+        true
+    }
     #[cfg(feature = "utm-transcript-worker")]
     fn request_live_receive(&self, start: bool) {
         if start { self.live_receive_start_requested.set(true); }
@@ -733,6 +813,8 @@ impl MessagesServiceClient {
     }
 
     fn load(&self) -> Result<String, &'static str> {
+        #[cfg(feature = "utm-transcript-worker")]
+        self.snapshot_refresh.borrow_mut().invalidate();
         let reply = MESSAGES_SERVICE.pp_call(MessageInfo::new(REQUEST_MESSAGES_LOAD, 0));
         if reply.label() != REPLY_MESSAGES_LOAD || reply.count() != 1 {
             return Err("Messages service load failed");
@@ -753,15 +835,7 @@ impl MessagesServiceClient {
         }
         let text = String::from_utf8(payload.into()).map_err(|_| "Messages snapshot is not UTF-8")?;
         #[cfg(feature = "utm-transcript-worker")]
-        {
-            let owners = personal_os_slint_notes_spike::transcript_queue::owners_from_snapshot(&text);
-            let changed = *self.transcript_owners.borrow() != owners;
-            if changed {
-                *self.transcript_owners.borrow_mut() = owners;
-                self.transcript_queue.borrow_mut().invalidate();
-                *self.history_cache.borrow_mut() = core::array::from_fn(|_| None);
-            }
-        }
+        self.apply_snapshot_owners(&text);
         Ok(text)
     }
 
@@ -4096,6 +4170,20 @@ fn init() -> SlintService {
         live_receive_start_requested: Cell::new(false),
         #[cfg(feature = "utm-transcript-worker")]
         live_receive_inflight_start: Cell::new(false),
+        #[cfg(feature = "utm-transcript-worker")]
+        navigation_mailbox: unsafe { memory_region_symbol!(navigation_mailbox: *mut personal_os_slint_notes_spike::photo_mailbox::Mailbox<8, 1>).as_ref() },
+        #[cfg(feature = "utm-transcript-worker")]
+        navigation_queue: RefCell::new(personal_os_slint_notes_spike::navigation_selection::Selection::new()),
+        #[cfg(feature = "utm-transcript-worker")]
+        navigation_ticket: Cell::new(None),
+        #[cfg(feature = "utm-transcript-worker")]
+        navigation_legacy_photo_pending: Cell::new(false),
+        #[cfg(feature = "utm-transcript-worker")]
+        snapshot_mailbox: unsafe { memory_region_symbol!(snapshot_mailbox: *mut personal_os_slint_notes_spike::photo_mailbox::Mailbox<1, 4096>).as_ref() },
+        #[cfg(feature = "utm-transcript-worker")]
+        snapshot_refresh: RefCell::new(personal_os_slint_notes_spike::snapshot_refresh::Refresh::new()),
+        #[cfg(feature = "utm-transcript-worker")]
+        snapshot_ticket: Cell::new(None),
     }));
     let chat_transcripts: Rc<RefCell<[String; CHAT_SLOTS]>> =
         Rc::new(RefCell::new(core::array::from_fn(|_| String::new())));
@@ -4366,6 +4454,33 @@ fn init() -> SlintService {
     let select_transcripts = chat_transcripts.clone();
     let select_drafts = chat_drafts.clone();
     ui.on_open_chat(move |index| {
+        #[cfg(feature = "utm-transcript-worker")]
+        {
+            if index < 0 || !select_service.borrow().request_navigation(index as usize) {
+                if let Some(ui) = weak_ui.upgrade() { ui.set_message_receive_status("Couldn’t open conversation. Try again.".into()); }
+                return false;
+            }
+            if let Some(ui) = weak_ui.upgrade() {
+                let index = index as usize;
+                select_service.borrow().transcript_queue.borrow_mut().prioritize(index);
+                let saved = select_service.borrow().transcript(index as u64)
+                    .unwrap_or_else(|_| select_transcripts.borrow()[index].clone());
+                select_transcripts.borrow_mut()[index] = saved.clone();
+                ui.set_message_chat_index(index as i32);
+                ui.set_message_transcript(saved.into());
+                ui.set_message_body(select_drafts.borrow()[index].clone().into());
+                ui.set_message_image_visible(false);
+                ui.set_message_incoming_image_visible(false);
+                ui.set_message_group_invite(false);
+                ui.set_message_target_ready(false);
+                ui.set_message_receive_status("Opening conversation…".into());
+                #[cfg(feature = "utm-perf-trace")]
+                debug_println!("PERF|NAV_VIEW_REQUEST|{}|{}", index, perf_time_us());
+            }
+            return true;
+        }
+        #[cfg(not(feature = "utm-transcript-worker"))]
+        {
         #[cfg(feature = "utm-perf-trace")]
         let trace_open_start = perf_time_us();
         let index = index as u64;
@@ -4407,6 +4522,7 @@ fn init() -> SlintService {
             debug_println!("PERF|CHAT_OPEN|{}|{}|{}|{}|{}", index, trace_open_start, trace_selected, trace_transcript, perf_time_us());
         }
         true
+        }
     });
     let weak_ui = ui.as_weak();
     let delete_service = messages_service.clone();
@@ -4653,6 +4769,7 @@ fn init() -> SlintService {
     let picker_service = messages_service.clone();
     ui.on_attach_picture(move |photos_only| {
         if let Some(ui) = weak_ui.upgrade() {
+            if !ui.get_message_target_ready() { return; }
             let mut choices = picker_choices.borrow_mut();
             choices.clear();
             let mut labels = Vec::new();
@@ -4690,6 +4807,7 @@ fn init() -> SlintService {
     let retry_ui = ui.as_weak();
     ui.on_retry_attachment(move |value, name| {
         let Some(ui) = retry_ui.upgrade() else { return; };
+        if !ui.get_message_target_ready() { return; }
         let chat = ui.get_message_chat_index().max(0) as usize;
         let sent = value.parse::<u64>().ok().is_some_and(|id|
             retry_service.borrow_mut().send_saved_photo(chat, id, name.as_str()).is_ok());
@@ -4698,6 +4816,7 @@ fn init() -> SlintService {
     let picker_choices = saved_photo_choices.clone();
     ui.on_pick_saved_photo(move |index| {
         if let Some(ui) = weak_ui.upgrade() {
+            if !ui.get_message_target_ready() { return; }
             let choice = usize::try_from(index).ok().and_then(|i| picker_choices.borrow().get(i).cloned());
             let Some((chat, id, name)) = choice else { ui.set_message_send_status("File unavailable".into()); return; };
             if chat != usize::MAX && ui.get_message_chat_index().max(0) as usize != chat {
@@ -4716,7 +4835,7 @@ fn init() -> SlintService {
     let send_drafts = chat_drafts.clone();
     ui.on_send_message(move |text| {
         if let Some(ui) = weak_ui.upgrade() {
-            if text.is_empty() || !ui.get_message_view() || !ui.get_message_service_ready() {
+            if text.is_empty() || !ui.get_message_view() || !ui.get_message_service_ready() || !ui.get_message_target_ready() {
                 return;
             }
             // FWD/DEL chips already pass fully framed bodies.
@@ -4820,7 +4939,7 @@ fn init() -> SlintService {
     ui.on_receive_next_message(move || {
         if let Some(ui) = weak_ui.upgrade() {
             debug_println!("SLINT SIMPLEX INBOX POLL REQUEST");
-            ui.set_message_receive_status("Listening".into());
+            ui.set_message_receive_status(if ui.get_message_target_ready() { "Listening" } else { "Opening conversation…" }.into());
             #[cfg(feature = "utm-transcript-worker")]
             receive_service.borrow().request_live_receive(true);
             #[cfg(not(feature = "utm-transcript-worker"))]
@@ -5740,6 +5859,8 @@ impl SlintService {
     fn apply_nav_back(&mut self) -> bool {
         remember_app_page(self._ui.get_page(), &mut self.nav_last_app_page);
         let changed = shell_navigate_back(&self._ui, self.nav_drafts());
+        #[cfg(feature = "utm-transcript-worker")]
+        if changed { self.messages_service.borrow().navigation_queue.borrow_mut().cancel(); }
         if changed {
             debug_println!("SLINT NAV BACK -> {}", self._ui.get_page());
         }
@@ -5749,6 +5870,8 @@ impl SlintService {
     fn apply_nav_home(&mut self) -> bool {
         remember_app_page(self._ui.get_page(), &mut self.nav_last_app_page);
         let changed = shell_navigate_home(&self._ui, self.nav_drafts());
+        #[cfg(feature = "utm-transcript-worker")]
+        if changed { self.messages_service.borrow().navigation_queue.borrow_mut().cancel(); }
         if changed {
             debug_println!("SLINT NAV HOME");
         }
@@ -5758,6 +5881,8 @@ impl SlintService {
     fn apply_nav_recents(&mut self) -> bool {
         remember_app_page(self._ui.get_page(), &mut self.nav_last_app_page);
         let changed = shell_navigate_recents(&self._ui);
+        #[cfg(feature = "utm-transcript-worker")]
+        if changed { self.messages_service.borrow().navigation_queue.borrow_mut().cancel(); }
         if changed {
             debug_println!("SLINT NAV RECENTS");
         }
@@ -5832,6 +5957,11 @@ impl SlintService {
         #[cfg(feature = "utm-transcript-worker")]
         {
             let service = self.messages_service.borrow();
+            if !service.navigation_mailbox.available() {
+                // Do not let a periodic refresh block input behind the
+                // navigation request currently being served by Messages.
+                return;
+            }
             if !service.live_receive_mailbox.available() && !service.live_receive_mailbox.finished() {
                 // The Messages PD is serving the worker. Avoid a competing
                 // synchronous call from the UI and coalesce a follow-up poll.
@@ -5848,7 +5978,17 @@ impl SlintService {
         let previous_owners = personal_os_slint_notes_spike::transcript_queue::owners_from_snapshot(
             self._ui.get_message_service_state().as_str(),
         );
-        if let Ok(snapshot) = profile_live_call!("load", self.messages_service.borrow().load()) {
+        #[cfg(feature = "utm-transcript-worker")]
+        let snapshot_result = {
+            let service = self.messages_service.borrow();
+            match service.take_snapshot() {
+                Some(result) => result,
+                None => { service.request_snapshot(); return; }
+            }
+        };
+        #[cfg(not(feature = "utm-transcript-worker"))]
+        let snapshot_result = profile_live_call!("load", self.messages_service.borrow().load());
+        if let Ok(snapshot) = snapshot_result {
             #[cfg(feature = "utm-transcript-worker")]
             let forced = self.messages_service.borrow().force_chat_refresh.replace(false);
             #[cfg(not(feature = "utm-transcript-worker"))]
@@ -5968,6 +6108,10 @@ impl SlintService {
             profile_live_call!("peer_photos", present_peer_photos(&self.messages_service.borrow(), photo_mask));
         }
         if self._ui.get_page() == 6 && self._ui.get_message_view() {
+            #[cfg(feature = "utm-transcript-worker")]
+            if self.messages_service.borrow().navigation_legacy_photo_pending.replace(false) {
+                present_message_image(&self._ui, &self.messages_service.borrow());
+            }
             profile_live_call!("group_invite", present_group_invite(&self._ui, &self.messages_service.borrow()));
             let send_status = profile_live_call!("send", self.messages_service.borrow().send_status());
             match send_status {
@@ -6849,8 +6993,12 @@ impl SlintService {
         // Timer callbacks and wallet IPC may reuse the message registers.
         // Capture the input packet above before invoking either.
         slint::platform::update_timers_and_animations();
-        // Tap/key path also unsticks boot if the catch-up notify was dropped.
-        if self.wallet_boot_phase != 0 {
+        // Keep wallet boot recoverable, but don't synchronously poll or paint
+        // the active scan before handling each tap or keystroke. The normal
+        // wallet notification pump owns phase 5; a nudge is enough here.
+        if self.wallet_boot_phase == 5 {
+            WALLET_SERVICE.notify();
+        } else if self.wallet_boot_phase != 0 {
             let _ = self.advance_wallet_boot();
         }
         if device == DEVICE_TABLET && event_type == EVENT_KEY && code == BTN_LEFT {
@@ -6913,6 +7061,8 @@ impl SlintService {
             }
             let edit_before = self._ui.get_edit_target();
             let page_before = self._ui.get_page();
+            #[cfg(feature = "utm-transcript-worker")]
+            let chat_view_before = self._ui.get_message_view();
             let setup_before = self._ui.get_wallet_setup();
             let setup_network_before = self._ui.get_wallet_network();
             let setup_actions_before = WALLET_SETUP_ACTIONS.load(Ordering::Relaxed);
@@ -7098,6 +7248,10 @@ impl SlintService {
                     self._ui.set_edit_target(0);
                     debug_println!("SLINT UTM HOME HIT settings");
                 }
+            }
+            #[cfg(feature = "utm-transcript-worker")]
+            if page_before == 6 && (self._ui.get_page() != 6 || (chat_view_before && !self._ui.get_message_view())) {
+                self.messages_service.borrow().navigation_queue.borrow_mut().cancel();
             }
             // Wallet HOME sits in the title row. A miss leaves the user inside
             // NexaWal with no shell chrome.
@@ -7508,6 +7662,41 @@ impl Handler for SlintService {
             self.messages_service.borrow().start_live_receive();
         }
         #[cfg(feature = "utm-transcript-worker")]
+        let navigation_finished = channels.contains(NAVIGATION_WORKER);
+        #[cfg(not(feature = "utm-transcript-worker"))]
+        let navigation_finished = false;
+        #[cfg(feature = "utm-transcript-worker")]
+        if navigation_finished {
+            use personal_os_slint_notes_spike::navigation_selection::Completion as NavigationCompletion;
+            use personal_os_slint_notes_spike::photo_mailbox::Completion as MailboxCompletion;
+            let service = self.messages_service.borrow();
+            let result = service.navigation_mailbox.take(|data| data == [1]);
+            if let Some(ticket) = service.navigation_ticket.take() {
+                let success = matches!(result, MailboxCompletion::Ready(true));
+                let completion = service.navigation_queue.borrow_mut().finish(ticket, success);
+                if let NavigationCompletion::Open { owner, .. } = completion {
+                    let index = service.transcript_owners.borrow().iter().position(|&candidate| candidate == owner);
+                    if let Some(index) = index.filter(|&i| self._ui.get_page() == 6 && self._ui.get_message_view()
+                        && self._ui.get_message_chat_index() == i as i32) {
+                        self._ui.set_message_receive_status("Loading conversation…".into());
+                        self._ui.set_message_target_ready(true);
+                        debug_println!("SLINT SIMPLEX SELECT CHAT {}", index);
+                        service.navigation_legacy_photo_pending.set(true);
+                        service.request_live_receive(true);
+                    }
+                } else if completion == NavigationCompletion::Failed && self._ui.get_page() == 6 {
+                    self._ui.set_message_receive_status("Couldn’t open conversation. Try again.".into());
+                }
+            }
+            service.start_navigation();
+        }
+        #[cfg(feature = "utm-transcript-worker")]
+        let snapshot_finished = channels.contains(SNAPSHOT_WORKER);
+        #[cfg(not(feature = "utm-transcript-worker"))]
+        let snapshot_finished = false;
+        #[cfg(feature = "utm-transcript-worker")]
+        if snapshot_finished && self._ui.get_page() == 6 { self.poll_live_chat(); }
+        #[cfg(feature = "utm-transcript-worker")]
         if transcript_finished {
             let completed = self.messages_service.borrow().finish_transcript();
             match completed {
@@ -7543,7 +7732,7 @@ impl Handler for SlintService {
             None => {}
             }
         }
-        if timer_fired || photo_finished || photo_read_finished || transcript_finished || live_receive_finished {
+        if timer_fired || photo_finished || photo_read_finished || transcript_finished || live_receive_finished || navigation_finished || snapshot_finished {
             #[cfg(feature = "simplex-agent-ui")]
             if timer_fired { self.load_visible_chat_photo_chunk(); }
             let revision = unsafe { self.header.as_ref() }.revision.load(Ordering::Acquire);

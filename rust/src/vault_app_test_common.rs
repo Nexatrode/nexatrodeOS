@@ -118,6 +118,8 @@ const REPLY_SLINT_MESSAGES_RECEIVE: MessageLabel = 0x360;
 const REQUEST_SLINT_MESSAGES_RECEIVE_STATUS: MessageLabel = 0x361;
 const REPLY_SLINT_MESSAGES_RECEIVE_STATUS: MessageLabel = 0x362;
 const REQUEST_WORKER_RECEIVE_STATUS: MessageLabel = 0x399;
+#[cfg(feature = "utm-transcript-worker")]
+const REQUEST_WORKER_SELECT_OWNER: MessageLabel = 0x39b;
 const REQUEST_SLINT_MESSAGES_ACK: MessageLabel = 0x363;
 const REPLY_SLINT_MESSAGES_ACK: MessageLabel = 0x364;
 const REQUEST_SLINT_MESSAGES_ACK_STATUS: MessageLabel = 0x365;
@@ -2602,7 +2604,7 @@ impl Handler for NamespaceTest {
         }
         #[cfg(feature = "utm-transcript-worker")]
         if channel == Channel::new(7) && self.name == "MESSAGES" {
-            if !matches!(request.label(), REQUEST_SLINT_HISTORY_ADVANCE | REQUEST_SLINT_HISTORY_PAGE_STEP | REQUEST_WORKER_RECEIVE_STATUS | REQUEST_SLINT_MESSAGES_RECEIVE) {
+            if !matches!(request.label(), REQUEST_SLINT_HISTORY_ADVANCE | REQUEST_SLINT_HISTORY_PAGE_STEP | REQUEST_WORKER_RECEIVE_STATUS | REQUEST_SLINT_MESSAGES_RECEIVE | REQUEST_WORKER_SELECT_OWNER | REQUEST_SLINT_MESSAGES_LOAD) {
                 return Ok(MessageInfo::new(REPLY_DENIED, 0));
             }
             return Ok(match self.transcript_transfer {
@@ -2673,6 +2675,22 @@ impl NamespaceTest {
     /// Slint receives only Messages' current local peer/thread summary. The
     /// Messages PD remains the sole owner of its vault record and Agent state.
     fn handle_slint_messages(&mut self, request: MessageInfo) -> MessageInfo {
+        #[cfg(feature = "utm-transcript-worker")]
+        if request.label() == REQUEST_WORKER_SELECT_OWNER && request.count() == 1 {
+            #[cfg(feature = "simplex-agent")]
+            {
+                let owner = get_mr(0);
+                let live = &self.simplex_agent_connection_handles[..self.simplex_agent_connection_handles_length];
+                if owner != 0 {
+                    if let Some(index) = crate::simplex_ipc::live_chat_index(live, owner) {
+                        self.simplex_agent_selected_index = index;
+                        self.simplex_agent_selected_handle = owner;
+                        return MessageInfo::new(REPLY_SLINT_MESSAGES_SELECT_CHAT, 0);
+                    }
+                }
+            }
+            return MessageInfo::new(REPLY_DENIED, 0);
+        }
         #[cfg(feature = "simplex-agent")]
         if request.label() != REQUEST_SLINT_MESSAGES_CREATE_INVITATION
             && request.label() != REQUEST_SLINT_MESSAGES_SET_PROFILE

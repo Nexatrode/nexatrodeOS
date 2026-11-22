@@ -362,6 +362,7 @@ export component NotesWindow inherits Window {
     in-out property <bool> message-view: false;
     in-out property <string> message-service-state: "";
     in-out property <bool> message-service-ready: false;
+    in-out property <bool> message-target-ready: true;
     in-out property <bool> message-has-connections: false;
     in-out property <bool> message-invitation-view: false;
     in-out property <bool> message-address-view: false;
@@ -2022,6 +2023,14 @@ export component NotesWindow inherits Window {
                 }
                 TouchArea { x: 40px; y: 0px; width: parent.width - 84px; height: parent.height;
                     clicked => { root.edit-target = 6; } }
+            }
+            if !root.message-target-ready: Rectangle {
+                width: parent.width; height: parent.height;
+                background: #050a12e8;
+                Text { x: 10px; y: 24px; width: parent.width - 20px;
+                    text: root.message-receive-status; color: #8eacbb; font-size: 14px;
+                    horizontal-alignment: center; }
+                TouchArea { width: parent.width; height: parent.height; }
             }
         }
 

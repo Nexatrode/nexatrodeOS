@@ -22,6 +22,8 @@ use sel4_microkit::debug_println;
 struct Worker {
     mailbox: &'static TranscriptMailbox,
     live_mailbox: &'static photo_mailbox::Mailbox<1, 4096>,
+    navigation_mailbox: &'static photo_mailbox::Mailbox<8, 1>,
+    snapshot_mailbox: &'static photo_mailbox::Mailbox<1, 4096>,
     transfer: *mut BlobTransferPage,
 }
 
@@ -31,7 +33,9 @@ fn init() -> Worker {
     let mailbox = memory_region_symbol!(transcript_mailbox: *mut TranscriptMailbox);
     let transfer = memory_region_symbol!(messages_worker_transfer: *mut BlobTransferPage);
     let live = memory_region_symbol!(live_receive_mailbox: *mut photo_mailbox::Mailbox<1, 4096>);
-    Worker { mailbox: unsafe { mailbox.as_ref() }, live_mailbox: unsafe { live.as_ref() }, transfer: transfer.as_ptr() }
+    let navigation = memory_region_symbol!(navigation_mailbox: *mut photo_mailbox::Mailbox<8, 1>);
+    let snapshot = memory_region_symbol!(snapshot_mailbox: *mut photo_mailbox::Mailbox<1, 4096>);
+    Worker { mailbox: unsafe { mailbox.as_ref() }, live_mailbox: unsafe { live.as_ref() }, navigation_mailbox: unsafe { navigation.as_ref() }, snapshot_mailbox: unsafe { snapshot.as_ref() }, transfer: transfer.as_ptr() }
 }
 
 #[cfg(target_os = "none")]
@@ -40,6 +44,24 @@ impl Handler for Worker {
     fn notified(&mut self, channels: ChannelSet) -> Result<(), Self::Error> {
         let ui = Channel::new(0);
         let live_ui = Channel::new(2);
+        let navigation_ui = Channel::new(3);
+        if channels.contains(navigation_ui) {
+            #[cfg(feature = "utm-perf-trace")]
+            let started = trace_time_us();
+            let transfer = self.transfer;
+            let executed = self.navigation_mailbox.execute(|request, output| {
+                let owner = u64::from_le_bytes(request.try_into().ok()?);
+                if owner == 0 || owner == u64::MAX { return None; }
+                if !unsafe { &mut *transfer }.set_payload(&[]) { return None; }
+                set_mr(0, owner);
+                let reply = Channel::new(1).pp_call(MessageInfo::new(0x39b, 1));
+                output[0] = u8::from(reply.label() == 0x368 && reply.count() == 0);
+                Some(1)
+            });
+            #[cfg(feature = "utm-perf-trace")]
+            debug_println!("PERF|NAV_SELECT_WORKER|{}|{}|{}", started, trace_time_us(), u8::from(executed));
+            if executed { navigation_ui.notify(); }
+        }
         if channels.contains(live_ui) {
             let transfer = self.transfer;
             #[cfg(feature = "utm-perf-trace")]
@@ -68,6 +90,29 @@ impl Handler for Worker {
             #[cfg(feature = "utm-perf-trace")]
             debug_println!("PERF|LIVE_RECEIVE_WORKER|{}|{}|{}", started, trace_time_us(), u8::from(executed));
             if executed { live_ui.notify(); }
+        }
+        let snapshot_ui = Channel::new(4);
+        if channels.contains(snapshot_ui) {
+            let transfer = self.transfer;
+            #[cfg(feature = "utm-perf-trace")]
+            let started = trace_time_us();
+            let executed = self.snapshot_mailbox.execute(|request, output| {
+                if request != [1] { return None; }
+                let page = unsafe { &mut *transfer };
+                if !page.set_payload(&[]) { return None; }
+                let reply = Channel::new(1).pp_call(MessageInfo::new(0x350, 0));
+                if reply.label() != 0x352 || reply.count() != 1 { return None; }
+                let len = usize::try_from(get_mr(0)).ok()?;
+                let data = page.payload().filter(|data| data.len() == len)?;
+                let end = len.checked_add(1)?;
+                if end > output.len() { return None; }
+                output[0] = 1;
+                output[1..end].copy_from_slice(data);
+                Some(end)
+            });
+            #[cfg(feature = "utm-perf-trace")]
+            debug_println!("PERF|SNAPSHOT_WORKER|{}|{}|{}", started, trace_time_us(), u8::from(executed));
+            if executed { snapshot_ui.notify(); }
         }
         if !channels.contains(ui) { return Ok(()); }
         let transfer = self.transfer;

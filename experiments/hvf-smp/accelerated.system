@@ -27,6 +27,8 @@
     <memory_region name="messages_worker_transfer" size="0x1000" />
     <memory_region name="transcript_mailbox" size="0x200000" page_size="0x200000" />
     <memory_region name="live_receive_mailbox" size="0x2000" />
+    <memory_region name="navigation_mailbox" size="0x1000" />
+    <memory_region name="snapshot_mailbox" size="0x2000" />
     <memory_region name="messages_net_tx" size="0x1000" />
     <memory_region name="settings_view" size="0x1000" />
     <memory_region name="phone_view" size="0x1000" />
@@ -510,6 +512,8 @@
         <map mr="photo_read_mailbox" vaddr="0x60_000_000" perms="rw" cached="true" setvar_vaddr="photo_read_mailbox" />
         <map mr="transcript_mailbox" vaddr="0x66_000_000" perms="rw" cached="true" setvar_vaddr="transcript_mailbox" />
         <map mr="live_receive_mailbox" vaddr="0x68_000_000" perms="rw" cached="true" setvar_vaddr="live_receive_mailbox" />
+        <map mr="navigation_mailbox" vaddr="0x6a_000_000" perms="rw" cached="true" setvar_vaddr="navigation_mailbox" />
+        <map mr="snapshot_mailbox" vaddr="0x6c_000_000" perms="rw" cached="true" setvar_vaddr="snapshot_mailbox" />
         <map mr="ui_focus" vaddr="0x42_000_000" perms="rw" cached="true" setvar_vaddr="ui_focus" />
         <map mr="ui_pointer" vaddr="0x47_000_000" perms="r" cached="true" setvar_vaddr="ui_pointer" />
         <map mr="slint_frame" vaddr="0x4d_000_000" perms="rw" cached="true" setvar_vaddr="slint_frame" />
@@ -536,6 +540,8 @@
         <program_image path="slint_transcript_worker.elf" />
         <map mr="transcript_mailbox" vaddr="0x60_000_000" perms="rw" cached="true" setvar_vaddr="transcript_mailbox" />
         <map mr="live_receive_mailbox" vaddr="0x64_000_000" perms="rw" cached="true" setvar_vaddr="live_receive_mailbox" />
+        <map mr="navigation_mailbox" vaddr="0x66_000_000" perms="rw" cached="true" setvar_vaddr="navigation_mailbox" />
+        <map mr="snapshot_mailbox" vaddr="0x68_000_000" perms="rw" cached="true" setvar_vaddr="snapshot_mailbox" />
         <map mr="messages_worker_transfer" vaddr="0x62_000_000" perms="rw" cached="true" setvar_vaddr="messages_worker_transfer" />
     </protection_domain>
     <channel>
@@ -545,6 +551,14 @@
     <channel>
         <end pd="slint_ui" id="12" notify="true" />
         <end pd="transcript_worker" id="2" notify="true" />
+    </channel>
+    <channel>
+        <end pd="slint_ui" id="13" notify="true" />
+        <end pd="transcript_worker" id="3" notify="true" />
+    </channel>
+    <channel>
+        <end pd="slint_ui" id="14" notify="true" />
+        <end pd="transcript_worker" id="4" notify="true" />
     </channel>
     <channel>
         <end pd="messages_app" id="7" notify="false" />

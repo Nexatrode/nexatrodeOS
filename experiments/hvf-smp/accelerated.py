@@ -45,7 +45,11 @@ def ui_source_required(pds):
             or b"photo_mailbox_region" not in binary or b"photo_read_mailbox" not in binary
             or b"transcript_mailbox" not in binary or b"messages_worker_transfer" not in messages.read_bytes()
             or b"LIVE_RECEIVE_WORKER_ABI_V1" not in messages.read_bytes()
-            or b"live_receive_mailbox" not in binary or b"live_receive_mailbox" not in transcript.read_bytes())
+            or b"NAVIGATION_WORKER_ABI_V1" not in messages.read_bytes()
+            or b"SNAPSHOT_WORKER_ABI_V1" not in messages.read_bytes()
+            or b"live_receive_mailbox" not in binary or b"live_receive_mailbox" not in transcript.read_bytes()
+            or b"navigation_mailbox" not in binary or b"navigation_mailbox" not in transcript.read_bytes()
+            or b"snapshot_mailbox" not in binary or b"snapshot_mailbox" not in transcript.read_bytes())
 
 
 def build_ui_from_source(inputs, stage):
