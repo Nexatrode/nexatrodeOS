@@ -25,9 +25,12 @@ mod ack_elf_stages;
 #[cfg(all(feature="sunfish-registry-window-trace", not(feature="sunfish-registry-handoff-turn")))]
 #[path="pixel_mpss_registry_window.rs"]
 mod registry_window;
-#[cfg(feature="sunfish-registry-handoff-turn")]
+#[cfg(all(feature="sunfish-registry-handoff-turn", not(feature="sunfish-registry-predecessor-pressure")))]
 #[path="pixel_mpss_registry_handoff.rs"]
 mod registry_handoff;
+#[cfg(feature="sunfish-registry-predecessor-pressure")]
+#[path="pixel_mpss_registry_pressure.rs"]
+mod registry_pressure;
 
 #[cfg(all(feature = "sunfish-ipa-independent-server-experiment", not(feature = "sunfish-ipa-independent-server-runtime")))]
 compile_error!("independent IPA server experiment is offline only; native composition not validated");

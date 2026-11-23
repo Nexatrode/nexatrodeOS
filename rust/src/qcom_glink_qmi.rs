@@ -780,6 +780,10 @@ pub struct RegistryWindowTrace {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RegistryPredecessorTrace {
     request: RequestHandle,
+    #[cfg(feature = "sunfish-registry-predecessor-pressure")]
+    pub publication: Option<RegistryPublication>,
+    #[cfg(feature = "sunfish-registry-predecessor-pressure")]
+    pub publication_frozen: bool,
     pub queued_at: Option<u64>,
     pub published_at: Option<u64>,
     pub done_at: Option<u64>,
@@ -6612,7 +6616,22 @@ impl Session {
     }
 
     #[cfg(feature = "sunfish-registry-window-trace")]
-    pub fn registry_window_trace(&self) -> RegistryWindowTrace { self.registry_window }
+    pub fn registry_window_trace(&self) -> RegistryWindowTrace {
+        #[cfg(not(feature = "sunfish-registry-predecessor-pressure"))]
+        { self.registry_window }
+        #[cfg(feature = "sunfish-registry-predecessor-pressure")]
+        {
+            let mut trace = self.registry_window;
+            if let Some(prior) = trace.predecessor.as_mut()
+                && !prior.publication_frozen
+                && prior.request.owner == self.owner && prior.request.generation == self.generation
+                && let Some(receive) = self.receive.iter().position(|rx| rx.id == prior.request.intent && rx.state == RxState::ReplyQueued)
+                && let Some(tx) = self.transmit.iter().find(|tx| tx.len != 0
+                    && matches!(tx.kind, TxKind::Reply { receive: index, .. } if index == receive))
+            { prior.publication = Some(tx.registry_publication); }
+            trace
+        }
+    }
 
     fn queue_reply_with_ipa_token(
         &mut self,
@@ -6787,6 +6806,10 @@ impl Session {
             self.registry_window.predecessor = Some(RegistryPredecessorTrace {
                 request: *handle, queued_at: self.intent_ack_clock.map(|clock| clock()),
                 published_at: None, done_at: None,
+                #[cfg(feature = "sunfish-registry-predecessor-pressure")]
+                publication: None,
+                #[cfg(feature = "sunfish-registry-predecessor-pressure")]
+                publication_frozen: false,
             });
         }
         #[cfg(feature = "sunfish-registry-window-trace")]
@@ -8519,7 +8542,14 @@ impl Session {
                     if let Some(prior) = self.registry_window.predecessor.as_mut()
                         && let TxKind::Reply { receive, .. } = self.transmit[index].kind
                         && prior.request == (RequestHandle { owner: self.owner, generation: self.generation, intent: self.receive[receive].id })
-                    { prior.published_at = self.intent_ack_clock.map(|clock| clock()); }
+                    {
+                        prior.published_at = self.intent_ack_clock.map(|clock| clock());
+                        #[cfg(feature = "sunfish-registry-predecessor-pressure")]
+                        {
+                            prior.publication = Some(self.transmit[index].registry_publication);
+                            prior.publication_frozen = true;
+                        }
+                    }
                     #[cfg(feature = "sunfish-registry-window-trace")]
                     if let Some(pair) = self.registry_window.target.as_mut()
                         && pair.published_before_done.is_none()

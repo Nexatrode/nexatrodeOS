@@ -4245,3 +4245,33 @@ fn registry_handoff_live_metadata_excludes_wrong_identity_route_and_completed_sl
         s.reset_after_transport_reset(2).unwrap();assert_eq!(s.registry_window_trace().predecessor,None);
     }
 }
+
+
+#[cfg(feature="sunfish-registry-predecessor-pressure")]
+#[test]
+fn registry_predecessor_pressure_freezes_exact_publication_without_clock_and_survives_retirement(){
+    for clocked in [false,true]{
+        let mut s=session();if clocked{s.set_registry_ack_clock(||77);}
+        s.register(1,Service::ServiceRegistry,qcom_servreg::LOCAL_PORT).unwrap();s.prepare_service_available(1,Service::ServiceRegistry).unwrap();
+        s.ingest(1,&intents(&[(7,4096),(8,4096)])).unwrap();let a=offer(&mut s);let b=offer(&mut s);
+        let one=registry_turn_request(&mut s,a,9,3);let two=registry_turn_request(&mut s,b,9,4);
+        s.queue_reply(&one,Reply::Failure{error:3}).unwrap();
+        let before=s.registry_window_trace().predecessor.unwrap();assert!(!before.publication_frozen);assert_eq!(before.publication.unwrap().transaction,3);
+        let mut blocked=None;
+        for _ in 0..16{
+            let r=s.publish_next(1,|bytes|{if word(bytes,0)&0xffff==9 && bytes.get(49..51)==Some(&3u16.to_le_bytes()){blocked=Some(bytes.to_vec());Err(WriteError::WouldBlock)}else{Ok(())}});
+            if blocked.is_some(){assert_eq!(r,Err(Error::WouldBlock));break;}r.unwrap();
+        }
+        let blocked=blocked.unwrap();let live=s.registry_window_trace().predecessor.unwrap();assert!(!live.publication_frozen);assert!(live.publication.unwrap().mask&16!=0);
+        let event=s.publish_next(1,|bytes|{assert_eq!(bytes,blocked);Ok(())}).unwrap().unwrap();
+        let Published::Data{remote_intent:id,..}=event else{panic!()};
+        let frozen=s.registry_window_trace().predecessor.unwrap();assert!(frozen.publication_frozen);assert_eq!(frozen.published_at,clocked.then_some(77));
+        assert!(frozen.publication.unwrap().mask&32!=0);assert!(frozen.publication.unwrap().calls>0);
+        s.queue_reply(&two,Reply::Failure{error:3}).unwrap();
+        let(Published::Data{remote_intent:other,..},_)=publish_until_data(&mut s)else{panic!()};
+        s.ingest(1,&control(14,other)).unwrap();assert_eq!(s.registry_window_trace().predecessor.unwrap().publication,frozen.publication);
+        assert_eq!(s.ingest(1,&control(14,id)),Ok(Event::ReplyRxDone(one)));
+        assert_eq!(s.registry_window_trace().predecessor.unwrap().publication,frozen.publication,"retirement cannot erase or overwrite the capture");
+        s.reset_after_transport_reset(2).unwrap();assert_eq!(s.registry_window_trace().predecessor,None);
+    }
+}
