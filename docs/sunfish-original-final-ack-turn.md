@@ -96,7 +96,7 @@ The exact-image capability audit rejects304mutations. The unchanged pinned SDK
 reproduces the entire loader/CapDL/report byte-for-byte. Its actual initializer
 archive contains24,536objects and the eight expected Normal-NC RW/NX/uncached
 mapping caps; wrong/missing archive-count controls reject. Object count and all
-544named protocol RAM physical bindings match the preceding image. Source,
+named region-frame physical bindings match the preceding image. Source,
 reference, private-input, compiled-helper, wrapper, LZ4 and boot-layout bindings
 pass. The earlier unrelated78-vs128SMR model expectation remains documented in
 the inherited unrelated-model baseline; this change does not claim it passes.
