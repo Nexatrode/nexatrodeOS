@@ -765,10 +765,36 @@ impl Transmit {
     }
 }
 
+/// Observation only: successful bounded second admissions and the exact startup
+/// pair. Opaque request identities survive TX-slot reuse. No clock is used by
+/// admission, ordering, completion matching, or the overlap proof.
+#[cfg(feature = "sunfish-registry-window-trace")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RegistryWindowTrace {
+    pub admissions: u32,
+    pub target: Option<RegistryWindowPair>,
+}
+#[cfg(feature = "sunfish-registry-window-trace")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RegistryWindowPair {
+    older: RequestHandle,
+    newer: RequestHandle,
+    pub older_transaction: u16,
+    pub newer_transaction: u16,
+    pub peer: Address,
+    pub queued_at: Option<u64>,
+    pub newer_published_at: Option<u64>,
+    pub older_done_at: Option<u64>,
+    pub published_before_done: Option<bool>,
+    older_completed: bool,
+}
+
 /// Fixed private buffers: 8 receive and 8 transmit slots of 4096 bytes each,
 /// plus bookkeeping. A native integration must budget this storage and its
 /// construction/reset stack separately from peer-visible memory pools.
 pub struct Session {
+    #[cfg(feature = "sunfish-registry-window-trace")]
+    registry_window: RegistryWindowTrace,
     #[cfg(feature = "sunfish-ipa-before-first-oack")]
     ipa_before_first_oack: bool,
     #[cfg(feature = "sunfish-first-oack-after-ipa-publish")]
@@ -1741,6 +1767,8 @@ impl Session {
             tftp_queue_block: TftpQueueBlock::default(),
             #[cfg(feature = "sunfish-wlan-elf-queue-trace")]
             registry_pressure: None,
+            #[cfg(feature = "sunfish-registry-window-trace")]
+            registry_window: RegistryWindowTrace::default(),
             #[cfg(feature = "sunfish-wlan-elf-exchange-trace")]
             elf_exchange: None,
             #[cfg(feature = "sunfish-wlan-first-server-check-trace")]
@@ -2705,6 +2733,8 @@ impl Session {
         { self.elf_host_credit = None; }
         #[cfg(feature = "sunfish-wlan-elf-queue-trace")]
         { self.registry_pressure = None; }
+        #[cfg(feature = "sunfish-registry-window-trace")]
+        { self.registry_window = RegistryWindowTrace::default(); }
         self.qrtr_flows = [None; TX_STORAGE_SLOTS];
         #[cfg(feature = "sunfish-qrtr-rmtfs-flow-experiment")]
         { self.rmtfs_reference_flows = new_reference_flows; self.rmtfs_flow_destinations = [None; 64]; }
@@ -6211,6 +6241,13 @@ impl Session {
             self.remote[remote] = None;
         }
         self.retire_transmit(index)?;
+        #[cfg(feature = "sunfish-registry-window-trace")]
+        if let Some(pair) = self.registry_window.target.as_mut()
+            && completion == Event::ReplyRxDone(pair.older) && !pair.older_completed
+        {
+            pair.older_completed = true;
+            pair.older_done_at = self.intent_ack_clock.map(|clock| clock());
+        }
         #[cfg(feature = "sunfish-wlan-first-wrq-window")]
         self.first_wrq_window.complete(index, id, self.intent_ack_clock);
         #[cfg(feature = "sunfish-wlan-elf-server-check-trace")]
@@ -6537,6 +6574,9 @@ impl Session {
         self.registry_pressure = Some((*handle, pressure));
     }
 
+    #[cfg(feature = "sunfish-registry-window-trace")]
+    pub fn registry_window_trace(&self) -> RegistryWindowTrace { self.registry_window }
+
     fn queue_reply_with_ipa_token(
         &mut self,
         handle: &RequestHandle,
@@ -6562,12 +6602,14 @@ impl Session {
         {
             return Err(Error::InvalidReply);
         }
-        let mut same_peer = self.transmit.iter().filter(|tx| {
+        #[cfg(feature = "sunfish-registry-window-trace")]
+        let mut window_prior = None;
+        let mut same_peer = self.transmit.iter().enumerate().filter(|(_, tx)| {
             tx.len != 0
                 && tx.kind.qrtr_addresses()
                     .is_some_and(|(_, destination)| destination == route.destination)
         });
-        if let Some(_previous) = same_peer.next() {
+        if let Some((_previous_index, _previous)) = same_peer.next() {
             #[cfg(feature = "sunfish-wlan-registry-second-reply")]
             let allow_second = route.service == Service::ServiceRegistry
                 && matches!(_previous.kind, TxKind::Reply { route: older, .. }
@@ -6585,6 +6627,8 @@ impl Session {
                 self.record_registry_pressure(handle, route, 1);
                 return Err(Error::FlowBusy);
             }
+            #[cfg(feature = "sunfish-registry-window-trace")]
+            { window_prior = Some(_previous_index); }
         }
         let Some(index) = self.free_tx_slot() else {
             #[cfg(feature = "sunfish-wlan-elf-queue-trace")]
@@ -6699,6 +6743,23 @@ impl Session {
             };
         }
         self.receive[receive].state = RxState::ReplyQueued;
+        #[cfg(feature = "sunfish-registry-window-trace")]
+        if let Some(prior) = window_prior {
+            self.registry_window.admissions = self.registry_window.admissions.saturating_add(1);
+            if self.registry_window.target.is_none()
+                && route.transaction == 4 && route.destination == (Address { node: 0, port: 9 })
+                && let TxKind::Reply { receive: older_receive, route: older_route, .. } = self.transmit[prior].kind
+                && older_route.transaction == 3
+            {
+                self.registry_window.target = Some(RegistryWindowPair {
+                    older: RequestHandle { owner: self.owner, generation: self.generation, intent: self.receive[older_receive].id },
+                    newer: *handle, older_transaction: 3, newer_transaction: 4,
+                    peer: route.destination, queued_at: self.intent_ack_clock.map(|clock| clock()),
+                    newer_published_at: None, older_done_at: None,
+                    published_before_done: None, older_completed: false,
+                });
+            }
+        }
         Ok(())
     }
 
@@ -8408,6 +8469,15 @@ impl Session {
                 self.transmit[index].remote_slot = Some(remote);
                 self.transmit[index].sent += chunk;
                 if self.transmit[index].sent == self.transmit[index].len {
+                    #[cfg(feature = "sunfish-registry-window-trace")]
+                    if let Some(pair) = self.registry_window.target.as_mut()
+                        && pair.published_before_done.is_none()
+                        && let TxKind::Reply { receive, .. } = self.transmit[index].kind
+                        && pair.newer == (RequestHandle { owner: self.owner, generation: self.generation, intent: self.receive[receive].id })
+                    {
+                        pair.newer_published_at = self.intent_ack_clock.map(|clock| clock());
+                        pair.published_before_done = Some(!pair.older_completed);
+                    }
                     #[cfg(feature = "sunfish-tftp-oack-reserve")]
                     if index == TX_SLOTS && let Some(oack) = self.reserved_oack.as_mut() {
                         oack.published_at = self.intent_ack_clock.map(|clock| clock());

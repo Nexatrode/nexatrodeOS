@@ -2157,6 +2157,8 @@ impl<I: Io> Adapter<I> {
     pub fn intent_ack_summary(&self) -> (u32, Option<u64>) {
         self.session.intent_ack_summary()
     }
+    #[cfg(feature = "sunfish-registry-window-trace")]
+    pub fn registry_window_trace(&self) -> core::RegistryWindowTrace { self.session.registry_window_trace() }
     #[cfg(feature = "sunfish-wlan-elf-queue-trace")]
     pub fn registry_queue_pressure(&self, handle: &core::RequestHandle) -> Option<core::RegistryQueuePressure> {
         self.session.registry_queue_pressure(handle)

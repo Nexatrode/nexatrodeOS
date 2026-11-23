@@ -3859,6 +3859,7 @@ fn elf_queue_trace_distinguishes_same_peer_from_slot_exhaustion() {
 
 #[cfg(feature = "sunfish-wlan-registry-txn4-timing")]
 #[test]
+#[cfg(not(feature = "sunfish-wlan-registry-second-reply"))]
 fn registry_txn4_timing_follows_exact_reply_that_blocks_elf() {
     use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
     use qcom_modem_owner::ServiceProgress;
@@ -3943,6 +3944,7 @@ fn registry_txn4_timing_follows_exact_reply_that_blocks_elf() {
 
 #[cfg(feature = "sunfish-wlan-tx4-pressure")]
 #[test]
+#[cfg(not(feature = "sunfish-wlan-registry-second-reply"))]
 fn tx4_pressure_retains_exact_same_peer_blocker_after_success() {
     use qcom_modem_owner::ServiceProgress;
     let (peer, mut owner, mut irqs) = owner_control_start();

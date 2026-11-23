@@ -1987,6 +1987,8 @@ impl<I: Io> Owner<I> {
     pub fn intent_ack_summary(&self) -> (u32, Option<u64>) {
         self.adapter.intent_ack_summary()
     }
+    #[cfg(feature = "sunfish-registry-window-trace")]
+    pub fn registry_window_trace(&self) -> crate::qcom_glink_qmi::RegistryWindowTrace { self.adapter.registry_window_trace() }
     pub fn service_registry_trace(&self) -> ServiceRegistryTrace {
         let trace = self.service_registry_trace;
         #[cfg(feature = "sunfish-wlan-elf-exchange-trace")]

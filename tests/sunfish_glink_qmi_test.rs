@@ -3604,6 +3604,7 @@ fn missing_reply_trace_matches_route_bytes_and_exact_transmit_lifetime() {
     feature = "sunfish-glink-intent-request-experiment",
 ))]
 #[test]
+#[cfg(not(feature = "sunfish-wlan-registry-second-reply"))]
 fn registry_blocker_trace_separates_intent_wait_and_fifo_backpressure() {
     let mut session = session();
     let port = crate::qcom_servreg::LOCAL_PORT;
@@ -3661,6 +3662,7 @@ fn registry_turn_request(s: &mut Session, intent: u32, peer: u32, txn: u8) -> Re
 
 #[cfg(feature = "sunfish-wlan-registry-tx-turn")]
 #[test]
+#[cfg(not(feature = "sunfish-wlan-registry-second-reply"))]
 fn registry_priority_is_bounded_and_preserves_same_peer_completion() {
     let mut s = session();
     s.register(1, Service::ServiceRegistry, qcom_servreg::LOCAL_PORT).unwrap();
@@ -4092,5 +4094,127 @@ fn preferred_negative_ack_can_borrow_one_slot_releasing_done() {
             assert_eq!(publish(&mut s).unwrap().0, Published::ReceiveDone(id));
         }
         assert!(publish(&mut s).is_none());
+    }
+}
+
+#[cfg(all(feature="sunfish-wlan-registry-second-reply",feature="sunfish-wlan-registry-tx-turn"))]
+#[test]
+fn registry_two_reply_window_retries_exact_write_and_retains_closed_peer_buffers(){
+    for (reverse,close_peer) in [(false,false),(true,false),(false,true),(true,true)] {
+        let mut s=session();s.register(1,Service::ServiceRegistry,qcom_servreg::LOCAL_PORT).unwrap();
+        s.prepare_service_available(1,Service::ServiceRegistry).unwrap();
+        s.start_control(1).unwrap();
+        s.ingest(1,&intents(&[(7,4096),(8,4096)])).unwrap();
+        let drain_control=|s:&mut Session|{for _ in 0..16 {
+            let next=s.publish_next(1,|_|Ok(())).unwrap();
+            if let Some(Published::Data{remote_intent,last_fragment:true})=next {s.ingest(1,&control(14,remote_intent)).unwrap();}
+            if next.is_none(){return;}
+        }panic!("control handshake did not drain")};
+        drain_control(&mut s);
+        let hello=offer(&mut s);s.ingest(1,&data(9,hello,&qrtr_control(2,[0;4]),0)).unwrap();
+        drain_control(&mut s);
+        let rx3=offer(&mut s);let rx4=offer(&mut s);
+        let first=registry_turn_request(&mut s,rx3,9,3);
+        let second=registry_turn_request(&mut s,rx4,9,4);
+        s.queue_reply(&first,Reply::Failure{error:3}).unwrap();
+        let (one,_)=publish_until_data(&mut s);
+        let Published::Data{remote_intent:a,..}=one else{panic!("first response")};
+        s.ingest(1,&control(7,52)).unwrap();
+        s.queue_reply(&second,Reply::Failure{error:3}).unwrap();
+        #[cfg(feature="sunfish-registry-window-trace")]
+        {
+            let window=s.registry_window_trace();assert_eq!(window.admissions,1);
+            let pair=window.target.unwrap();assert_eq!((pair.older_transaction,pair.newer_transaction),(3,4));
+            assert_eq!(pair.published_before_done,None);
+        }
+        let mut grant_advertised=false;let mut grant_acked=false;
+        let mut blocked=None;
+        for _ in 0..16 {
+            let result=s.publish_next(1,|bytes|{
+                if (word(bytes,0)&0xffff)==9 && bytes.get(49..51)==Some(&4u16.to_le_bytes()) {
+                    blocked=Some(bytes.to_vec());Err(WriteError::WouldBlock)
+                }else{Ok(())}
+            });
+            if blocked.is_some(){assert_eq!(result,Err(Error::WouldBlock));break;}
+            match result.unwrap() {
+                Some(Published::ReceiveIntent(_))=>grant_advertised=true,
+                Some(Published::IntentRequestAck{granted:true})=>{assert!(grant_advertised);grant_acked=true;},
+                _=>{}
+            }
+        }
+        assert!(grant_acked,"positive grant after its advertisement must keep its turn");
+        let blocked=blocked.expect("must block the actual second reply record");
+        assert!(!s.reply_fully_published(&second));assert!(s.reply_fully_published(&first));
+        let retry=s.publish_next(1,|bytes|{assert_eq!(bytes,blocked.as_slice());Ok(())}).unwrap();
+        let Some(Published::Data{remote_intent:b,..})=retry else{panic!("second response")};
+        assert_ne!(a,b);assert!(s.reply_fully_published(&first));assert!(s.reply_fully_published(&second));
+        #[cfg(feature="sunfish-registry-window-trace")]
+        assert_eq!(s.registry_window_trace().target.unwrap().published_before_done,Some(true),"proof is independent of the absent clock");
+        if close_peer {
+            let close=offer(&mut s);
+            assert_eq!(s.ingest(1,&data(9,close,&qrtr_control(6,[0,9,0,0]),0)),Err(Error::Control(qcom_qrtr_control::Error::ClientGone)));
+            assert!(s.reply_fully_published(&first));assert!(s.reply_fully_published(&second));
+            let mut called=false;
+            assert_eq!(s.publish_next(1,|_|{called=true;Ok(())}),Err(Error::Quarantined));assert!(!called);
+            assert_eq!(s.ingest(1,&control(14,a)),Err(Error::Quarantined));
+            continue;
+        }
+        assert!(s.reply_fully_published(&first));assert!(s.reply_fully_published(&second));
+        let completions=if reverse{[(b,second,first),(a,first,second)]}else{[(a,first,second),(b,second,first)]};
+        for (index,(intent,expected,other)) in completions.into_iter().enumerate(){
+            assert_eq!(s.ingest(1,&control(14,intent)),Ok(Event::ReplyRxDone(expected)));
+            assert!(!s.reply_fully_published(&expected));
+            if index==0{assert!(s.reply_fully_published(&other),"close/other completion cannot free its intent");}
+        }
+    }
+}
+
+#[cfg(feature = "sunfish-registry-window-trace")]
+#[test]
+fn registry_window_trace_matches_receipts_without_relying_on_clock_or_slot_index() {
+    use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    static CLOCK: AtomicU64 = AtomicU64::new(0);
+    for clocked in [false, true] {
+        for complete_first in [false, true] {
+            let mut s = session();
+            if clocked { s.set_registry_ack_clock(|| CLOCK.load(Relaxed)); }
+            s.register(1, Service::ServiceRegistry, qcom_servreg::LOCAL_PORT).unwrap();
+            s.prepare_service_available(1, Service::ServiceRegistry).unwrap();
+            s.ingest(1, &intents(&[(7, 4096), (8, 4096)])).unwrap();
+            let rx3 = offer(&mut s); let rx4 = offer(&mut s);
+            let one = registry_turn_request(&mut s, rx3, 9, 3);
+            let two = registry_turn_request(&mut s, rx4, 9, 4);
+            s.queue_reply(&one, Reply::Failure { error: 3 }).unwrap();
+            assert_eq!(s.queue_reply(&two, Reply::Failure { error: 3 }), Err(Error::FlowBusy));
+            assert_eq!(s.registry_window_trace().admissions, 0);
+            let (Published::Data { remote_intent: a, .. }, _) = publish_until_data(&mut s) else { panic!() };
+            assert_eq!(s.queue_reply(&two, Reply::Failure { error: 0 }), Err(Error::InvalidReply));
+            assert_eq!(s.registry_window_trace().admissions, 0, "failed admission must not be counted");
+            CLOCK.store(100, Relaxed);
+            s.queue_reply(&two, Reply::Failure { error: 3 }).unwrap();
+            assert_eq!(s.registry_window_trace().admissions, 1);
+            assert_eq!(s.registry_window_trace().target.unwrap().queued_at, clocked.then_some(100));
+            if complete_first {
+                CLOCK.store(120, Relaxed);
+                assert_eq!(s.ingest(1, &control(14, a)), Ok(Event::ReplyRxDone(one)));
+            }
+            CLOCK.store(140, Relaxed);
+            let (Published::Data { remote_intent: b, .. }, _) = publish_until_data(&mut s) else { panic!() };
+            let pair = s.registry_window_trace().target.unwrap();
+            assert_eq!(pair.newer_published_at, clocked.then_some(140));
+            assert_eq!(pair.published_before_done, Some(!complete_first));
+            CLOCK.store(160, Relaxed);
+            assert_eq!(s.ingest(1, &control(14, b)), Ok(Event::ReplyRxDone(two)));
+            assert_eq!(s.registry_window_trace().target.unwrap().older_done_at, if clocked && complete_first {Some(120)} else {None}, "newer completion is not the older receipt");
+            if !complete_first {
+                CLOCK.store(180, Relaxed);
+                assert_eq!(s.ingest(1, &control(14, a)), Ok(Event::ReplyRxDone(one)));
+            }
+            let pair = s.registry_window_trace().target.unwrap();
+            assert_eq!(pair.older_done_at, clocked.then_some(if complete_first {120} else {180}));
+            assert_eq!(pair.published_before_done, Some(!complete_first), "later completion cannot rewrite overlap proof");
+            s.reset_after_transport_reset(2).unwrap();
+            assert_eq!(s.registry_window_trace(), Default::default());
+        }
     }
 }
