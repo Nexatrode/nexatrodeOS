@@ -15,7 +15,10 @@ impl RuntimeDomain {
             if us == u32::MAX { u32::MAX } else { us / 1000 } };
         let pair = |a: u32, b: u32| (a.min(65535) << 16) | b.min(65535);
         let query = self.wlan_query.snapshot(owner);
+        #[cfg(not(feature = "sunfish-registry-between-grants"))]
         display.replace_line(1, "REGISTRY TX3 PRESSURE");
+        #[cfg(feature = "sunfish-registry-between-grants")]
+        display.replace_line(1, "REGISTRY BETWEEN GRANTS");
         for (row, (label, value)) in [
             ("RUNTIME ERROR", self.error),
             ("OLD SNAP STATE", prior.map_or(0, |p| if p.publication_frozen { 2 } else { 1 })),

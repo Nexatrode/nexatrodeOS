@@ -711,6 +711,8 @@ struct Transmit {
     bytes: [u8; MAX_DATAGRAM_BYTES],
     len: usize,
     sent: usize,
+    #[cfg(feature = "sunfish-registry-between-grants")]
+    registry_grant_turn_used: bool,
     #[cfg(feature = "sunfish-wlan-elf-publish-trace")]
     registry_publication: RegistryPublication,
     #[cfg(feature = "sunfish-tftp-final-ack-observer")]
@@ -741,6 +743,8 @@ impl Transmit {
             bytes: [0; MAX_DATAGRAM_BYTES],
             len: 0,
             sent: 0,
+            #[cfg(feature = "sunfish-registry-between-grants")]
+            registry_grant_turn_used: false,
             #[cfg(feature = "sunfish-wlan-elf-publish-trace")]
             registry_publication: RegistryPublication {
                 transaction: 0, bytes: 0, calls: 0, mask: 0,
@@ -7421,11 +7425,26 @@ impl Session {
         // Yield to the existing TFTP turn, intent ACKs and ready QRTR credits.
         // A successful registry turn must be followed by a normal publication
         // before another priority record can be sent.
+        // After a committed ACK, lend one attempt before a new positive
+        // grant's backing advertisement. Once advertised, its ACK keeps its
+        // turn. The per-transmit latch survives blocked writes; diagnostics
+        // and clocks never decide eligibility.
+        #[cfg(feature = "sunfish-registry-between-grants")]
+        let registry_before_grant = self.intent_ack_yield
+            && self.intent_request_ack == Some(true) && self.intent_ack_backing.is_some();
+        #[cfg(not(feature = "sunfish-registry-between-grants"))]
+        let registry_before_grant = false;
         #[cfg(feature = "sunfish-wlan-registry-tx-turn")]
         let registry_candidate = if !self.registry_turn_used && priority_tftp.is_none()
-            && self.intent_request_ack.is_none() && priority_wrq_done.is_none()
+            && (self.intent_request_ack.is_none() || registry_before_grant)
+            && priority_wrq_done.is_none()
         {
-            self.next_transmit_in_order([3])
+            self.next_transmit_in_order([3]).filter(|(slot, _)| {
+                #[cfg(feature = "sunfish-registry-between-grants")]
+                if registry_before_grant && self.transmit[*slot].registry_grant_turn_used { return false; }
+                let _ = slot;
+                true
+            })
         } else {
             None
         };
@@ -8173,7 +8192,21 @@ impl Session {
         if first_oack_ready {
             self.first_oack_eligibility.ready_command = Some(u16::from_le_bytes([record[0], record[1]]));
         }
+        #[cfg(feature = "sunfish-registry-between-grants")]
+        let borrowed_registry_slot = if registry_before_grant {
+            priority_registry.filter(|(slot, _)| matches!(&commit, Commit::Data(actual, ..) if slot == actual))
+                .map(|(slot, _)| slot)
+        } else { None };
+        #[cfg(feature = "sunfish-registry-between-grants")]
+        if let Some(slot) = borrowed_registry_slot {
+            self.transmit[slot].registry_grant_turn_used = true;
+            self.transmit[slot].registry_publication.mask |= 1 << 8;
+        }
         let result = writer(&record[..size]);
+        #[cfg(feature = "sunfish-registry-between-grants")]
+        if result.is_ok() && let Some(slot) = borrowed_registry_slot {
+            self.transmit[slot].registry_publication.mask |= 1 << 9;
+        }
         #[cfg(feature = "sunfish-post-reg-oack-turn")]
         if let Some(i) = post_reg_turn {
             self.post_reg_turns.turns[i].written(u16::from_le_bytes([record[0], record[1]]), result);

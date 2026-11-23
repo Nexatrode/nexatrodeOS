@@ -60,6 +60,6 @@ fn main(){
   code=code.replace('DISPLAY_PATH',json.dumps(str(ROOT/'rust/src/pixel_probe_display.rs'))).replace('CLOCK',source[a:end]).replace('PANEL_PATH',json.dumps(str(ROOT/'rust/src/pixel_mpss_registry_pressure.rs')))
   with tempfile.TemporaryDirectory() as temp:
    p=Path(temp);(p/'panel.rs').write_text(code)
-   subprocess.run(['rustc','+nightly-2026-09-25','--edition=2024','-Adead_code',str(p/'panel.rs'),'-o',str(p/'panel')],check=True)
+   subprocess.run(['rustc','+nightly-2026-09-25','--edition=2024','-Adead_code',*(['--cfg','feature=\"sunfish-registry-between-grants\"'] if os.environ.get('SUNFISH_REGISTRY_GRANT_PANEL') else []),str(p/'panel.rs'),'-o',str(p/'panel')],check=True)
    subprocess.run([str(p/'panel')],check=True,env=os.environ)
 if __name__=='__main__':unittest.main()

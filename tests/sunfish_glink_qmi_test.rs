@@ -4275,3 +4275,131 @@ fn registry_predecessor_pressure_freezes_exact_publication_without_clock_and_sur
         s.reset_after_transport_reset(2).unwrap();assert_eq!(s.registry_window_trace().predecessor,None);
     }
 }
+
+
+#[cfg(feature="sunfish-registry-between-grants")]
+mod registry_between_grants {
+    use super::*;
+
+    // A real completed ACK precedes a second, still-unadvertised grant.
+    // No simulated clock or diagnostic counter controls this window.
+    fn prepared(return_request: bool, confirm: bool, capacity: u32) -> (Session, RequestHandle) {
+        let mut s=session();
+        s.register(1,Service::ServiceRegistry,qcom_servreg::LOCAL_PORT).unwrap();
+        s.prepare_service_available(1,Service::ServiceRegistry).unwrap();
+        s.ingest(1,&intents(&[(7,capacity),(8,capacity),(9,capacity)])).unwrap();
+        let id=offer(&mut s);
+        let payload=[0,3,0,0x21,0,6,0,1,3,0,b'f',b'o',b'o'];
+        let packet=qrtr(1,9,qcom_servreg::LOCAL_PORT,confirm,&payload);
+        let Event::Request(request)=s.ingest(1,&data(9,id,&packet,0)).unwrap() else {panic!()};
+        if return_request {assert_eq!(publish(&mut s).unwrap().0,Published::ReceiveDone(id));}
+        s.ingest(1,&control(7,52)).unwrap();
+        assert!(matches!(publish(&mut s).unwrap().0,Published::ReceiveIntent(_)));
+        assert_eq!(publish(&mut s).unwrap().0,Published::IntentRequestAck{granted:true});
+        s.queue_reply(&request,Reply::Failure{error:3}).unwrap();
+        s.ingest(1,&control(7,108)).unwrap();
+        (s,request)
+    }
+    fn reply(s:&mut Session)->(u32,Vec<u8>){
+        let(event,bytes)=publish(s).unwrap();
+        let Published::Data{remote_intent,last_fragment:true}=event else{panic!("expected registry reply: {event:?}")};
+        assert_eq!(word(&bytes,44),9);assert_eq!(&bytes[49..51],&3u16.to_le_bytes());
+        (remote_intent,bytes)
+    }
+    fn grant(s:&mut Session){
+        assert!(matches!(publish(s).unwrap().0,Published::ReceiveIntent(_)));
+        assert_eq!(publish(s).unwrap().0,Published::IntentRequestAck{granted:true});
+    }
+    #[test]
+    fn committed_ack_lends_exact_reply_one_turn_before_next_advertisement(){
+        let(mut s,request)=prepared(true,false,4096);
+        let(id,_)=reply(&mut s);
+        let p=s.registry_window_trace().predecessor.unwrap().publication.unwrap();
+        assert_eq!(p.mask&0x300,0x300,"attempt and actual successful borrowed DATA");
+        grant(&mut s);
+        assert_eq!(s.ingest(1,&control(14,id)),Ok(Event::ReplyRxDone(request)));
+    }
+    #[test]
+    fn blocked_borrow_consumes_opportunity_then_grant_and_ordinary_retry_preserve_bytes(){
+        let(mut s,request)=prepared(true,false,4096);let mut blocked=Vec::new();
+        assert_eq!(s.publish_next(1,|b|{blocked.extend_from_slice(b);Err(WriteError::WouldBlock)}),Err(Error::WouldBlock));
+        let p=s.registry_window_trace().predecessor.unwrap().publication.unwrap();
+        assert_eq!(p.mask&0x300,0x100);assert!(!s.reply_fully_published(&request));
+        grant(&mut s); // no second borrowed attempt despite the still-pending exact reply
+        let(id,bytes)=reply(&mut s);assert_eq!(bytes,blocked);
+        assert_eq!(s.registry_window_trace().predecessor.unwrap().publication.unwrap().mask&0x300,0x100);
+        assert_eq!(s.ingest(1,&control(14,id)),Ok(Event::ReplyRxDone(request)));
+    }
+    #[test]
+    fn uncertain_borrow_quarantines_without_grant_or_data_retry(){
+        let(mut s,_)=prepared(true,false,4096);
+        assert_eq!(s.publish_next(1,|_|Err(WriteError::Uncertain)),Err(Error::PublicationUncertain));
+        let mut called=false;assert_eq!(s.publish_next(1,|_|{called=true;Ok(())}),Err(Error::Quarantined));assert!(!called);
+        s.reset_after_transport_reset(2).unwrap();assert!(s.transport_is_pristine());
+    }
+    #[test]
+    fn own_request_return_and_ready_qrtr_credit_keep_their_turns(){
+        for confirm in [false,true]{
+            let(mut s,request)=prepared(false,confirm,4096);
+            assert!(matches!(publish(&mut s).unwrap().0,Published::ReceiveDone(_)));
+            grant(&mut s);
+            if confirm {let(e,b)=publish(&mut s).unwrap();assert!(matches!(e,Published::Data{..}));assert_eq!(word(&b,20),7);}
+            let(id,_)=reply(&mut s);
+            assert_eq!(s.registry_window_trace().predecessor.unwrap().publication.unwrap().mask&0x300,0);
+            assert_eq!(s.ingest(1,&control(14,id)),Ok(Event::ReplyRxDone(request)));
+        }
+    }
+    #[test]
+    fn ready_credit_and_missing_fit_do_not_spend_the_borrow() {
+        let(mut credit,request)=prepared(true,true,4096);
+        grant(&mut credit); // a ready RESUME excludes registry priority
+        let(e,b)=publish(&mut credit).unwrap();assert!(matches!(e,Published::Data{..}));assert_eq!(word(&b,20),7);
+        let(id,_)=reply(&mut credit);
+        assert_eq!(credit.registry_window_trace().predecessor.unwrap().publication.unwrap().mask&0x300,0);
+        assert_eq!(credit.ingest(1,&control(14,id)),Ok(Event::ReplyRxDone(request)));
+        let(mut nofit,request)=prepared(true,false,32);
+        grant(&mut nofit); // no fitting modem intent, so finish the original grant
+        assert_eq!(nofit.registry_window_trace().predecessor.unwrap().publication.unwrap().mask&0x300,0);
+        nofit.ingest(1,&intents(&[(10,4096)])).unwrap();
+        nofit.ingest(1,&control(7,108)).unwrap();
+        let(id,_)=reply(&mut nofit); // missing fit did not consume the later opportunity
+        assert_eq!(nofit.registry_window_trace().predecessor.unwrap().publication.unwrap().mask&0x300,0x300);
+        assert_eq!(nofit.ingest(1,&control(14,id)),Ok(Event::ReplyRxDone(request)));
+    }
+    #[test]
+    fn advertised_grant_ack_is_never_overtaken_by_new_reply(){
+        let mut s=session();s.register(1,Service::ServiceRegistry,qcom_servreg::LOCAL_PORT).unwrap();
+        s.prepare_service_available(1,Service::ServiceRegistry).unwrap();s.ingest(1,&intents(&[(7,4096)])).unwrap();
+        let id=offer(&mut s);let request=registry_turn_request(&mut s,id,9,3);
+        assert_eq!(publish(&mut s).unwrap().0,Published::ReceiveDone(id));
+        s.ingest(1,&control(7,52)).unwrap();grant(&mut s);
+        s.ingest(1,&control(7,108)).unwrap();
+        assert!(matches!(publish(&mut s).unwrap().0,Published::ReceiveIntent(_)));
+        // Queue only after the backing advertisement. The new reply has never borrowed.
+        s.queue_reply(&request,Reply::Failure{error:3}).unwrap();
+        assert_eq!(publish(&mut s).unwrap().0,Published::IntentRequestAck{granted:true});
+        let(id,_)=reply(&mut s);assert_eq!(s.ingest(1,&control(14,id)),Ok(Event::ReplyRxDone(request)));
+        assert_eq!(s.registry_window_trace().predecessor.unwrap().publication.unwrap().mask&0x300,0);
+    }
+    #[test]
+    fn reset_reuses_slots_without_reusing_a_consumed_borrow_or_old_receipt(){
+        let(mut s,old)=prepared(true,false,4096);
+        assert_eq!(s.publish_next(1,|_|Err(WriteError::WouldBlock)),Err(Error::WouldBlock));
+        s.reset_after_transport_reset(2).unwrap();
+        s.register(2,Service::ServiceRegistry,qcom_servreg::LOCAL_PORT).unwrap();s.prepare_service_available(2,Service::ServiceRegistry).unwrap();
+        s.ingest(2,&intents(&[(7,4096)])).unwrap();let id=s.offer_receive(2).unwrap();
+        let next=|s:&mut Session|{let mut b=Vec::new();let e=s.publish_next(2,|v|{b.extend_from_slice(v);Ok(())}).unwrap().unwrap();(e,b)};
+        assert_eq!(next(&mut s).0,Published::ReceiveIntent(id));
+        let payload=[0,3,0,0x21,0,6,0,1,3,0,b'f',b'o',b'o'];
+        let Event::Request(new)=s.ingest(2,&data(9,id,&qrtr(1,9,qcom_servreg::LOCAL_PORT,false,&payload),0)).unwrap() else {panic!()};
+        assert_ne!(old,new);assert_eq!(s.queue_reply(&old,Reply::Failure{error:3}),Err(Error::StaleGeneration));
+        assert_eq!(next(&mut s).0,Published::ReceiveDone(id));
+        s.ingest(2,&control(7,52)).unwrap();assert!(matches!(next(&mut s).0,Published::ReceiveIntent(_)));
+        assert_eq!(next(&mut s).0,Published::IntentRequestAck{granted:true});
+        s.queue_reply(&new,Reply::Failure{error:3}).unwrap();s.ingest(2,&control(7,108)).unwrap();
+        let(e,b)=next(&mut s);let Published::Data{remote_intent:id,..}=e else {panic!("reset latch survived: {e:?}")};
+        assert_eq!(&b[49..51],&3u16.to_le_bytes());
+        assert_eq!(s.ingest(2,&control(14,id)),Ok(Event::ReplyRxDone(new)));
+        assert_eq!(s.registry_window_trace().predecessor.unwrap().publication.unwrap().mask&0x300,0x300);
+    }
+}
