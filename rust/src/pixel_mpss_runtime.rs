@@ -46,6 +46,9 @@ mod registry_credit_turn;
 #[cfg(feature="sunfish-registry-prearm-io-trace")]
 #[path="pixel_mpss_registry_prearm_io.rs"]
 mod registry_prearm_io;
+#[cfg(feature="sunfish-registry-defer-paint")]
+#[path="pixel_mpss_registry_paint.rs"]
+mod registry_paint;
 
 #[cfg(all(feature = "sunfish-ipa-independent-server-experiment", not(feature = "sunfish-ipa-independent-server-runtime")))]
 compile_error!("independent IPA server experiment is offline only; native composition not validated");
@@ -88,6 +91,8 @@ enum Stage {
 /// receipt, and IPA receive runtime stay retained beside one transport phase;
 /// the only Native adapter is inside that phase's checked RefCell gate.
 pub(super) struct RuntimeDomain {
+    #[cfg(feature="sunfish-registry-defer-paint")]
+    registry_paint: registry_paint::Gate,
     stage: Option<Stage>,
     boot: ManuallyDrop<pixel_mpss_auth::NativeBoot>,
     ready: ManuallyDrop<personal_os_rust_server::sunfish_mpss_linux_smp2p::ReadyObservation>,
@@ -196,6 +201,8 @@ impl RuntimeDomain {
         let mut opening = transport::start_live(parts.gate, parts.auth, session, parts.hz);
         opening.with_io(|io| io.owner_timing_clock(counter));
         Self {
+            #[cfg(feature="sunfish-registry-defer-paint")]
+            registry_paint: registry_paint::Gate::default(),
             stage: Some(Stage::Opening(opening)),
             boot: ManuallyDrop::new(parts.boot),
             ready: ManuallyDrop::new(parts.ready),
@@ -672,6 +679,18 @@ impl RuntimeDomain {
         Ok(())
     }
 
+    #[cfg(feature="sunfish-registry-defer-paint")]
+    fn registry_display_busy(&self) -> bool {
+        matches!(self.stage, Some(Stage::Services(_))) && self.router.report().continuation_pending
+    }
+
+    #[cfg(feature="sunfish-registry-defer-paint")]
+    fn record_registry_paint(&mut self, start: u64, end: u64) {
+        if let Some(Stage::Services(owner)) = self.stage.as_ref()
+            && let Some(io) = owner.registry_prearm_io()
+        { self.registry_paint.record(io.queued_at, io.first_enter_at, start, end); }
+    }
+
     fn paint_progress(&mut self, display: &Display, phase: u32) {
         #[cfg(feature = "sunfish-ipa-schedule-trace")]
         self.schedule_sample(7);
@@ -679,12 +698,16 @@ impl RuntimeDomain {
         self.progress_trace.checkpoint(phase);
         #[cfg(feature = "sunfish-tftp-quiet-oack-experiment")]
         if self.awaiting_first_oack_completion() { return; }
+        #[cfg(feature="sunfish-registry-defer-paint")]
+        { let busy=self.registry_display_busy(); if !self.registry_paint.progress(self.error,busy) { return; } }
         display.runtime_progress(cfg!(feature = "sunfish-ipa-independent-server-runtime"),
             self.progress_trace.phase, self.progress_trace.wake_sent, self.progress_trace.wake_received,
             self.rmtfs_report.map_or(0, |r| r.chunks.min(u64::from(u32::MAX)) as u32));
         display.flush();
         let ended = counter();
         self.timing.record(3, ended.wrapping_sub(started));
+        #[cfg(feature="sunfish-registry-defer-paint")]
+        self.record_registry_paint(started,ended);
         #[cfg(feature = "sunfish-ipa-registration-prep-trace")]
         if let Some(Stage::Services(owner)) = self.stage.as_ref() {
             record_registration_prep_work(&mut self.registration_prep_work[3], owner.ipa_registration_trace(), started, ended);
@@ -700,6 +723,8 @@ impl RuntimeDomain {
         self.show(display);
         let ended = counter();
         self.timing.record(3, ended.wrapping_sub(started));
+        #[cfg(feature="sunfish-registry-defer-paint")]
+        self.record_registry_paint(started,ended);
         #[cfg(feature = "sunfish-ipa-registration-prep-trace")]
         if let Some(Stage::Services(owner)) = self.stage.as_ref() {
             record_registration_prep_work(&mut self.registration_prep_work[3], owner.ipa_registration_trace(), started, ended);
@@ -1076,6 +1101,8 @@ impl RuntimeDomain {
             let waiting = self.awaiting_first_oack_completion();
             self.oack_paint_gate.allow(waiting, self.error != 0, counter(), self.hz)
         } else { false };
+        #[cfg(feature="sunfish-registry-defer-paint")]
+        let repaint = { let busy=self.registry_display_busy(); self.registry_paint.full(self.error,busy,repaint) };
         if repaint { self.timed_show(display); }
         #[cfg(feature = "sunfish-wlan-elf-registry-gap")]
         self.registry_gap.end_callback(counter());

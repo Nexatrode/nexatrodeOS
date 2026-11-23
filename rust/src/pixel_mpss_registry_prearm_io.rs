@@ -10,7 +10,18 @@ impl RuntimeDomain {
         let age=|at|self.time_from_us(Some(self.runtime_started),at);
         let duration=|ticks|self.time_from_us(Some(0),ticks);
         let parts=io.and_then(|t|t.delta(true));
+        #[cfg(not(feature="sunfish-registry-defer-paint"))]
         display.replace_line(1,"REGISTRY PREARM IO");
+        #[cfg(feature="sunfish-registry-defer-paint")]
+        display.replace_line(1,"REGISTRY DEFER PAINT");
+        #[cfg(not(feature="sunfish-registry-defer-paint"))]
+        let extra_rx=("ELF RX US",age(elf.and_then(|e|e.received)));
+        #[cfg(feature="sunfish-registry-defer-paint")]
+        let extra_rx=("PAINT DEFERRED",self.registry_paint.deferred);
+        #[cfg(not(feature="sunfish-registry-defer-paint"))]
+        let extra_pub=("ELF PUB US",age(elf.and_then(|e|e.published)));
+        #[cfg(feature="sunfish-registry-defer-paint")]
+        let extra_pub=("PAINT GAP US",duration(io.and_then(|i|i.first_enter_at).and(self.registry_paint.ticks())));
         for (row,(label,value)) in [
             ("RUNTIME ERROR",self.error),
             ("QUEUE OBS US",age(io.and_then(|t|t.queued_at))),
@@ -31,9 +42,9 @@ impl RuntimeDomain {
             ("CURSOR US",duration(parts.map(|p|p[1]))),
             ("READ US",duration(parts.map(|p|p[2]))),
             ("OTHER IO US",duration(parts.map(|p|p[3]))),
-            ("ELF RX US",age(elf.and_then(|e|e.received))),
+            extra_rx,
             ("ELF QUEUE US",age(elf.and_then(|e|e.queued))),
-            ("ELF PUB US",age(elf.and_then(|e|e.published))),
+            extra_pub,
             ("ELF DONE US",age(elf.and_then(|e|e.done))),
             ("TX4 PUB US",age(pair.and_then(|p|p.newer_published_at))),
             ("IPA COMPLETE",u32::from(self.ipa_complete_seen)),

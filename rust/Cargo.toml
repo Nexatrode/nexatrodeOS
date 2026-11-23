@@ -335,6 +335,8 @@ sunfish-registry-conversion-lifetime-trace = ["sunfish-registry-post-reply-trace
 sunfish-registry-converted-credit-turn = ["sunfish-registry-conversion-lifetime-trace"]
 
 sunfish-registry-prearm-io-trace = ["sunfish-registry-converted-credit-turn"]
+# Presentation only: retain repaint debt while the live continuation has work.
+sunfish-registry-defer-paint = ["sunfish-registry-prearm-io-trace"]
 
 [[bin]]
 name = "rust_sunfish_native_startup_preflight"
