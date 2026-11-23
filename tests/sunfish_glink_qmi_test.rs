@@ -4218,6 +4218,11 @@ fn registry_window_trace_matches_receipts_without_relying_on_clock_or_slot_index
             let pair = s.registry_window_trace().target.unwrap();
             assert_eq!(pair.newer_published_at, clocked.then_some(140));
             assert_eq!(pair.published_before_done, Some(!complete_first));
+            #[cfg(feature="sunfish-registry-post-reply-trace")]
+            { assert!(pair.publication_frozen); assert_eq!(pair.publication.unwrap().transaction,4);
+              assert!(pair.publication.unwrap().calls>0); }
+            #[cfg(feature="sunfish-registry-post-reply-trace")]
+            let frozen_publication = pair.publication;
             CLOCK.store(160, Relaxed);
             assert_eq!(s.ingest(1, &control(14, b)), Ok(Event::ReplyRxDone(two)));
             assert_eq!(s.registry_window_trace().target.unwrap().older_done_at, if clocked && complete_first {Some(120)} else {None}, "newer completion is not the older receipt");
@@ -4228,6 +4233,10 @@ fn registry_window_trace_matches_receipts_without_relying_on_clock_or_slot_index
             let pair = s.registry_window_trace().target.unwrap();
             assert_eq!(pair.older_done_at, clocked.then_some(if complete_first {120} else {180}));
             assert_eq!(pair.published_before_done, Some(!complete_first), "later completion cannot rewrite overlap proof");
+            #[cfg(feature="sunfish-registry-post-reply-trace")]
+            { assert_eq!(pair.publication,frozen_publication);
+              assert!(s.registry_window_trace().target.unwrap().publication_frozen); }
+
             s.reset_after_transport_reset(2).unwrap();
             assert_eq!(s.registry_window_trace(), Default::default());
         }
@@ -4500,6 +4509,37 @@ mod registry_converted_grant_turn {
     }
     fn converted(s:&mut Session,release:u32){assert_eq!(publish(s).unwrap().0,Published::ReceiveDone(release));}
     fn mask(s:&Session)->u32{s.registry_window_trace().predecessor.unwrap().publication.unwrap().mask}
+    #[cfg(feature="sunfish-registry-post-reply-trace")]
+    #[test]
+    fn registry_post_reply_converted_grant_observation_survives_token_and_frozen_publication(){
+        use core::sync::atomic::{AtomicU64,Ordering::Relaxed};
+        static NOW:AtomicU64=AtomicU64::new(100);
+        for clocked in [false,true] {
+            let(mut s,request,release,backing)=denied(false,true);
+            if clocked{s.set_registry_ack_clock(||NOW.load(Relaxed));}
+            converted(&mut s,release);
+            let g=s.registry_window_trace().predecessor.unwrap().grant.unwrap();
+            assert_eq!(g.intent,backing);assert_eq!(g.converted_at,clocked.then_some(100));
+            let(id,_)=exact_reply(&mut s);
+            let publication=s.registry_window_trace().predecessor.unwrap().publication;
+            NOW.store(200,Relaxed);
+            assert_eq!(s.publish_next(1,|_|Err(WriteError::WouldBlock)),Err(Error::WouldBlock));
+            assert_eq!(s.registry_window_trace().predecessor.unwrap().grant.unwrap().advertised_at,None);
+            assert_eq!(publish(&mut s).unwrap().0,Published::ReceiveIntent(backing));
+            NOW.store(300,Relaxed);
+            assert_eq!(publish(&mut s).unwrap().0,Published::IntentRequestAck{granted:true});
+            let prior=s.registry_window_trace().predecessor.unwrap();let grant=prior.grant.unwrap();
+            assert_eq!(grant.advertised_at,clocked.then_some(200));assert_eq!(grant.ack_at,clocked.then_some(300));
+            assert_eq!(prior.publication,publication,"later matching grant must not rewrite pre-publication pressure");
+            assert_eq!(s.ingest(1,&control(14,id)),Ok(Event::ReplyRxDone(request)));
+            s.ingest(1,&control(7,52)).unwrap();
+            assert_eq!(publish(&mut s).unwrap().0,Published::IntentRequestAck{granted:false});
+            assert_eq!(s.registry_window_trace().predecessor.unwrap().grant,Some(grant));
+            s.reset_after_transport_reset(2).unwrap();assert_eq!(s.registry_window_trace().predecessor,None);
+            NOW.store(100,Relaxed);
+        }
+    }
+
     #[test]
     fn full_slot_denial_return_then_exact_reply_precedes_backing_and_positive_ack(){
         let(mut s,request,release,backing)=denied(false,true);converted(&mut s,release);
@@ -4621,5 +4661,52 @@ mod registry_converted_grant_turn {
         }
         assert!(s.reply_fully_published(&request));assert_eq!(word(&payload,28),9);assert_eq!(&payload[33..35],&3u16.to_le_bytes());
         assert_eq!(mask(&s)&0x1f00,0x1f00);assert_eq!(s.ingest(1,&control(14,id)),Ok(Event::ReplyRxDone(request)));
+    }
+}
+
+#[cfg(feature="sunfish-registry-post-reply-trace")]
+#[test]
+fn registry_post_reply_tx4_pressure_is_live_then_frozen_against_original_identity(){
+    for no_fit in [false,true] {
+        let mut s=session();
+        s.register(1,Service::ServiceRegistry,qcom_servreg::LOCAL_PORT).unwrap();
+        s.prepare_service_available(1,Service::ServiceRegistry).unwrap();
+        s.ingest(1,&intents(&[(7,4096)])).unwrap();
+        let rx3=offer(&mut s);let rx4=offer(&mut s);
+        let one=registry_turn_request(&mut s,rx3,9,3);let two=registry_turn_request(&mut s,rx4,9,4);
+        s.queue_reply(&one,Reply::Failure{error:3}).unwrap();
+        let(Published::Data{remote_intent:a,..},_)=publish_until_data(&mut s)else{panic!()};
+        s.queue_reply(&two,Reply::Failure{error:3}).unwrap();
+        let live=s.registry_window_trace().target.unwrap();
+        assert!(!live.publication_frozen);assert_eq!(live.publication.unwrap().transaction,4);
+        if no_fit {
+            // The only modem intent still belongs to transaction 3. Normal
+            // missing-fit handling must be observed, never bypassed by tracing.
+            for _ in 0..3 {let _=s.publish_next(1,|_|Ok(()));}
+            let p=s.registry_window_trace().target.unwrap().publication.unwrap();
+            assert!(p.mask&1!=0);assert!(!s.reply_fully_published(&two));
+            s.ingest(1,&intents(&[(8,4096)])).unwrap();
+            // The normal outbound-intent request ACK is needed, if requested.
+            let _=s.ingest(1,&control(8,1));
+        }else{s.ingest(1,&intents(&[(8,4096)])).unwrap();}
+        let mut attempted=false;
+        for _ in 0..16 {
+            let r=s.publish_next(1,|bytes|{
+                if word(bytes,0)&0xffff==9 && bytes.get(49..51)==Some(&4u16.to_le_bytes()){
+                    attempted=true;Err(WriteError::WouldBlock)
+                }else{Ok(())}
+            });
+            if attempted{assert_eq!(r,Err(Error::WouldBlock));break;}
+        }
+        assert!(attempted);let blocked=s.registry_window_trace().target.unwrap();
+        assert!(!blocked.publication_frozen);assert!(blocked.publication.unwrap().mask&16!=0);
+        let(Published::Data{remote_intent:b,..},_)=publish_until_data(&mut s)else{panic!()};
+        let frozen=s.registry_window_trace().target.unwrap();assert!(frozen.publication_frozen);
+        assert!(frozen.publication.unwrap().mask&(1<<5)!=0);
+        assert_eq!(s.ingest(1,&control(14,b)),Ok(Event::ReplyRxDone(two)));
+        assert_eq!(s.registry_window_trace().target.unwrap().publication,frozen.publication);
+        assert_eq!(s.ingest(1,&control(14,a)),Ok(Event::ReplyRxDone(one)));
+        assert_eq!(s.registry_window_trace().target.unwrap().publication,frozen.publication);
+        s.reset_after_transport_reset(2).unwrap();assert_eq!(s.registry_window_trace().target,None);
     }
 }

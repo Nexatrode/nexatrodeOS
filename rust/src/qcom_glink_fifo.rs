@@ -1073,6 +1073,47 @@ fn registration_header_capture_decodes_data_and_preserves_both_ends() {
     assert_eq!(retained, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 16, 17, 18, 19, 20, 21, 22, 23, 24]);
 }
 
+/// Observes the exact registry predecessor using already validated cursor samples.
+/// Peer-tail crossing is transport consumption, not application acceptance.
+#[cfg(feature = "sunfish-registry-post-reply-trace")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RegistryReplyFifo {
+    pub peer_tail_at: Option<u64>,
+    pub completion: Option<ServerCheckRxDone>,
+    pub finished: bool,
+    pub history_evictions: u32,
+}
+#[cfg(feature = "sunfish-registry-post-reply-trace")]
+struct RegistryReplyWindow {
+    remaining: usize,
+    trace: RegistryReplyFifo,
+    rx: ServerCheckRxWindow,
+}
+#[cfg(feature = "sunfish-registry-post-reply-trace")]
+impl RegistryReplyWindow {
+    fn new(remaining: usize, unread: usize, at: Option<u64>) -> Self {
+        Self { remaining, trace: RegistryReplyFifo { peer_tail_at: at.filter(|_| remaining == 0),
+            ..RegistryReplyFifo::default() }, rx: ServerCheckRxWindow::new(unread, at) }
+    }
+    fn sample(&mut self, consumed: usize, advanced: usize, unread: usize, start: Option<u64>, end: Option<u64>) {
+        if self.trace.finished { return; }
+        if self.remaining != 0 {
+            self.remaining = self.remaining.saturating_sub(consumed);
+            if self.remaining == 0 { self.trace.peer_tail_at = end; }
+        }
+        if advanced != 0 && self.rx.advances[self.rx.next_advance].is_some() {
+            self.trace.history_evictions = self.trace.history_evictions.saturating_add(1);
+        }
+        self.rx.sample(advanced, unread, start, end);
+    }
+    fn finish(&mut self, unread: usize, size: usize) {
+        if self.trace.finished { return; }
+        self.rx.finish(unread, size);
+        self.trace.completion = self.rx.done;
+        self.trace.finished = true;
+    }
+}
+
 #[cfg(feature = "sunfish-ipa-registration-reply-path")]
 #[derive(Clone, Copy, Default)]
 pub struct RegistrationReplyFifo {
@@ -1317,6 +1358,8 @@ struct Ring<I> {
     registration_reply: Option<RegistrationReplyFifo>,
     #[cfg(feature = "sunfish-ipa-reply-fifo-visibility")]
     registration_reply_rx: Option<ServerCheckRxWindow>,
+    #[cfg(feature = "sunfish-registry-post-reply-trace")]
+    registry_reply: Option<RegistryReplyWindow>,
     #[cfg(feature = "sunfish-tftp-tail-observer")]
     tftp_tail_remaining: Option<usize>,
     #[cfg(feature = "sunfish-tftp-tail-observer")]
@@ -1445,6 +1488,9 @@ impl<I: Io> Ring<I> {
         #[cfg(feature = "sunfish-tftp-oack-fifo-outcome")]
         let reserved_sample_start = self.reserved_oack_rx.as_ref().filter(|trace| trace.done.is_none())
             .and(self.first_server_check_clock).map(|clock| clock());
+        #[cfg(feature = "sunfish-registry-post-reply-trace")]
+        let registry_reply_start = self.registry_reply.as_ref().filter(|w| !w.trace.finished)
+            .and(self.first_server_check_clock).map(|clock| clock());
         #[cfg(feature = "sunfish-ipa-reply-fifo-visibility")]
         let registration_reply_start = self.registration_reply_rx.as_ref()
             .and(self.first_server_check_clock).map(|clock| clock());
@@ -1561,6 +1607,14 @@ impl<I: Io> Ring<I> {
                     trace.last_empty_at = self.first_server_check_clock.map(|clock| clock());
                 }
             }
+        }
+        #[cfg(feature = "sunfish-registry-post-reply-trace")]
+        if let Some(trace) = self.registry_reply.as_mut().filter(|w| !w.trace.finished)
+            && let Some(length) = rx
+        {
+            trace.sample(consumed, ring_distance(old_rx_head, new[3], length),
+                ring_distance(new[2], new[3], length), registry_reply_start,
+                self.first_server_check_clock.map(|clock| clock()));
         }
         #[cfg(feature = "sunfish-ipa-registration-rx-visibility")]
         if let Some(start) = registration_start && let Some(length) = rx
@@ -2037,6 +2091,8 @@ impl<I: Io> Adapter<I> {
                 registration_reply: None,
                 #[cfg(feature = "sunfish-ipa-reply-fifo-visibility")]
                 registration_reply_rx: None,
+                #[cfg(feature = "sunfish-registry-post-reply-trace")]
+                registry_reply: None,
                 #[cfg(feature = "sunfish-tftp-tail-observer")]
                 tftp_tail_remaining: None,
                 #[cfg(feature = "sunfish-tftp-tail-observer")]
@@ -2163,6 +2219,10 @@ impl<I: Io> Adapter<I> {
     { self.session.registry_handoff_pair(older, waiting) }
     #[cfg(feature = "sunfish-registry-window-trace")]
     pub fn registry_window_trace(&self) -> core::RegistryWindowTrace { self.session.registry_window_trace() }
+    #[cfg(feature = "sunfish-registry-post-reply-trace")]
+    pub fn registry_reply_fifo(&self) -> Option<RegistryReplyFifo> {
+        self.ring.registry_reply.as_ref().map(|w| w.trace)
+    }
     #[cfg(feature = "sunfish-wlan-elf-queue-trace")]
     pub fn registry_queue_pressure(&self, handle: &core::RequestHandle) -> Option<core::RegistryQueuePressure> {
         self.session.registry_queue_pressure(handle)
@@ -3132,6 +3192,16 @@ impl<I: Io> Adapter<I> {
                 trace.finish(unread, size);
             }
         }
+        #[cfg(feature = "sunfish-registry-post-reply-trace")]
+        if let Receive::Session(ref completed) = event
+            && self.session.registry_predecessor_completed_by(completed)
+            && let Some(window) = self.ring.registry_reply.as_mut()
+            && let Some(length) = self.ring.rx_bytes
+        {
+            // Only the normal decoder's exact opaque request receipt freezes
+            // the window, before advancing the RX tail through that record.
+            window.finish(ring_distance(self.ring.words[2], self.ring.words[3], length), size);
+        }
         #[cfg(feature = "sunfish-ipa-registration-reply-headers")]
         self.ring.capture_registration_rx(size,
             self.session.ipa_registration_trace().is_some_and(|reg| reg.completed_at.is_some()), &event);
@@ -3739,6 +3809,18 @@ impl<I: Io> Adapter<I> {
                 ring_distance(self.ring.words[2], self.ring.words[3], length) as u32);
             self.ring.init_close.fresh_head = self.ring.registration_rx.as_ref().map(|h| h.head);
         }
+        #[cfg(feature = "sunfish-registry-post-reply-trace")]
+        if self.ring.registry_reply.is_none()
+            && self.session.registry_window_trace().predecessor.is_some_and(|p| p.publication_frozen)
+            && let Some(length) = self.ring.rx_bytes
+        {
+            // Successful checked publication sampled the cursor pair on both
+            // sides of its head store. Reuse that pair; add no hardware reads.
+            self.ring.registry_reply = Some(RegistryReplyWindow::new(
+                distance(self.ring.words[0], self.ring.words[1]),
+                ring_distance(self.ring.words[2], self.ring.words[3], length),
+                self.ring.first_server_check_clock.map(|clock| clock())));
+        }
         #[cfg(feature = "sunfish-ipa-registration-reply-path")]
         if registration_pending
             && self.session.ipa_registration_trace().is_some_and(|reg| reg.published_at.is_some())
@@ -4116,6 +4198,8 @@ impl<I: Io> Adapter<I> {
         { self.ring.registration_reply = None; }
         #[cfg(feature = "sunfish-ipa-reply-fifo-visibility")]
         { self.ring.registration_reply_rx = None; }
+        #[cfg(feature = "sunfish-registry-post-reply-trace")]
+        { self.ring.registry_reply = None; }
         #[cfg(feature = "sunfish-ipa-init-close-visibility")]
         { self.ring.init_close = InitCloseFifo::default(); }
         #[cfg(feature = "sunfish-ipa-reg-close-fifo")]
@@ -4596,3 +4680,33 @@ impl WrqReceiveWork {
 mod wrq_validation_cost;
 #[cfg(feature = "sunfish-wrq-validation-path")]
 pub use wrq_validation_cost::*;
+
+#[cfg(all(test, feature = "sunfish-registry-post-reply-trace"))]
+#[test]
+fn registry_post_reply_window_retains_tail_visibility_and_reports_history_loss() {
+    for clocked in [false, true] {
+        let time = |n| clocked.then_some(n);
+        let mut w = RegistryReplyWindow::new(40, 0, time(10));
+        w.sample(16, 0, 0, time(20), time(21));
+        assert_eq!(w.trace.peer_tail_at, None);
+        w.sample(24, 80, 80, time(30), time(31));
+        assert_eq!(w.trace.peer_tail_at, time(31));
+        w.sample(0, 0, 8, time(40), time(41));
+        w.finish(8, 8);
+        let bounds = w.trace.completion.unwrap();
+        assert_eq!((bounds.last_absent, bounds.first_visible, bounds.bytes_ahead), (time(20), time(31), Some(72)));
+        assert!(w.trace.finished);
+        let frozen = w.trace;
+        w.sample(1, 8, 8, time(50), time(51)); w.finish(8,8);
+        assert_eq!(w.trace, frozen);
+    }
+    let mut w = RegistryReplyWindow::new(8, 0, Some(1));
+    w.sample(8, 8, 8, Some(2), Some(3));
+    for i in 0..RX_HEAD_HISTORY { w.sample(0, 8, 8, Some(4+i as u64), Some(5+i as u64)); }
+    assert_eq!(w.trace.history_evictions, 1);
+    // Original completion was not parsed until after its arrival span expired.
+    // Missing visibility is explicit; never substitute the latest observation.
+    w.finish(8*(RX_HEAD_HISTORY+1),8);
+    assert_eq!(w.trace.completion.unwrap().first_visible, None);
+    assert_eq!(w.trace.peer_tail_at, Some(3));
+}

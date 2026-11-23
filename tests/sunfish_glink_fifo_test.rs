@@ -1399,3 +1399,49 @@ fn grant_read_trace_requires_the_last_byte_of_the_wrapped_offer() {
     assert!(offer.first_read.unwrap() > capture.visible.unwrap());
     assert_eq!(offer.order(capture.absent, capture.visible), 2);
 }
+
+#[cfg(feature="sunfish-registry-post-reply-trace")]
+#[test]
+fn registry_post_reply_fifo_matches_exact_receipt_across_wrap_and_preserves_checked_io() {
+    use core::sync::atomic::{AtomicU64,Ordering::Relaxed};
+    static NOW:AtomicU64=AtomicU64::new(100);
+    for clocked in [false,true] {
+        let mut s=session();
+        s.register(1,Service::ServiceRegistry,qcom_servreg::LOCAL_PORT).unwrap();
+        s.prepare_service_available(1,Service::ServiceRegistry).unwrap();
+        let peer=Fake::new(0x3ff8,0x3ff8);
+        let mut a=Adapter::attach(peer.clone(),s,1).unwrap();
+        if clocked {a.set_registry_ack_clock(||NOW.fetch_add(1,Relaxed));}
+        let mut remote=control(5,2,2);
+        for id in [7u32,8] {remote.extend(4096u32.to_le_bytes());remote.extend(id.to_le_bytes());}
+        peer.push(&remote);a.poll_receive(1).unwrap();
+        let id=advertised(&mut a,&peer);
+        let mut packet=qrtr(1,&[0,3,0,0x21,0,6,0,1,3,0,b'f',b'o',b'o']);
+        packet[28..32].copy_from_slice(&qcom_servreg::LOCAL_PORT.to_le_bytes());
+        peer.push(&data(id,&packet));
+        let Ok(Receive::Session(Event::Request(request)))=a.poll_receive(1) else{panic!("registry request")};
+        a.queue_reply(1,&request,Reply::Failure{error:3}).unwrap();
+        let mut intent=None;
+        for _ in 0..16 {
+            let e=a.publish_next(1).unwrap();
+            if let Transmit::Session(Published::Data{remote_intent,last_fragment:true})=e {intent=Some(remote_intent);break;}
+            peer.take_tx();
+        }
+        let intent=intent.expect("exact reply published");
+        let trace=a.registry_reply_fifo().expect("publication arms even without a clock");
+        assert!(!trace.finished); assert_eq!(trace.completion,None);
+        peer.take_tx();a.revalidate(1).unwrap();
+        assert_eq!(a.registry_reply_fifo().unwrap().peer_tail_at.is_some(),clocked);
+        // A read notification ahead of the exact receipt stays in FIFO order.
+        peer.push(&control(13,0,0));peer.push(&control(14,2,intent));
+        a.revalidate(1).unwrap();
+        assert_eq!(a.poll_receive(1),Ok(Receive::ReadNotification));
+        assert!(!a.registry_reply_fifo().unwrap().finished);
+        assert_eq!(a.poll_receive(1),Ok(Receive::Session(Event::ReplyRxDone(request))));
+        let done=a.registry_reply_fifo().unwrap();assert!(done.finished);
+        let bounds=done.completion.unwrap();assert_eq!(bounds.bytes_ahead,Some(8));
+        assert_eq!(bounds.first_visible.is_some(),clocked);
+        let log=peer.log();assert_eq!(a.registry_reply_fifo(),Some(done));assert_eq!(peer.log(),log,"getter adds no hardware reads");
+        a.revalidate(1).unwrap();assert_eq!(a.registry_reply_fifo(),Some(done));
+    }
+}

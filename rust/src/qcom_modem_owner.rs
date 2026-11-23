@@ -2018,6 +2018,10 @@ impl<I: Io> Owner<I> {
     }
     #[cfg(feature = "sunfish-registry-window-trace")]
     pub fn registry_window_trace(&self) -> crate::qcom_glink_qmi::RegistryWindowTrace { self.adapter.registry_window_trace() }
+    #[cfg(feature = "sunfish-registry-post-reply-trace")]
+    pub fn registry_reply_fifo(&self) -> Option<crate::qcom_glink_fifo::RegistryReplyFifo> {
+        self.adapter.registry_reply_fifo()
+    }
     pub fn service_registry_trace(&self) -> ServiceRegistryTrace {
         let trace = self.service_registry_trace;
         #[cfg(feature = "sunfish-wlan-elf-exchange-trace")]

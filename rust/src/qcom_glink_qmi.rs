@@ -795,6 +795,8 @@ pub struct RegistryWindowTrace {
 #[cfg(feature = "sunfish-registry-handoff-turn")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RegistryPredecessorTrace {
+    #[cfg(feature = "sunfish-registry-post-reply-trace")]
+    pub grant: Option<RegistryConvertedGrantTrace>,
     request: RequestHandle,
     #[cfg(feature = "sunfish-registry-predecessor-pressure")]
     pub publication: Option<RegistryPublication>,
@@ -804,9 +806,24 @@ pub struct RegistryPredecessorTrace {
     pub published_at: Option<u64>,
     pub done_at: Option<u64>,
 }
+/// Exact converted backing retained for observation after the scheduling token expires.
+#[cfg(feature = "sunfish-registry-post-reply-trace")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RegistryConvertedGrantTrace {
+    pub intent: u32,
+    pub converted_at: Option<u64>,
+    pub advertised_at: Option<u64>,
+    pub ack_at: Option<u64>,
+    advertised: bool,
+    acked: bool,
+}
 #[cfg(feature = "sunfish-registry-window-trace")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RegistryWindowPair {
+    #[cfg(feature = "sunfish-registry-post-reply-trace")]
+    pub publication: Option<RegistryPublication>,
+    #[cfg(feature = "sunfish-registry-post-reply-trace")]
+    pub publication_frozen: bool,
     older: RequestHandle,
     newer: RequestHandle,
     pub older_transaction: u16,
@@ -6651,8 +6668,23 @@ impl Session {
                 && let Some(tx) = self.transmit.iter().find(|tx| tx.len != 0
                     && matches!(tx.kind, TxKind::Reply { receive: index, .. } if index == receive))
             { prior.publication = Some(tx.registry_publication); }
+            #[cfg(feature = "sunfish-registry-post-reply-trace")]
+            if let Some(pair) = trace.target.as_mut()
+                && !pair.publication_frozen
+                && pair.newer.owner == self.owner && pair.newer.generation == self.generation
+                && let Some(receive) = self.receive.iter().position(|rx| rx.id == pair.newer.intent && rx.state == RxState::ReplyQueued)
+                && let Some(tx) = self.transmit.iter().find(|tx| tx.len != 0
+                    && matches!(tx.kind, TxKind::Reply { receive: index, .. } if index == receive))
+            { pair.publication = Some(tx.registry_publication); }
             trace
         }
+    }
+
+    #[cfg(feature = "sunfish-registry-post-reply-trace")]
+    pub(crate) fn registry_predecessor_completed_by(&self, event: &Event) -> bool {
+        self.registry_window.predecessor.is_some_and(|p| p.publication_frozen
+            && p.request.owner == self.owner && p.request.generation == self.generation
+            && *event == Event::ReplyRxDone(p.request))
     }
 
     fn queue_reply_with_ipa_token(
@@ -6826,6 +6858,8 @@ impl Session {
             && route.transaction == 3 && route.destination == (Address { node: 0, port: 9 })
         {
             self.registry_window.predecessor = Some(RegistryPredecessorTrace {
+                #[cfg(feature = "sunfish-registry-post-reply-trace")]
+                grant: None,
                 request: *handle, queued_at: self.intent_ack_clock.map(|clock| clock()),
                 published_at: None, done_at: None,
                 #[cfg(feature = "sunfish-registry-predecessor-pressure")]
@@ -6843,6 +6877,10 @@ impl Session {
                 && older_route.transaction == 3
             {
                 self.registry_window.target = Some(RegistryWindowPair {
+                    #[cfg(feature = "sunfish-registry-post-reply-trace")]
+                    publication: None,
+                    #[cfg(feature = "sunfish-registry-post-reply-trace")]
+                    publication_frozen: false,
                     older: RequestHandle { owner: self.owner, generation: self.generation, intent: self.receive[older_receive].id },
                     newer: *handle, older_transaction: 3, newer_transaction: 4,
                     peer: route.destination, queued_at: self.intent_ack_clock.map(|clock| clock()),
@@ -8464,6 +8502,10 @@ impl Session {
                             Some(_) => GrantAdWriter::OtherFollowup,
                         });
                         self.grant_backing.advertised_at = self.intent_ack_clock.map(|now| now());
+                        #[cfg(feature = "sunfish-registry-post-reply-trace")]
+                        if let Some(grant) = self.registry_window.predecessor.as_mut().and_then(|p| p.grant.as_mut())
+                            && grant.intent == self.receive[index].id && !grant.advertised
+                        { grant.advertised = true; grant.advertised_at = self.grant_backing.advertised_at; }
                     }
                     #[cfg(feature = "sunfish-tftp-oack-slot-follow")]
                     self.follow_oack_slot_available(index, 2);
@@ -8491,6 +8533,11 @@ impl Session {
                     *count = count.saturating_add(1);
                     *maximum = (*maximum).max(age);
                 }
+                #[cfg(feature = "sunfish-registry-post-reply-trace")]
+                if self.intent_request_ack == Some(true)
+                    && let Some(grant) = self.registry_window.predecessor.as_mut().and_then(|p| p.grant.as_mut())
+                    && self.grant_backing.intent == Some(grant.intent) && grant.advertised && !grant.acked
+                { grant.acked = true; grant.ack_at = self.intent_ack_clock.map(|now| now()); }
                 self.intent_request_ack = None;
                 #[cfg(feature = "sunfish-glink-retry-full-intent")]
                 { self.retry_full_intent = false; }
@@ -8613,8 +8660,18 @@ impl Session {
                                 .map(|(slot, _)| {
                                     let TxKind::Reply { receive, .. } = self.transmit[slot].kind else { unreachable!() };
                                     self.transmit[slot].registry_publication.mask |= 1 << 10;
-                                    (id, RequestHandle { owner: self.owner, generation: self.generation,
-                                        intent: self.receive[receive].id })
+                                    let request = RequestHandle { owner: self.owner, generation: self.generation,
+                                        intent: self.receive[receive].id };
+                                    #[cfg(feature = "sunfish-registry-post-reply-trace")]
+                                    if let Some(prior) = self.registry_window.predecessor.as_mut()
+                                        && prior.request == request && prior.grant.is_none()
+                                    {
+                                        prior.grant = Some(RegistryConvertedGrantTrace {
+                                            intent: id, converted_at: self.grant_backing.reserved_at,
+                                            advertised_at: None, ack_at: None, advertised: false, acked: false,
+                                        });
+                                    }
+                                    (id, request)
                                 });
                         }
                     }
@@ -8706,6 +8763,11 @@ impl Session {
                         && let TxKind::Reply { receive, .. } = self.transmit[index].kind
                         && pair.newer == (RequestHandle { owner: self.owner, generation: self.generation, intent: self.receive[receive].id })
                     {
+                        #[cfg(feature = "sunfish-registry-post-reply-trace")]
+                        {
+                            pair.publication = Some(self.transmit[index].registry_publication);
+                            pair.publication_frozen = true;
+                        }
                         pair.newer_published_at = self.intent_ack_clock.map(|clock| clock());
                         pair.published_before_done = Some(!pair.older_completed);
                     }

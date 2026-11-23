@@ -217,6 +217,8 @@ impl<I: BootIo> BootTransport<I> {
                 registration_reply: None,
                 #[cfg(feature = "sunfish-ipa-reply-fifo-visibility")]
                 registration_reply_rx: None,
+                #[cfg(feature = "sunfish-registry-post-reply-trace")]
+                registry_reply: None,
                 #[cfg(feature = "sunfish-tftp-tail-observer")]
                 tftp_tail_remaining: None,
                 #[cfg(feature = "sunfish-tftp-tail-observer")]
