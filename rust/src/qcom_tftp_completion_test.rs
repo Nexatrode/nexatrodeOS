@@ -100,3 +100,51 @@ fn original_ack_stages_queue_requires_accepted_exact_data_even_without_clock(){
   assert_eq!(stages.queued_at,None,"an absent clock must not invent a time");
  }
 }
+
+#[cfg(feature="sunfish-original-final-ack-turn")]
+fn ready_original_ack()->Session {
+ let mut s=fixture();let peer=Address{node:0,port:0x1f};let source=Address{node:1,port:0x5001};
+ let data=TftpHandle{owner:s.owner,generation:77,intent:17};
+ let w=s.first_server_check.as_mut().unwrap();w.final_block=Some(1);
+ w.data=Some(ElfWriteData{request:data,block:1,body_bytes:9,received_at:None,result:Some(0),
+  stages:FinalAckStages{final_prepared:true,final_queued:true,..FinalAckStages::default()}});
+ w.ack.phase=2;w.ack.slot=Some(0);
+ let tx=&mut s.transmit[0];tx.kind=TxKind::TftpReply{source,destination:peer};tx.len=36;
+ header(&mut tx.bytes,1,source,peer,4,false);tx.bytes[32..36].copy_from_slice(&[0,4,0,1]);
+ s.intent_ack_clock=Some(||panic!("readiness must not read a diagnostic clock"));s
+}
+#[cfg(feature="sunfish-original-final-ack-turn")]
+#[test]
+fn original_ack_readiness_ignores_missing_and_reversed_timestamps(){
+ for missing in [true,false]{let mut s=ready_original_ack();
+  let mut other=s.server_check_transfers[0].unwrap();other.intent=99;other.peer.port=0x51;other.transfer_port=0x5002;other.wrq_at=Some(1);
+  s.server_check_transfers[1]=Some(other);s.server_check_transfers[0].as_mut().unwrap().wrq_at=if missing{None}else{Some(999)};
+  assert!(s.original_tftp_write_trace().is_none(),"historical display selection is deliberately unchanged");
+  assert!(s.original_final_ack_queued(),"scheduling identity must not be sorted by time");
+ }
+}
+#[cfg(feature="sunfish-original-final-ack-turn")]
+#[test]
+fn original_ack_readiness_requires_live_exact_transfer_and_final_packet(){
+ assert!(ready_original_ack().original_final_ack_queued());
+ for bad in 0..17{let mut s=ready_original_ack();match bad{
+  0=>s.first_server_check.as_mut().unwrap().request.owner+=1,
+  1=>s.first_server_check.as_mut().unwrap().request.generation+=1,
+  2=>s.first_server_check.as_mut().unwrap().request.intent+=1,
+  3=>s.first_server_check.as_mut().unwrap().peer.node+=1,
+  4=>s.first_server_check.as_mut().unwrap().peer.port+=1,
+  5=>s.first_server_check.as_mut().unwrap().transfer_port=Some(0x5002),
+  6=>s.first_server_check.as_mut().unwrap().data.as_mut().unwrap().request.owner+=1,
+  7=>s.first_server_check.as_mut().unwrap().data.as_mut().unwrap().request.generation+=1,
+  8=>s.first_server_check.as_mut().unwrap().data.as_mut().unwrap().block=2,
+  9=>s.first_server_check.as_mut().unwrap().data.as_mut().unwrap().stages.final_queued=false,
+  10=>s.first_server_check.as_mut().unwrap().ack.phase=3,
+  11=>s.transmit[0].bytes[35]=2,
+  12=>s.transmit[0].len=0,
+  13=>s.transmit[0].kind=TxKind::Resume,
+  14=>s.first_server_check.as_mut().unwrap().data.as_mut().unwrap().result=Some(6),
+  15=>s.first_server_check.as_mut().unwrap().data.as_mut().unwrap().stages.final_prepared=false,
+  _=>s.first_server_check=None}
+  assert!(!s.original_final_ack_queued(),"mismatch {bad}");
+ }
+}

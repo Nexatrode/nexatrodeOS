@@ -3126,6 +3126,30 @@ impl Session {
                 && write.transfer_port == Some(first.transfer_port))
     }
 
+    /// Scheduling proof for the observed single-DATA original server check.
+    /// Resolve its immutable transfer slot directly: observation timestamps,
+    /// inventory sort order and the first completed peer are not policy inputs.
+    #[cfg(feature = "sunfish-original-final-ack-turn")]
+    pub(crate) fn original_final_ack_queued(&self) -> bool {
+        let Some(write) = self.first_server_check else { return false; };
+        let Some(port) = write.transfer_port else { return false; };
+        let Some(index) = port.checked_sub(crate::qcom_tftp_server_check::TRANSFER_PORT)
+            .and_then(|n| usize::try_from(n).ok()) else { return false; };
+        let Some(Some(first)) = self.server_check_transfers.get(index) else { return false; };
+        if write.request.owner != self.owner || write.request.generation != self.generation
+            || write.request.intent != first.intent || write.peer != first.peer
+            || port != first.transfer_port || write.ack.phase != 2 { return false; }
+        let Some(data) = write.data else { return false; };
+        if data.request.owner != self.owner || data.request.generation != self.generation
+            || data.result != Some(0) || write.final_block != Some(data.block)
+            || !data.stages.final_prepared || !data.stages.final_queued { return false; }
+        let Some(tx) = write.ack.slot.and_then(|slot| self.transmit.get(slot)) else { return false; };
+        let source = Address { node: self.config.local_node, port };
+        matches!(tx.kind, TxKind::TftpReply { source: from, destination } if from == source && destination == write.peer)
+            && tx.len == 36 && tx.sent < tx.len && word(&tx.bytes, 20) == 4
+            && tx.bytes[32..36] == [0, 4, (data.block >> 8) as u8, data.block as u8]
+    }
+
     #[cfg(feature = "sunfish-wlan-first-server-check-trace")]
     pub(crate) fn first_server_check(&self) -> Option<ElfServerCheckTrace> {
         self.first_server_check

@@ -49,6 +49,8 @@ pub struct Report {
 /// Keeps physical notifications until the actual serialized owner requests
 /// their rearm. Continuations are a software work flag, not physical GSI bit3.
 pub struct Router<K: Kernel> {
+    #[cfg(feature = "sunfish-original-final-ack-turn")]
+    original_final_ack_turn: bool,
     kernel: K,
     generation: u64,
     identity: Option<u64>,
@@ -69,6 +71,8 @@ pub struct Router<K: Kernel> {
 impl<K: Kernel> Router<K> {
     pub fn new(kernel: K, generation: u64) -> Self {
         Self {
+            #[cfg(feature = "sunfish-original-final-ack-turn")]
+            original_final_ack_turn: false,
             kernel,
             generation,
             identity: None,
@@ -282,6 +286,24 @@ impl<K: Kernel> Router<K> {
         }
         result.map(|_| true)
     }
+
+    /// At most one ordinary checked dispatch for the exact original final ACK.
+    /// An attempted but blocked write consumes this turn; normal continuation
+    /// owns subsequent retries. Diagnostic clocks never gate the opportunity.
+    #[cfg(feature = "sunfish-original-final-ack-turn")]
+    pub fn dispatch_queued_original_final_ack<I: Io>(
+        &mut self, owner: &mut Owner<I>,
+    ) -> Result<bool, Error> {
+        if self.original_final_ack_turn || !self.continuation || self.other != 0 {
+            return Ok(false);
+        }
+        if !owner.original_final_ack_queued() { return Ok(false); }
+        self.original_final_ack_turn = true;
+        self.dispatch(owner).map(|_| true)
+    }
+
+    #[cfg(feature = "sunfish-original-final-ack-turn")]
+    pub fn original_final_ack_turn(&self) -> bool { self.original_final_ack_turn }
 
     #[cfg(feature = "sunfish-wlan-first-server-check-early-turn")]
     pub fn first_oack_turn(&self) -> Option<(u64, u64)> {

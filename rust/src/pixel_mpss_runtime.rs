@@ -468,6 +468,15 @@ impl RuntimeDomain {
                             #[cfg(not(feature = "sunfish-tftp-close-handoff-prototype"))]
                             let _ = dispatched;
                         }
+                        #[cfg(feature = "sunfish-original-final-ack-turn")]
+                        {
+                            self.router.dispatch_queued_original_final_ack(owner)
+                                .map_err(|_| 0x61u32)?;
+                            #[cfg(feature = "sunfish-tftp-wlan-close-handoff")]
+                            if owner.pending_firmware_close().is_some() {
+                                owner.resolve_firmware_close(&mut self.firmware).map_err(|_| 0x63u32)?;
+                            }
+                        }
                     },
                     qcom_modem_owner::TftpServiceProgress::Ignored(_) => self.server_check_ignored = self.server_check_ignored.saturating_add(1),
                     _ => {},

@@ -880,3 +880,93 @@ fn rmtfsserver_original_encoder_requests_reach_real_storage() {
     assert!(sim.0.borrow().bytes[..4096].iter().all(|b| *b == 1));
     assert_eq!(r.s.report().chunks, 1);
 }
+
+#[cfg(feature="sunfish-original-final-ack-turn")]
+#[test]
+fn final_ack_uses_one_bounded_router_turn_without_oack_helper() {
+    use super::elf_blocker_irq::{Kernel, Router};
+    use super::qcom_modem_owner::TftpServiceProgress;
+    use super::qcom_tftp_server_check as tftp;
+    struct Irq;
+    impl Kernel for Irq { fn acknowledge(&mut self,_:u8)->Result<(),()>{Ok(())} }
+    for (pending_grant,blocked) in [(false,false),(true,false),(false,true),(true,true)] {
+        let mut session=super::lo_session();session.prepare_tftp_server(1,0x5000).unwrap();
+        let mut rig=LoRig::from_session(0,false,session);
+        let mut router=Router::new(Irq,1);let mut server=tftp::ServerCheck::new();
+        rig.hold_host=true;
+        while rig.available.len()<4 {
+            rig.owner.offer_receive().unwrap();
+            super::qcom_modem_owner::Interrupts::schedule(&mut router).unwrap();
+            router.dispatch(&mut rig.owner).unwrap();rig.drain();
+        }
+        let is_tftp=|p:&[u8],op:u8|lo_word(p,4)==1 && lo_word(p,28)==0x1f && p.len()>=34 && p[32..34]==[0,op];
+        rig.enqueue(&lo_packet(1,0x1f,0x5000,false,tftp::REQUEST));
+        router.capture(1<<4).unwrap();router.dispatch(&mut rig.owner).unwrap();rig.drain();
+        assert_eq!(rig.owner.service_tftp_server_check_step(&mut server,&mut router).unwrap(),TftpServiceProgress::ResponseQueued);
+        assert_eq!(router.dispatch_queued_original_final_ack(&mut rig.owner),Ok(false),"an OACK cannot consume the ACK turn");
+        assert!(!router.original_final_ack_turn());
+        router.dispatch(&mut rig.owner).unwrap();rig.drain();
+        let (id,oack)=rig.held_host.iter().find(|(_,p)|is_tftp(p,6)).unwrap().clone();
+        let port=lo_word(&oack,12);
+        assert_eq!(port,0x5001);assert_eq!(lo_word(&oack,8),1);assert_eq!(lo_word(&oack,24),0);
+        let exact_ack=|p:&[u8]|is_tftp(p,4) && p.len()==36 && lo_word(p,20)==4
+            && lo_word(p,8)==1 && lo_word(p,12)==port && lo_word(p,24)==0 && p[32..36]==[0,4,0,1];
+        rig.peer.push(&super::control(6,2,id));
+        if lo_word(&oack,16)==1 { let credit=rig.credit(&oack);rig.enqueue(&credit); }
+        router.capture(1<<4).unwrap();router.dispatch(&mut rig.owner).unwrap();rig.drain();
+        assert_eq!(rig.owner.service_registry_trace().first_server_check.unwrap().oack.phase,4);
+        if rig.available.is_empty(){rig.owner.offer_receive().unwrap();super::qcom_modem_owner::Interrupts::schedule(&mut router).unwrap();router.dispatch(&mut rig.owner).unwrap();rig.drain();}
+        rig.enqueue(&lo_packet(1,0x1f,port,false,b"\0\x03\0\x01test\n"));
+        router.capture(1<<4).unwrap();router.dispatch(&mut rig.owner).unwrap();rig.drain();
+        assert_eq!(rig.owner.service_tftp_server_check_step(&mut server,&mut router).unwrap(),TftpServiceProgress::ResponseQueued);
+        let w=rig.owner.service_registry_trace().first_server_check.unwrap();
+        assert_eq!(w.ack.phase,2);assert!(w.data.unwrap().stages.final_queued);
+        assert!(!rig.held_host.iter().any(|(_,p)|exact_ack(p)));
+        assert!(router.report().continuation_pending);
+        assert_eq!(router.dispatch_queued_server_check_oack(&mut rig.owner,||0),Ok(false));
+        assert_eq!(router.dispatch_queued_tftp_retry(&mut rig.owner),Ok(false));
+        assert_eq!(rig.owner.service_registry_trace().first_server_check.unwrap().ack.phase,2);
+        router.capture(1<<2).unwrap();
+        assert_eq!(router.dispatch_queued_original_final_ack(&mut rig.owner),Ok(false));
+        assert!(!router.original_final_ack_turn());
+        assert!(router.report().continuation_pending);
+        assert_eq!(router.take_other(),1<<2);
+        if pending_grant { rig.peer.push(&super::control(7,2,52)); }
+        if blocked {
+            // Valid receive backlog defers the attempted DATA write. Do not
+            // forge a TX tail beyond bytes actually published by the host.
+            for peer in [0x60,0x61] {rig.enqueue(&lo_packet(1,peer,0x5000,false,tftp::REQUEST));}
+        }
+        assert_eq!(router.dispatch_queued_original_final_ack(&mut rig.owner),Ok(true));
+        assert!(router.original_final_ack_turn());
+        assert_eq!(router.dispatch_queued_original_final_ack(&mut rig.owner),Ok(false));
+        if blocked {
+            assert_eq!(rig.owner.service_registry_trace().first_server_check.unwrap().ack.phase,2);
+            assert!(router.report().continuation_pending);
+            for _ in 0..4 {
+                router.dispatch(&mut rig.owner).unwrap();
+                if rig.owner.service_registry_trace().first_server_check.unwrap().ack.phase==3 {break;}
+                assert!(router.report().continuation_pending);
+                assert_eq!(router.dispatch_queued_original_final_ack(&mut rig.owner),Ok(false));
+            }
+        }
+        let wire={let m=rig.peer.0.borrow();let tail=m.words[0] as usize;let n=(m.words[1] as usize+super::qcom_glink_fifo::FIFO_BYTES-tail)%super::qcom_glink_fifo::FIFO_BYTES;
+            (0..n).map(|i|m.tx[(tail+i)%super::qcom_glink_fifo::FIFO_BYTES]).collect::<Vec<_>>()};
+        let mut at=0;let mut advertisements=Vec::new();let mut grants=Vec::new();
+        while at<wire.len(){let cmd=u16::from_le_bytes([wire[at],wire[at+1]]);let size=match cmd{
+            5=>{assert_eq!(lo_word(&wire,at)>>16,1);assert_eq!(lo_word(&wire,at+4),1);
+                advertisements.push((at,lo_word(&wire,at+8),lo_word(&wire,at+12)));16},
+            8=>{assert_eq!(lo_word(&wire,at)>>16,1);assert_eq!(lo_word(&wire,at+4),1,"positive grant required");grants.push(at);8},
+            9|12=>{let n=lo_word(&wire,at+8) as usize;(16+n+7)&!7},
+            6|7|13|14=>8,other=>panic!("unexpected GLINK command {other}")};at+=size;}
+        if pending_grant {
+            assert_eq!(advertisements.len(),1);assert_eq!(grants.len(),1);
+            assert!(advertisements[0].1>=52 && advertisements[0].2!=0);
+            assert!(advertisements[0].0<grants[0],"backing advertisement must commit before positive grant ACK");
+        }
+        rig.drain();
+        assert_eq!(rig.owner.service_registry_trace().first_server_check.unwrap().ack.phase,3);
+        assert!(rig.held_host.iter().any(|(_,p)|exact_ack(p)));
+        println!("ACK TURN pending_grant={pending_grant}, blocked={blocked}: OACK-only helpers returned false; ordinary checked router turn published exact final ACK; grant advertisements={:?}, grants={:?}",rig.available,rig.intent_acks);
+    }
+}

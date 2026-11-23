@@ -2230,6 +2230,10 @@ impl<I: Io> Adapter<I> {
     pub(crate) fn original_tftp_write_trace(&self) -> Option<core::ElfServerCheckTrace> {
         self.session.original_tftp_write_trace()
     }
+    #[cfg(feature = "sunfish-original-final-ack-turn")]
+    pub(crate) fn original_final_ack_queued(&self) -> bool {
+        self.session.original_final_ack_queued()
+    }
     #[cfg(feature = "sunfish-wlan-first-wrq-window")]
     pub(crate) fn first_wrq_window(&self) -> core::FirstWrqWindow {
         self.session.first_wrq_window()

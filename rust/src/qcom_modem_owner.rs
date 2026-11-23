@@ -2040,6 +2040,10 @@ impl<I: Io> Owner<I> {
     pub fn original_tftp_write_trace(&self) -> Option<crate::qcom_glink_qmi::ElfServerCheckTrace> {
         self.adapter.original_tftp_write_trace()
     }
+    #[cfg(feature = "sunfish-original-final-ack-turn")]
+    pub fn original_final_ack_queued(&self) -> bool {
+        self.adapter.original_final_ack_queued()
+    }
     #[cfg(feature = "sunfish-native-tftp-server-check")]
     pub fn tftp_queue_snapshot(&self) -> (crate::qcom_glink_qmi::TftpQueueSnapshot, bool) {
         (self.adapter.tftp_queue_snapshot(), self.has_pending_tftp_reply())
