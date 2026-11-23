@@ -43,9 +43,12 @@ mod registry_conversion_lifetime;
 #[cfg(all(feature="sunfish-registry-converted-credit-turn",not(feature="sunfish-registry-prearm-io-trace")))]
 #[path="pixel_mpss_registry_credit_turn.rs"]
 mod registry_credit_turn;
-#[cfg(feature="sunfish-registry-prearm-io-trace")]
+#[cfg(all(feature="sunfish-registry-prearm-io-trace",not(feature="sunfish-registry-elf-admission-panel")))]
 #[path="pixel_mpss_registry_prearm_io.rs"]
 mod registry_prearm_io;
+#[cfg(feature="sunfish-registry-elf-admission-panel")]
+#[path="pixel_mpss_registry_elf_admission.rs"]
+mod registry_elf_admission;
 #[cfg(feature="sunfish-registry-defer-paint")]
 #[path="pixel_mpss_registry_paint.rs"]
 mod registry_paint;

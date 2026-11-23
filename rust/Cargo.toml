@@ -337,6 +337,8 @@ sunfish-registry-converted-credit-turn = ["sunfish-registry-conversion-lifetime-
 sunfish-registry-prearm-io-trace = ["sunfish-registry-converted-credit-turn"]
 # Presentation only: retain repaint debt while the live continuation has work.
 sunfish-registry-defer-paint = ["sunfish-registry-prearm-io-trace"]
+# Existing exact completions and normal ELF admission observations on one panel.
+sunfish-registry-elf-admission-panel = ["sunfish-registry-defer-paint"]
 
 [[bin]]
 name = "rust_sunfish_native_startup_preflight"
