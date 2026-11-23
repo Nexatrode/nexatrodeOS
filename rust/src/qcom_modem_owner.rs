@@ -2022,6 +2022,8 @@ impl<I: Io> Owner<I> {
     pub fn registry_reply_fifo(&self) -> Option<crate::qcom_glink_fifo::RegistryReplyFifo> {
         self.adapter.registry_reply_fifo()
     }
+    #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+    pub fn registry_prearm_io(&self) -> Option<fifo::RegistryPrearmIo> { self.adapter.registry_prearm_io() }
     pub fn service_registry_trace(&self) -> ServiceRegistryTrace {
         let trace = self.service_registry_trace;
         #[cfg(feature = "sunfish-wlan-elf-exchange-trace")]

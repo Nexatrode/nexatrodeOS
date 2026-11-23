@@ -824,6 +824,8 @@ pub struct RegistryConvertedGrantTrace {
 #[cfg(feature = "sunfish-registry-window-trace")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RegistryWindowPair {
+    #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+    pub prearm: RegistryPrearmTrace,
     #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
     pub conversion: RegistryConversionLifetime,
     #[cfg(feature = "sunfish-registry-post-reply-trace")]
@@ -898,6 +900,19 @@ pub struct RegistryConversionChoice {
     /// 1: committed, 2: WouldBlock, 3: uncertain, 4: callback entered but
     /// no returned result (e.g. unwind).
     pub result: u8,
+}
+
+#[cfg(feature = "sunfish-registry-prearm-io-trace")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RegistryPrearmTrace {
+    pub queued_flags: u32,
+    pub first_pass_at: Option<u64>,
+    pub first_flags: Option<u32>,
+    pub first_gate: Option<u8>,
+    pub first_choice: Option<RegistryConversionChoice>,
+    pub passes: u32,
+    pub own_done_at: Option<u64>,
+    own_done_seen: bool,
 }
 
 /// Fixed private buffers: 8 receive and 8 transmit slots of 4096 bytes each,
@@ -6805,6 +6820,57 @@ impl Session {
         { first.exit = Some((cause, self.intent_ack_clock.map(|now| now()))); first.active = false; }
     }
 
+    #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+    pub(crate) fn registry_prearm_queue_matches(&self,request:&RequestHandle)->bool {
+        self.registry_window.target.is_some_and(|p| p.newer == *request && !p.publication_frozen)
+    }
+
+    #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+    fn registry_prearm_flags(&self, request: RequestHandle) -> u32 {
+        let receive = self.receive.iter().position(|rx| rx.id == request.intent && rx.state == RxState::ReplyQueued);
+        let tx = receive.and_then(|receive| self.transmit.iter().find(|tx| tx.len != 0
+            && matches!(tx.kind, TxKind::Reply { receive: index, .. } if index == receive)));
+        u32::from(receive.is_some_and(|i| self.receive[i].done_pending))
+            | (u32::from(tx.is_some_and(|t| self.remote_for_transmit(t).is_some())) << 1)
+            | (u32::from(self.intent_request_ack.is_some()) << 2)
+            | (u32::from(self.intent_request_ack == Some(true)) << 3)
+            | (u32::from(self.intent_ack_backing.is_some()) << 4)
+            | (u32::from(self.next_transmit_in_order([1]).is_some()) << 5)
+            | (u32::from(self.registry_turn_used) << 6)
+            | (u32::from(tx.is_some_and(|t| t.registry_grant_turn_used)) << 7)
+            | (u32::from(tx.is_some_and(|t| t.registry_credit_turn_used)) << 8)
+            | (u32::from(tx.is_some()) << 9)
+            | (u32::from({ #[cfg(feature="sunfish-glink-intent-request-experiment")] { matches!(self.outbound_intent_request, OutboundIntentRequest::Waiting { .. }) } #[cfg(not(feature="sunfish-glink-intent-request-experiment"))] { false } }) << 10)
+            | (u32::from(tx.is_some_and(|t| { #[cfg(feature="sunfish-qrtr-rmtfs-flow-experiment")] { self.unsent_flow_predecessor(t) } #[cfg(not(feature="sunfish-qrtr-rmtfs-flow-experiment"))] { let _ = t; false } })) << 11)
+            | (u32::from(receive.is_some() && request.owner == self.owner && request.generation == self.generation) << 12)
+    }
+
+    #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+    fn observe_prearm_entry(&mut self) -> bool {
+        let Some(pair) = self.registry_window.target.filter(|p| !p.publication_frozen && p.conversion.arms == 0) else { return false; };
+        let first = pair.prearm.passes == 0;
+        let flags = first.then(|| self.registry_prearm_flags(pair.newer));
+        let trace = &mut self.registry_window.target.as_mut().unwrap().prearm;
+        trace.passes = trace.passes.saturating_add(1);
+        if first { trace.first_pass_at = self.intent_ack_clock.map(|now| now()); trace.first_flags = flags; }
+        first
+    }
+
+    #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+    fn observe_prearm_choice(&mut self, record: &[u8], transaction: Option<u16>) -> bool {
+        let Some(pair) = self.registry_window.target.as_mut().filter(|p| !p.publication_frozen && p.conversion.arms == 0
+            && p.prearm.passes != 0 && p.prearm.first_choice.is_none()) else { return false; };
+        pair.prearm.first_choice = Some(RegistryConversionChoice { at: self.intent_ack_clock.map(|now| now()),
+            command: u16::from_le_bytes([record[0], record[1]]), parameter: word(record,4), transaction, result: 0 });
+        true
+    }
+
+    #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+    fn observe_prearm_result(&mut self, captured: bool, result: u8) {
+        if captured && let Some(choice) = self.registry_window.target.as_mut().and_then(|p| p.prearm.first_choice.as_mut())
+        { choice.result = result; }
+    }
+
     fn queue_reply_with_ipa_token(
         &mut self,
         handle: &RequestHandle,
@@ -6994,7 +7060,11 @@ impl Session {
                 && let TxKind::Reply { receive: older_receive, route: older_route, .. } = self.transmit[prior].kind
                 && older_route.transaction == 3
             {
+                #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+                let prearm_flags = self.registry_prearm_flags(*handle);
                 self.registry_window.target = Some(RegistryWindowPair {
+                    #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+                    prearm: RegistryPrearmTrace { queued_flags: prearm_flags, ..RegistryPrearmTrace::default() },
                     #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
                     conversion: RegistryConversionLifetime::default(),
                     #[cfg(feature = "sunfish-registry-post-reply-trace")]
@@ -7075,6 +7145,7 @@ impl Session {
         &mut self, tftp_ready: bool, wrq_return: bool,
         candidate: Option<usize>, priority: Option<usize>,
         #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")] first_entry: bool,
+        #[cfg(feature = "sunfish-registry-prearm-io-trace")] prearm_entry: bool,
     ) {
         for (index, tx) in self.transmit.iter_mut().enumerate() {
             let TxKind::Reply { receive, route, .. } = tx.kind else { continue };
@@ -7105,6 +7176,11 @@ impl Session {
                 else { 11 };
             let count = &mut tx.registry_publication.grant_gates[gate];
             *count = count.saturating_add(1);
+            #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+            if prearm_entry && let Some(pair) = self.registry_window.target.as_mut()
+                && pair.newer == (RequestHandle { owner: self.owner, generation: self.generation, intent: self.receive[receive].id })
+            { pair.prearm.first_gate = Some(gate as u8); }
+
             #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
             if first_entry && let Some(pair) = self.registry_window.target.as_mut()
                 && pair.newer == (RequestHandle { owner: self.owner, generation: self.generation, intent: self.receive[receive].id })
@@ -7589,6 +7665,8 @@ impl Session {
         let ordinary = true;
         #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
         let conversion_entry = self.observe_conversion_entry(ordinary);
+        #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+        let prearm_entry = self.observe_prearm_entry();
         #[cfg(feature = "sunfish-ipa-registration-tx-trace")]
         let registration_started = self.registration_tx_slot().and(self.intent_ack_clock).map(|clock| clock());
         #[cfg(feature = "sunfish-wlan-elf-oack-queue-trace")]
@@ -7704,6 +7782,7 @@ impl Session {
             registry_candidate.map(|(slot, _)| slot),
             priority_registry.map(|(slot, _)| slot),
             #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")] conversion_entry,
+            #[cfg(feature = "sunfish-registry-prearm-io-trace")] prearm_entry,
         );
         #[cfg(feature = "sunfish-registry-converted-credit-turn")]
         let entry_length_consistent = self.registry_window.target.and_then(|p| p.conversion.first)
@@ -7935,9 +8014,15 @@ impl Session {
                 let registration_writer = registration_target.and(self.intent_ack_clock).map(|clock| clock());
                 #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
                 let conversion_choice = self.observe_conversion_choice(&record[..8], None);
+                #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+                let prearm_choice = self.observe_prearm_choice(&record[..8], None);
+                #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+                self.observe_prearm_result(prearm_choice, 4);
                 #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
                 self.observe_conversion_callback(conversion_choice);
                 let result = writer(&record[..8]);
+                #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+                self.observe_prearm_result(prearm_choice, match result { Ok(()) => 1, Err(WriteError::WouldBlock) => 2, Err(WriteError::Uncertain) => 3 });
                 #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
                 if conversion_choice && let Some(choice) = self.registry_window.target.as_mut()
                     .and_then(|p| p.conversion.first.as_mut()).and_then(|t| t.choice.as_mut())
@@ -8223,6 +8308,10 @@ impl Session {
         // These extra attempts may only publish the exact pair selected
         // by the ordinary arbiter. Pending grants and other work keep
         // their normal priority on the next receive/write iteration.
+        #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+        let prearm_choice = self.observe_prearm_choice(&record[..size], match &commit {
+            Commit::Data(slot, ..) => match self.transmit[*slot].kind { TxKind::Reply { route, .. } => Some(route.transaction), _ => None }, _ => None,
+        });
         #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
         let conversion_choice = self.observe_conversion_choice(&record[..size], match &commit {
             Commit::Data(slot, ..) => match self.transmit[*slot].kind {
@@ -8518,7 +8607,11 @@ impl Session {
         }
         #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
         self.observe_conversion_callback(conversion_choice);
+        #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+        self.observe_prearm_result(prearm_choice, 4);
         let result = writer(&record[..size]);
+        #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+        self.observe_prearm_result(prearm_choice, match result { Ok(()) => 1, Err(WriteError::WouldBlock) => 2, Err(WriteError::Uncertain) => 3 });
         #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
         if conversion_choice && let Some(choice) = self.registry_window.target.as_mut()
             .and_then(|p| p.conversion.first.as_mut()).and_then(|t| t.choice.as_mut())
@@ -8757,6 +8850,11 @@ impl Session {
                 { self.intent_ack_started = None; }
             },
             Commit::Done(index) => {
+                #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+                if let Some(pair) = self.registry_window.target.as_mut()
+                    && !pair.prearm.own_done_seen
+                    && pair.newer == (RequestHandle { owner: self.owner, generation: self.generation, intent: self.receive[index].id })
+                { pair.prearm.own_done_seen = true; pair.prearm.own_done_at = self.intent_ack_clock.map(|now| now()); }
                 #[cfg(feature = "sunfish-ack-elf-phase-trace")]
                 {
                     let request = TftpHandle { owner: self.owner, generation: self.generation,

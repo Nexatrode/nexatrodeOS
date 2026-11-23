@@ -1445,3 +1445,37 @@ fn registry_post_reply_fifo_matches_exact_receipt_across_wrap_and_preserves_chec
         a.revalidate(1).unwrap();assert_eq!(a.registry_reply_fifo(),Some(done));
     }
 }
+
+
+#[cfg(feature="sunfish-registry-prearm-io-trace")]
+#[test]
+fn registry_prearm_adapter_observes_queue_first_sample_own_return_and_fault_without_extra_getter_io(){
+    use core::sync::atomic::{AtomicU64,Ordering::Relaxed};
+    static NOW:AtomicU64=AtomicU64::new(100);
+    for clocked in [false,true] {for fail_sample in [false,true] {
+        let mut s=session();s.register(1,Service::ServiceRegistry,qcom_servreg::LOCAL_PORT).unwrap();
+        s.prepare_service_available(1,Service::ServiceRegistry).unwrap();
+        let peer=Fake::new(0x3ff8,0x3ff8);let mut a=Adapter::attach(peer.clone(),s,1).unwrap();
+        if clocked{a.set_registry_ack_clock(||NOW.fetch_add(1,Relaxed));}
+        let mut remote=control(5,2,2);for id in [7u32,8]{remote.extend(4096u32.to_le_bytes());remote.extend(id.to_le_bytes());}
+        peer.push(&remote);a.poll_receive(1).unwrap();
+        for txn in [3u16,4]{
+            let id=advertised(&mut a,&peer);let mut payload=vec![0];payload.extend(txn.to_le_bytes());payload.extend([0x21,0,6,0,1,3,0,b'f',b'o',b'o']);
+            let mut packet=qrtr(1,&payload);packet[28..32].copy_from_slice(&qcom_servreg::LOCAL_PORT.to_le_bytes());peer.push(&data(id,&packet));
+            let Ok(Receive::Session(Event::Request(request)))=a.poll_receive(1)else{panic!("registry request")};
+            a.queue_reply(1,&request,Reply::Failure{error:3}).unwrap();
+            if txn==3{
+                assert_eq!(a.registry_prearm_io(),None);
+                for _ in 0..16{let event=a.publish_next(1).unwrap();peer.take_tx();if matches!(event,Transmit::Session(Published::Data{last_fragment:true,..})){break;}}
+            }else{
+                let queued=a.registry_prearm_io().expect("only exact transaction4 queues observation");assert!(queued.queued.is_some());assert_eq!(queued.queued_at.is_some(),clocked);assert_eq!(queued.first_enter,None);
+                if fail_sample{peer.0.borrow_mut().fail=Some("observe");assert!(a.publish_next(1).is_err());}
+                else{assert_eq!(a.publish_next(1),Ok(Transmit::Session(Published::ReceiveDone(id))));}
+                let t=a.registry_prearm_io().unwrap();assert!(t.first_enter.is_some());assert_eq!(t.first_enter_at.is_some(),clocked);assert_eq!(t.first_end.is_some(),!fail_sample);assert_eq!(t.arm,None);
+                let p=a.registry_window_trace().target.unwrap().prearm;assert_eq!(p.passes,u32::from(!fail_sample));assert_eq!(p.own_done_at.is_some(),clocked&&!fail_sample);
+                if !fail_sample{assert_eq!(p.first_choice.unwrap().command,6);assert_eq!(p.first_choice.unwrap().parameter,id);assert_eq!(p.first_choice.unwrap().result,1);assert!(t.total(false).is_some());}
+                let log=peer.log();assert_eq!(a.registry_prearm_io(),Some(t));assert_eq!(peer.log(),log,"diagnostic getter performs no I/O");
+            }
+        }
+    }}
+}

@@ -40,9 +40,12 @@ mod registry_post_reply;
 #[cfg(all(feature="sunfish-registry-conversion-lifetime-trace",not(feature="sunfish-registry-converted-credit-turn")))]
 #[path="pixel_mpss_registry_conversion_lifetime.rs"]
 mod registry_conversion_lifetime;
-#[cfg(feature="sunfish-registry-converted-credit-turn")]
+#[cfg(all(feature="sunfish-registry-converted-credit-turn",not(feature="sunfish-registry-prearm-io-trace")))]
 #[path="pixel_mpss_registry_credit_turn.rs"]
 mod registry_credit_turn;
+#[cfg(feature="sunfish-registry-prearm-io-trace")]
+#[path="pixel_mpss_registry_prearm_io.rs"]
+mod registry_prearm_io;
 
 #[cfg(all(feature = "sunfish-ipa-independent-server-experiment", not(feature = "sunfish-ipa-independent-server-runtime")))]
 compile_error!("independent IPA server experiment is offline only; native composition not validated");

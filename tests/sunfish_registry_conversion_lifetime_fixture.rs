@@ -96,3 +96,7 @@ fn registry_conversion_lifetime_unwind_is_not_mislabeled_as_a_veto(){
 #[cfg(feature="sunfish-registry-converted-credit-turn")]
 #[path="sunfish_registry_converted_credit_fixture.rs"]
 mod converted_credit;
+
+#[cfg(feature="sunfish-registry-prearm-io-trace")]
+#[path="sunfish_registry_prearm_fixture.rs"]
+mod prearm;

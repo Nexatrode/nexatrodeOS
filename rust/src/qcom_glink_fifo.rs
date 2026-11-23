@@ -71,6 +71,13 @@ pub trait Io {
     /// Copy existing CPU-side counters only, with no hardware observation.
     #[cfg(feature = "sunfish-wlan-elf-phase-io")]
     fn elf_io_totals(&self) -> Option<[u64; 12]> { None }
+    #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+    fn registry_prearm_timing(&mut self,_enabled:bool) {}
+    #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+    fn registry_prearm_totals(&self)->Option<[u64;12]>{
+        #[cfg(feature="sunfish-wlan-elf-phase-io")] {self.elf_io_totals()}
+        #[cfg(not(feature="sunfish-wlan-elf-phase-io"))] {None}
+    }
     /// Only return counters when the native profiler is enabled for this call.
     #[cfg(feature = "sunfish-tftp-reserved-writer-io")]
     fn reserved_io_totals(&self) -> Option<[u64; 12]> { None }
@@ -1073,6 +1080,35 @@ fn registration_header_capture_decodes_data_and_preserves_both_ends() {
     assert_eq!(retained, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 16, 17, 18, 19, 20, 21, 22, 23, 24]);
 }
 
+/// Counter-only snapshots around queueing and first writer/arming. No device reads.
+#[cfg(feature = "sunfish-registry-prearm-io-trace")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RegistryPrearmIo {
+    pub queued_at: Option<u64>,
+    pub first_enter_at: Option<u64>,
+    pub first_end_at: Option<u64>,
+    pub arm_at: Option<u64>,
+    pub queued: Option<[u64;12]>,
+    pub first_enter: Option<[u64;12]>,
+    pub first_end: Option<[u64;12]>,
+    pub arm: Option<[u64;12]>,
+    entered: bool,
+    ended: bool,
+    armed: bool,
+}
+#[cfg(feature = "sunfish-registry-prearm-io-trace")]
+impl RegistryPrearmIo {
+    pub fn delta(&self, to_arm: bool) -> Option<[u64;4]> {
+        let a=self.queued?;let b=if to_arm{self.arm?}else{self.first_enter?};
+        let mut d=[0;4];
+        for i in 0..4 { if a[i]==u64::MAX || b[i]==u64::MAX{return None;}d[i]=b[i].checked_sub(a[i])?; }
+        Some(d)
+    }
+    pub fn total(&self, to_arm: bool) -> Option<u64> {
+        self.delta(to_arm)?.iter().try_fold(0u64,|a,b|a.checked_add(*b))
+    }
+}
+
 /// Observes the exact registry predecessor using already validated cursor samples.
 /// Peer-tail crossing is transport consumption, not application acceptance.
 #[cfg(feature = "sunfish-registry-post-reply-trace")]
@@ -1360,6 +1396,8 @@ struct Ring<I> {
     registration_reply_rx: Option<ServerCheckRxWindow>,
     #[cfg(feature = "sunfish-registry-post-reply-trace")]
     registry_reply: Option<RegistryReplyWindow>,
+    #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+    prearm_io: Option<RegistryPrearmIo>,
     #[cfg(feature = "sunfish-tftp-tail-observer")]
     tftp_tail_remaining: Option<usize>,
     #[cfg(feature = "sunfish-tftp-tail-observer")]
@@ -2093,6 +2131,8 @@ impl<I: Io> Adapter<I> {
                 registration_reply_rx: None,
                 #[cfg(feature = "sunfish-registry-post-reply-trace")]
                 registry_reply: None,
+                #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+                prearm_io: None,
                 #[cfg(feature = "sunfish-tftp-tail-observer")]
                 tftp_tail_remaining: None,
                 #[cfg(feature = "sunfish-tftp-tail-observer")]
@@ -2223,6 +2263,9 @@ impl<I: Io> Adapter<I> {
     pub fn registry_reply_fifo(&self) -> Option<RegistryReplyFifo> {
         self.ring.registry_reply.as_ref().map(|w| w.trace)
     }
+    #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+    pub fn registry_prearm_io(&self) -> Option<RegistryPrearmIo> { self.ring.prearm_io }
+
     #[cfg(feature = "sunfish-wlan-elf-queue-trace")]
     pub fn registry_queue_pressure(&self, handle: &core::RequestHandle) -> Option<core::RegistryQueuePressure> {
         self.session.registry_queue_pressure(handle)
@@ -2834,6 +2877,12 @@ impl<I: Io> Adapter<I> {
     ) -> Result<(), Error> {
         self.gate(generation)?;
         self.session.queue_reply(handle, reply)?;
+        #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+        if self.ring.prearm_io.is_none() && self.session.registry_prearm_queue_matches(handle) {
+            self.ring.io.registry_prearm_timing(true);
+            self.ring.prearm_io = Some(RegistryPrearmIo { queued: self.ring.io.registry_prearm_totals(),
+                queued_at: self.ring.first_server_check_clock.map(|now|now()), ..RegistryPrearmIo::default() });
+        }
         Ok(())
     }
     pub fn queue_ipa_service_reply(
@@ -3620,6 +3669,13 @@ impl<I: Io> Adapter<I> {
         #[cfg(feature = "sunfish-tftp-oack-followup")] followup: Option<core::OackFollowup>,
     ) -> Result<Transmit, Error> {
         self.check(generation)?;
+        #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+        let first_prearm_io = self.ring.prearm_io.is_some_and(|t| !t.entered);
+        #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+        if first_prearm_io {
+            let totals=self.ring.io.registry_prearm_totals();let at=self.ring.first_server_check_clock.map(|now|now());
+            let trace=self.ring.prearm_io.as_mut().unwrap();trace.entered=true;trace.first_enter=totals;trace.first_enter_at=at;
+        }
         self.quarantined = true;
         self.ring.sample()?;
         #[cfg(feature = "sunfish-first-oack-grant-window")]
@@ -3724,6 +3780,17 @@ impl<I: Io> Adapter<I> {
         };
         #[cfg(not(feature = "sunfish-tftp-oack-followup"))]
         let result = self.session.publish_next(generation, writer);
+        #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+        {
+            let arm = self.session.registry_window_trace().target.is_some_and(|p| p.conversion.arms != 0);
+            if self.ring.prearm_io.is_some_and(|t| (first_prearm_io && !t.ended) || (arm && !t.armed)) {
+                let totals=self.ring.io.registry_prearm_totals();let at=self.ring.first_server_check_clock.map(|now|now());
+                let trace=self.ring.prearm_io.as_mut().unwrap();
+                if first_prearm_io && !trace.ended {trace.ended=true;trace.first_end=totals;trace.first_end_at=at;}
+                if arm && !trace.armed {trace.armed=true;trace.arm=totals;trace.arm_at=at;}
+                if arm {self.ring.io.registry_prearm_timing(false);}
+            }
+        }
         #[cfg(feature = "sunfish-oack-grant-outcome")]
         { self.ring.grant_reads.oack_pool = None; }
         if let Some(error) = failure {
@@ -4200,6 +4267,8 @@ impl<I: Io> Adapter<I> {
         { self.ring.registration_reply_rx = None; }
         #[cfg(feature = "sunfish-registry-post-reply-trace")]
         { self.ring.registry_reply = None; }
+        #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+        { self.ring.io.registry_prearm_timing(false); self.ring.prearm_io = None; }
         #[cfg(feature = "sunfish-ipa-init-close-visibility")]
         { self.ring.init_close = InitCloseFifo::default(); }
         #[cfg(feature = "sunfish-ipa-reg-close-fifo")]
@@ -4709,4 +4778,15 @@ fn registry_post_reply_window_retains_tail_visibility_and_reports_history_loss()
     w.finish(8*(RX_HEAD_HISTORY+1),8);
     assert_eq!(w.trace.completion.unwrap().first_visible, None);
     assert_eq!(w.trace.peer_tail_at, Some(3));
+}
+
+#[cfg(all(test,feature="sunfish-registry-prearm-io-trace"))]
+#[test]
+fn registry_prearm_io_delta_rejects_missing_saturated_regressed_or_overflowed_counters(){
+    let mut t=RegistryPrearmIo::default();assert_eq!(t.total(true),None);
+    t.queued=Some([10;12]);let mut b=[u64::MAX;12];b[..4].copy_from_slice(&[11,12,13,14]);t.arm=Some(b);
+    assert_eq!(t.delta(true),Some([1,2,3,4]));assert_eq!(t.total(true),Some(10)); // nested categories are not added
+    t.arm.as_mut().unwrap()[1]=9;assert_eq!(t.delta(true),None);
+    t.arm=Some([u64::MAX;12]);assert_eq!(t.delta(true),None);
+    t.queued=Some([0;12]);t.arm=Some([u64::MAX-1;12]);assert_eq!(t.total(true),None);
 }

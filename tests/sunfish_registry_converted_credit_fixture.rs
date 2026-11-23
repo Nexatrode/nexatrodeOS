@@ -59,3 +59,6 @@ fn converted_credit_is_one_attempt_per_original_registry_reply_even_with_two_rea
     for _ in 0..8{let(e,b)=publish(&mut s).unwrap();if let Published::Data{..}=e{assert_eq!(word(&b,20),7);assert_eq!(word(&b,44),11);seen=true;break;}}
     assert!(seen);let id=reply(&mut s);assert_eq!(s.ingest(1,&control(14,id)),Ok(Event::ReplyRxDone(four)));assert_eq!(mask(&s)&(3<<17),3<<17);
 }
+
+#[cfg(feature="sunfish-registry-prearm-io-trace")]
+pub(super) fn credit_for_prearm(s:&mut Session)->(u32,Vec<u8>){credit(s)}
