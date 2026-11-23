@@ -1,0 +1,9 @@
+# Bounded registry publication/admission handoff
+
+Implement one normal checked Router dispatch between the existing successful registry queue and storage/service tail, followed by at most one ordinary registry retry only if the exact retained predecessor has actually fully published and the originally blocked request is still the selected registry request. Consume the candidate before dispatch. Preserve grants, credits, FIFO/native validation, exact receipts, terminal faults, other-owner deferral and ordinary fallback. No timestamp or display history may gate policy. No forced DATA selection, slot retirement or drain loop.
+
+- [x] Add regression coverage for actual owner/router3/4 startup, one-shot, pending grant/backlog, blocked/uncertain writes, wrong owner/generation, stale pair, other-owner work and fatal/close fallback. Preserve previous-profile tests.
+- [x] Implement feature-gated opaque candidate from real successful/blocked dispatch handles and pure live core metadata. Add exact predecessor publication and bounded-attempt/retry trace, independent of clocks for state. Wire before storage; actual panel renderer tests.
+- [x] Run current/prior owner/link suites, focused fault/identity tests, pressure replays and source/stack checks. Build target/boot image; verify304 capability mutations, actual packed SDK/loader/archive/maps, payload and source hashes. Save notes and push main; deliver manual cold temporary-boot command only. No device commands.
+
+Completed offline lifecycle tests:6tests/14cases, core live metadata in two clock modes; candidate/prior owner575/569 with one prior ignored per profile, links222/221;304capability mutations, packed SDK/loader/archive and payload hashes pass. Manual cold command is recorded in docs/sunfish-bounded-registry-handoff.md. No device action.

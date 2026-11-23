@@ -970,3 +970,148 @@ fn final_ack_uses_one_bounded_router_turn_without_oack_helper() {
         println!("ACK TURN pending_grant={pending_grant}, blocked={blocked}: OACK-only helpers returned false; ordinary checked router turn published exact final ACK; grant advertisements={:?}, grants={:?}",rig.available,rig.intent_acks);
     }
 }
+
+
+#[cfg(feature="sunfish-registry-handoff-turn")]
+#[test]
+fn registry_handoff_one_checked_turn_admits_exact_next_reply_before_storage() {
+    use super::elf_blocker_irq::{Kernel,Router};
+    struct Irq;impl Kernel for Irq{fn acknowledge(&mut self,_:u8)->Result<(),()>{Ok(())}}
+    for storage_work in [false,true] {
+        let sim=Sim::new();let(config,src,mut dst)=shadows();let mut rig=SrRig::new(&sim,config,&src,&mut dst);
+        let mut router=Router::new(Irq,1);rig.t.hold_host=true;
+        let mut input=vec![super::servreg_query_datagram_with_transaction(b"avs/audio",3),super::servreg_query_datagram_with_transaction(b"tms/servreg",4),super::servreg_query_datagram_with_transaction(b"kernel/elf_loader",5)];
+        if storage_work{input.push(lo_packet(1,19,0x4000,false,&lo_message(0,1,100,&[(1,b"/boot/modem_fs1")])));}
+        for packet in input {
+            if rig.t.available.is_empty(){rig.t.owner.offer_receive().unwrap();router.dispatch(&mut rig.t.owner).unwrap();rig.t.drain();}
+            rig.t.enqueue(&packet);router.capture(1<<4).unwrap();router.dispatch(&mut rig.t.owner).unwrap();rig.t.drain();
+        }
+        assert_eq!(rig.t.owner.dispatch_service_registry_bounded(&mut router).unwrap(),(SP::ReplyQueued,Some(SP::WaitingReply)));
+        router.capture(1<<2).unwrap();
+        assert_eq!(router.dispatch_registry_handoff(&mut rig.t.owner),Ok(None));
+        assert_eq!(rig.t.owner.registry_handoff_trace().attempts,0);
+        assert_eq!(router.take_other(),1<<2);
+        assert_eq!(router.dispatch_registry_handoff(&mut rig.t.owner),Ok(Some(SP::ReplyQueued)));
+        let trace=rig.t.owner.registry_handoff_trace();assert_eq!(trace.attempts,1);assert_eq!(trace.target.unwrap().result,1);
+        assert_eq!(router.dispatch_registry_handoff(&mut rig.t.owner),Ok(None),"one-shot consumed before dispatch");
+        rig.t.drain();let is_reply=|p:&[u8],tx:u16|lo_word(p,12)==super::qcom_servreg::LOCAL_PORT && lo_word(p,28)==9 && p[32]==2 && p[33..35]==tx.to_le_bytes();
+        let prior=rig.t.held_host.iter().find(|(_,p)|is_reply(p,3)).unwrap().clone();
+        assert!(rig.t.held_host.iter().all(|(_,p)|lo_word(p,12)!=0x4000));
+        assert_eq!(rig.t.owner.registry_window_trace().target.unwrap().older_done_at,None);
+        assert_eq!(rig.t.owner.dispatch_linux_rmtfs_burst(&mut rig.s,&mut router).unwrap(),if storage_work{SP::ReplyQueued}else{SP::Idle});
+        router.dispatch(&mut rig.t.owner).unwrap();rig.t.drain();
+        let newer=rig.t.held_host.iter().find(|(_,p)|is_reply(p,4)).unwrap();assert_ne!(newer.0,prior.0);
+        assert_eq!(rig.t.held_host.iter().find(|(_,p)|is_reply(p,3)).unwrap(),&prior);
+    }
+}
+
+#[cfg(feature="sunfish-registry-handoff-turn")]
+mod registry_handoff_safety {
+    use super::*;
+    use super::super::elf_blocker_irq::{Kernel,Router};
+    struct Irq;impl Kernel for Irq{fn acknowledge(&mut self,_:u8)->Result<(),()>{Ok(())}}
+    fn prepared()->(LoRig,Router<Irq>){
+        let mut rig=LoRig::new();let _ipa=rig.next();rig.hold_host=true;let mut router=Router::new(Irq,1);
+        for (tx,name) in [(3,b"avs/audio".as_slice()),(4,b"tms/servreg".as_slice()),(5,b"kernel/elf_loader".as_slice())]{
+            if rig.available.is_empty(){rig.owner.offer_receive().unwrap();router.dispatch(&mut rig.owner).unwrap();rig.drain();}
+            rig.enqueue(&super::super::servreg_query_datagram_with_transaction(name,tx));
+            router.capture(1<<4).unwrap();router.dispatch(&mut rig.owner).unwrap();rig.drain();
+        }
+        assert_eq!(rig.owner.dispatch_service_registry_bounded(&mut router).unwrap(),(SP::ReplyQueued,Some(SP::WaitingReply)));
+        (rig,router)
+    }
+    #[test]
+    fn registry_handoff_defers_controls_and_retains_ordinary_fallback(){
+        for grant in [false,true]{
+            let(mut rig,mut router)=prepared();
+            if grant{rig.peer.push(&super::super::control(7,2,52));router.capture(1<<4).unwrap();}
+            else{rig.enqueue(&super::super::servreg_query_datagram_with_transaction(b"unknown/a",6));rig.enqueue(&super::super::servreg_query_datagram_with_transaction(b"unknown/b",7));router.capture(1<<4).unwrap();}
+            let result=router.dispatch_registry_handoff(&mut rig.owner).unwrap();
+            assert!(matches!(result,None|Some(SP::ReplyQueued)));
+            let admitted=result==Some(SP::ReplyQueued);
+            assert_eq!(rig.owner.registry_handoff_trace().attempts,1);
+            assert_eq!(rig.owner.registry_window_trace().target.is_some(),admitted);
+            println!("grant={grant}, handoff={result:?}: ordinary receive/selection outcome retained");
+            assert_eq!(router.dispatch_registry_handoff(&mut rig.owner),Ok(None));
+            // Normal continuation owns all further progress; a blocked one-shot
+            // must not manufacture a second writer or prematurely admit4.
+            for _ in 0..32 {
+                router.dispatch(&mut rig.owner).unwrap();rig.drain();
+                if rig.held_host.iter().any(|(_,p)|p.len()>35 && p[32]==2 && p[33..35]==3u16.to_le_bytes()){break;}
+            }
+            if grant && !admitted {assert_eq!(rig.owner.dispatch_service_registry_step(&mut router).unwrap(),SP::ReplyQueued);}
+            assert_eq!(rig.owner.registry_handoff_trace().attempts,1);
+            assert_eq!(rig.owner.registry_handoff_trace().target.unwrap().result,if admitted{1}else{0});
+        }
+    }
+    #[test]
+    fn registry_handoff_faults_are_terminal_and_generation_is_checked(){
+        for mode in 0..6 {
+            let(mut rig,mut router)=prepared();
+            match mode {
+                0=>rig.peer.0.borrow_mut().fail=Some("snapshot"),
+                1=>rig.peer.0.borrow_mut().fail_after_store=true,
+                2=>rig.peer.0.borrow_mut().observation.fatal=true,
+                3=>{router=Router::new(Irq,2);super::super::qcom_modem_owner::Interrupts::schedule(&mut router).unwrap();},
+                4=>{rig.peer.push(&super::super::control(7,2,52));router.capture(1<<4).unwrap();rig.peer.0.borrow_mut().fail=Some("head");},
+                _=>{rig.enqueue(&super::super::owner_control_frame(6,[0,9,0,0]));router.capture(1<<4).unwrap();},
+            }
+            assert!(router.dispatch_registry_handoff(&mut rig.owner).is_err(),"mode{mode}");
+            assert!(router.report().error.is_some());assert!(rig.owner.registry_window_trace().target.is_none());
+            let log=rig.peer.log();assert!(router.dispatch_registry_handoff(&mut rig.owner).is_err());assert_eq!(rig.peer.log(),log,"fatal attempt cannot repeat I/O");
+        }
+    }
+    #[test]
+    fn registry_handoff_stale_candidate_is_not_reused(){
+        for completed in [false,true]{
+            let(mut rig,mut router)=prepared();router.dispatch(&mut rig.owner).unwrap();rig.drain();
+            if completed{
+                let id=rig.held_host.iter().find(|(_,p)|p.len()>35 && p[32]==2 && p[33..35]==3u16.to_le_bytes()).unwrap().0;
+                rig.peer.push(&super::super::control(6,2,id));router.capture(1<<4).unwrap();router.dispatch(&mut rig.owner).unwrap();
+            }else{assert_eq!(rig.owner.dispatch_service_registry_step(&mut router).unwrap(),SP::ReplyQueued);}
+            assert_eq!(router.dispatch_registry_handoff(&mut rig.owner),Ok(None));assert_eq!(rig.owner.registry_handoff_trace().attempts,0);
+        }
+    }
+    #[test]
+    fn registry_handoff_actual_credit_pressure_keeps_wait_and_resumes_normally(){
+        let mut rig=LoRig::new();let _ipa=rig.next();rig.hold_host=true;rig.recycle_intents=true;let mut router=Router::new(Irq,1);
+        let input=|rig:&mut LoRig,router:&mut Router<Irq>,tx,name:&[u8]|{
+            if rig.available.is_empty(){rig.owner.offer_receive().unwrap();router.dispatch(&mut rig.owner).unwrap();rig.drain();}
+            rig.enqueue(&super::super::servreg_query_datagram_with_transaction(name,tx));
+            router.capture(1<<4).unwrap();router.dispatch(&mut rig.owner).unwrap();rig.drain();
+        };
+        for tx in 100..109 {
+            input(&mut rig,&mut router,tx,b"avs/audio");assert_eq!(rig.owner.dispatch_service_registry_step(&mut router).unwrap(),SP::ReplyQueued);
+            for _ in 0..16{router.dispatch(&mut rig.owner).unwrap();rig.drain();if rig.held_host.iter().any(|(_,p)|p[33..35]==(tx as u16).to_le_bytes()){break;}}
+            let index=rig.held_host.iter().position(|(_,p)|p[33..35]==(tx as u16).to_le_bytes()).unwrap();let record=rig.held_host.remove(index);
+            // Return the real GLINK intent, deliberately withhold QRTR RESUME.
+            rig.peer.push(&super::super::control(14,2,record.0));router.capture(1<<4).unwrap();router.dispatch(&mut rig.owner).unwrap();rig.drain();
+        }
+        for (tx,name) in [(3,b"avs/audio".as_slice()),(4,b"tms/servreg".as_slice()),(5,b"kernel/elf_loader".as_slice())]{input(&mut rig,&mut router,tx,name);}
+        assert_eq!(rig.owner.dispatch_service_registry_bounded(&mut router).unwrap(),(SP::ReplyQueued,Some(SP::WaitingReply)));
+        assert_eq!(router.dispatch_registry_handoff(&mut rig.owner),Ok(Some(SP::WaitingReply)));
+        assert_eq!(rig.owner.registry_handoff_trace().target.unwrap().result,2);
+        assert_eq!(rig.owner.service_registry_trace().txn4.unwrap().last_pressure.unwrap().reason,4);
+        assert!(rig.owner.registry_window_trace().target.is_none());rig.drain();
+        let record=rig.held_host.iter().find(|(_,p)|p[33..35]==3u16.to_le_bytes()).unwrap().clone();let credit=rig.credit(&record.1);
+        rig.enqueue(&credit);router.capture(1<<4).unwrap();router.dispatch(&mut rig.owner).unwrap();rig.drain();
+        assert_eq!(rig.owner.dispatch_service_registry_step(&mut router).unwrap(),SP::ReplyQueued);
+        assert_eq!(rig.owner.registry_handoff_trace().attempts,1);
+        assert_eq!(rig.held_host.iter().find(|(_,p)|p[33..35]==3u16.to_le_bytes()).unwrap(),&record);
+    }
+
+    #[test]
+    fn registry_handoff_does_not_bypass_a_newly_selected_request(){
+        let(mut rig,mut router)=prepared();router.dispatch(&mut rig.owner).unwrap();rig.drain();
+        rig.enqueue(&super::super::servreg_query_datagram_with_transaction(b"unknown/earlier_slot",6));
+        router.capture(1<<4).unwrap();router.dispatch(&mut rig.owner).unwrap();rig.drain();
+        let selected=rig.owner.pending_request_for_service(Service::ServiceRegistry).unwrap().unwrap();
+        assert_eq!(rig.owner.request(&selected).unwrap().0.transaction,6,"new request occupies the earlier released queue slot");
+        assert_eq!(router.dispatch_registry_handoff(&mut rig.owner),Ok(None));
+        assert_eq!(rig.owner.registry_handoff_trace().attempts,1);
+        assert_eq!(rig.owner.registry_handoff_trace().target.unwrap().result,0);
+        assert!(rig.owner.registry_window_trace().target.is_none(),"exact4 must not jump selected6");
+        assert_eq!(rig.owner.dispatch_service_registry_step(&mut router).unwrap(),SP::ReplyQueued);
+    }
+
+}

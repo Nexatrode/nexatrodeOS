@@ -4218,3 +4218,30 @@ fn registry_window_trace_matches_receipts_without_relying_on_clock_or_slot_index
         }
     }
 }
+
+#[cfg(feature="sunfish-registry-handoff-turn")]
+#[test]
+fn registry_handoff_live_metadata_excludes_wrong_identity_route_and_completed_slot(){
+    use crate::qcom_qmi_router::Address;
+    for clocked in [false,true] {
+        let mut s=session();if clocked{s.set_registry_ack_clock(||77);}
+        s.register(1,Service::ServiceRegistry,qcom_servreg::LOCAL_PORT).unwrap();s.prepare_service_available(1,Service::ServiceRegistry).unwrap();
+        s.ingest(1,&intents(&[(7,4096),(8,4096)])).unwrap();
+        let a=offer(&mut s);let b=offer(&mut s);let c=offer(&mut s);
+        let one=registry_turn_request(&mut s,a,9,3);let two=registry_turn_request(&mut s,b,9,4);let other=registry_turn_request(&mut s,c,10,4);
+        s.queue_reply(&one,Reply::Failure{error:3}).unwrap();
+        assert_eq!(s.registry_handoff_pair(&one,&two),Some((3,4,Address{node:0,port:9},false)));
+        assert_eq!(s.registry_handoff_pair(&one,&other),None);assert_eq!(s.registry_handoff_pair(&two,&one),None);
+        assert_eq!(session().registry_handoff_pair(&one,&two),None);
+        assert_eq!(s.registry_window_trace().predecessor.unwrap().queued_at,clocked.then_some(77));
+        assert_eq!(s.registry_window_trace().predecessor.unwrap().published_at,None);
+        let(Published::Data{remote_intent:first,..},_)=publish_until_data(&mut s)else{panic!()};
+        assert_eq!(s.registry_handoff_pair(&one,&two),Some((3,4,Address{node:0,port:9},true)));
+        assert_eq!(s.registry_window_trace().predecessor.unwrap().published_at,clocked.then_some(77));
+        s.queue_reply(&two,Reply::Failure{error:3}).unwrap();assert_eq!(s.registry_handoff_pair(&one,&two),None);
+        assert_eq!(s.ingest(1,&control(14,first)),Ok(Event::ReplyRxDone(one)));
+        assert_eq!(s.registry_handoff_pair(&one,&other),None);
+        assert_eq!(s.registry_window_trace().predecessor.unwrap().done_at,clocked.then_some(77));
+        s.reset_after_transport_reset(2).unwrap();assert_eq!(s.registry_window_trace().predecessor,None);
+    }
+}

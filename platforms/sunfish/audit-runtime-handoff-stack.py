@@ -66,6 +66,32 @@ def frame_from_disassembly(text):
     return frame
 
 
+def choose_init_symbol(names):
+    direct = 'rust_sunfish_native_startup_preflight::init'
+    wrapper = '<' + direct + ' as core::ops::function::FnOnce<()>>::call_once'
+    exact = lambda base: [n for n in names if re.fullmatch(re.escape(base) + r'(?: \(\.llvm\.[0-9]+\))?', n)]
+    functions, wrappers = exact(direct), exact(wrapper)
+    if len(functions) > 1 or len(wrappers) > 1 or not (functions or wrappers):
+        raise ValueError('missing or ambiguous exact initialization implementation')
+    if functions:
+        return functions[0], wrappers[0] if wrappers else None
+    return wrappers[0], None  # init body inlined into the actual call_once frame
+
+
+def zero_frame_init_thunk(text, destination):
+    instructions = []
+    for line in text.splitlines():
+        match = re.match(r'\s*([0-9a-f]+):\s+(?:[0-9a-f]{8}\s+)?(.+)', line)
+        if match:
+            instructions.append(match[2].split('//')[0].strip())
+    if len(instructions) != 2 or not re.fullmatch(r'mov\s+x8, x0', instructions[0]):
+        raise ValueError('outlined initialization wrapper requires reviewed zero-frame thunk')
+    branch = re.match(r'b\s+0x([0-9a-f]+)(?:\s|$)', instructions[1])
+    if branch is None or int(branch[1], 16) != destination:
+        raise ValueError('initialization thunk does not forward to selected implementation')
+    return 0
+
+
 def inspect(elf):
     text = subprocess.check_output([str(LLVM / 'llvm-nm'), '-S', '--demangle', str(elf)], text=True)
     symbols = []
@@ -74,7 +100,7 @@ def inspect(elf):
         if match:
             symbols.append((int(match[1], 16), int(match[2], 16), match[3]))
 
-    def pick(predicate, optional=False):
+    def pick(predicate, optional=False, parse_frame=frame_from_disassembly):
         found = [s for s in symbols if predicate(s[2])]
         if not found and optional:
             return None
@@ -83,17 +109,27 @@ def inspect(elf):
         address, size, name = found[0]
         dis = subprocess.check_output([str(LLVM / 'llvm-objdump'), '-d', '--no-show-raw-insn',
             f'--start-address={address}', f'--stop-address={address+size}', str(elf)], text=True)
-        return {'symbol': name, 'address': hex(address), 'frame': frame_from_disassembly(dis), 'disassembly': dis}
+        return {'symbol': name, 'address': hex(address), 'frame': parse_frame(dis), 'disassembly': dis}
 
+    init_name, thunk_name = choose_init_symbol([name for _, _, name in symbols])
     frames = {
         'entry': pick(lambda n: 'entry::run_main::' in n and 'closure#0' in n),
-        'init': pick(lambda n: n == 'rust_sunfish_native_startup_preflight::init'),
+        'init': pick(lambda n: n == init_name),
         'start': pick(lambda n: n.endswith('pixel_mpss_runtime::start')),
         'opening': pick(lambda n: 'RuntimeDomain>::step_opening' in n),
         'transfer': pick(lambda n: 'sunfish_linux_rmtfs::Resources<' in n and '>::run::' in n and '>::transfer::' in n),
         'take': pick(lambda n: n.endswith('pixel_mpss_auth::take_runtime')),
         'start_live': pick(lambda n: 'sunfish_mpss_linux_transport_native::start_live::' in n),
     }
+    # A separately outlined call_once wrapper is accepted only as an exact
+    # zero-frame tail forwarder; an inlined init uses its full measured frame.
+    init_entry = frames['init']
+    if thunk_name is not None:
+        frames['init_tail_thunk'] = pick(lambda n: n == thunk_name,
+            parse_frame=lambda dis: zero_frame_init_thunk(dis, int(frames['init']['address'], 16)))
+        init_entry = frames['init_tail_thunk']
+    if not re.search(r'\bbl\s+' + re.escape(init_entry['address']) + r'(?:\s|$)', frames['entry']['disassembly']):
+        raise ValueError('selected persistent entry does not call initialization implementation/thunk')
     frames['construct'] = pick(lambda n: n.endswith('pixel_mpss_runtime::construct_runtime'), True)
     frames['begin'] = pick(lambda n: n.endswith('pixel_mpss_runtime::begin_prepared_runtime'), True)
     split = frames['construct'] is not None and frames['begin'] is not None

@@ -773,6 +773,16 @@ impl Transmit {
 pub struct RegistryWindowTrace {
     pub admissions: u32,
     pub target: Option<RegistryWindowPair>,
+    #[cfg(feature = "sunfish-registry-handoff-turn")]
+    pub predecessor: Option<RegistryPredecessorTrace>,
+}
+#[cfg(feature = "sunfish-registry-handoff-turn")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RegistryPredecessorTrace {
+    request: RequestHandle,
+    pub queued_at: Option<u64>,
+    pub published_at: Option<u64>,
+    pub done_at: Option<u64>,
 }
 #[cfg(feature = "sunfish-registry-window-trace")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -6241,6 +6251,10 @@ impl Session {
             self.remote[remote] = None;
         }
         self.retire_transmit(index)?;
+        #[cfg(feature = "sunfish-registry-handoff-turn")]
+        if let Some(prior) = self.registry_window.predecessor.as_mut()
+            && completion == Event::ReplyRxDone(prior.request)
+        { prior.done_at = self.intent_ack_clock.map(|clock| clock()); }
         #[cfg(feature = "sunfish-registry-window-trace")]
         if let Some(pair) = self.registry_window.target.as_mut()
             && completion == Event::ReplyRxDone(pair.older) && !pair.older_completed
@@ -6574,6 +6588,29 @@ impl Session {
         self.registry_pressure = Some((*handle, pressure));
     }
 
+    /// Pure live ownership metadata, never a display history or timing guard.
+    /// The older slot stays owned; normal queue_reply still checks credits.
+    #[cfg(feature = "sunfish-registry-handoff-turn")]
+    pub(crate) fn registry_handoff_pair(&self, older: &RequestHandle, waiting: &RequestHandle)
+        -> Option<(u16, u16, Address, bool)>
+    {
+        self.check(self.generation).ok()?;
+        if older.owner != self.owner || older.generation != self.generation { return None; }
+        let pending = self.request_index(waiting).ok()?;
+        let route = self.router.reply_route(self.receive[pending].ticket.as_ref()?).ok()?;
+        if route.service != Service::ServiceRegistry { return None; }
+        let receive = self.receive.iter().position(|rx| rx.id == older.intent && rx.state == RxState::ReplyQueued)?;
+        let mut same_peer = self.transmit.iter().filter(|tx| tx.len != 0
+            && tx.kind.qrtr_addresses().is_some_and(|(_,peer)| peer == route.destination));
+        let tx = same_peer.next()?;
+        if same_peer.next().is_some() || tx.glink_done || !tx.qrtr_done || tx.reference_flow.is_none() { return None; }
+        let TxKind::Reply { receive: prior, route: prior_route, .. } = tx.kind else { return None; };
+        if prior != receive || prior_route.service != Service::ServiceRegistry
+            || prior_route.source != route.source { return None; }
+        Some((prior_route.transaction, route.transaction, route.destination,
+            tx.sent == tx.len && tx.remote_slot.is_some()))
+    }
+
     #[cfg(feature = "sunfish-registry-window-trace")]
     pub fn registry_window_trace(&self) -> RegistryWindowTrace { self.registry_window }
 
@@ -6743,6 +6780,15 @@ impl Session {
             };
         }
         self.receive[receive].state = RxState::ReplyQueued;
+        #[cfg(feature = "sunfish-registry-handoff-turn")]
+        if self.registry_window.predecessor.is_none() && route.service == Service::ServiceRegistry
+            && route.transaction == 3 && route.destination == (Address { node: 0, port: 9 })
+        {
+            self.registry_window.predecessor = Some(RegistryPredecessorTrace {
+                request: *handle, queued_at: self.intent_ack_clock.map(|clock| clock()),
+                published_at: None, done_at: None,
+            });
+        }
         #[cfg(feature = "sunfish-registry-window-trace")]
         if let Some(prior) = window_prior {
             self.registry_window.admissions = self.registry_window.admissions.saturating_add(1);
@@ -8469,6 +8515,11 @@ impl Session {
                 self.transmit[index].remote_slot = Some(remote);
                 self.transmit[index].sent += chunk;
                 if self.transmit[index].sent == self.transmit[index].len {
+                    #[cfg(feature = "sunfish-registry-handoff-turn")]
+                    if let Some(prior) = self.registry_window.predecessor.as_mut()
+                        && let TxKind::Reply { receive, .. } = self.transmit[index].kind
+                        && prior.request == (RequestHandle { owner: self.owner, generation: self.generation, intent: self.receive[receive].id })
+                    { prior.published_at = self.intent_ack_clock.map(|clock| clock()); }
                     #[cfg(feature = "sunfish-registry-window-trace")]
                     if let Some(pair) = self.registry_window.target.as_mut()
                         && pair.published_before_done.is_none()

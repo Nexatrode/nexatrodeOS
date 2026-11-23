@@ -302,6 +302,24 @@ impl<K: Kernel> Router<K> {
         self.dispatch(owner).map(|_| true)
     }
 
+    /// Consume before one ordinary writer turn; retry only the exact live pair.
+    /// Other owners, grant/credit work and backpressure keep the normal path.
+    #[cfg(feature = "sunfish-registry-handoff-turn")]
+    pub fn dispatch_registry_handoff<I: Io>(&mut self, owner: &mut Owner<I>)
+        -> Result<Option<modem::ServiceProgress>, Error>
+    {
+        if let Err(error) = self.live() { owner.fault(); return Err(error); }
+        if !self.continuation || self.other != 0 { return Ok(None); }
+        let token = owner.take_registry_handoff().map_err(|error| self.fail(Error::Owner(error)))?;
+        let Some(token) = token else { return Ok(None); };
+        owner.observe_registry_handoff_writer(token, false, false);
+        let result = self.dispatch(owner);
+        owner.observe_registry_handoff_writer(token, true, result.is_err());
+        result?;
+        if self.other != 0 { return Ok(None); }
+        owner.retry_registry_handoff(token, self).map_err(|error| self.fail(Error::Owner(error)))
+    }
+
     #[cfg(feature = "sunfish-original-final-ack-turn")]
     pub fn original_final_ack_turn(&self) -> bool { self.original_final_ack_turn }
 

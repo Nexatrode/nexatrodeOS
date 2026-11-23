@@ -2157,6 +2157,10 @@ impl<I: Io> Adapter<I> {
     pub fn intent_ack_summary(&self) -> (u32, Option<u64>) {
         self.session.intent_ack_summary()
     }
+    #[cfg(feature = "sunfish-registry-handoff-turn")]
+    pub(crate) fn registry_handoff_pair(&self, older: &core::RequestHandle, waiting: &core::RequestHandle)
+        -> Option<(u16, u16, crate::qcom_qmi_router::Address, bool)>
+    { self.session.registry_handoff_pair(older, waiting) }
     #[cfg(feature = "sunfish-registry-window-trace")]
     pub fn registry_window_trace(&self) -> core::RegistryWindowTrace { self.session.registry_window_trace() }
     #[cfg(feature = "sunfish-wlan-elf-queue-trace")]

@@ -22,9 +22,12 @@ mod tftp_completion;
 #[cfg(all(feature="sunfish-ack-elf-phase-trace", not(feature="sunfish-registry-window-trace")))]
 #[path="pixel_mpss_ack_elf_stages.rs"]
 mod ack_elf_stages;
-#[cfg(feature="sunfish-registry-window-trace")]
+#[cfg(all(feature="sunfish-registry-window-trace", not(feature="sunfish-registry-handoff-turn")))]
 #[path="pixel_mpss_registry_window.rs"]
 mod registry_window;
+#[cfg(feature="sunfish-registry-handoff-turn")]
+#[path="pixel_mpss_registry_handoff.rs"]
+mod registry_handoff;
 
 #[cfg(all(feature = "sunfish-ipa-independent-server-experiment", not(feature = "sunfish-ipa-independent-server-runtime")))]
 compile_error!("independent IPA server experiment is offline only; native composition not validated");
@@ -571,6 +574,18 @@ impl RuntimeDomain {
         #[cfg(feature = "sunfish-servreg-bounded-second-turn")]
         let registry_result = match owner.dispatch_service_registry_bounded(&mut self.router) {
             Ok((first, second)) => {
+                #[cfg(feature = "sunfish-registry-handoff-turn")]
+                {
+                    self.router.dispatch_registry_handoff(owner).map_err(|_| 0x61u32)?;
+                    #[cfg(feature = "sunfish-tftp-wlan-close-handoff")]
+                    if owner.pending_firmware_close().is_some() {
+                        owner.resolve_firmware_close(&mut self.firmware).map_err(|_| 0x63u32)?;
+                    }
+                    #[cfg(feature = "sunfish-tftp-close-handoff-prototype")]
+                    if owner.pending_tftp_close().is_some() {
+                        owner.resolve_pending_tftp_close(&mut self.server_check).map_err(|_| 0x62u32)?;
+                    }
+                }
                 if let Some(progress) = second {
                     self.registry_extra_attempts = self.registry_extra_attempts.saturating_add(1);
                     self.registry_extra_outcome = match progress {
