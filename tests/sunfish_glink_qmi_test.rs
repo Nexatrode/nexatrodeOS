@@ -4402,4 +4402,47 @@ mod registry_between_grants {
         assert_eq!(s.ingest(2,&control(14,id)),Ok(Event::ReplyRxDone(new)));
         assert_eq!(s.registry_window_trace().predecessor.unwrap().publication.unwrap().mask&0x300,0x300);
     }
+
+    #[cfg(feature="sunfish-registry-grant-eligibility")]
+    #[test]
+    fn eligibility_distinguishes_return_expired_yield_advertised_ack_and_borrow(){
+        for mode in 0..3 {
+            let(mut s,request)=prepared(mode!=0,false,4096);
+            let expected=match mode {
+                0 => { assert!(matches!(publish(&mut s).unwrap().0,Published::ReceiveDone(_)));grant(&mut s);reply(&mut s);[1,0,1,1,0,0,0,1,0,0,0,0] },
+                1 => {reply(&mut s);[0,0,0,0,0,0,0,0,0,0,0,1]},
+                _ => {assert_eq!(s.publish_next(1,|_|Err(WriteError::WouldBlock)),Err(Error::WouldBlock));grant(&mut s);reply(&mut s);[1,0,1,0,0,0,0,0,1,0,0,1]},
+            };
+            assert!(s.reply_fully_published(&request));
+            let frozen=s.registry_window_trace().predecessor.unwrap();
+            assert!(frozen.publication_frozen);
+            assert_eq!(frozen.publication.unwrap().grant_gates,expected,"mode{mode}");
+            assert_eq!(expected.iter().sum::<u32>(),frozen.publication.unwrap().calls);
+            assert_eq!(s.ingest(1,&control(14,7)),Ok(Event::ReplyRxDone(request)));
+            assert_eq!(s.registry_window_trace().predecessor.unwrap().publication,frozen.publication);
+        }
+    }
+    #[cfg(feature="sunfish-registry-grant-eligibility")]
+    #[test]
+    fn eligibility_distinguishes_negative_ack_and_trace_reads_do_not_sample_clock(){
+        use core::sync::atomic::{AtomicU32,Ordering::Relaxed};
+        static READS:AtomicU32=AtomicU32::new(0);
+        for clocked in [false,true]{
+            let(mut s,request)=prepared(true,false,4096);
+            if clocked{s.set_registry_ack_clock(||{READS.fetch_add(1,Relaxed);77});}
+            // Consume the positive-grant borrow without publication, then finish
+            // its advertisement and ACK. A later invalid-size request is denied.
+            assert_eq!(s.publish_next(1,|_|Err(WriteError::WouldBlock)),Err(Error::WouldBlock));grant(&mut s);
+            assert_eq!(s.ingest(1,&control(7,4097)),Ok(Event::ReceiveIntentRequest{granted:false}));
+            for _ in 0..4{if s.reply_fully_published(&request){break;}publish(&mut s).unwrap();}
+            assert!(s.reply_fully_published(&request));
+            let before=READS.load(Relaxed);let frozen=s.registry_window_trace().predecessor.unwrap();
+            assert_eq!(frozen.publication.unwrap().grant_gates[1],1);
+            for _ in 0..4{assert_eq!(s.registry_window_trace().predecessor.unwrap().publication,frozen.publication);}
+            assert_eq!(READS.load(Relaxed),before,"trace reads must not add clock operations");
+            assert_eq!(s.ingest(1,&control(14,7)),Ok(Event::ReplyRxDone(request)));
+            assert_eq!(s.registry_window_trace().predecessor.unwrap().publication,frozen.publication);
+            s.reset_after_transport_reset(2).unwrap();assert_eq!(s.registry_window_trace().predecessor,None);
+        }
+    }
 }

@@ -28,9 +28,12 @@ mod registry_window;
 #[cfg(all(feature="sunfish-registry-handoff-turn", not(feature="sunfish-registry-predecessor-pressure")))]
 #[path="pixel_mpss_registry_handoff.rs"]
 mod registry_handoff;
-#[cfg(feature="sunfish-registry-predecessor-pressure")]
+#[cfg(all(feature="sunfish-registry-predecessor-pressure", not(feature="sunfish-registry-grant-eligibility")))]
 #[path="pixel_mpss_registry_pressure.rs"]
 mod registry_pressure;
+#[cfg(feature="sunfish-registry-grant-eligibility")]
+#[path="pixel_mpss_registry_grant_eligibility.rs"]
+mod registry_grant_eligibility;
 
 #[cfg(all(feature = "sunfish-ipa-independent-server-experiment", not(feature = "sunfish-ipa-independent-server-runtime")))]
 compile_error!("independent IPA server experiment is offline only; native composition not validated");

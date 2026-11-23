@@ -663,7 +663,8 @@ pub struct RegistryPublication {
     /// Bits 0–6: no suitable intent, outstanding intent request,
     /// control selected, other data selected, selected but FIFO blocked,
     /// written, and outbound intent request selected. Bit 7 records a
-    /// successful experimental registry-priority publication.
+    /// successful experimental registry-priority publication. Bits 8/9
+    /// record the borrowed pre-grant DATA attempt/successful commit.
     pub mask: u32,
     /// First priority gate on each call: cooldown, TFTP, intent ACK, own
     /// RX_DONE, no candidate, different registry candidate, credit, selected.
@@ -671,6 +672,12 @@ pub struct RegistryPublication {
     pub turn_gates: [u32; 8],
     #[cfg(feature = "sunfish-wlan-registry-ack-trace")]
     pub ack: RegistryAckTrace,
+    /// First failed borrowed-turn condition, or selected: no ACK, denial,
+    /// no unadvertised backing, no ACK yield, cooldown, TFTP, WRQ return,
+    /// own return, used opportunity, no exact candidate, credit, selected.
+    /// Observation only; none of these counters controls publication.
+    #[cfg(feature = "sunfish-registry-grant-eligibility")]
+    pub grant_gates: [u32; 12],
 }
 
 #[cfg(feature = "sunfish-wlan-registry-ack-trace")]
@@ -752,6 +759,8 @@ impl Transmit {
                 turn_gates: [0; 8],
                 #[cfg(feature = "sunfish-wlan-registry-ack-trace")]
                 ack: RegistryAckTrace::EMPTY,
+                #[cfg(feature = "sunfish-registry-grant-eligibility")]
+                grant_gates: [0; 12],
             },
             #[cfg(feature = "sunfish-tftp-final-ack-observer")]
             final_ack_observed: false,
@@ -6894,6 +6903,35 @@ impl Session {
         }
     }
 
+    #[cfg(feature = "sunfish-registry-grant-eligibility")]
+    fn observe_registry_grant_eligibility(
+        &mut self, tftp_ready: bool, wrq_return: bool,
+        candidate: Option<usize>, priority: Option<usize>,
+    ) {
+        for (index, tx) in self.transmit.iter_mut().enumerate() {
+            let TxKind::Reply { receive, route, .. } = tx.kind else { continue };
+            if route.service != Service::ServiceRegistry || tx.sent == tx.len { continue; }
+            // Capture the actual conjunction used by the borrowed turn. Later
+            // conditions are deliberately not inferred when an earlier one
+            // fails. Use the already-computed selectors; no extra selection,
+            // clock, hardware access or scheduling mutation.
+            let gate = if self.intent_request_ack.is_none() { 0 }
+                else if self.intent_request_ack == Some(false) { 1 }
+                else if self.intent_ack_backing.is_none() { 2 }
+                else if !self.intent_ack_yield { 3 }
+                else if self.registry_turn_used { 4 }
+                else if tftp_ready { 5 }
+                else if wrq_return { 6 }
+                else if self.receive[receive].done_pending { 7 }
+                else if tx.registry_grant_turn_used { 8 }
+                else if candidate != Some(index) { 9 }
+                else if priority != Some(index) { 10 }
+                else { 11 };
+            let count = &mut tx.registry_publication.grant_gates[gate];
+            *count = count.saturating_add(1);
+        }
+    }
+
     #[cfg(feature = "sunfish-wlan-registry-ack-trace")]
     pub fn set_registry_ack_clock(&mut self, clock: fn() -> u64) {
         self.intent_ack_clock = Some(clock);
@@ -7453,6 +7491,12 @@ impl Session {
         #[cfg(feature = "sunfish-wlan-registry-turn-gates")]
         self.observe_registry_turn_gates(
             priority_tftp.is_some(),
+            registry_candidate.map(|(slot, _)| slot),
+            priority_registry.map(|(slot, _)| slot),
+        );
+        #[cfg(feature = "sunfish-registry-grant-eligibility")]
+        self.observe_registry_grant_eligibility(
+            priority_tftp.is_some(), priority_wrq_done.is_some(),
             registry_candidate.map(|(slot, _)| slot),
             priority_registry.map(|(slot, _)| slot),
         );
