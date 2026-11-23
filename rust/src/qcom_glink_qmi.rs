@@ -820,6 +820,8 @@ pub struct RegistryConvertedGrantTrace {
 #[cfg(feature = "sunfish-registry-window-trace")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RegistryWindowPair {
+    #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+    pub conversion: RegistryConversionLifetime,
     #[cfg(feature = "sunfish-registry-post-reply-trace")]
     pub publication: Option<RegistryPublication>,
     #[cfg(feature = "sunfish-registry-post-reply-trace")]
@@ -834,6 +836,55 @@ pub struct RegistryWindowPair {
     pub older_done_at: Option<u64>,
     pub published_before_done: Option<bool>,
     older_completed: bool,
+}
+
+/// Observation of the first converted grant for the exact startup transaction 4.
+/// Identity, active/finished state and writer outcomes do not depend on clocks.
+#[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RegistryConversionLifetime {
+    pub arms: u32,
+    pub first: Option<RegistryConversionTurn>,
+}
+#[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RegistryConversionTurn {
+    pub intent: u32,
+    pub request_intent: u32,
+    pub bytes: u16,
+    pub sent: u16,
+    pub armed_at: Option<u64>,
+    pub entry: Option<RegistryConversionEntry>,
+    pub choice: Option<RegistryConversionChoice>,
+    /// 1: borrowed callback starts; 2: matching advertisement committed;
+    /// 3: ACK committed; 4: another conversion replaces the token.
+    pub exit: Option<(u8, Option<u64>)>,
+    pub advertised_at: Option<u64>,
+    pub ack_at: Option<u64>,
+    active: bool,
+    advertised: bool,
+    acked: bool,
+}
+#[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RegistryConversionEntry {
+    pub at: Option<u64>,
+    pub flags: u32,
+    pub backing: Option<u32>,
+    pub token_request: Option<u32>,
+    pub gate: Option<u8>,
+}
+#[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RegistryConversionChoice {
+    pub at: Option<u64>,
+    pub command: u16,
+    pub parameter: u32,
+    pub transaction: Option<u16>,
+    /// 0: selected but no callback (e.g. bounded follow-up veto);
+    /// 1: committed, 2: WouldBlock, 3: uncertain, 4: callback entered but
+    /// no returned result (e.g. unwind).
+    pub result: u8,
 }
 
 /// Fixed private buffers: 8 receive and 8 transmit slots of 4096 bytes each,
@@ -6687,6 +6738,60 @@ impl Session {
             && *event == Event::ReplyRxDone(p.request))
     }
 
+    #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+    fn observe_conversion_entry(&mut self, ordinary: bool) -> bool {
+        let Some(pair) = self.registry_window.target else { return false; };
+        let Some(first) = pair.conversion.first.filter(|t| t.active && t.entry.is_none()) else { return false; };
+        let token = self.registry_converted_grant;
+        let receive = self.receive.iter().position(|rx| rx.id == pair.newer.intent && rx.state == RxState::ReplyQueued);
+        let tx = receive.and_then(|receive| self.transmit.iter().find(|tx| tx.len != 0
+            && matches!(tx.kind, TxKind::Reply { receive: index, .. } if index == receive)));
+        let flags = u32::from(ordinary)
+            | (u32::from(self.intent_request_ack.is_some()) << 1)
+            | (u32::from(self.intent_request_ack == Some(true)) << 2)
+            | (u32::from(self.intent_ack_backing == Some(first.intent)) << 3)
+            | (u32::from(token == Some((first.intent, pair.newer))) << 4)
+            | (u32::from(self.receive[..RX_SLOTS].iter().any(|rx| rx.id == first.intent && rx.state == RxState::Advertising)) << 5)
+            | (u32::from(receive.is_some_and(|i| self.receive[i].done_pending)) << 6)
+            | (u32::from(self.registry_turn_used) << 7)
+            | (u32::from(tx.is_some_and(|t| t.registry_grant_turn_used)) << 8)
+            | (u32::from(tx.is_some()) << 9)
+            | (u32::from(tx.is_some_and(|t| t.sent == t.len)) << 10)
+            | (u32::from(self.intent_ack_yield) << 16)
+            | (u32::from(tx.is_some_and(|t| self.remote_for_transmit(t).is_some())) << 17)
+            | (u32::from(tx.is_some_and(|t| {
+                #[cfg(feature = "sunfish-qrtr-rmtfs-flow-experiment")] { self.unsent_flow_predecessor(t) }
+                #[cfg(not(feature = "sunfish-qrtr-rmtfs-flow-experiment"))] { let _ = t; false }
+            })) << 18);
+        let entry = RegistryConversionEntry { at: self.intent_ack_clock.map(|now| now()), flags,
+            backing: self.intent_ack_backing, token_request: token.map(|(_, r)| r.intent), gate: None };
+        self.registry_window.target.as_mut().unwrap().conversion.first.as_mut().unwrap().entry = Some(entry);
+        true
+    }
+
+    #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+    fn observe_conversion_choice(&mut self, record: &[u8], transaction: Option<u16>) -> bool {
+        let Some(first) = self.registry_window.target.as_mut().and_then(|p| p.conversion.first.as_mut())
+            .filter(|t| t.active && t.entry.is_some() && t.choice.is_none()) else { return false; };
+        first.choice = Some(RegistryConversionChoice { at: self.intent_ack_clock.map(|now| now()),
+            command: u16::from_le_bytes([record[0], record[1]]), parameter: word(record, 4), transaction, result: 0 });
+        true
+    }
+
+    #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+    fn observe_conversion_callback(&mut self, captured: bool) {
+        if captured && let Some(choice) = self.registry_window.target.as_mut()
+            .and_then(|p| p.conversion.first.as_mut()).and_then(|t| t.choice.as_mut())
+        { choice.result = 4; }
+    }
+
+    #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+    fn observe_conversion_exit(&mut self, cause: u8) {
+        if let Some(first) = self.registry_window.target.as_mut().and_then(|p| p.conversion.first.as_mut())
+            .filter(|t| t.active && t.exit.is_none())
+        { first.exit = Some((cause, self.intent_ack_clock.map(|now| now()))); first.active = false; }
+    }
+
     fn queue_reply_with_ipa_token(
         &mut self,
         handle: &RequestHandle,
@@ -6877,6 +6982,8 @@ impl Session {
                 && older_route.transaction == 3
             {
                 self.registry_window.target = Some(RegistryWindowPair {
+                    #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+                    conversion: RegistryConversionLifetime::default(),
                     #[cfg(feature = "sunfish-registry-post-reply-trace")]
                     publication: None,
                     #[cfg(feature = "sunfish-registry-post-reply-trace")]
@@ -6954,6 +7061,7 @@ impl Session {
     fn observe_registry_grant_eligibility(
         &mut self, tftp_ready: bool, wrq_return: bool,
         candidate: Option<usize>, priority: Option<usize>,
+        #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")] first_entry: bool,
     ) {
         for (index, tx) in self.transmit.iter_mut().enumerate() {
             let TxKind::Reply { receive, route, .. } = tx.kind else { continue };
@@ -6984,6 +7092,12 @@ impl Session {
                 else { 11 };
             let count = &mut tx.registry_publication.grant_gates[gate];
             *count = count.saturating_add(1);
+            #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+            if first_entry && let Some(pair) = self.registry_window.target.as_mut()
+                && pair.newer == (RequestHandle { owner: self.owner, generation: self.generation, intent: self.receive[receive].id })
+                && let Some(entry) = pair.conversion.first.as_mut().and_then(|t| t.entry.as_mut())
+            { entry.gate = Some(gate as u8); }
+
         }
     }
 
@@ -7460,6 +7574,8 @@ impl Session {
         let ordinary = followup.is_none();
         #[cfg(not(feature = "sunfish-tftp-oack-followup"))]
         let ordinary = true;
+        #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+        let conversion_entry = self.observe_conversion_entry(ordinary);
         #[cfg(feature = "sunfish-ipa-registration-tx-trace")]
         let registration_started = self.registration_tx_slot().and(self.intent_ack_clock).map(|clock| clock());
         #[cfg(feature = "sunfish-wlan-elf-oack-queue-trace")]
@@ -7570,7 +7686,18 @@ impl Session {
             },
             registry_candidate.map(|(slot, _)| slot),
             priority_registry.map(|(slot, _)| slot),
+            #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")] conversion_entry,
         );
+        #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+        if conversion_entry && let Some(pair) = self.registry_window.target.as_mut()
+            && let Some(entry) = pair.conversion.first.as_mut().and_then(|t| t.entry.as_mut())
+        {
+            entry.flags |= (u32::from(converted_registry.is_some()) << 11)
+                | (u32::from(priority_registry.is_some()) << 12)
+                | (u32::from(conversion_tftp) << 13)
+                | (u32::from(conversion_wrq_return) << 14)
+                | (u32::from(registry_candidate.is_some() && priority_registry.is_none()) << 15);
+        }
         #[cfg(feature = "sunfish-wlan-registry-tx-turn")]
         let priority_data = priority_tftp.or(priority_registry);
         #[cfg(not(feature = "sunfish-wlan-registry-tx-turn"))]
@@ -7780,7 +7907,15 @@ impl Session {
                 let init_writer = init_target.and(self.intent_ack_clock).map(|clock| clock());
                 #[cfg(feature = "sunfish-ipa-registration-tx-trace")]
                 let registration_writer = registration_target.and(self.intent_ack_clock).map(|clock| clock());
+                #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+                let conversion_choice = self.observe_conversion_choice(&record[..8], None);
+                #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+                self.observe_conversion_callback(conversion_choice);
                 let result = writer(&record[..8]);
+                #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+                if conversion_choice && let Some(choice) = self.registry_window.target.as_mut()
+                    .and_then(|p| p.conversion.first.as_mut()).and_then(|t| t.choice.as_mut())
+                { choice.result = match result { Ok(()) => 1, Err(WriteError::WouldBlock) => 2, Err(WriteError::Uncertain) => 3 }; }
                 #[cfg(feature = "sunfish-post-reg-oack-turn")]
                 if let Some(i) = post_reg_turn {
                     self.post_reg_turns.turns[i].written(7, result);
@@ -8062,6 +8197,12 @@ impl Session {
         // These extra attempts may only publish the exact pair selected
         // by the ordinary arbiter. Pending grants and other work keep
         // their normal priority on the next receive/write iteration.
+        #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+        let conversion_choice = self.observe_conversion_choice(&record[..size], match &commit {
+            Commit::Data(slot, ..) => match self.transmit[*slot].kind {
+                TxKind::Reply { route, .. } => Some(route.transaction), _ => None,
+            }, _ => None,
+        });
         #[cfg(feature = "sunfish-tftp-oack-followup")]
         if let Some(stage) = followup {
             #[cfg(feature = "sunfish-tftp-oack-followup-reason")]
@@ -8324,10 +8465,18 @@ impl Session {
         if borrowed_registry_slot.is_some() {
             // Consume before the checked writer, including WouldBlock or an
             // unwind. A different reply cannot inherit this grant opportunity.
+            #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+            self.observe_conversion_exit(1);
             self.registry_converted_grant = None;
             if let Some(slot) = converted_slot { self.transmit[slot].registry_publication.mask |= 1 << 11; }
         }
+        #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+        self.observe_conversion_callback(conversion_choice);
         let result = writer(&record[..size]);
+        #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+        if conversion_choice && let Some(choice) = self.registry_window.target.as_mut()
+            .and_then(|p| p.conversion.first.as_mut()).and_then(|t| t.choice.as_mut())
+        { choice.result = match result { Ok(()) => 1, Err(WriteError::WouldBlock) => 2, Err(WriteError::Uncertain) => 3 }; }
         #[cfg(feature = "sunfish-registry-converted-grant-turn")]
         if result.is_ok() && let Some(slot) = converted_slot {
             self.transmit[slot].registry_publication.mask |= 1 << 12;
@@ -8483,6 +8632,8 @@ impl Session {
             Commit::Advertise(index) => {
                 #[cfg(feature = "sunfish-registry-converted-grant-turn")]
                 if self.registry_converted_grant.is_some_and(|(backing, _)| backing == self.receive[index].id) {
+                    #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+                    self.observe_conversion_exit(2);
                     self.registry_converted_grant = None;
                 }
                 self.receive[index].state = RxState::Available;
@@ -8502,6 +8653,10 @@ impl Session {
                             Some(_) => GrantAdWriter::OtherFollowup,
                         });
                         self.grant_backing.advertised_at = self.intent_ack_clock.map(|now| now());
+                        #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+                        if let Some(first) = self.registry_window.target.as_mut().and_then(|p| p.conversion.first.as_mut())
+                            && first.intent == self.receive[index].id && !first.advertised
+                        { first.advertised = true; first.advertised_at = self.grant_backing.advertised_at; }
                         #[cfg(feature = "sunfish-registry-post-reply-trace")]
                         if let Some(grant) = self.registry_window.predecessor.as_mut().and_then(|p| p.grant.as_mut())
                             && grant.intent == self.receive[index].id && !grant.advertised
@@ -8515,6 +8670,8 @@ impl Session {
                 self.follow_oack_slot_available(index, 1);
             },
             Commit::IntentAck => {
+                #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+                self.observe_conversion_exit(3);
                 #[cfg(feature = "sunfish-registry-converted-grant-turn")]
                 { self.registry_converted_grant = None; }
                 #[cfg(feature = "sunfish-glink-intent-denial-snapshot")]
@@ -8538,6 +8695,11 @@ impl Session {
                     && let Some(grant) = self.registry_window.predecessor.as_mut().and_then(|p| p.grant.as_mut())
                     && self.grant_backing.intent == Some(grant.intent) && grant.advertised && !grant.acked
                 { grant.acked = true; grant.ack_at = self.intent_ack_clock.map(|now| now()); }
+                #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+                if self.intent_request_ack == Some(true)
+                    && let Some(first) = self.registry_window.target.as_mut().and_then(|p| p.conversion.first.as_mut())
+                    && self.grant_backing.intent == Some(first.intent) && first.advertised && !first.acked
+                { first.acked = true; first.ack_at = self.intent_ack_clock.map(|now| now()); }
                 self.intent_request_ack = None;
                 #[cfg(feature = "sunfish-glink-retry-full-intent")]
                 { self.retry_full_intent = false; }
@@ -8655,6 +8817,8 @@ impl Session {
                                     | (u32::from(candidate.is_none_or(|(target, _)| target != slot)) << 15)
                                     | (u32::from(tx.registry_grant_turn_used) << 16);
                             }
+                            #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+                            self.observe_conversion_exit(4);
                             self.registry_converted_grant = candidate
                                 .filter(|(slot, _)| !self.transmit[*slot].registry_grant_turn_used)
                                 .map(|(slot, _)| {
@@ -8673,6 +8837,22 @@ impl Session {
                                     }
                                     (id, request)
                                 });
+                            #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+                            if let Some((intent, request)) = self.registry_converted_grant
+                                && let Some(pair) = self.registry_window.target.as_mut()
+                                && pair.newer == request
+                            {
+                                pair.conversion.arms = pair.conversion.arms.saturating_add(1);
+                                if pair.conversion.first.is_none() && let Some((slot, _)) = candidate {
+                                    let tx = &self.transmit[slot];
+                                    pair.conversion.first = Some(RegistryConversionTurn {
+                                        intent, request_intent: request.intent, bytes: tx.len as u16, sent: tx.sent as u16,
+                                        armed_at: self.grant_backing.reserved_at, entry: None, choice: None,
+                                        exit: None, advertised_at: None, ack_at: None,
+                                        active: true, advertised: false, acked: false,
+                                    });
+                                }
+                            }
                         }
                     }
                 }

@@ -330,6 +330,8 @@ host-backup = ["development-crypto"]
 # Exact transaction 3 completion visibility and transaction 4 pressure.
 sunfish-registry-post-reply-trace = ["sunfish-registry-converted-grant-turn", "sunfish-ipa-reply-fifo-visibility", "sunfish-grant-ad-writer-trace"]
 
+sunfish-registry-conversion-lifetime-trace = ["sunfish-registry-post-reply-trace"]
+
 [[bin]]
 name = "rust_sunfish_native_startup_preflight"
 path = "src/sunfish_native_startup_preflight.rs"

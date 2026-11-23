@@ -4710,3 +4710,7 @@ fn registry_post_reply_tx4_pressure_is_live_then_frozen_against_original_identit
         s.reset_after_transport_reset(2).unwrap();assert_eq!(s.registry_window_trace().target,None);
     }
 }
+
+#[cfg(feature="sunfish-registry-conversion-lifetime-trace")]
+#[path="sunfish_registry_conversion_lifetime_fixture.rs"]
+mod registry_conversion_lifetime_fixture;

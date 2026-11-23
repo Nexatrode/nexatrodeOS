@@ -34,9 +34,12 @@ mod registry_pressure;
 #[cfg(all(feature="sunfish-registry-grant-eligibility",not(feature="sunfish-registry-post-reply-trace")))]
 #[path="pixel_mpss_registry_grant_eligibility.rs"]
 mod registry_grant_eligibility;
-#[cfg(feature="sunfish-registry-post-reply-trace")]
+#[cfg(all(feature="sunfish-registry-post-reply-trace",not(feature="sunfish-registry-conversion-lifetime-trace")))]
 #[path="pixel_mpss_registry_post_reply.rs"]
 mod registry_post_reply;
+#[cfg(feature="sunfish-registry-conversion-lifetime-trace")]
+#[path="pixel_mpss_registry_conversion_lifetime.rs"]
+mod registry_conversion_lifetime;
 
 #[cfg(all(feature = "sunfish-ipa-independent-server-experiment", not(feature = "sunfish-ipa-independent-server-runtime")))]
 compile_error!("independent IPA server experiment is offline only; native composition not validated");
