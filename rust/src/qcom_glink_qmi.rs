@@ -664,7 +664,10 @@ pub struct RegistryPublication {
     /// control selected, other data selected, selected but FIFO blocked,
     /// written, and outbound intent request selected. Bit 7 records a
     /// successful experimental registry-priority publication. Bits 8/9
-    /// record the borrowed pre-grant DATA attempt/successful commit.
+    /// record the borrowed pre-grant DATA attempt/successful commit. Bits
+    /// 10/11/12 record conversion arming, its callback attempt and commit.
+    /// 13/14/15/16 record conversion seen, own return pending, no exact
+    /// candidate and an already-used borrowed opportunity at conversion.
     pub mask: u32,
     /// First priority gate on each call: cooldown, TFTP, intent ACK, own
     /// RX_DONE, no candidate, different registry candidate, credit, selected.
@@ -885,6 +888,8 @@ pub struct Session {
     retry_full_intent: bool,
     #[cfg(feature = "sunfish-wlan-intent-ack-turn")]
     intent_ack_backing: Option<u32>,
+    #[cfg(feature = "sunfish-registry-converted-grant-turn")]
+    registry_converted_grant: Option<(u32, RequestHandle)>,
     #[cfg(feature = "sunfish-grant-ad-writer-trace")]
     pub(crate) grant_backing: GrantBackingTrace,
     #[cfg(feature = "sunfish-wlan-intent-ack-turn")]
@@ -1778,6 +1783,8 @@ impl Session {
             retry_full_intent: false,
             #[cfg(feature = "sunfish-wlan-intent-ack-turn")]
             intent_ack_backing: None,
+            #[cfg(feature = "sunfish-registry-converted-grant-turn")]
+            registry_converted_grant: None,
             #[cfg(feature = "sunfish-grant-ad-writer-trace")]
             grant_backing: GrantBackingTrace::default(),
             #[cfg(feature = "sunfish-wlan-intent-ack-turn")]
@@ -2770,6 +2777,8 @@ impl Session {
         self.intent_request_ack = None;
         #[cfg(feature = "sunfish-glink-retry-full-intent")]
         { self.retry_full_intent = false; }
+        #[cfg(feature = "sunfish-registry-converted-grant-turn")]
+        { self.registry_converted_grant = None; }
         #[cfg(feature = "sunfish-wlan-intent-ack-turn")]
         {
             self.intent_ack_backing = None;
@@ -6918,7 +6927,15 @@ impl Session {
             let gate = if self.intent_request_ack.is_none() { 0 }
                 else if self.intent_request_ack == Some(false) { 1 }
                 else if self.intent_ack_backing.is_none() { 2 }
-                else if !self.intent_ack_yield { 3 }
+                else if !self.intent_ack_yield && {
+                    #[cfg(feature = "sunfish-registry-converted-grant-turn")]
+                    { self.registry_converted_grant.is_none_or(|(backing, target)|
+                        self.intent_ack_backing != Some(backing)
+                            || target != (RequestHandle { owner: self.owner, generation: self.generation,
+                                intent: self.receive[receive].id })) }
+                    #[cfg(not(feature = "sunfish-registry-converted-grant-turn"))]
+                    { true }
+                } { 3 }
                 else if self.registry_turn_used { 4 }
                 else if tftp_ready { 5 }
                 else if wrq_return { 6 }
@@ -7433,6 +7450,12 @@ impl Session {
         let prefer_ack = self.intent_request_ack.is_some() && !self.intent_ack_yield;
         #[cfg(not(feature = "sunfish-wlan-intent-ack-turn"))]
         let prefer_ack = false;
+        #[cfg(feature = "sunfish-registry-converted-grant-turn")]
+        let (conversion_wrq_return, conversion_tftp) = self.registry_conversion_protected_work();
+        #[cfg(feature = "sunfish-registry-converted-grant-turn")]
+        let converted_registry = if ordinary && !conversion_wrq_return && !conversion_tftp {
+            self.converted_registry_candidate()
+        } else { None };
         // A released first WRQ can wait behind traffic that continually
         // refills lower receive slots. Give its exact RX_DONE one turn after
         // any preferred peer intent ACK and its backing advertisement.
@@ -7472,6 +7495,8 @@ impl Session {
             && self.intent_request_ack == Some(true) && self.intent_ack_backing.is_some();
         #[cfg(not(feature = "sunfish-registry-between-grants"))]
         let registry_before_grant = false;
+        #[cfg(feature = "sunfish-registry-converted-grant-turn")]
+        let registry_before_grant = registry_before_grant || converted_registry.is_some();
         #[cfg(feature = "sunfish-wlan-registry-tx-turn")]
         let registry_candidate = if !self.registry_turn_used && priority_tftp.is_none()
             && (self.intent_request_ack.is_none() || registry_before_grant)
@@ -7488,6 +7513,8 @@ impl Session {
         };
         #[cfg(feature = "sunfish-wlan-registry-tx-turn")]
         let priority_registry = registry_candidate.filter(|_| self.next_transmit_in_order([1]).is_none());
+        #[cfg(feature = "sunfish-registry-converted-grant-turn")]
+        let prefer_ack = prefer_ack && !(converted_registry.is_some() && priority_registry == converted_registry);
         #[cfg(feature = "sunfish-wlan-registry-turn-gates")]
         self.observe_registry_turn_gates(
             priority_tftp.is_some(),
@@ -7496,7 +7523,13 @@ impl Session {
         );
         #[cfg(feature = "sunfish-registry-grant-eligibility")]
         self.observe_registry_grant_eligibility(
-            priority_tftp.is_some(), priority_wrq_done.is_some(),
+            priority_tftp.is_some() || {
+                #[cfg(feature = "sunfish-registry-converted-grant-turn")] { conversion_tftp }
+                #[cfg(not(feature = "sunfish-registry-converted-grant-turn"))] { false }
+            }, priority_wrq_done.is_some() || {
+                #[cfg(feature = "sunfish-registry-converted-grant-turn")] { conversion_wrq_return }
+                #[cfg(not(feature = "sunfish-registry-converted-grant-turn"))] { false }
+            },
             registry_candidate.map(|(slot, _)| slot),
             priority_registry.map(|(slot, _)| slot),
         );
@@ -8246,7 +8279,21 @@ impl Session {
             self.transmit[slot].registry_grant_turn_used = true;
             self.transmit[slot].registry_publication.mask |= 1 << 8;
         }
+        #[cfg(feature = "sunfish-registry-converted-grant-turn")]
+        let converted_slot = borrowed_registry_slot.filter(|slot|
+            converted_registry.is_some_and(|(target, _)| target == *slot));
+        #[cfg(feature = "sunfish-registry-converted-grant-turn")]
+        if borrowed_registry_slot.is_some() {
+            // Consume before the checked writer, including WouldBlock or an
+            // unwind. A different reply cannot inherit this grant opportunity.
+            self.registry_converted_grant = None;
+            if let Some(slot) = converted_slot { self.transmit[slot].registry_publication.mask |= 1 << 11; }
+        }
         let result = writer(&record[..size]);
+        #[cfg(feature = "sunfish-registry-converted-grant-turn")]
+        if result.is_ok() && let Some(slot) = converted_slot {
+            self.transmit[slot].registry_publication.mask |= 1 << 12;
+        }
         #[cfg(feature = "sunfish-registry-between-grants")]
         if result.is_ok() && let Some(slot) = borrowed_registry_slot {
             self.transmit[slot].registry_publication.mask |= 1 << 9;
@@ -8396,6 +8443,10 @@ impl Session {
         { self.intent_ack_yield = matches!(&commit, Commit::IntentAck); }
         match commit {
             Commit::Advertise(index) => {
+                #[cfg(feature = "sunfish-registry-converted-grant-turn")]
+                if self.registry_converted_grant.is_some_and(|(backing, _)| backing == self.receive[index].id) {
+                    self.registry_converted_grant = None;
+                }
                 self.receive[index].state = RxState::Available;
                 #[cfg(feature = "sunfish-tftp-oack-prime-rx")]
                 if let Some((transfer, rx)) = prime && index == rx {
@@ -8422,6 +8473,8 @@ impl Session {
                 self.follow_oack_slot_available(index, 1);
             },
             Commit::IntentAck => {
+                #[cfg(feature = "sunfish-registry-converted-grant-turn")]
+                { self.registry_converted_grant = None; }
                 #[cfg(feature = "sunfish-glink-intent-denial-snapshot")]
                 if let Some((requested, request)) = self.pending_denial_slots.take()
                     && self.intent_request_ack == Some(false)
@@ -8544,6 +8597,26 @@ impl Session {
                         }
                         self.intent_request_ack = Some(true);
                         self.retry_full_intent = false;
+                        #[cfg(feature = "sunfish-registry-converted-grant-turn")]
+                        {
+                            let candidate = self.next_transmit_in_order([3]);
+                            for (slot, tx) in self.transmit.iter_mut().enumerate() {
+                                let TxKind::Reply { receive, route, .. } = tx.kind else { continue; };
+                                if route.service != Service::ServiceRegistry || tx.sent == tx.len { continue; }
+                                tx.registry_publication.mask |= (1 << 13)
+                                    | (u32::from(self.receive[receive].done_pending) << 14)
+                                    | (u32::from(candidate.is_none_or(|(target, _)| target != slot)) << 15)
+                                    | (u32::from(tx.registry_grant_turn_used) << 16);
+                            }
+                            self.registry_converted_grant = candidate
+                                .filter(|(slot, _)| !self.transmit[*slot].registry_grant_turn_used)
+                                .map(|(slot, _)| {
+                                    let TxKind::Reply { receive, .. } = self.transmit[slot].kind else { unreachable!() };
+                                    self.transmit[slot].registry_publication.mask |= 1 << 10;
+                                    (id, RequestHandle { owner: self.owner, generation: self.generation,
+                                        intent: self.receive[receive].id })
+                                });
+                        }
                     }
                 }
             }
@@ -8731,6 +8804,34 @@ impl Session {
         #[cfg(not(feature = "sunfish-glink-credit-fairness-experiment"))]
         let order = [1, 0, 2];
         self.next_transmit_in_order(order)
+    }
+
+    #[cfg(feature = "sunfish-registry-converted-grant-turn")]
+    fn registry_conversion_protected_work(&self) -> (bool, bool) {
+        // Check protected work independently of prefer_ack: a conversion
+        // normally prefers its backing advertisement, whereas this exception
+        // may lend only a registry DATA turn, never another control turn.
+        let wrq_return = self.first_server_check.as_ref().is_some_and(|write|
+            write.before_elf && write.exact_wrq && !write.coalesced
+                && write.wrq_result == Some(0) && write.oack.phase >= 1 && write.timing.closes == 0
+                && self.receive.iter().any(|rx| rx.tftp_datagram_id() == write.request.intent
+                    && rx.state == RxState::Control && rx.done_pending));
+        let tftp = !wrq_return && self.tftp_control_turn_due && self.next_ready_tftp().is_some();
+        (wrq_return, tftp)
+    }
+
+    #[cfg(feature = "sunfish-registry-converted-grant-turn")]
+    fn converted_registry_candidate(&self) -> Option<(usize, usize)> {
+        let (backing, request) = self.registry_converted_grant?;
+        if request.owner != self.owner || request.generation != self.generation
+            || self.intent_request_ack != Some(true) || self.intent_ack_backing != Some(backing)
+            || !self.receive[..RX_SLOTS].iter().any(|rx| rx.id == backing && rx.state == RxState::Advertising)
+        { return None; }
+        let candidate = self.next_transmit_in_order([3])?;
+        let tx = &self.transmit[candidate.0];
+        let TxKind::Reply { receive, .. } = tx.kind else { return None; };
+        (!tx.registry_grant_turn_used && self.receive[receive].id == request.intent
+            && self.receive[receive].state == RxState::ReplyQueued).then_some(candidate)
     }
 
     #[cfg(feature = "sunfish-glink-tftp-control-fairness-experiment")]

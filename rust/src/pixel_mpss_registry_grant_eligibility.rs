@@ -17,7 +17,10 @@ impl RuntimeDomain {
         let query = self.wlan_query.snapshot(owner);
         let gates = pressure.map(|p| p.grant_gates);
         let packed = |i| gates.map_or(u32::MAX, |g| pair(g[i], g[i+1]));
+        #[cfg(not(feature="sunfish-registry-converted-grant-turn"))]
         display.replace_line(1, "REGISTRY GRANT GATES");
+        #[cfg(feature="sunfish-registry-converted-grant-turn")]
+        display.replace_line(1, "REGISTRY GRANT RETRY");
         for (row, (label, value)) in [
             ("RUNTIME ERROR", self.error),
             ("OLD SNAP STATE", prior.map_or(0, |p| if p.publication_frozen { 2 } else { 1 })),

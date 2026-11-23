@@ -11,7 +11,7 @@ class GrantEligibilityPanel(unittest.TestCase):
 use std::cell::RefCell;
 #[path=DISPLAY_PATH] mod physical;
 struct Display{real:physical::Display,values:RefCell<[u32;30]>}
-impl Display{fn replace_line(&self,n:usize,s:&str){assert!(n<30);if n==1{assert_eq!(s,"REGISTRY GRANT GATES");assert!(s.len()<=24);}self.real.replace_line(n,s);}fn hex(&self,n:usize,s:&str,v:u32){assert!(n<30);self.values.borrow_mut()[n]=v;self.real.hex(n,s,v);}}
+impl Display{fn replace_line(&self,n:usize,s:&str){assert!(n<30);if n==1{assert_eq!(s,EXPECTED_TITLE);assert!(s.len()<=24);}self.real.replace_line(n,s);}fn hex(&self,n:usize,s:&str,v:u32){assert!(n<30);self.values.borrow_mut()[n]=v;self.real.hex(n,s,v);}}
 #[derive(Clone,Copy)]struct Address{node:u32,port:u32}
 #[derive(Clone,Copy)]struct Stages{final_prepared:bool,final_queued:bool,dispatch_at:Option<u64>,prepared_at:Option<u64>,returned_at:Option<u64>,queued_at:Option<u64>}
 #[derive(Clone,Copy)]struct Data{block:u16,received_at:Option<u64>,stages:Stages}
@@ -57,9 +57,10 @@ fn main(){
  println!("Actual grant eligibility renderer: all27fields, live/frozen/absent, packed counters/saturation, duration units, missing clocks, ACK identity and dual framebuffers passed.");
 }
 '''
+  code=code.replace('EXPECTED_TITLE',json.dumps('REGISTRY GRANT RETRY' if os.environ.get('SUNFISH_CONVERTED_GRANT_PANEL') else 'REGISTRY GRANT GATES'))
   code=code.replace('DISPLAY_PATH',json.dumps(str(ROOT/'rust/src/pixel_probe_display.rs'))).replace('CLOCK',source[a:end]).replace('PANEL_PATH',json.dumps(str(ROOT/'rust/src/pixel_mpss_registry_grant_eligibility.rs')))
   with tempfile.TemporaryDirectory() as temp:
    p=Path(temp);(p/'panel.rs').write_text(code)
-   subprocess.run(['rustc','+nightly-2026-09-25','--edition=2024','-Adead_code',*(['--cfg','feature=\"sunfish-registry-between-grants\"'] if os.environ.get('SUNFISH_REGISTRY_GRANT_PANEL') else []),str(p/'panel.rs'),'-o',str(p/'panel')],check=True)
+   subprocess.run(['rustc','+nightly-2026-09-25','--edition=2024','-Adead_code',*(['--cfg','feature=\"sunfish-registry-converted-grant-turn\"'] if os.environ.get('SUNFISH_CONVERTED_GRANT_PANEL') else []),str(p/'panel.rs'),'-o',str(p/'panel')],check=True)
    subprocess.run([str(p/'panel')],check=True,env=os.environ)
 if __name__=='__main__':unittest.main()

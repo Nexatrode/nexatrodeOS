@@ -3976,6 +3976,9 @@ fn replay_registry_reply_completes_after_receive_slot_is_reused() {
     assert_eq!(s.offer_receive(1), Err(Error::NoCapacity));
     assert_eq!(publish(&mut s).unwrap().0, Published::ReceiveDone(id));
 
+    let early_reply = if cfg!(feature = "sunfish-registry-converted-grant-turn") {
+        Some(publish(&mut s).unwrap())
+    } else { None };
     let replacement = if cfg!(feature = "sunfish-glink-registry-early-release") {
         assert_eq!(publish(&mut s).unwrap().0, Published::ReceiveIntent(id + 1));
         assert_eq!(publish(&mut s).unwrap().0, Published::IntentRequestAck { granted: true });
@@ -3985,7 +3988,7 @@ fn replay_registry_reply_completes_after_receive_slot_is_reused() {
         assert_eq!(publish(&mut s).unwrap().0, Published::IntentRequestAck { granted: false });
         None
     };
-    let (event, bytes) = publish_until_data(&mut s);
+    let (event, bytes) = early_reply.unwrap_or_else(|| publish_until_data(&mut s));
     assert!(matches!(event, Published::Data { remote_intent: 7, .. }));
     assert_eq!(u16::from_le_bytes([bytes[49], bytes[50]]), 4);
     assert_eq!(s.ingest(1, &control(6, 7)), Ok(Event::ReplyRxDone(original)));
@@ -4018,6 +4021,10 @@ fn replay_registry_move_entry_occupied() {
     assert_eq!(s.offer_receive(1), Err(Error::NoCapacity));
     assert_eq!(publish(&mut s).unwrap().0, Published::ReceiveDone(id));
 
+    let early_older = if cfg!(feature = "sunfish-registry-converted-grant-turn") {
+        let (Published::Data { remote_intent, .. }, b) = publish(&mut s).unwrap() else { panic!("converted grant reply expected") };
+        assert_eq!(&b[49..51], &3u16.to_le_bytes()); Some(remote_intent)
+    } else { None };
     let replacement = if cfg!(feature = "sunfish-glink-registry-second-host-entry") {
         assert_eq!(s.publish_next(1, |bytes| {
             assert_eq!(word(bytes, 0) & 0xffff, 5);
@@ -4035,6 +4042,13 @@ fn replay_registry_move_entry_occupied() {
     let (context, request) = s.request(&original).unwrap();
     assert_eq!(context.transaction, 4);
     assert!(matches!(request, Request::ServiceRegistry(query) if query.service_name == b"foo"));
+    if let Some(older_remote) = early_older {
+        s.queue_reply(&original, Reply::Failure { error: 3 }).unwrap();
+        let (Published::Data { remote_intent, .. }, b) = publish_until_data(&mut s) else { panic!() };
+        assert_eq!(&b[49..51], &4u16.to_le_bytes());
+        assert_eq!(s.ingest(1, &control(6, remote_intent)), Ok(Event::ReplyRxDone(original)));
+        assert_eq!(s.ingest(1, &control(6, older_remote)), Ok(Event::ReplyRxDone(older)));
+    } else {
     assert_eq!(s.queue_reply(&original, Reply::Failure { error: 3 }), Err(Error::FlowBusy));
     let (Published::Data { remote_intent, .. }, older_bytes) = publish_until_data(&mut s) else { panic!() };
     assert_eq!(u16::from_le_bytes([older_bytes[49], older_bytes[50]]), 3);
@@ -4043,6 +4057,7 @@ fn replay_registry_move_entry_occupied() {
     let (Published::Data { remote_intent, .. }, bytes) = publish_until_data(&mut s) else { panic!() };
     assert_eq!(u16::from_le_bytes([bytes[49], bytes[50]]), 4);
     assert_eq!(s.ingest(1, &control(6, remote_intent)), Ok(Event::ReplyRxDone(original)));
+    }
     if let Some(replacement) = replacement {
         assert_eq!(s.request(&replacement).unwrap().0.transaction, 5);
     } else {
@@ -4444,5 +4459,167 @@ mod registry_between_grants {
             assert_eq!(s.registry_window_trace().predecessor.unwrap().publication,frozen.publication);
             s.reset_after_transport_reset(2).unwrap();assert_eq!(s.registry_window_trace().predecessor,None);
         }
+    }
+}
+
+#[cfg(feature="sunfish-registry-converted-grant-turn")]
+mod registry_converted_grant_turn {
+    use super::*;
+    fn next_at(s:&mut Session,g:u64)->(Published,Vec<u8>){
+        let mut b=Vec::new();let e=s.publish_next(g,|v|{b.extend_from_slice(v);Ok(())}).unwrap().unwrap();(e,b)
+    }
+    fn offer_at(s:&mut Session,g:u64)->u32{let id=s.offer_receive(g).unwrap();assert_eq!(next_at(s,g).0,Published::ReceiveIntent(id));id}
+    fn denied_in(s:Session,g:u64,confirm:bool,fit:bool)->(Session,RequestHandle,u32,u32){
+        denied_reply(s,g,confirm,fit,Reply::Failure{error:3})
+    }
+    fn denied_reply(mut s:Session,g:u64,confirm:bool,fit:bool,reply:Reply<'_>)->(Session,RequestHandle,u32,u32){
+        for(service,port) in [(Service::RemoteStorage,STORAGE),(Service::HeapMemory,MEMORY),(Service::ServiceRegistry,qcom_servreg::LOCAL_PORT)]{
+            if s.endpoint(service).is_none(){s.register(g,service,port).unwrap();}
+        }
+        s.prepare_service_available(g,Service::ServiceRegistry).unwrap();
+        s.ingest(g,&intents(&[(1,if confirm{4096}else{32})])).unwrap();
+        let ids:Vec<_>=(0..qcom_glink_qmi::RX_SLOTS).map(|_|offer_at(&mut s,g)).collect();
+        let payload=[0,3,0,0x21,0,6,0,1,3,0,b'f',b'o',b'o'];
+        let Event::Request(request)=s.ingest(g,&data(9,ids[0],&qrtr(1,9,qcom_servreg::LOCAL_PORT,confirm,&payload),0)).unwrap()else{panic!()};
+        assert_eq!(next_at(&mut s,g).0,Published::ReceiveDone(ids[0]));
+        let last=offer_at(&mut s,g);assert_eq!(s.offer_receive(g),Err(Error::NoCapacity));
+        if fit{s.ingest(g,&intents(&[(7,4096),(8,4096),(9,4096)])).unwrap();}
+        s.queue_reply(&request,reply).unwrap();
+        assert_eq!(s.ingest(g,&data(9,ids[1],&resume_route(0xdead_0000,STORAGE),0)),Ok(Event::CreditReceived));
+        assert_eq!(s.ingest(g,&control(7,108)),Ok(Event::ReceiveIntentRequest{granted:false}));
+        (s,request,ids[1],last+1)
+    }
+    fn denied(confirm:bool,fit:bool)->(Session,RequestHandle,u32,u32){denied_in(session(),1,confirm,fit)}
+    fn exact_reply(s:&mut Session)->(u32,Vec<u8>){
+        let(e,b)=publish(s).unwrap();let Published::Data{remote_intent,last_fragment:true}=e else{panic!("converted grant must lend exact registry reply, got {e:?}")};
+        assert_eq!(word(&b,44),9);assert_eq!(&b[49..51],&3u16.to_le_bytes());(remote_intent,b)
+    }
+    fn backing_and_ack(s:&mut Session,id:u32){
+        assert_eq!(publish(s).unwrap().0,Published::ReceiveIntent(id));
+        assert_eq!(publish(s).unwrap().0,Published::IntentRequestAck{granted:true});
+    }
+    fn converted(s:&mut Session,release:u32){assert_eq!(publish(s).unwrap().0,Published::ReceiveDone(release));}
+    fn mask(s:&Session)->u32{s.registry_window_trace().predecessor.unwrap().publication.unwrap().mask}
+    #[test]
+    fn full_slot_denial_return_then_exact_reply_precedes_backing_and_positive_ack(){
+        let(mut s,request,release,backing)=denied(false,true);converted(&mut s,release);
+        assert_eq!(mask(&s)&0x1c00,0x400);
+        let(id,_)=exact_reply(&mut s);assert_eq!(mask(&s)&0x1f00,0x1f00);
+        backing_and_ack(&mut s,backing);
+        assert_eq!(s.ingest(1,&control(14,id)),Ok(Event::ReplyRxDone(request)));
+    }
+    #[test]
+    fn blocked_reply_spends_conversion_before_checked_writer_and_preserves_fallback_bytes(){
+        let(mut s,request,release,backing)=denied(false,true);converted(&mut s,release);
+        let mut blocked=Vec::new();assert_eq!(s.publish_next(1,|b|{blocked.extend_from_slice(b);Err(WriteError::WouldBlock)}),Err(Error::WouldBlock));
+        assert_eq!(mask(&s)&0x1f00,0xd00);
+        let mut blocked_ad=Vec::new();assert_eq!(s.publish_next(1,|b|{assert_eq!(word(b,0)&0xffff,5);blocked_ad.extend_from_slice(b);Err(WriteError::WouldBlock)}),Err(Error::WouldBlock));
+        let(e,b)=publish(&mut s).unwrap();assert_eq!(e,Published::ReceiveIntent(backing));assert_eq!(b,blocked_ad);
+        assert_eq!(publish(&mut s).unwrap().0,Published::IntentRequestAck{granted:true});
+        let(id,b)=exact_reply(&mut s);assert_eq!(b,blocked);assert_eq!(mask(&s)&0x1f00,0xd00);
+        assert_eq!(s.ingest(1,&control(14,id)),Ok(Event::ReplyRxDone(request)));
+    }
+    #[test]
+    fn blocked_or_uncertain_receive_return_cannot_arm_a_positive_grant(){
+        for uncertain in [false,true]{
+            let(mut s,request,release,_)=denied(false,true);
+            let result=s.publish_next(1,|b|{assert_eq!(word(b,0)&0xffff,6);assert_eq!(word(b,4),release);Err(if uncertain{WriteError::Uncertain}else{WriteError::WouldBlock})});
+            assert_eq!(result,Err(if uncertain{Error::PublicationUncertain}else{Error::WouldBlock}));assert_eq!(mask(&s)&0x1f00,0);
+            if uncertain{let mut called=false;assert_eq!(s.publish_next(1,|_|{called=true;Ok(())}),Err(Error::Quarantined));assert!(!called);}
+            else{assert_eq!(publish(&mut s).unwrap().0,Published::IntentRequestAck{granted:false});let(id,_)=exact_reply(&mut s);assert_eq!(s.ingest(1,&control(14,id)),Ok(Event::ReplyRxDone(request)));assert_eq!(mask(&s)&0x1f00,0);}
+        }
+    }
+    #[test]
+    fn uncertain_reply_quarantines_and_generation_reset_drops_exact_conversion_identity(){
+        let(mut s,old,release,_)=denied(false,true);converted(&mut s,release);
+        assert_eq!(s.publish_next(1,|_|Err(WriteError::Uncertain)),Err(Error::PublicationUncertain));assert_eq!(mask(&s)&0x1f00,0xd00);
+        assert_eq!(s.publish_next(1,|_|panic!("uncertain publication must never retry")),Err(Error::Quarantined));
+        s.reset_after_transport_reset(2).unwrap();assert_eq!(s.registry_window_trace().predecessor,None);
+        let(mut s,new,release,backing)=denied_in(s,2,false,true);assert_ne!(old,new);
+        assert_eq!(s.queue_reply(&old,Reply::Failure{error:3}),Err(Error::StaleGeneration));
+        assert_eq!(next_at(&mut s,2).0,Published::ReceiveDone(release));
+        let(e,b)=next_at(&mut s,2);let Published::Data{remote_intent:id,..}=e else{panic!("new generation did not get its own turn: {e:?}")};assert_eq!(&b[49..51],&3u16.to_le_bytes());
+        assert_eq!(next_at(&mut s,2).0,Published::ReceiveIntent(backing));assert_eq!(next_at(&mut s,2).0,Published::IntentRequestAck{granted:true});
+        assert_eq!(s.ingest(2,&control(14,id)),Ok(Event::ReplyRxDone(new)));assert_eq!(mask(&s)&0x1f00,0x1f00);
+    }
+    #[test]
+    fn ready_qrtr_credit_expires_conversion_at_advertisement_and_keeps_its_data_turn(){
+        let(mut s,request,release,backing)=denied(true,true);converted(&mut s,release);
+        assert_eq!(mask(&s)&0x1f00,0x400);backing_and_ack(&mut s,backing);
+        let(e,b)=publish(&mut s).unwrap();let Published::Data{remote_intent:credit,..}=e else{panic!()};assert_eq!(word(&b,20),7);
+        let(id,_)=exact_reply(&mut s);assert_ne!(id,credit);assert_eq!(mask(&s)&0x1f00,0x400);
+        s.ingest(1,&control(14,credit)).unwrap();assert!(s.reply_fully_published(&request));
+        assert_eq!(s.ingest(1,&control(14,id)),Ok(Event::ReplyRxDone(request)));
+    }
+    #[test]
+    fn absent_fitting_modem_intent_cannot_arm_or_inherit_a_conversion_turn(){
+        let(mut s,request,release,backing)=denied(false,false);converted(&mut s,release);assert_eq!(mask(&s)&0x1f00,0);assert_eq!(mask(&s)&0xe000,0xa000);
+        backing_and_ack(&mut s,backing);s.ingest(1,&intents(&[(7,4096)])).unwrap();
+        let(id,_)=exact_reply(&mut s);assert_eq!(mask(&s)&0x1f00,0);assert_eq!(s.ingest(1,&control(14,id)),Ok(Event::ReplyRxDone(request)));
+    }
+    #[test]
+    fn another_conversion_cannot_rearm_the_same_blocked_reply(){
+        let(mut s,request,release,backing)=denied(false,true);converted(&mut s,release);
+        assert_eq!(s.publish_next(1,|_|Err(WriteError::WouldBlock)),Err(Error::WouldBlock));backing_and_ack(&mut s,backing);
+        s.ingest(1,&data(9,3,&resume_route(0xbeef_0000,STORAGE),0)).unwrap();
+        assert_eq!(s.ingest(1,&control(7,108)),Ok(Event::ReceiveIntentRequest{granted:false}));converted(&mut s,3);
+        assert_ne!(mask(&s)&0x10000,0);backing_and_ack(&mut s,backing+1);let(id,_)=exact_reply(&mut s);assert_eq!(mask(&s)&0x1f00,0xd00);
+        assert_eq!(s.ingest(1,&control(14,id)),Ok(Event::ReplyRxDone(request)));
+    }
+    #[test]
+    fn second_reply_admission_and_reverse_receipts_keep_original_transactions(){
+        let(mut s,one,release,backing)=denied(false,true);converted(&mut s,release);
+        let(first,_)=exact_reply(&mut s);backing_and_ack(&mut s,backing);
+        let two=registry_turn_request(&mut s,backing,9,4);s.queue_reply(&two,Reply::Failure{error:3}).unwrap();
+        let(Published::Data{remote_intent:second,..},b)=publish_until_data(&mut s)else{panic!()};assert_eq!(&b[49..51],&4u16.to_le_bytes());assert_ne!(first,second);
+        assert_eq!(s.registry_window_trace().target.unwrap().published_before_done,Some(true));
+        assert_eq!(s.ingest(1,&control(14,second)),Ok(Event::ReplyRxDone(two)));assert!(s.reply_fully_published(&one));
+        assert_eq!(s.ingest(1,&control(14,first)),Ok(Event::ReplyRxDone(one)));
+    }
+
+    #[test]
+    fn ready_tftp_oack_keeps_its_turn_and_expires_the_conversion_before_registry_data(){
+        use qcom_glink_qmi::TftpReplyRoute;use qcom_qmi_router::Address;
+        let mut s=session();s.register(1,Service::ServiceRegistry,qcom_servreg::LOCAL_PORT).unwrap();s.prepare_service_available(1,Service::ServiceRegistry).unwrap();
+        s.prepare_tftp_server(1,0x5000).unwrap();s.start_control(1).unwrap();s.ingest(1,&intents(&[(17,4096),(18,4096),(19,4096)])).unwrap();
+        let hello=offer(&mut s);let mut available=vec![hello];
+        s.ingest(1,&data(9,hello,&qrtr_control(2,[0;4]),0)).unwrap();
+        for _ in 0..64{let Some((e,_))=publish(&mut s)else{break};match e{
+            Published::ReceiveIntent(id)=>available.push(id),Published::ReceiveDone(id)=>available.retain(|&old|old!=id),
+            Published::Data{remote_intent,..}=>{s.ingest(1,&control(14,remote_intent)).unwrap();},other=>panic!("{other:?}")}}
+        assert!(publish(&mut s).is_none());
+        while available.len()<qcom_glink_qmi::RX_SLOTS{available.push(offer(&mut s));}
+        assert_eq!(s.offer_receive(1),Err(Error::NoCapacity));
+        let request=registry_turn_request(&mut s,available[0],9,3);
+        assert_eq!(publish(&mut s).unwrap().0,Published::ReceiveDone(available[0]));let last=offer(&mut s);
+        s.queue_reply(&request,Reply::Failure{error:3}).unwrap();
+        s.ingest(1,&data(9,available[1],&resume_route(0xdead_0000,STORAGE),0)).unwrap();
+        let route=TftpReplyRoute{source:Address{node:1,port:0x5001},destination:Address{node:0,port:0x56}};
+        s.queue_tftp_response(1,route,qcom_tftp_server_check::OACK).unwrap();
+        assert_eq!(s.ingest(1,&control(7,108)),Ok(Event::ReceiveIntentRequest{granted:false}));converted(&mut s,available[1]);
+        assert_eq!(mask(&s)&0x1f00,0x400);backing_and_ack(&mut s,last+1);
+        let(e,b)=publish(&mut s).unwrap();let Published::Data{remote_intent:oack,..}=e else{panic!("protected OACK expected: {e:?}")};assert_eq!(word(&b,44),0x56);assert_eq!(&b[48..50],&[0,6]);
+        let(id,_)=exact_reply(&mut s);assert_eq!(mask(&s)&0x1f00,0x400);
+        s.ingest(1,&control(14,oack)).unwrap();assert!(s.reply_fully_published(&request));assert_eq!(s.ingest(1,&control(14,id)),Ok(Event::ReplyRxDone(request)));
+    }
+
+    #[test]
+    fn a_large_reply_borrows_one_fragment_then_the_grant_pair_keeps_its_turn(){
+        let mut fields=vec![0x10];fields.extend(700u16.to_le_bytes());fields.extend(vec![0;700]);
+        let(mut s,request,release,backing)=denied_reply(session(),1,false,true,Reply::Success{optional_tlvs:&fields});
+        converted(&mut s,release);let(e,b)=publish(&mut s).unwrap();
+        let Published::Data{remote_intent:id,last_fragment:false}=e else{panic!("one bounded first fragment expected: {e:?}")};
+        assert_eq!(word(&b,8),qcom_glink_qmi::TX_CHUNK_BYTES as u32);assert!(!s.reply_fully_published(&request));
+        let mut payload=b[16..16+word(&b,8)as usize].to_vec();let mut remaining=word(&b,12);
+        backing_and_ack(&mut s,backing); // no continuation can replace this grant pair
+        for _ in 0..16{
+            let(e,b)=publish(&mut s).unwrap();let Published::Data{remote_intent,last_fragment}=e else{panic!("{e:?}")};
+            assert_eq!(remote_intent,id);assert_eq!(word(&b,0)&0xffff,12);
+            let chunk=word(&b,8);assert_eq!(chunk+word(&b,12),remaining);remaining=word(&b,12);
+            payload.extend_from_slice(&b[16..16+chunk as usize]);
+            if last_fragment{assert_eq!(remaining,0);break;}
+        }
+        assert!(s.reply_fully_published(&request));assert_eq!(word(&payload,28),9);assert_eq!(&payload[33..35],&3u16.to_le_bytes());
+        assert_eq!(mask(&s)&0x1f00,0x1f00);assert_eq!(s.ingest(1,&control(14,id)),Ok(Event::ReplyRxDone(request)));
     }
 }
