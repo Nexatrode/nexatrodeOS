@@ -723,6 +723,8 @@ struct Transmit {
     sent: usize,
     #[cfg(feature = "sunfish-registry-between-grants")]
     registry_grant_turn_used: bool,
+    #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+    registry_credit_turn_used: bool,
     #[cfg(feature = "sunfish-wlan-elf-publish-trace")]
     registry_publication: RegistryPublication,
     #[cfg(feature = "sunfish-tftp-final-ack-observer")]
@@ -755,6 +757,8 @@ impl Transmit {
             sent: 0,
             #[cfg(feature = "sunfish-registry-between-grants")]
             registry_grant_turn_used: false,
+            #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+            registry_credit_turn_used: false,
             #[cfg(feature = "sunfish-wlan-elf-publish-trace")]
             registry_publication: RegistryPublication {
                 transaction: 0, bytes: 0, calls: 0, mask: 0,
@@ -849,6 +853,14 @@ pub struct RegistryConversionLifetime {
 #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RegistryConversionTurn {
+    #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+    pub packed_len_sent: u32,
+    #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+    pub length_consistent: bool,
+    #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+    pub credit_ports: Option<u32>,
+    #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+    pub credit_nodes: Option<u32>,
     pub intent: u32,
     pub request_intent: u32,
     pub bytes: u16,
@@ -857,7 +869,8 @@ pub struct RegistryConversionTurn {
     pub entry: Option<RegistryConversionEntry>,
     pub choice: Option<RegistryConversionChoice>,
     /// 1: borrowed callback starts; 2: matching advertisement committed;
-    /// 3: ACK committed; 4: another conversion replaces the token.
+    /// 3: ACK committed; 4: another conversion replaces the token;
+    /// 5: bounded ready-credit callback starts.
     pub exit: Option<(u8, Option<u64>)>,
     pub advertised_at: Option<u64>,
     pub ack_at: Option<u64>,
@@ -7669,6 +7682,10 @@ impl Session {
         let priority_registry = registry_candidate.filter(|_| self.next_transmit_in_order([1]).is_none());
         #[cfg(feature = "sunfish-registry-converted-grant-turn")]
         let prefer_ack = prefer_ack && !(converted_registry.is_some() && priority_registry == converted_registry);
+        #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+        let converted_credit = self.converted_credit_candidate(registry_candidate, converted_registry);
+        #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+        let prefer_ack = prefer_ack && converted_credit.is_none();
         #[cfg(feature = "sunfish-wlan-registry-turn-gates")]
         self.observe_registry_turn_gates(
             priority_tftp.is_some(),
@@ -7688,6 +7705,9 @@ impl Session {
             priority_registry.map(|(slot, _)| slot),
             #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")] conversion_entry,
         );
+        #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+        let entry_length_consistent = self.registry_window.target.and_then(|p| p.conversion.first)
+            .is_some_and(|t| t.length_consistent);
         #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
         if conversion_entry && let Some(pair) = self.registry_window.target.as_mut()
             && let Some(entry) = pair.conversion.first.as_mut().and_then(|t| t.entry.as_mut())
@@ -7697,9 +7717,15 @@ impl Session {
                 | (u32::from(conversion_tftp) << 13)
                 | (u32::from(conversion_wrq_return) << 14)
                 | (u32::from(registry_candidate.is_some() && priority_registry.is_none()) << 15);
+            #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+            { entry.flags |= (u32::from(converted_credit.is_some()) << 19)
+                | (u32::from(entry_length_consistent) << 20); }
+
         }
         #[cfg(feature = "sunfish-wlan-registry-tx-turn")]
         let priority_data = priority_tftp.or(priority_registry);
+        #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+        let priority_data = priority_data.or(converted_credit.map(|(_, credit, remote)| (credit, remote)));
         #[cfg(not(feature = "sunfish-wlan-registry-tx-turn"))]
         let priority_data = priority_tftp;
         // Borrow one attempt only before the backing advertisement. Once
@@ -8448,6 +8474,26 @@ impl Session {
         if first_oack_ready {
             self.first_oack_eligibility.ready_command = Some(u16::from_le_bytes([record[0], record[1]]));
         }
+        #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+        let borrowed_credit = converted_credit.filter(|(_, credit, _)|
+            matches!(&commit, Commit::Data(actual, ..) if actual == credit));
+        #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+        if let Some((registry, credit, _)) = borrowed_credit {
+            // One attempt per actual registry transmit, including blocked or
+            // uncertain outcomes. Never lend the same conversion twice.
+            self.transmit[registry].registry_credit_turn_used = true;
+            self.transmit[registry].registry_publication.mask |= 1 << 17;
+            if let Some(first) = self.registry_window.target.as_mut().and_then(|p| p.conversion.first.as_mut())
+                .filter(|t| t.active)
+            {
+                let bytes = &self.transmit[credit].bytes;
+                let pack = |a: u32, b: u32| (a <= 65535 && b <= 65535).then_some((a << 16) | b);
+                first.credit_ports = pack(word(bytes, 12), word(bytes, 28));
+                first.credit_nodes = pack(word(bytes, 8), word(bytes, 24));
+            }
+            self.observe_conversion_exit(5);
+            self.registry_converted_grant = None;
+        }
         #[cfg(feature = "sunfish-registry-between-grants")]
         let borrowed_registry_slot = if registry_before_grant {
             priority_registry.filter(|(slot, _)| matches!(&commit, Commit::Data(actual, ..) if slot == actual))
@@ -8477,6 +8523,10 @@ impl Session {
         if conversion_choice && let Some(choice) = self.registry_window.target.as_mut()
             .and_then(|p| p.conversion.first.as_mut()).and_then(|t| t.choice.as_mut())
         { choice.result = match result { Ok(()) => 1, Err(WriteError::WouldBlock) => 2, Err(WriteError::Uncertain) => 3 }; }
+        #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+        if result.is_ok() && let Some((registry, _, _)) = borrowed_credit {
+            self.transmit[registry].registry_publication.mask |= 1 << 18;
+        }
         #[cfg(feature = "sunfish-registry-converted-grant-turn")]
         if result.is_ok() && let Some(slot) = converted_slot {
             self.transmit[slot].registry_publication.mask |= 1 << 12;
@@ -8846,6 +8896,14 @@ impl Session {
                                 if pair.conversion.first.is_none() && let Some((slot, _)) = candidate {
                                     let tx = &self.transmit[slot];
                                     pair.conversion.first = Some(RegistryConversionTurn {
+                                        #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+                                        packed_len_sent: (u32::from(tx.registry_publication.bytes) << 16) | tx.sent as u32,
+                                        #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+                                        length_consistent: tx.len != 0 && tx.len == usize::from(tx.registry_publication.bytes),
+                                        #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+                                        credit_ports: None,
+                                        #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+                                        credit_nodes: None,
                                         intent, request_intent: request.intent, bytes: tx.len as u16, sent: tx.sent as u16,
                                         armed_at: self.grant_backing.reserved_at, entry: None, choice: None,
                                         exit: None, advertised_at: None, ack_at: None,
@@ -9060,6 +9118,23 @@ impl Session {
                     && rx.state == RxState::Control && rx.done_pending));
         let tftp = !wrq_return && self.tftp_control_turn_due && self.next_ready_tftp().is_some();
         (wrq_return, tftp)
+    }
+
+    #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+    fn converted_credit_candidate(&self, registry: Option<(usize, usize)>, converted: Option<(usize, usize)>)
+        -> Option<(usize, usize, usize)>
+    {
+        // Use only the real converted-token selector and normal ready order;
+        // no diagnostic counters, clocks or captured histories decide policy.
+        let (target, _) = converted?;
+        if registry != converted || self.transmit[target].registry_credit_turn_used { return None; }
+        if !matches!(self.transmit[target].kind, TxKind::Reply { route, .. }
+            if route.service == Service::ServiceRegistry && route.transaction == 4
+                && route.destination == (Address { node: 0, port: 9 })) { return None; }
+        let (credit, remote) = self.next_transmit_in_order([1])?;
+        let tx = &self.transmit[credit];
+        (matches!(tx.kind, TxKind::Resume) && tx.sent == 0 && tx.len == 52)
+            .then_some((target, credit, remote))
     }
 
     #[cfg(feature = "sunfish-registry-converted-grant-turn")]

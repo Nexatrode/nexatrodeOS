@@ -2,17 +2,21 @@
 //! host-only registry entries occupied. Fake clocks are labels, not phone times.
 use super::*;
 fn prepared(confirm:bool)->(Session,RequestHandle,RequestHandle,u32,u32,u32){
+    prepared_credit_capacity(confirm,4096,Reply::Failure{error:3})
+}
+fn prepared_credit_capacity(confirm:bool,capacity:u32,response:Reply<'_>)->(Session,RequestHandle,RequestHandle,u32,u32,u32){
     let mut s=session();s.register(1,Service::ServiceRegistry,qcom_servreg::LOCAL_PORT).unwrap();s.prepare_service_available(1,Service::ServiceRegistry).unwrap();
-    s.ingest(1,&intents(&[(17,4096),(18,4096),(19,4096),(20,4096)])).unwrap();
+    s.ingest(1,&intents(&[(17,4096)])).unwrap();
     let ids:Vec<_>=(0..qcom_glink_qmi::RX_SLOTS).map(|_|offer(&mut s)).collect();
     let three=registry_turn_request(&mut s,ids[0],9,3);
     assert_eq!(publish(&mut s).unwrap().0,Published::ReceiveDone(ids[0]));offer(&mut s);
     s.queue_reply(&three,Reply::Failure{error:3}).unwrap();
     let(Published::Data{remote_intent:three_intent,..},_)=publish_until_data(&mut s)else{panic!()};
+    s.ingest(1,&intents(&[(18,capacity),(19,capacity),(20,capacity)])).unwrap();
     let packet=qrtr(1,9,qcom_servreg::LOCAL_PORT,confirm,&[0,4,0,0x21,0,6,0,1,3,0,b'f',b'o',b'o']);
     let Event::Request(four)=s.ingest(1,&data(9,ids[1],&packet,0)).unwrap()else{panic!()};
     assert_eq!(publish(&mut s).unwrap().0,Published::ReceiveDone(ids[1]));let last=offer(&mut s);
-    s.queue_reply(&four,Reply::Failure{error:3}).unwrap();
+    s.queue_reply(&four,response).unwrap();
     assert_eq!(s.ingest(1,&data(9,ids[2],&resume_route(0xdead_0000,STORAGE),0)),Ok(Event::CreditReceived));
     assert_eq!(s.ingest(1,&control(7,108)),Ok(Event::ReceiveIntentRequest{granted:false}));
     (s,three,four,three_intent,ids[2],last+1)
@@ -49,9 +53,11 @@ fn registry_conversion_lifetime_blocked_callback_does_not_become_success_on_retr
 }
 #[test]
 fn registry_conversion_lifetime_credit_preempts_and_matching_advertisement_expires_token(){
-    let(mut s,_,four,_,release,backing)=prepared(true);arm(&mut s,release);grant(&mut s,backing);
-    let first=trace(&s).first.unwrap();assert_eq!(first.entry.unwrap().gate,Some(10));assert_ne!(first.entry.unwrap().flags&(1<<15),0);assert_eq!((first.choice.unwrap().command,first.choice.unwrap().result),(5,1));assert_eq!(first.exit.unwrap().0,2);
-    let(e,b)=publish(&mut s).unwrap();let Published::Data{remote_intent:credit,..}=e else{panic!()};assert_eq!(word(&b,20),7);
+    let(mut s,_,four,_,release,backing)=prepared(true);arm(&mut s,release);
+    let early=if cfg!(feature="sunfish-registry-converted-credit-turn") {Some(publish(&mut s).unwrap())}else{None};
+    grant(&mut s,backing);
+    let first=trace(&s).first.unwrap();assert_eq!(first.entry.unwrap().gate,Some(10));assert_ne!(first.entry.unwrap().flags&(1<<15),0);assert_eq!((first.choice.unwrap().command,first.choice.unwrap().result),(if early.is_some(){9}else{5},1));assert_eq!(first.exit.unwrap().0,if early.is_some(){5}else{2});
+    let(e,b)=early.unwrap_or_else(||publish(&mut s).unwrap());let Published::Data{remote_intent:credit,..}=e else{panic!()};assert_eq!(word(&b,20),7);
     let id=reply(&mut s);assert_ne!(credit,id);assert_eq!(s.ingest(1,&control(14,id)),Ok(Event::ReplyRxDone(four)));assert_eq!(trace(&s).first,Some(first));
 }
 #[test]
@@ -70,8 +76,10 @@ fn registry_conversion_lifetime_uncertain_write_freezes_attempt_and_quarantines(
 }
 #[test]
 fn registry_conversion_lifetime_later_arm_counts_but_cannot_rewrite_first_history(){
-    let(mut s,_,four,_,release,backing)=prepared(true);arm(&mut s,release);grant(&mut s,backing);
-    let first=trace(&s).first.unwrap();let(e,_)=publish(&mut s).unwrap();assert!(matches!(e,Published::Data{..})); // QRTR credit keeps its turn.
+    let(mut s,_,four,_,release,backing)=prepared(true);arm(&mut s,release);
+    let early=if cfg!(feature="sunfish-registry-converted-credit-turn") {Some(publish(&mut s).unwrap())}else{None};
+    grant(&mut s,backing);
+    let first=trace(&s).first.unwrap();let(e,_)=early.unwrap_or_else(||publish(&mut s).unwrap());assert!(matches!(e,Published::Data{..})); // QRTR credit keeps its turn.
     assert_eq!(s.ingest(1,&data(9,backing,&resume_route(0xdead_0000,STORAGE),0)),Ok(Event::CreditReceived));assert_eq!(s.ingest(1,&control(7,108)),Ok(Event::ReceiveIntentRequest{granted:false}));arm(&mut s,backing);
     assert_eq!(trace(&s).arms,2);assert_eq!(trace(&s).first,Some(first));let id=reply(&mut s);grant(&mut s,backing+1);assert_eq!(trace(&s).first,Some(first));assert_eq!(s.ingest(1,&control(14,id)),Ok(Event::ReplyRxDone(four)));
 }
@@ -84,3 +92,7 @@ fn registry_conversion_lifetime_unwind_is_not_mislabeled_as_a_veto(){
     assert_eq!(s.publish_next(1,|_|panic!("unwound callback cannot retry")),Err(Error::Quarantined));assert_eq!(trace(&s),t);
     s.reset_after_transport_reset(2).unwrap();assert_eq!(s.registry_window_trace().target,None);
 }
+
+#[cfg(feature="sunfish-registry-converted-credit-turn")]
+#[path="sunfish_registry_converted_credit_fixture.rs"]
+mod converted_credit;
