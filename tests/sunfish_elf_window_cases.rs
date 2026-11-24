@@ -82,3 +82,33 @@ fn elf_window_protocol_bytes_unchanged(){
  let h3=request(&mut s,ids[0],3,b"avs/audio");queue(&mut s,&h3,b"avs/audio").unwrap();let i3=send(&mut s);let h4=request(&mut s,ids[1],4,b"tms/servreg");queue(&mut s,&h4,b"tms/servreg").unwrap();let i4=send(&mut s);let elf=request(&mut s,ids[2],5,b"kernel/elf_loader");assert_eq!(queue(&mut s,&elf,b"kernel/elf_loader"),Err(Error::FlowBusy));done(&mut s,h3,i3);queue(&mut s,&elf,b"kernel/elf_loader").unwrap();let ie=send(&mut s);assert_ne!(i4,ie);done(&mut s,h4,i4);done(&mut s,elf,ie);
  print!("ELF_WINDOW_PROTOCOL_BYTES ");for b in bytes{print!("{b:02x}");}println!();
 }
+
+#[cfg(feature="sunfish-elf-first-slot-turn")]
+#[test]
+fn elf_slot_either_exact_receipt_can_offer_one_normal_turn(){
+ for reverse in [false,true]{let(mut s,h3,h4,elf,i3,i4)=setup(false,true);assert_eq!(queue(&mut s,&elf,b"kernel/elf_loader"),Err(Error::FlowBusy));
+ let(h,i)=if reverse{(h4,i4.unwrap())}else{(h3,i3)};done(&mut s,h,i);assert!(s.take_elf_slot_turn(&h,&elf));assert!(!s.take_elf_slot_turn(&h,&elf),"receipt consumed once");queue(&mut s,&elf,b"kernel/elf_loader").unwrap();assert_eq!(s.elf_window_trace().unwrap().admitted.unwrap().count,1);
+ }
+}
+#[cfg(feature="sunfish-elf-first-slot-turn")]
+#[test]
+fn elf_slot_unpublished_survivor_and_stale_receipts_cannot_lend_turn(){
+ let(mut s,h3,_,elf,i3,_)=setup(false,false);done(&mut s,h3,i3);assert!(!s.take_elf_slot_turn(&h3,&elf));let _=tx(&mut s);assert!(!s.take_elf_slot_turn(&h3,&elf),"later publication cannot resurrect receipt");
+ let(mut s,h3,_,elf,i3,_)=setup(false,true);done(&mut s,h3,i3);s.ingest(1,&intents(&[(99,4096)])).unwrap();assert!(!s.take_elf_slot_turn(&h3,&elf));
+}
+#[cfg(feature="sunfish-elf-first-slot-turn")]
+#[test]
+fn elf_slot_wrong_handle_peer_reset_and_invalid_ingest_cannot_lend_turn(){
+ let(mut s,h3,h4,elf,i3,_)=setup(false,true);done(&mut s,h3,i3);assert!(!s.take_elf_slot_turn(&h4,&elf));assert!(!s.take_elf_slot_turn(&h3,&elf));
+ let(mut s,h3,_,elf,i3,_)=setup(false,true);done(&mut s,h3,i3);assert!(s.ingest(1,&[]).is_err());assert!(!s.take_elf_slot_turn(&h3,&elf));
+ let(mut s,h3,_,elf,i3,_)=setup(false,true);done(&mut s,h3,i3);s.reset_after_transport_reset(2).unwrap();assert!(!s.take_elf_slot_turn(&h3,&elf));
+ let(mut s,_,_,elf,_,_)=setup(false,true);let id=offer(&mut s);let h=request_peer(&mut s,id,6,b"tms/servreg",10);queue(&mut s,&h,b"tms/servreg").unwrap();let i=tx(&mut s);done(&mut s,h,i);assert!(!s.take_elf_slot_turn(&h,&elf));
+}
+#[cfg(feature="sunfish-elf-first-slot-turn")]
+#[test]
+fn elf_slot_normal_queue_still_enforces_reference_credit_and_writer_fallback(){
+ let mut s=session();s.register(1,Service::ServiceRegistry,qcom_servreg::LOCAL_PORT).unwrap();s.prepare_service_available(1,Service::ServiceRegistry).unwrap();s.ingest(1,&intents(&[(7,4096),(8,4096)])).unwrap();
+ let mut last=None;for txn in 1..=10{let id=offer(&mut s);let h=request(&mut s,id,txn,b"tms/servreg");queue(&mut s,&h,b"tms/servreg").unwrap();let i=tx(&mut s);if txn<10{done(&mut s,h,i);}else{last=Some((h,i));}}
+ let id=offer(&mut s);let elf=request(&mut s,id,11,b"kernel/elf_loader");let(h,i)=last.unwrap();done(&mut s,h,i);assert!(s.take_elf_slot_turn(&h,&elf));assert_eq!(queue(&mut s,&elf,b"kernel/elf_loader"),Err(Error::FlowBusy));assert_eq!(s.elf_window_trace().unwrap().last_failure.unwrap().reason,4);
+ let(mut s,h3,_,elf,i3,_)=setup(false,true);done(&mut s,h3,i3);assert!(s.take_elf_slot_turn(&h3,&elf));queue(&mut s,&elf,b"kernel/elf_loader").unwrap();assert_eq!(s.publish_next(1,|_|Err(WriteError::WouldBlock)),Err(Error::WouldBlock));assert!(!s.reply_fully_published(&elf));let _=tx(&mut s);assert!(s.reply_fully_published(&elf));
+}

@@ -2341,6 +2341,10 @@ impl<I: Io> Adapter<I> {
     { self.session.registry_handoff_pair(older, waiting) }
     #[cfg(feature = "sunfish-registry-window-trace")]
     pub fn registry_window_trace(&self) -> core::RegistryWindowTrace { self.session.registry_window_trace() }
+    #[cfg(feature="sunfish-elf-first-slot-turn")]
+    pub(crate) fn take_elf_slot_turn(&mut self,completed:&RequestHandle,waiting:&RequestHandle)->bool {
+        self.session.take_elf_slot_turn(completed,waiting)
+    }
     #[cfg(feature="sunfish-elf-window-trace")]
     pub fn elf_window_trace(&self)->Option<&core::ElfWindowTrace>{self.session.elf_window_trace()}
     #[cfg(feature="sunfish-post-elf-mcfg-trace")]

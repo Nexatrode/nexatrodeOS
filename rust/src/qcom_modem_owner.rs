@@ -1034,6 +1034,8 @@ pub struct Owner<I> {
     first_service_registry_reply_qrtr_resume_handle: Option<RequestHandle>,
     #[cfg(feature = "sunfish-wlan-elf-timing")]
     elf_lookup_handle: Option<RequestHandle>,
+    #[cfg(feature="sunfish-elf-first-slot-turn")]
+    elf_slot_turn_taken:bool,
     #[cfg(feature="sunfish-elf-queued-handoff")]
     queued_elf_turn:Option<RequestHandle>,
     #[cfg(feature="sunfish-elf-queued-handoff")]
@@ -1307,6 +1309,8 @@ impl<I: Io> Owner<I> {
             first_service_registry_reply_qrtr_resume_handle: None,
             #[cfg(feature = "sunfish-wlan-elf-timing")]
             elf_lookup_handle: None,
+            #[cfg(feature="sunfish-elf-first-slot-turn")]
+            elf_slot_turn_taken:false,
             #[cfg(feature="sunfish-elf-queued-handoff")]
             queued_elf_turn:None,
             #[cfg(feature="sunfish-elf-queued-handoff")]
@@ -2034,6 +2038,8 @@ impl<I: Io> Owner<I> {
     }
     #[cfg(feature = "sunfish-registry-window-trace")]
     pub fn registry_window_trace(&self) -> crate::qcom_glink_qmi::RegistryWindowTrace { self.adapter.registry_window_trace() }
+    #[cfg(feature="sunfish-elf-first-slot-turn")]
+    pub fn elf_completion_turn_taken(&self)->bool {self.elf_slot_turn_taken}
     #[cfg(feature="sunfish-elf-window-trace")]
     pub fn elf_window_trace(&self)->Option<&crate::qcom_glink_qmi::ElfWindowTrace>{self.adapter.elf_window_trace()}
     #[cfg(feature="sunfish-post-elf-mcfg-trace")]
@@ -3859,7 +3865,16 @@ impl<I: Io> Owner<I> {
             // Let the regular service pass try ELF after the exact blocking
             // reply completes. Finish this checked iteration and keep the
             // continuation and any IRQ ownership, just as on budget expiry.
-            #[cfg(feature = "sunfish-wlan-elf-completion-turn")]
+            #[cfg(feature="sunfish-elf-first-slot-turn")]
+            if let Receive::Session(Event::ReplyRxDone(handle))=rx
+                && !self.elf_slot_turn_taken
+                && let Some(waiting)=self.elf_lookup_handle.filter(|h|self.requests.contains(&Some(*h)))
+                && self.adapter.take_elf_slot_turn(&handle,&waiting)
+            {
+                self.elf_slot_turn_taken=true;
+                break;
+            }
+            #[cfg(all(feature = "sunfish-wlan-elf-completion-turn",not(feature="sunfish-elf-first-slot-turn")))]
             if let Receive::Session(Event::ReplyRxDone(handle)) = rx
                 && self.elf_lookup_handle.is_some_and(|elf| self.requests.contains(&Some(elf)))
                 && let Some(elf) = self.service_registry_trace.elf.as_mut()

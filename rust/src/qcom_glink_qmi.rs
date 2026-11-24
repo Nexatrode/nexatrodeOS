@@ -19,6 +19,9 @@
 #[cfg(feature="sunfish-elf-window-trace")]
 #[path="qcom_elf_window.rs"]
 mod elf_window;
+#[cfg(feature="sunfish-elf-first-slot-turn")]
+#[path="qcom_elf_slot_turn.rs"]
+mod elf_slot_turn;
 #[cfg(feature="sunfish-elf-window-trace")]
 pub use elf_window::{ElfWindowTrace,ElfWindowSnapshot,ElfWindowEntry,ElfWindowReceipt};
 
@@ -959,6 +962,8 @@ pub struct Session {
     post_elf_mcfg: Option<PostElfMcfgTrace>,
     #[cfg(feature="sunfish-elf-window-trace")]
     elf_window:Option<ElfWindowTrace>,
+    #[cfg(feature="sunfish-elf-first-slot-turn")]
+    elf_slot_receipt:Option<(RequestHandle,ReplyRoute)>,
     #[cfg(feature = "sunfish-wlan-first-server-check-trace")]
     first_server_check: Option<ElfServerCheckTrace>,
     #[cfg(feature = "sunfish-ipa-announcement-timeline")]
@@ -1929,6 +1934,8 @@ impl Session {
             post_elf_mcfg: None,
             #[cfg(feature="sunfish-elf-window-trace")]
             elf_window:None,
+            #[cfg(feature="sunfish-elf-first-slot-turn")]
+            elf_slot_receipt:None,
             #[cfg(feature = "sunfish-wlan-first-server-check-trace")]
             first_server_check: None,
             #[cfg(feature = "sunfish-ipa-announcement-timeline")]
@@ -2872,6 +2879,8 @@ impl Session {
         { self.post_elf_mcfg = None; }
         #[cfg(feature="sunfish-elf-window-trace")]
         {self.elf_window=None;}
+        #[cfg(feature="sunfish-elf-first-slot-turn")]
+        {self.elf_slot_receipt=None;}
         #[cfg(feature = "sunfish-wlan-first-server-check-trace")]
         { self.first_server_check = None; }
         #[cfg(feature = "sunfish-ipa-announcement-timeline")]
@@ -4523,6 +4532,8 @@ impl Session {
     }
 
     pub fn ingest(&mut self, generation: u64, record: &[u8]) -> Result<Event, Error> {
+        #[cfg(feature="sunfish-elf-first-slot-turn")]
+        {self.elf_slot_receipt=None;}
         self.check(generation)?;
         if record.len() < 8 {
             return Err(Error::TruncatedRecord);
@@ -6464,6 +6475,8 @@ impl Session {
         self.retire_transmit(index)?;
         #[cfg(feature="sunfish-elf-window-trace")]
         if let Some(route)=elf_window_route {self.observe_elf_window_receipt(completion,id,route);}
+        #[cfg(feature="sunfish-elf-first-slot-turn")]
+        if let (Event::ReplyRxDone(h),Some(route))=(completion,elf_window_route) {self.elf_slot_receipt=Some((h,route));}
         #[cfg(feature = "sunfish-registry-handoff-turn")]
         if let Some(prior) = self.registry_window.predecessor.as_mut()
             && completion == Event::ReplyRxDone(prior.request)

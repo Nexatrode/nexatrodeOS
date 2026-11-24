@@ -870,6 +870,8 @@ impl<I: Io> Owner<I> {
             first_service_registry_reply_qrtr_resume_handle: None,
             #[cfg(feature = "sunfish-wlan-elf-timing")]
             elf_lookup_handle: None,
+            #[cfg(feature="sunfish-elf-first-slot-turn")]
+            elf_slot_turn_taken:false,
             #[cfg(feature="sunfish-elf-queued-handoff")]
             queued_elf_turn:None,
             #[cfg(feature="sunfish-elf-queued-handoff")]

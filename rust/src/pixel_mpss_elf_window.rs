@@ -2,11 +2,14 @@
 use super::*;
 impl RuntimeDomain {
     pub(super) fn show_tftp_completion(&self,d:&Display,owner:&ModemOwner){
-        for n in 2..=28{d.replace_line(n,"");}d.replace_line(1,"ELF WINDOW RETIREMENT");d.hex(2,"RUNTIME ERROR",self.error);
+        for n in 2..=28{d.replace_line(n,"");}d.replace_line(1,if cfg!(feature="sunfish-elf-first-slot-turn"){"ELF FIRST SLOT TURN"}else{"ELF WINDOW RETIREMENT"});d.hex(2,"RUNTIME ERROR",self.error);
         let s=owner.service_registry_trace();let e=s.elf;let w=owner.elf_window_trace();let age=|t|self.time_from_us(Some(self.runtime_started),t);
         let row=|n,label,v:&[u32]|{d.header_label(n,label);let mut f=[(0,8);4];for(i,v)in v.iter().enumerate(){f[i]=(*v,8);}d.header_row(n,true,&f[..v.len()]);};
         row(3,"ELF RX QUEUE PUB DONE",&[age(e.and_then(|e|e.received)),age(e.and_then(|e|e.queued)),age(e.and_then(|e|e.published)),age(e.and_then(|e|e.done))]);
         let turn=owner.elf_queued_turn_trace();row(4,"TURN ARM ENTER END FLAGS",&[age(turn.armed_at),age(turn.entry),age(turn.end),turn.flags]);
+        #[cfg(feature="sunfish-elf-first-slot-turn")]
+        row(5,"TRIES RECEIPTS OMIT SLOT TURN",&[w.map_or(0,|w|w.attempts),w.map_or(0,|w|w.receipt_count),w.map_or(0,|w|w.receipt_omitted),u32::from(owner.elf_completion_turn_taken())]);
+        #[cfg(not(feature="sunfish-elf-first-slot-turn"))]
         row(5,"ADMISSION TRIES RECEIPTS END",&[w.map_or(0,|w|w.attempts),w.map_or(0,|w|w.receipt_count),w.map_or(0,|w|w.receipt_omitted),w.map_or(0,|w|u32::from(w.finished))]);
         let prior=owner.registry_window_trace().predecessor;let fifo=owner.registry_reply_fifo();let rx=fifo.and_then(|f|f.completion);
         row(6,"TX3 QUEUE PUB TAIL DONE",&[age(prior.and_then(|p|p.queued_at)),age(prior.and_then(|p|p.published_at)),age(fifo.and_then(|f|f.peer_tail_at)),age(prior.and_then(|p|p.done_at))]);

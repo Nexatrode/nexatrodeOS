@@ -1713,3 +1713,19 @@ fn servreg_startup_reply_window_keeps_distinct_intents_and_exact_receipts() {
         }
     }
 }
+
+#[cfg(feature="sunfish-elf-first-slot-turn")]
+#[test]
+fn elf_slot_owner_yields_after_first_of_two_pending_receipts(){
+ for reverse in [false,true]{
+ let mut r=LoRig::new();let _ipa=r.next();r.hold_host=true;
+ for(txn,name)in[(3,b"avs/audio".as_slice()),(4,b"tms/servreg".as_slice()),(5,b"kernel/elf_loader".as_slice())]{let q=lo_message(0,0x21,txn,&[(1,name),(0x10,&0u32.to_le_bytes())]);r.input(&lo_packet(1,9,qcom_servreg::LOCAL_PORT,true,&q)).unwrap();}
+ assert_eq!(r.held_host.len(),2);let first=r.held_host[usize::from(reverse)].clone();let second=r.held_host[usize::from(!reverse)].clone();
+ r.peer.push(&control(6,2,first.0));r.peer.push(&control(6,2,second.0));
+ let p=r.owner.notified(8,&mut r.irqs).unwrap();assert_eq!(p.received,1);assert!(r.owner.elf_completion_turn_taken());assert_eq!(r.owner.elf_window_trace().unwrap().receipt_count,1);assert!(r.owner.elf_window_trace().unwrap().admitted.is_none());
+ for _ in 0..4{r.owner.dispatch_service_registry_step(&mut r.irqs).unwrap();if r.owner.elf_window_trace().unwrap().admitted.is_some(){break;}}
+ let c=r.owner.elf_window_trace().unwrap();assert_eq!(c.receipt_count,1);assert_eq!(c.admitted.unwrap().count,1);assert_eq!(c.last_before_admission,Some(if reverse{4}else{3}));
+ // A later receipt is handled normally; the one-shot remains consumed.
+ r.owner.notified(8,&mut r.irqs).unwrap();assert!(r.owner.elf_completion_turn_taken());
+ }
+}
