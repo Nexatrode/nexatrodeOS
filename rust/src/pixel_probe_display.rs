@@ -149,6 +149,20 @@ impl Display {
         }
     }
 
+    /// Four bounded one-line wire records per standard row, smaller font.
+    #[cfg(feature="sunfish-registry-tx3-wire-headers")]
+    pub fn wire_row(&self,row:usize,lane:usize,fields:&[(u32,usize)]) {
+        if lane>=4{return;}
+        let mut line=[b' ';96];let mut end=0;
+        for &(value,width) in fields {
+            if width==0 || width>8 || end+width+1>line.len(){return;}
+            for index in 0..width {let digit=(value>>(4*(width-1-index)))as usize&15;line[end+index]=b"0123456789ABCDEF"[digit];}
+            end+=width+1;
+        }
+        if lane==0{self.replace_line(row,"");}
+        if let Ok(text)=core::str::from_utf8(&line[..end]){self.line_scaled(row,text,2,lane*18);}
+    }
+
     pub fn hex(&self, row: usize, label: &str, value: u32) {
         let mut line = [b' '; 24];
         let label = label.as_bytes();

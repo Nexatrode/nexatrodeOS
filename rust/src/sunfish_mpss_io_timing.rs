@@ -50,3 +50,24 @@ impl IoTiming {
         })
     }
 }
+
+/// Four disjoint outer I/O categories for one diagnostic queue-to-arm window.
+#[cfg(feature="sunfish-registry-prearm-io-trace")]
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct WindowTiming { total:[u64;4], seen:bool, enabled:bool }
+#[cfg(feature="sunfish-registry-prearm-io-trace")]
+impl WindowTiming {
+    pub fn begin(&mut self){self.total=[0;4];self.seen=true;self.enabled=true;}
+    pub fn finish(&mut self){self.enabled=false;}
+    pub fn enabled(&self)->bool{self.enabled}
+    pub fn record(&mut self,category:usize,ticks:u64){if self.enabled{self.total[category]=self.total[category].saturating_add(ticks);}}
+    pub fn snapshot(&self)->Option<[u64;12]>{self.seen.then(||[self.total[0],self.total[1],self.total[2],self.total[3],0,0,0,0,0,0,0,0])}
+}
+#[cfg(all(test,feature="sunfish-registry-prearm-io-trace"))]
+#[test]
+fn prearm_window_counter_is_independent_of_owner_scope_and_freezes_without_resetting_evidence(){
+    let mut owner=IoTiming::default();let mut window=WindowTiming::default();assert_eq!(window.snapshot(),None);
+    window.begin();owner.enable(false);owner.record(0,7);window.record(0,7);assert_eq!(owner.total,[0;4]);assert_eq!(window.snapshot().unwrap()[0],7);
+    owner.enable(true);owner.record(1,9);window.record(1,9);window.finish();window.record(1,99);assert_eq!(&window.snapshot().unwrap()[..4],&[7,9,0,0]);assert_eq!(owner.total[1],9);
+    window.begin();assert_eq!(&window.snapshot().unwrap()[..4],&[0;4]);window.record(2,u64::MAX);window.record(2,1);assert_eq!(window.snapshot().unwrap()[2],u64::MAX);
+}

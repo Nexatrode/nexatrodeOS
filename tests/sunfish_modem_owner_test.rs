@@ -3859,6 +3859,7 @@ fn elf_queue_trace_distinguishes_same_peer_from_slot_exhaustion() {
 
 #[cfg(feature = "sunfish-wlan-registry-txn4-timing")]
 #[test]
+#[cfg(not(feature = "sunfish-wlan-registry-second-reply"))]
 fn registry_txn4_timing_follows_exact_reply_that_blocks_elf() {
     use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
     use qcom_modem_owner::ServiceProgress;
@@ -3943,6 +3944,7 @@ fn registry_txn4_timing_follows_exact_reply_that_blocks_elf() {
 
 #[cfg(feature = "sunfish-wlan-tx4-pressure")]
 #[test]
+#[cfg(not(feature = "sunfish-wlan-registry-second-reply"))]
 fn tx4_pressure_retains_exact_same_peer_blocker_after_success() {
     use qcom_modem_owner::ServiceProgress;
     let (peer, mut owner, mut irqs) = owner_control_start();
@@ -4334,6 +4336,8 @@ fn post_elf_oack_uses_one_early_router_turn_and_preserves_irq_ownership() {
         assert_eq!(completed.timing.peer_rx.data.count, 1);
         assert_eq!(completed.final_block, Some(1));
         assert_eq!(completed.ack.phase, 4);
+        #[cfg(feature="sunfish-first-data-ack-elf-trace")]
+        assert_eq!(owner.original_tftp_write_trace(), Some(completed));
         assert!(completed.ack.done_at > completed.oack.done_at);
         #[cfg(feature = "sunfish-wlan-elf-tftp-timeline")]
         {
@@ -5316,6 +5320,8 @@ fn first_wrq_window_retains_neighbors_and_matches_only_published_completion() {
 fn elf_host_credit_and_first_tftp_request_follow_exact_transport_boundaries() {
     use qcom_glink_qmi::ElfTftpRequest;
 
+    let cases: &[u8] = if cfg!(feature="sunfish-ack-elf-phase-trace") { &[0,1,2,3] } else { &[3] };
+    for &ack_case in cases {
     let mut session = session();
     let locator = qcom_servreg::LOCAL_PORT;
     session.register(1, Service::ServiceRegistry, locator).unwrap();
@@ -5593,6 +5599,16 @@ fn elf_host_credit_and_first_tftp_request_follow_exact_transport_boundaries() {
             assert_eq!(peer_rx.data.first.unwrap().destination_port, port + 1);
             assert_eq!(peer_rx.error.count, 1);
         }
+        #[cfg(feature = "sunfish-ack-elf-phase-trace")]
+        {
+            let stages = trace(&session).data.unwrap().stages;
+            assert_eq!(stages, qcom_glink_qmi::FinalAckStages::default());
+            CLOCK.store(41, Relaxed);
+            session.observe_elf_server_check_dispatch_start(&target);
+            CLOCK.store(42, Relaxed);
+            session.observe_elf_server_check_dispatch_start(&target);
+            assert_eq!(trace(&session).data.unwrap().stages.dispatch_at, Some(41));
+        }
         let reply = dispatch(&mut session, &mut server, target, &mut response).unwrap();
         assert!(reply.completed);
         assert_eq!(trace(&session).data.unwrap().result, Some(0));
@@ -5601,12 +5617,40 @@ fn elf_host_credit_and_first_tftp_request_follow_exact_transport_boundaries() {
         assert_eq!(trace(&session).ack.phase, 1);
         assert_eq!(server.completed_count(), 1);
         assert_eq!(server.total_bytes(), 5);
+        #[cfg(feature = "sunfish-ack-elf-phase-trace")]
+        {
+            assert_eq!(trace(&session).data.unwrap().stages.prepared_at, Some(42));
+            assert_eq!(trace(&session).data.unwrap().stages.returned_at, None);
+            CLOCK.store(44, Relaxed);
+        }
+        #[cfg(feature = "sunfish-ack-elf-phase-trace")]
+        if ack_case == 0 { session.queue_tftp_response(1, route, &response[..reply.len]).unwrap(); }
+        else { session.queue_traced_tftp_response(1, if ack_case==1 {&other} else {&target}, route, &response[..reply.len], false).unwrap(); }
+        #[cfg(not(feature = "sunfish-ack-elf-phase-trace"))]
         session.queue_tftp_response(1, route, &response[..reply.len]).unwrap();
         assert_eq!(trace(&session).ack.phase, 2);
+        #[cfg(feature = "sunfish-ack-elf-phase-trace")]
+        {
+            assert_eq!(trace(&session).data.unwrap().stages.queued_at, if ack_case>=2 {Some(44)} else {None});
+            assert_eq!(session.publish_next(1, |_| Err(qcom_glink_qmi::WriteError::WouldBlock)),
+                Err(qcom_glink_qmi::Error::WouldBlock));
+            assert_eq!(trace(&session).data.unwrap().stages.returned_at, None,
+                "a blocked publication cannot invent a receive buffer return");
+        }
         CLOCK.store(50, Relaxed);
         let (intent, _) = publish_data(&mut session);
         assert_eq!(trace(&session).ack.phase, 3);
         assert_eq!(trace(&session).ack.published_at, Some(50));
+        #[cfg(feature = "sunfish-ack-elf-phase-trace")]
+        {
+            assert_eq!(trace(&session).data.unwrap().stages.returned_at, None);
+            CLOCK.store(55, Relaxed);
+            assert_eq!(publish(&mut session).0, Some(Published::ReceiveDone(target.diagnostic_id())));
+            assert_eq!(trace(&session).data.unwrap().stages, qcom_glink_qmi::FinalAckStages {
+                final_prepared: true, final_queued: ack_case>=2,
+                dispatch_at: Some(41), prepared_at: Some(42), queued_at: if ack_case>=2 {Some(44)} else {None}, returned_at: Some(55),
+            });
+        }
         CLOCK.store(60, Relaxed);
         assert_eq!(complete(&mut session, intent), Event::TransmitDone);
         assert_eq!(trace(&session).ack.phase, 4);
@@ -5655,6 +5699,7 @@ fn elf_host_credit_and_first_tftp_request_follow_exact_transport_boundaries() {
                 assert_eq!(first.timing.first_close_at, post.timing.first_close_at);
             }
         }
+    }
     }
 }
 
@@ -5782,3 +5827,7 @@ fn wrq_stage_history_freezes_only_after_exact_checked_return() {
         assert!(!path.records.records(end+1,u64::MAX).any(|r|r.cmd==7));
     }
 }
+
+#[cfg(feature = "sunfish-tftp-peer-metadata-batch")]
+#[path = "sunfish_tftp_peer_metadata_test.rs"]
+mod peer_metadata_batch_tests;

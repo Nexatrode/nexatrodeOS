@@ -498,6 +498,8 @@ impl RxState {
 struct Receive {
     state: RxState,
     id: u32,
+    #[cfg(feature = "sunfish-glink-announcement-reuse")]
+    announcement_reuse: bool,
     #[cfg(feature = "sunfish-wlan-first-wrq-reuse")]
     reused_datagram_id: Option<u32>,
     bytes: [u8; MAX_DATAGRAM_BYTES],
@@ -520,6 +522,8 @@ impl Receive {
         Self {
             state: RxState::Free,
             id: 0,
+            #[cfg(feature = "sunfish-glink-announcement-reuse")]
+            announcement_reuse: false,
             #[cfg(feature = "sunfish-wlan-first-wrq-reuse")]
             reused_datagram_id: None,
             bytes: [0; MAX_DATAGRAM_BYTES],
@@ -663,7 +667,11 @@ pub struct RegistryPublication {
     /// Bits 0–6: no suitable intent, outstanding intent request,
     /// control selected, other data selected, selected but FIFO blocked,
     /// written, and outbound intent request selected. Bit 7 records a
-    /// successful experimental registry-priority publication.
+    /// successful experimental registry-priority publication. Bits 8/9
+    /// record the borrowed pre-grant DATA attempt/successful commit. Bits
+    /// 10/11/12 record conversion arming, its callback attempt and commit.
+    /// 13/14/15/16 record conversion seen, own return pending, no exact
+    /// candidate and an already-used borrowed opportunity at conversion.
     pub mask: u32,
     /// First priority gate on each call: cooldown, TFTP, intent ACK, own
     /// RX_DONE, no candidate, different registry candidate, credit, selected.
@@ -671,6 +679,12 @@ pub struct RegistryPublication {
     pub turn_gates: [u32; 8],
     #[cfg(feature = "sunfish-wlan-registry-ack-trace")]
     pub ack: RegistryAckTrace,
+    /// First failed borrowed-turn condition, or selected: no ACK, denial,
+    /// no unadvertised backing, no ACK yield, cooldown, TFTP, WRQ return,
+    /// own return, used opportunity, no exact candidate, credit, selected.
+    /// Observation only; none of these counters controls publication.
+    #[cfg(feature = "sunfish-registry-grant-eligibility")]
+    pub grant_gates: [u32; 12],
 }
 
 #[cfg(feature = "sunfish-wlan-registry-ack-trace")]
@@ -711,6 +725,10 @@ struct Transmit {
     bytes: [u8; MAX_DATAGRAM_BYTES],
     len: usize,
     sent: usize,
+    #[cfg(feature = "sunfish-registry-between-grants")]
+    registry_grant_turn_used: bool,
+    #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+    registry_credit_turn_used: bool,
     #[cfg(feature = "sunfish-wlan-elf-publish-trace")]
     registry_publication: RegistryPublication,
     #[cfg(feature = "sunfish-tftp-final-ack-observer")]
@@ -741,6 +759,10 @@ impl Transmit {
             bytes: [0; MAX_DATAGRAM_BYTES],
             len: 0,
             sent: 0,
+            #[cfg(feature = "sunfish-registry-between-grants")]
+            registry_grant_turn_used: false,
+            #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+            registry_credit_turn_used: false,
             #[cfg(feature = "sunfish-wlan-elf-publish-trace")]
             registry_publication: RegistryPublication {
                 transaction: 0, bytes: 0, calls: 0, mask: 0,
@@ -748,6 +770,8 @@ impl Transmit {
                 turn_gates: [0; 8],
                 #[cfg(feature = "sunfish-wlan-registry-ack-trace")]
                 ack: RegistryAckTrace::EMPTY,
+                #[cfg(feature = "sunfish-registry-grant-eligibility")]
+                grant_gates: [0; 12],
             },
             #[cfg(feature = "sunfish-tftp-final-ack-observer")]
             final_ack_observed: false,
@@ -765,10 +789,142 @@ impl Transmit {
     }
 }
 
+/// Observation only: successful bounded second admissions and the exact startup
+/// pair. Opaque request identities survive TX-slot reuse. No clock is used by
+/// admission, ordering, completion matching, or the overlap proof.
+#[cfg(feature = "sunfish-registry-window-trace")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RegistryWindowTrace {
+    pub admissions: u32,
+    pub target: Option<RegistryWindowPair>,
+    #[cfg(feature = "sunfish-registry-handoff-turn")]
+    pub predecessor: Option<RegistryPredecessorTrace>,
+}
+#[cfg(feature = "sunfish-registry-handoff-turn")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RegistryPredecessorTrace {
+    #[cfg(feature = "sunfish-registry-post-reply-trace")]
+    pub grant: Option<RegistryConvertedGrantTrace>,
+    request: RequestHandle,
+    #[cfg(feature = "sunfish-registry-predecessor-pressure")]
+    pub publication: Option<RegistryPublication>,
+    #[cfg(feature = "sunfish-registry-predecessor-pressure")]
+    pub publication_frozen: bool,
+    pub queued_at: Option<u64>,
+    pub published_at: Option<u64>,
+    pub done_at: Option<u64>,
+}
+/// Exact converted backing retained for observation after the scheduling token expires.
+#[cfg(feature = "sunfish-registry-post-reply-trace")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RegistryConvertedGrantTrace {
+    pub intent: u32,
+    pub converted_at: Option<u64>,
+    pub advertised_at: Option<u64>,
+    pub ack_at: Option<u64>,
+    advertised: bool,
+    acked: bool,
+}
+#[cfg(feature = "sunfish-registry-window-trace")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RegistryWindowPair {
+    #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+    pub prearm: RegistryPrearmTrace,
+    #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+    pub conversion: RegistryConversionLifetime,
+    #[cfg(feature = "sunfish-registry-post-reply-trace")]
+    pub publication: Option<RegistryPublication>,
+    #[cfg(feature = "sunfish-registry-post-reply-trace")]
+    pub publication_frozen: bool,
+    older: RequestHandle,
+    newer: RequestHandle,
+    pub older_transaction: u16,
+    pub newer_transaction: u16,
+    pub peer: Address,
+    pub queued_at: Option<u64>,
+    pub newer_published_at: Option<u64>,
+    pub older_done_at: Option<u64>,
+    pub published_before_done: Option<bool>,
+    older_completed: bool,
+}
+
+/// Observation of the first converted grant for the exact startup transaction 4.
+/// Identity, active/finished state and writer outcomes do not depend on clocks.
+#[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RegistryConversionLifetime {
+    pub arms: u32,
+    pub first: Option<RegistryConversionTurn>,
+}
+#[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RegistryConversionTurn {
+    #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+    pub packed_len_sent: u32,
+    #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+    pub length_consistent: bool,
+    #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+    pub credit_ports: Option<u32>,
+    #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+    pub credit_nodes: Option<u32>,
+    pub intent: u32,
+    pub request_intent: u32,
+    pub bytes: u16,
+    pub sent: u16,
+    pub armed_at: Option<u64>,
+    pub entry: Option<RegistryConversionEntry>,
+    pub choice: Option<RegistryConversionChoice>,
+    /// 1: borrowed callback starts; 2: matching advertisement committed;
+    /// 3: ACK committed; 4: another conversion replaces the token;
+    /// 5: bounded ready-credit callback starts.
+    pub exit: Option<(u8, Option<u64>)>,
+    pub advertised_at: Option<u64>,
+    pub ack_at: Option<u64>,
+    active: bool,
+    advertised: bool,
+    acked: bool,
+}
+#[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RegistryConversionEntry {
+    pub at: Option<u64>,
+    pub flags: u32,
+    pub backing: Option<u32>,
+    pub token_request: Option<u32>,
+    pub gate: Option<u8>,
+}
+#[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RegistryConversionChoice {
+    pub at: Option<u64>,
+    pub command: u16,
+    pub parameter: u32,
+    pub transaction: Option<u16>,
+    /// 0: selected but no callback (e.g. bounded follow-up veto);
+    /// 1: committed, 2: WouldBlock, 3: uncertain, 4: callback entered but
+    /// no returned result (e.g. unwind).
+    pub result: u8,
+}
+
+#[cfg(feature = "sunfish-registry-prearm-io-trace")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RegistryPrearmTrace {
+    pub queued_flags: u32,
+    pub first_pass_at: Option<u64>,
+    pub first_flags: Option<u32>,
+    pub first_gate: Option<u8>,
+    pub first_choice: Option<RegistryConversionChoice>,
+    pub passes: u32,
+    pub own_done_at: Option<u64>,
+    own_done_seen: bool,
+}
+
 /// Fixed private buffers: 8 receive and 8 transmit slots of 4096 bytes each,
 /// plus bookkeeping. A native integration must budget this storage and its
 /// construction/reset stack separately from peer-visible memory pools.
 pub struct Session {
+    #[cfg(feature = "sunfish-registry-window-trace")]
+    registry_window: RegistryWindowTrace,
     #[cfg(feature = "sunfish-ipa-before-first-oack")]
     ipa_before_first_oack: bool,
     #[cfg(feature = "sunfish-first-oack-after-ipa-publish")]
@@ -832,6 +988,10 @@ pub struct Session {
     retry_full_intent: bool,
     #[cfg(feature = "sunfish-wlan-intent-ack-turn")]
     intent_ack_backing: Option<u32>,
+    #[cfg(feature = "sunfish-glink-announcement-reuse")]
+    intent_ack_reused: Option<u32>,
+    #[cfg(feature = "sunfish-registry-converted-grant-turn")]
+    registry_converted_grant: Option<(u32, RequestHandle)>,
     #[cfg(feature = "sunfish-grant-ad-writer-trace")]
     pub(crate) grant_backing: GrantBackingTrace,
     #[cfg(feature = "sunfish-wlan-intent-ack-turn")]
@@ -1148,6 +1308,21 @@ pub struct ElfWriteData {
     pub body_bytes: u32,
     pub received_at: Option<u64>,
     pub result: Option<u32>,
+    #[cfg(feature = "sunfish-ack-elf-phase-trace")]
+    pub stages: FinalAckStages,
+}
+
+/// First matching DATA lifecycle observations; these never drive protocol decisions.
+#[cfg(feature = "sunfish-ack-elf-phase-trace")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct FinalAckStages {
+    /// Identity proofs independent of whether an optional observation clock exists.
+    pub final_prepared: bool,
+    pub final_queued: bool,
+    pub dispatch_at: Option<u64>,
+    pub prepared_at: Option<u64>,
+    pub returned_at: Option<u64>,
+    pub queued_at: Option<u64>,
 }
 
 #[cfg(feature = "sunfish-wlan-elf-host-credit-trace")]
@@ -1710,6 +1885,10 @@ impl Session {
             retry_full_intent: false,
             #[cfg(feature = "sunfish-wlan-intent-ack-turn")]
             intent_ack_backing: None,
+            #[cfg(feature = "sunfish-glink-announcement-reuse")]
+            intent_ack_reused: None,
+            #[cfg(feature = "sunfish-registry-converted-grant-turn")]
+            registry_converted_grant: None,
             #[cfg(feature = "sunfish-grant-ad-writer-trace")]
             grant_backing: GrantBackingTrace::default(),
             #[cfg(feature = "sunfish-wlan-intent-ack-turn")]
@@ -1726,6 +1905,8 @@ impl Session {
             tftp_queue_block: TftpQueueBlock::default(),
             #[cfg(feature = "sunfish-wlan-elf-queue-trace")]
             registry_pressure: None,
+            #[cfg(feature = "sunfish-registry-window-trace")]
+            registry_window: RegistryWindowTrace::default(),
             #[cfg(feature = "sunfish-wlan-elf-exchange-trace")]
             elf_exchange: None,
             #[cfg(feature = "sunfish-wlan-first-server-check-trace")]
@@ -2690,14 +2871,20 @@ impl Session {
         { self.elf_host_credit = None; }
         #[cfg(feature = "sunfish-wlan-elf-queue-trace")]
         { self.registry_pressure = None; }
+        #[cfg(feature = "sunfish-registry-window-trace")]
+        { self.registry_window = RegistryWindowTrace::default(); }
         self.qrtr_flows = [None; TX_STORAGE_SLOTS];
         #[cfg(feature = "sunfish-qrtr-rmtfs-flow-experiment")]
         { self.rmtfs_reference_flows = new_reference_flows; self.rmtfs_flow_destinations = [None; 64]; }
         self.retired_rmtfs_peers = [None; 64];
         self.remote = [None; REMOTE_INTENTS];
         self.intent_request_ack = None;
+        #[cfg(feature = "sunfish-glink-announcement-reuse")]
+        { self.intent_ack_reused = None; }
         #[cfg(feature = "sunfish-glink-retry-full-intent")]
         { self.retry_full_intent = false; }
+        #[cfg(feature = "sunfish-registry-converted-grant-turn")]
+        { self.registry_converted_grant = None; }
         #[cfg(feature = "sunfish-wlan-intent-ack-turn")]
         {
             self.intent_ack_backing = None;
@@ -3100,6 +3287,41 @@ impl Session {
             .is_some_and(|handle| self.tftp_index(&handle).is_ok_and(|index| self.receive[index].id == intent))
     }
 
+    /// Original accepted transfer only; never substitute another completed peer.
+    /// Read-only metadata: no clock, validation token or transport operation.
+    #[cfg(feature = "sunfish-first-data-ack-elf-trace")]
+    pub(crate) fn original_tftp_write_trace(&self) -> Option<ElfServerCheckTrace> {
+        let first = self.server_check_oacks()[0]?;
+        self.first_server_check.filter(|write|
+            write.request.owner == self.owner && write.request.generation == self.generation
+                && write.request.intent == first.intent && write.peer == first.peer
+                && write.transfer_port == Some(first.transfer_port))
+    }
+
+    /// Scheduling proof for the observed single-DATA original server check.
+    /// Resolve its immutable transfer slot directly: observation timestamps,
+    /// inventory sort order and the first completed peer are not policy inputs.
+    #[cfg(feature = "sunfish-original-final-ack-turn")]
+    pub(crate) fn original_final_ack_queued(&self) -> bool {
+        let Some(write) = self.first_server_check else { return false; };
+        let Some(port) = write.transfer_port else { return false; };
+        let Some(index) = port.checked_sub(crate::qcom_tftp_server_check::TRANSFER_PORT)
+            .and_then(|n| usize::try_from(n).ok()) else { return false; };
+        let Some(Some(first)) = self.server_check_transfers.get(index) else { return false; };
+        if write.request.owner != self.owner || write.request.generation != self.generation
+            || write.request.intent != first.intent || write.peer != first.peer
+            || port != first.transfer_port || write.ack.phase != 2 { return false; }
+        let Some(data) = write.data else { return false; };
+        if data.request.owner != self.owner || data.request.generation != self.generation
+            || data.result != Some(0) || write.final_block != Some(data.block)
+            || !data.stages.final_prepared || !data.stages.final_queued { return false; }
+        let Some(tx) = write.ack.slot.and_then(|slot| self.transmit.get(slot)) else { return false; };
+        let source = Address { node: self.config.local_node, port };
+        matches!(tx.kind, TxKind::TftpReply { source: from, destination } if from == source && destination == write.peer)
+            && tx.len == 36 && tx.sent < tx.len && word(&tx.bytes, 20) == 4
+            && tx.bytes[32..36] == [0, 4, (data.block >> 8) as u8, data.block as u8]
+    }
+
     #[cfg(feature = "sunfish-wlan-first-server-check-trace")]
     pub(crate) fn first_server_check(&self) -> Option<ElfServerCheckTrace> {
         self.first_server_check
@@ -3440,6 +3662,12 @@ impl Session {
         {
             write.timing.dispatch_at = clock.map(|clock| clock());
         }
+        #[cfg(feature = "sunfish-ack-elf-phase-trace")]
+        for write in self.server_check_traces_mut() {
+            if let Some(data) = write.data.as_mut().filter(|d| d.request == *handle)
+                && data.stages.dispatch_at.is_none()
+            { data.stages.dispatch_at = clock.map(|clock| clock()); }
+        }
         #[cfg(feature = "sunfish-wlan-first-server-check-repeat")]
         if let Some(repeat) = self.server_check_repeat_mut(handle) {
             repeat.dispatch_at = clock.map(|clock| clock());
@@ -3507,6 +3735,13 @@ impl Session {
             {
                 write.final_block = Some(u16::from_be_bytes([*high, *low]));
                 write.ack.phase = 1;
+                #[cfg(feature = "sunfish-ack-elf-phase-trace")]
+                if let Some(data) = write.data.as_mut().filter(|d| d.request == *handle
+                    && Some(d.block) == write.final_block)
+                {
+                    data.stages.final_prepared = true;
+                    data.stages.prepared_at = clock.map(|clock| clock());
+                }
             }
         }
     }
@@ -3632,6 +3867,24 @@ impl Session {
             }
         }
         let clock = self.intent_ack_clock;
+        #[cfg(feature = "sunfish-ack-elf-phase-trace")]
+        if let Ok(slot) = result && route.source.node == self.config.local_node
+            && let [0, 4, high, low] = packet
+        {
+            let block = u16::from_be_bytes([*high, *low]);
+            for write in self.server_check_traces_mut().filter(|w| w.peer == route.destination
+                && w.transfer_port == Some(route.source.port) && w.final_block == Some(block)
+                && w.ack.phase == 2 && w.ack.slot == Some(slot))
+            {
+                if let Some(data) = write.data.as_mut().filter(|d| d.request == *handle
+                    && d.block == block && d.result == Some(0) && d.stages.final_prepared
+                    && !d.stages.final_queued)
+                {
+                    data.stages.final_queued = true;
+                    data.stages.queued_at = clock.map(|clock| clock());
+                }
+            }
+        }
         if let Some(repeat) = self.server_check_repeat_mut(handle).filter(|repeat| repeat.oack.phase == 1) {
             match result {
                 Ok(slot) => {
@@ -3795,6 +4048,10 @@ impl Session {
         self.tftp_owner_peers = peers;
         self.tftp_owner_snapshot_valid = true;
         Ok(())
+    }
+    #[cfg(all(test, feature = "sunfish-tftp-peer-metadata-batch"))]
+    pub(crate) fn test_peer_metadata(&self) -> ([Option<Address>; TFTP_OWNER_PEER_SLOTS], [Option<Address>; TFTP_OWNER_PEER_SLOTS]) {
+        (self.tftp_owner_peers, self.tftp_firmware_peers)
     }
     #[cfg(feature = "sunfish-tftp-close-owner-fence")]
     pub fn set_tftp_firmware_peers(&mut self, generation: u64, peers: [Option<Address>; TFTP_OWNER_PEER_SLOTS]) -> Result<(), Error> {
@@ -4208,6 +4465,12 @@ impl Session {
         Ok(self.completed_ipa_service_response.take())
     }
 
+    /// The FIFO writer must yield to visible RX before ACKing existing backing.
+    #[cfg(feature = "sunfish-glink-announcement-reuse")]
+    pub(crate) fn reusable_intent_ack_pending(&self) -> bool {
+        self.intent_request_ack == Some(true) && self.intent_ack_reused.is_some()
+    }
+
     /// Queue a one-shot receive intent backed by a private 4096-byte slot.
     /// The peer cannot use it until publish_next successfully advertises it.
     pub fn offer_receive(&mut self, generation: u64) -> Result<u32, Error> {
@@ -4245,9 +4508,16 @@ impl Session {
                 if self.intent_request_ack.is_some() {
                     return Err(Error::NoCapacity);
                 }
+                #[cfg(feature = "sunfish-glink-announcement-reuse")]
+                let reusable = if parameter != 0 && parameter as usize <= MAX_DATAGRAM_BYTES {
+                    self.receive[..RX_SLOTS].iter().find(|rx|
+                        rx.state == RxState::Available && rx.announcement_reuse).map(|rx|rx.id)
+                } else { None };
+                #[cfg(not(feature = "sunfish-glink-announcement-reuse"))]
+                let reusable: Option<u32> = None;
                 let granted = parameter != 0
                     && parameter as usize <= MAX_DATAGRAM_BYTES
-                    && self.receive[..RX_SLOTS].iter().any(|rx| rx.state == RxState::Free);
+                    && (reusable.is_some() || self.receive[..RX_SLOTS].iter().any(|rx| rx.state == RxState::Free));
                 #[cfg(feature = "sunfish-glink-intent-denial-snapshot")]
                 if !granted && self.ipa_registration_trace().is_some_and(|trace|
                     trace.published_at.is_some() && trace.completed_at.is_none())
@@ -4267,7 +4537,9 @@ impl Session {
                 }
                 #[cfg(feature = "sunfish-grant-ad-writer-trace")]
                 { self.grant_backing = GrantBackingTrace { requested: parameter, ..Default::default() }; }
-                if granted {
+                #[cfg(feature = "sunfish-glink-announcement-reuse")]
+                { self.intent_ack_reused = reusable; }
+                if granted && reusable.is_none() {
                     let _id = self.offer_receive(generation)?;
                     #[cfg(feature = "sunfish-wlan-intent-ack-turn")]
                     { self.intent_ack_backing = Some(_id); }
@@ -4373,6 +4645,19 @@ impl Session {
         let rx = &mut self.receive[index];
         match (command, rx.state) {
             (9, RxState::Available) => {
+                // Available reuse never follows this buffer into a new packet
+                // unless that packet is itself a completely accepted announcement.
+                #[cfg(feature = "sunfish-glink-announcement-reuse")]
+                {
+                    // A previously returned buffer may be consumed while its
+                    // grant ACK is blocked. Never promise that consumed backing.
+                    if self.intent_ack_reused == Some(rx.id) && self.intent_request_ack == Some(true) {
+                        self.intent_ack_reused = None;
+                        self.intent_request_ack = Some(false);
+                        self.retry_full_intent = true;
+                    }
+                    rx.announcement_reuse = false;
+                }
                 #[cfg(feature = "sunfish-wlan-elf-server-check-timing")]
                 { rx.elf_wrq_observed = false; }
             }
@@ -4692,6 +4977,8 @@ impl Session {
                         write.data = Some(ElfWriteData {
                             request, block, body_bytes: body as u32,
                             received_at: clock.map(|clock| clock()), result: None,
+                            #[cfg(feature = "sunfish-ack-elf-phase-trace")]
+                            stages: FinalAckStages::default(),
                         });
                     }
                 }
@@ -5376,6 +5663,12 @@ impl Session {
         {
             *slot = Some(server);
         }
+        #[cfg(feature = "sunfish-glink-announcement-reuse")]
+        { self.receive[index].announcement_reuse = matches!(command, control::Command::NewServer(_))
+            && self.receive[index].context.is_none() && self.receive[index].ticket.is_none()
+            && self.transmit.iter().any(|tx| tx.len != 0 && tx.sent == tx.len && !tx.glink_done
+                && matches!(tx.kind, TxKind::Reply { route, .. }
+                    if route.service == Service::ServiceRegistry && route.transaction == 3)); }
         self.receive[index].state = RxState::Control;
         self.receive[index].done_pending = true;
         Ok(Event::QrtrControl(event))
@@ -6124,6 +6417,17 @@ impl Session {
             self.remote[remote] = None;
         }
         self.retire_transmit(index)?;
+        #[cfg(feature = "sunfish-registry-handoff-turn")]
+        if let Some(prior) = self.registry_window.predecessor.as_mut()
+            && completion == Event::ReplyRxDone(prior.request)
+        { prior.done_at = self.intent_ack_clock.map(|clock| clock()); }
+        #[cfg(feature = "sunfish-registry-window-trace")]
+        if let Some(pair) = self.registry_window.target.as_mut()
+            && completion == Event::ReplyRxDone(pair.older) && !pair.older_completed
+        {
+            pair.older_completed = true;
+            pair.older_done_at = self.intent_ack_clock.map(|clock| clock());
+        }
         #[cfg(feature = "sunfish-wlan-first-wrq-window")]
         self.first_wrq_window.complete(index, id, self.intent_ack_clock);
         #[cfg(feature = "sunfish-wlan-elf-server-check-trace")]
@@ -6450,6 +6754,167 @@ impl Session {
         self.registry_pressure = Some((*handle, pressure));
     }
 
+    /// Pure live ownership metadata, never a display history or timing guard.
+    /// The older slot stays owned; normal queue_reply still checks credits.
+    #[cfg(feature = "sunfish-registry-handoff-turn")]
+    pub(crate) fn registry_handoff_pair(&self, older: &RequestHandle, waiting: &RequestHandle)
+        -> Option<(u16, u16, Address, bool)>
+    {
+        self.check(self.generation).ok()?;
+        if older.owner != self.owner || older.generation != self.generation { return None; }
+        let pending = self.request_index(waiting).ok()?;
+        let route = self.router.reply_route(self.receive[pending].ticket.as_ref()?).ok()?;
+        if route.service != Service::ServiceRegistry { return None; }
+        let receive = self.receive.iter().position(|rx| rx.id == older.intent && rx.state == RxState::ReplyQueued)?;
+        let mut same_peer = self.transmit.iter().filter(|tx| tx.len != 0
+            && tx.kind.qrtr_addresses().is_some_and(|(_,peer)| peer == route.destination));
+        let tx = same_peer.next()?;
+        if same_peer.next().is_some() || tx.glink_done || !tx.qrtr_done || tx.reference_flow.is_none() { return None; }
+        let TxKind::Reply { receive: prior, route: prior_route, .. } = tx.kind else { return None; };
+        if prior != receive || prior_route.service != Service::ServiceRegistry
+            || prior_route.source != route.source { return None; }
+        Some((prior_route.transaction, route.transaction, route.destination,
+            tx.sent == tx.len && tx.remote_slot.is_some()))
+    }
+
+    #[cfg(feature = "sunfish-registry-window-trace")]
+    pub fn registry_window_trace(&self) -> RegistryWindowTrace {
+        #[cfg(not(feature = "sunfish-registry-predecessor-pressure"))]
+        { self.registry_window }
+        #[cfg(feature = "sunfish-registry-predecessor-pressure")]
+        {
+            let mut trace = self.registry_window;
+            if let Some(prior) = trace.predecessor.as_mut()
+                && !prior.publication_frozen
+                && prior.request.owner == self.owner && prior.request.generation == self.generation
+                && let Some(receive) = self.receive.iter().position(|rx| rx.id == prior.request.intent && rx.state == RxState::ReplyQueued)
+                && let Some(tx) = self.transmit.iter().find(|tx| tx.len != 0
+                    && matches!(tx.kind, TxKind::Reply { receive: index, .. } if index == receive))
+            { prior.publication = Some(tx.registry_publication); }
+            #[cfg(feature = "sunfish-registry-post-reply-trace")]
+            if let Some(pair) = trace.target.as_mut()
+                && !pair.publication_frozen
+                && pair.newer.owner == self.owner && pair.newer.generation == self.generation
+                && let Some(receive) = self.receive.iter().position(|rx| rx.id == pair.newer.intent && rx.state == RxState::ReplyQueued)
+                && let Some(tx) = self.transmit.iter().find(|tx| tx.len != 0
+                    && matches!(tx.kind, TxKind::Reply { receive: index, .. } if index == receive))
+            { pair.publication = Some(tx.registry_publication); }
+            trace
+        }
+    }
+
+    #[cfg(feature = "sunfish-registry-post-reply-trace")]
+    pub(crate) fn registry_predecessor_completed_by(&self, event: &Event) -> bool {
+        self.registry_window.predecessor.is_some_and(|p| p.publication_frozen
+            && p.request.owner == self.owner && p.request.generation == self.generation
+            && *event == Event::ReplyRxDone(p.request))
+    }
+
+    #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+    fn observe_conversion_entry(&mut self, ordinary: bool) -> bool {
+        let Some(pair) = self.registry_window.target else { return false; };
+        let Some(first) = pair.conversion.first.filter(|t| t.active && t.entry.is_none()) else { return false; };
+        let token = self.registry_converted_grant;
+        let receive = self.receive.iter().position(|rx| rx.id == pair.newer.intent && rx.state == RxState::ReplyQueued);
+        let tx = receive.and_then(|receive| self.transmit.iter().find(|tx| tx.len != 0
+            && matches!(tx.kind, TxKind::Reply { receive: index, .. } if index == receive)));
+        let flags = u32::from(ordinary)
+            | (u32::from(self.intent_request_ack.is_some()) << 1)
+            | (u32::from(self.intent_request_ack == Some(true)) << 2)
+            | (u32::from(self.intent_ack_backing == Some(first.intent)) << 3)
+            | (u32::from(token == Some((first.intent, pair.newer))) << 4)
+            | (u32::from(self.receive[..RX_SLOTS].iter().any(|rx| rx.id == first.intent && rx.state == RxState::Advertising)) << 5)
+            | (u32::from(receive.is_some_and(|i| self.receive[i].done_pending)) << 6)
+            | (u32::from(self.registry_turn_used) << 7)
+            | (u32::from(tx.is_some_and(|t| t.registry_grant_turn_used)) << 8)
+            | (u32::from(tx.is_some()) << 9)
+            | (u32::from(tx.is_some_and(|t| t.sent == t.len)) << 10)
+            | (u32::from(self.intent_ack_yield) << 16)
+            | (u32::from(tx.is_some_and(|t| self.remote_for_transmit(t).is_some())) << 17)
+            | (u32::from(tx.is_some_and(|t| {
+                #[cfg(feature = "sunfish-qrtr-rmtfs-flow-experiment")] { self.unsent_flow_predecessor(t) }
+                #[cfg(not(feature = "sunfish-qrtr-rmtfs-flow-experiment"))] { let _ = t; false }
+            })) << 18);
+        let entry = RegistryConversionEntry { at: self.intent_ack_clock.map(|now| now()), flags,
+            backing: self.intent_ack_backing, token_request: token.map(|(_, r)| r.intent), gate: None };
+        self.registry_window.target.as_mut().unwrap().conversion.first.as_mut().unwrap().entry = Some(entry);
+        true
+    }
+
+    #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+    fn observe_conversion_choice(&mut self, record: &[u8], transaction: Option<u16>) -> bool {
+        let Some(first) = self.registry_window.target.as_mut().and_then(|p| p.conversion.first.as_mut())
+            .filter(|t| t.active && t.entry.is_some() && t.choice.is_none()) else { return false; };
+        first.choice = Some(RegistryConversionChoice { at: self.intent_ack_clock.map(|now| now()),
+            command: u16::from_le_bytes([record[0], record[1]]), parameter: word(record, 4), transaction, result: 0 });
+        true
+    }
+
+    #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+    fn observe_conversion_callback(&mut self, captured: bool) {
+        if captured && let Some(choice) = self.registry_window.target.as_mut()
+            .and_then(|p| p.conversion.first.as_mut()).and_then(|t| t.choice.as_mut())
+        { choice.result = 4; }
+    }
+
+    #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+    fn observe_conversion_exit(&mut self, cause: u8) {
+        if let Some(first) = self.registry_window.target.as_mut().and_then(|p| p.conversion.first.as_mut())
+            .filter(|t| t.active && t.exit.is_none())
+        { first.exit = Some((cause, self.intent_ack_clock.map(|now| now()))); first.active = false; }
+    }
+
+    #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+    pub(crate) fn registry_prearm_queue_matches(&self,request:&RequestHandle)->bool {
+        self.registry_window.target.is_some_and(|p| p.newer == *request && !p.publication_frozen)
+    }
+
+    #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+    fn registry_prearm_flags(&self, request: RequestHandle) -> u32 {
+        let receive = self.receive.iter().position(|rx| rx.id == request.intent && rx.state == RxState::ReplyQueued);
+        let tx = receive.and_then(|receive| self.transmit.iter().find(|tx| tx.len != 0
+            && matches!(tx.kind, TxKind::Reply { receive: index, .. } if index == receive)));
+        u32::from(receive.is_some_and(|i| self.receive[i].done_pending))
+            | (u32::from(tx.is_some_and(|t| self.remote_for_transmit(t).is_some())) << 1)
+            | (u32::from(self.intent_request_ack.is_some()) << 2)
+            | (u32::from(self.intent_request_ack == Some(true)) << 3)
+            | (u32::from(self.intent_ack_backing.is_some()) << 4)
+            | (u32::from(self.next_transmit_in_order([1]).is_some()) << 5)
+            | (u32::from(self.registry_turn_used) << 6)
+            | (u32::from(tx.is_some_and(|t| t.registry_grant_turn_used)) << 7)
+            | (u32::from(tx.is_some_and(|t| t.registry_credit_turn_used)) << 8)
+            | (u32::from(tx.is_some()) << 9)
+            | (u32::from({ #[cfg(feature="sunfish-glink-intent-request-experiment")] { matches!(self.outbound_intent_request, OutboundIntentRequest::Waiting { .. }) } #[cfg(not(feature="sunfish-glink-intent-request-experiment"))] { false } }) << 10)
+            | (u32::from(tx.is_some_and(|t| { #[cfg(feature="sunfish-qrtr-rmtfs-flow-experiment")] { self.unsent_flow_predecessor(t) } #[cfg(not(feature="sunfish-qrtr-rmtfs-flow-experiment"))] { let _ = t; false } })) << 11)
+            | (u32::from(receive.is_some() && request.owner == self.owner && request.generation == self.generation) << 12)
+    }
+
+    #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+    fn observe_prearm_entry(&mut self) -> bool {
+        let Some(pair) = self.registry_window.target.filter(|p| !p.publication_frozen && p.conversion.arms == 0) else { return false; };
+        let first = pair.prearm.passes == 0;
+        let flags = first.then(|| self.registry_prearm_flags(pair.newer));
+        let trace = &mut self.registry_window.target.as_mut().unwrap().prearm;
+        trace.passes = trace.passes.saturating_add(1);
+        if first { trace.first_pass_at = self.intent_ack_clock.map(|now| now()); trace.first_flags = flags; }
+        first
+    }
+
+    #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+    fn observe_prearm_choice(&mut self, record: &[u8], transaction: Option<u16>) -> bool {
+        let Some(pair) = self.registry_window.target.as_mut().filter(|p| !p.publication_frozen && p.conversion.arms == 0
+            && p.prearm.passes != 0 && p.prearm.first_choice.is_none()) else { return false; };
+        pair.prearm.first_choice = Some(RegistryConversionChoice { at: self.intent_ack_clock.map(|now| now()),
+            command: u16::from_le_bytes([record[0], record[1]]), parameter: word(record,4), transaction, result: 0 });
+        true
+    }
+
+    #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+    fn observe_prearm_result(&mut self, captured: bool, result: u8) {
+        if captured && let Some(choice) = self.registry_window.target.as_mut().and_then(|p| p.prearm.first_choice.as_mut())
+        { choice.result = result; }
+    }
+
     fn queue_reply_with_ipa_token(
         &mut self,
         handle: &RequestHandle,
@@ -6475,12 +6940,14 @@ impl Session {
         {
             return Err(Error::InvalidReply);
         }
-        let mut same_peer = self.transmit.iter().filter(|tx| {
+        #[cfg(feature = "sunfish-registry-window-trace")]
+        let mut window_prior = None;
+        let mut same_peer = self.transmit.iter().enumerate().filter(|(_, tx)| {
             tx.len != 0
                 && tx.kind.qrtr_addresses()
                     .is_some_and(|(_, destination)| destination == route.destination)
         });
-        if let Some(_previous) = same_peer.next() {
+        if let Some((_previous_index, _previous)) = same_peer.next() {
             #[cfg(feature = "sunfish-wlan-registry-second-reply")]
             let allow_second = route.service == Service::ServiceRegistry
                 && matches!(_previous.kind, TxKind::Reply { route: older, .. }
@@ -6498,6 +6965,8 @@ impl Session {
                 self.record_registry_pressure(handle, route, 1);
                 return Err(Error::FlowBusy);
             }
+            #[cfg(feature = "sunfish-registry-window-trace")]
+            { window_prior = Some(_previous_index); }
         }
         let Some(index) = self.free_tx_slot() else {
             #[cfg(feature = "sunfish-wlan-elf-queue-trace")]
@@ -6612,6 +7081,48 @@ impl Session {
             };
         }
         self.receive[receive].state = RxState::ReplyQueued;
+        #[cfg(feature = "sunfish-registry-handoff-turn")]
+        if self.registry_window.predecessor.is_none() && route.service == Service::ServiceRegistry
+            && route.transaction == 3 && route.destination == (Address { node: 0, port: 9 })
+        {
+            self.registry_window.predecessor = Some(RegistryPredecessorTrace {
+                #[cfg(feature = "sunfish-registry-post-reply-trace")]
+                grant: None,
+                request: *handle, queued_at: self.intent_ack_clock.map(|clock| clock()),
+                published_at: None, done_at: None,
+                #[cfg(feature = "sunfish-registry-predecessor-pressure")]
+                publication: None,
+                #[cfg(feature = "sunfish-registry-predecessor-pressure")]
+                publication_frozen: false,
+            });
+        }
+        #[cfg(feature = "sunfish-registry-window-trace")]
+        if let Some(prior) = window_prior {
+            self.registry_window.admissions = self.registry_window.admissions.saturating_add(1);
+            if self.registry_window.target.is_none()
+                && route.transaction == 4 && route.destination == (Address { node: 0, port: 9 })
+                && let TxKind::Reply { receive: older_receive, route: older_route, .. } = self.transmit[prior].kind
+                && older_route.transaction == 3
+            {
+                #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+                let prearm_flags = self.registry_prearm_flags(*handle);
+                self.registry_window.target = Some(RegistryWindowPair {
+                    #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+                    prearm: RegistryPrearmTrace { queued_flags: prearm_flags, ..RegistryPrearmTrace::default() },
+                    #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+                    conversion: RegistryConversionLifetime::default(),
+                    #[cfg(feature = "sunfish-registry-post-reply-trace")]
+                    publication: None,
+                    #[cfg(feature = "sunfish-registry-post-reply-trace")]
+                    publication_frozen: false,
+                    older: RequestHandle { owner: self.owner, generation: self.generation, intent: self.receive[older_receive].id },
+                    newer: *handle, older_transaction: 3, newer_transaction: 4,
+                    peer: route.destination, queued_at: self.intent_ack_clock.map(|clock| clock()),
+                    newer_published_at: None, older_done_at: None,
+                    published_before_done: None, older_completed: false,
+                });
+            }
+        }
         Ok(())
     }
 
@@ -6670,6 +7181,56 @@ impl Session {
             };
             let count = &mut tx.registry_publication.turn_gates[gate];
             *count = count.saturating_add(1);
+        }
+    }
+
+    #[cfg(feature = "sunfish-registry-grant-eligibility")]
+    fn observe_registry_grant_eligibility(
+        &mut self, tftp_ready: bool, wrq_return: bool,
+        candidate: Option<usize>, priority: Option<usize>,
+        #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")] first_entry: bool,
+        #[cfg(feature = "sunfish-registry-prearm-io-trace")] prearm_entry: bool,
+    ) {
+        for (index, tx) in self.transmit.iter_mut().enumerate() {
+            let TxKind::Reply { receive, route, .. } = tx.kind else { continue };
+            if route.service != Service::ServiceRegistry || tx.sent == tx.len { continue; }
+            // Capture the actual conjunction used by the borrowed turn. Later
+            // conditions are deliberately not inferred when an earlier one
+            // fails. Use the already-computed selectors; no extra selection,
+            // clock, hardware access or scheduling mutation.
+            let gate = if self.intent_request_ack.is_none() { 0 }
+                else if self.intent_request_ack == Some(false) { 1 }
+                else if self.intent_ack_backing.is_none() { 2 }
+                else if !self.intent_ack_yield && {
+                    #[cfg(feature = "sunfish-registry-converted-grant-turn")]
+                    { self.registry_converted_grant.is_none_or(|(backing, target)|
+                        self.intent_ack_backing != Some(backing)
+                            || target != (RequestHandle { owner: self.owner, generation: self.generation,
+                                intent: self.receive[receive].id })) }
+                    #[cfg(not(feature = "sunfish-registry-converted-grant-turn"))]
+                    { true }
+                } { 3 }
+                else if self.registry_turn_used { 4 }
+                else if tftp_ready { 5 }
+                else if wrq_return { 6 }
+                else if self.receive[receive].done_pending { 7 }
+                else if tx.registry_grant_turn_used { 8 }
+                else if candidate != Some(index) { 9 }
+                else if priority != Some(index) { 10 }
+                else { 11 };
+            let count = &mut tx.registry_publication.grant_gates[gate];
+            *count = count.saturating_add(1);
+            #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+            if prearm_entry && let Some(pair) = self.registry_window.target.as_mut()
+                && pair.newer == (RequestHandle { owner: self.owner, generation: self.generation, intent: self.receive[receive].id })
+            { pair.prearm.first_gate = Some(gate as u8); }
+
+            #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+            if first_entry && let Some(pair) = self.registry_window.target.as_mut()
+                && pair.newer == (RequestHandle { owner: self.owner, generation: self.generation, intent: self.receive[receive].id })
+                && let Some(entry) = pair.conversion.first.as_mut().and_then(|t| t.entry.as_mut())
+            { entry.gate = Some(gate as u8); }
+
         }
     }
 
@@ -7146,6 +7707,10 @@ impl Session {
         let ordinary = followup.is_none();
         #[cfg(not(feature = "sunfish-tftp-oack-followup"))]
         let ordinary = true;
+        #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+        let conversion_entry = self.observe_conversion_entry(ordinary);
+        #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+        let prearm_entry = self.observe_prearm_entry();
         #[cfg(feature = "sunfish-ipa-registration-tx-trace")]
         let registration_started = self.registration_tx_slot().and(self.intent_ack_clock).map(|clock| clock());
         #[cfg(feature = "sunfish-wlan-elf-oack-queue-trace")]
@@ -7174,6 +7739,12 @@ impl Session {
         let prefer_ack = self.intent_request_ack.is_some() && !self.intent_ack_yield;
         #[cfg(not(feature = "sunfish-wlan-intent-ack-turn"))]
         let prefer_ack = false;
+        #[cfg(feature = "sunfish-registry-converted-grant-turn")]
+        let (conversion_wrq_return, conversion_tftp) = self.registry_conversion_protected_work();
+        #[cfg(feature = "sunfish-registry-converted-grant-turn")]
+        let converted_registry = if ordinary && !conversion_wrq_return && !conversion_tftp {
+            self.converted_registry_candidate()
+        } else { None };
         // A released first WRQ can wait behind traffic that continually
         // refills lower receive slots. Give its exact RX_DONE one turn after
         // any preferred peer intent ACK and its backing advertisement.
@@ -7204,24 +7775,80 @@ impl Session {
         // Yield to the existing TFTP turn, intent ACKs and ready QRTR credits.
         // A successful registry turn must be followed by a normal publication
         // before another priority record can be sent.
+        // After a committed ACK, lend one attempt before a new positive
+        // grant's backing advertisement. Once advertised, its ACK keeps its
+        // turn. The per-transmit latch survives blocked writes; diagnostics
+        // and clocks never decide eligibility.
+        #[cfg(feature = "sunfish-registry-between-grants")]
+        let registry_before_grant = self.intent_ack_yield
+            && self.intent_request_ack == Some(true) && self.intent_ack_backing.is_some();
+        #[cfg(not(feature = "sunfish-registry-between-grants"))]
+        let registry_before_grant = false;
+        #[cfg(feature = "sunfish-registry-converted-grant-turn")]
+        let registry_before_grant = registry_before_grant || converted_registry.is_some();
         #[cfg(feature = "sunfish-wlan-registry-tx-turn")]
         let registry_candidate = if !self.registry_turn_used && priority_tftp.is_none()
-            && self.intent_request_ack.is_none() && priority_wrq_done.is_none()
+            && (self.intent_request_ack.is_none() || registry_before_grant)
+            && priority_wrq_done.is_none()
         {
-            self.next_transmit_in_order([3])
+            self.next_transmit_in_order([3]).filter(|(slot, _)| {
+                #[cfg(feature = "sunfish-registry-between-grants")]
+                if registry_before_grant && self.transmit[*slot].registry_grant_turn_used { return false; }
+                let _ = slot;
+                true
+            })
         } else {
             None
         };
         #[cfg(feature = "sunfish-wlan-registry-tx-turn")]
         let priority_registry = registry_candidate.filter(|_| self.next_transmit_in_order([1]).is_none());
+        #[cfg(feature = "sunfish-registry-converted-grant-turn")]
+        let prefer_ack = prefer_ack && !(converted_registry.is_some() && priority_registry == converted_registry);
+        #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+        let converted_credit = self.converted_credit_candidate(registry_candidate, converted_registry);
+        #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+        let prefer_ack = prefer_ack && converted_credit.is_none();
         #[cfg(feature = "sunfish-wlan-registry-turn-gates")]
         self.observe_registry_turn_gates(
             priority_tftp.is_some(),
             registry_candidate.map(|(slot, _)| slot),
             priority_registry.map(|(slot, _)| slot),
         );
+        #[cfg(feature = "sunfish-registry-grant-eligibility")]
+        self.observe_registry_grant_eligibility(
+            priority_tftp.is_some() || {
+                #[cfg(feature = "sunfish-registry-converted-grant-turn")] { conversion_tftp }
+                #[cfg(not(feature = "sunfish-registry-converted-grant-turn"))] { false }
+            }, priority_wrq_done.is_some() || {
+                #[cfg(feature = "sunfish-registry-converted-grant-turn")] { conversion_wrq_return }
+                #[cfg(not(feature = "sunfish-registry-converted-grant-turn"))] { false }
+            },
+            registry_candidate.map(|(slot, _)| slot),
+            priority_registry.map(|(slot, _)| slot),
+            #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")] conversion_entry,
+            #[cfg(feature = "sunfish-registry-prearm-io-trace")] prearm_entry,
+        );
+        #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+        let entry_length_consistent = self.registry_window.target.and_then(|p| p.conversion.first)
+            .is_some_and(|t| t.length_consistent);
+        #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+        if conversion_entry && let Some(pair) = self.registry_window.target.as_mut()
+            && let Some(entry) = pair.conversion.first.as_mut().and_then(|t| t.entry.as_mut())
+        {
+            entry.flags |= (u32::from(converted_registry.is_some()) << 11)
+                | (u32::from(priority_registry.is_some()) << 12)
+                | (u32::from(conversion_tftp) << 13)
+                | (u32::from(conversion_wrq_return) << 14)
+                | (u32::from(registry_candidate.is_some() && priority_registry.is_none()) << 15);
+            #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+            { entry.flags |= (u32::from(converted_credit.is_some()) << 19)
+                | (u32::from(entry_length_consistent) << 20); }
+
+        }
         #[cfg(feature = "sunfish-wlan-registry-tx-turn")]
         let priority_data = priority_tftp.or(priority_registry);
+        #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+        let priority_data = priority_data.or(converted_credit.map(|(_, credit, remote)| (credit, remote)));
         #[cfg(not(feature = "sunfish-wlan-registry-tx-turn"))]
         let priority_data = priority_tftp;
         // Borrow one attempt only before the backing advertisement. Once
@@ -7429,7 +8056,21 @@ impl Session {
                 let init_writer = init_target.and(self.intent_ack_clock).map(|clock| clock());
                 #[cfg(feature = "sunfish-ipa-registration-tx-trace")]
                 let registration_writer = registration_target.and(self.intent_ack_clock).map(|clock| clock());
+                #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+                let conversion_choice = self.observe_conversion_choice(&record[..8], None);
+                #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+                let prearm_choice = self.observe_prearm_choice(&record[..8], None);
+                #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+                self.observe_prearm_result(prearm_choice, 4);
+                #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+                self.observe_conversion_callback(conversion_choice);
                 let result = writer(&record[..8]);
+                #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+                self.observe_prearm_result(prearm_choice, match result { Ok(()) => 1, Err(WriteError::WouldBlock) => 2, Err(WriteError::Uncertain) => 3 });
+                #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+                if conversion_choice && let Some(choice) = self.registry_window.target.as_mut()
+                    .and_then(|p| p.conversion.first.as_mut()).and_then(|t| t.choice.as_mut())
+                { choice.result = match result { Ok(()) => 1, Err(WriteError::WouldBlock) => 2, Err(WriteError::Uncertain) => 3 }; }
                 #[cfg(feature = "sunfish-post-reg-oack-turn")]
                 if let Some(i) = post_reg_turn {
                     self.post_reg_turns.turns[i].written(7, result);
@@ -7711,6 +8352,16 @@ impl Session {
         // These extra attempts may only publish the exact pair selected
         // by the ordinary arbiter. Pending grants and other work keep
         // their normal priority on the next receive/write iteration.
+        #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+        let prearm_choice = self.observe_prearm_choice(&record[..size], match &commit {
+            Commit::Data(slot, ..) => match self.transmit[*slot].kind { TxKind::Reply { route, .. } => Some(route.transaction), _ => None }, _ => None,
+        });
+        #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+        let conversion_choice = self.observe_conversion_choice(&record[..size], match &commit {
+            Commit::Data(slot, ..) => match self.transmit[*slot].kind {
+                TxKind::Reply { route, .. } => Some(route.transaction), _ => None,
+            }, _ => None,
+        });
         #[cfg(feature = "sunfish-tftp-oack-followup")]
         if let Some(stage) = followup {
             #[cfg(feature = "sunfish-tftp-oack-followup-reason")]
@@ -7907,20 +8558,24 @@ impl Session {
                 return Ok(None);
             }
         }
-        // Keep the wire intent for this one completion. Reserve a distinct
-        // datagram ID so a stale TFTP handle cannot reach its next packet.
+        // Keep the wire intent only for the existing exact WRQ exception or
+        // a fully accepted NEW_SERVER. Retained service requests never qualify.
         #[cfg(feature = "sunfish-wlan-first-wrq-reuse")]
-        let reuse = if let Commit::Done(index) = &commit
-            && priority_wrq_done == Some(*index)
-        {
-            let id = self.next_local_intent;
-            let next = id.checked_add(1).ok_or(Error::IdExhausted)?;
-            glink_header(&mut record, crate::wlfw_protocol::GLINK_CMD_RX_DONE_W_REUSE,
-                self.config.local_channel, self.receive[*index].id);
-            Some((id, next))
-        } else {
-            None
-        };
+        let reuse = if let Commit::Done(index) = &commit {
+            #[cfg(feature = "sunfish-glink-announcement-reuse")]
+            let announcement = self.receive[*index].state == RxState::Control
+                && self.receive[*index].announcement_reuse
+                && self.receive[*index].context.is_none() && self.receive[*index].ticket.is_none();
+            #[cfg(not(feature = "sunfish-glink-announcement-reuse"))]
+            let announcement = false;
+            if priority_wrq_done == Some(*index) || announcement {
+                let id = self.next_local_intent;
+                let next = id.checked_add(1).ok_or(Error::IdExhausted)?;
+                glink_header(&mut record, crate::wlfw_protocol::GLINK_CMD_RX_DONE_W_REUSE,
+                    self.config.local_channel, self.receive[*index].id);
+                Some((id, next))
+            } else { None }
+        } else { None };
         // An unwinding host writer is also an uncertain publication. Leave the
         // guard set unless it returns one of the explicit known outcomes.
         self.quarantined = true;
@@ -7956,7 +8611,71 @@ impl Session {
         if first_oack_ready {
             self.first_oack_eligibility.ready_command = Some(u16::from_le_bytes([record[0], record[1]]));
         }
+        #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+        let borrowed_credit = converted_credit.filter(|(_, credit, _)|
+            matches!(&commit, Commit::Data(actual, ..) if actual == credit));
+        #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+        if let Some((registry, credit, _)) = borrowed_credit {
+            // One attempt per actual registry transmit, including blocked or
+            // uncertain outcomes. Never lend the same conversion twice.
+            self.transmit[registry].registry_credit_turn_used = true;
+            self.transmit[registry].registry_publication.mask |= 1 << 17;
+            if let Some(first) = self.registry_window.target.as_mut().and_then(|p| p.conversion.first.as_mut())
+                .filter(|t| t.active)
+            {
+                let bytes = &self.transmit[credit].bytes;
+                let pack = |a: u32, b: u32| (a <= 65535 && b <= 65535).then_some((a << 16) | b);
+                first.credit_ports = pack(word(bytes, 12), word(bytes, 28));
+                first.credit_nodes = pack(word(bytes, 8), word(bytes, 24));
+            }
+            self.observe_conversion_exit(5);
+            self.registry_converted_grant = None;
+        }
+        #[cfg(feature = "sunfish-registry-between-grants")]
+        let borrowed_registry_slot = if registry_before_grant {
+            priority_registry.filter(|(slot, _)| matches!(&commit, Commit::Data(actual, ..) if slot == actual))
+                .map(|(slot, _)| slot)
+        } else { None };
+        #[cfg(feature = "sunfish-registry-between-grants")]
+        if let Some(slot) = borrowed_registry_slot {
+            self.transmit[slot].registry_grant_turn_used = true;
+            self.transmit[slot].registry_publication.mask |= 1 << 8;
+        }
+        #[cfg(feature = "sunfish-registry-converted-grant-turn")]
+        let converted_slot = borrowed_registry_slot.filter(|slot|
+            converted_registry.is_some_and(|(target, _)| target == *slot));
+        #[cfg(feature = "sunfish-registry-converted-grant-turn")]
+        if borrowed_registry_slot.is_some() {
+            // Consume before the checked writer, including WouldBlock or an
+            // unwind. A different reply cannot inherit this grant opportunity.
+            #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+            self.observe_conversion_exit(1);
+            self.registry_converted_grant = None;
+            if let Some(slot) = converted_slot { self.transmit[slot].registry_publication.mask |= 1 << 11; }
+        }
+        #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+        self.observe_conversion_callback(conversion_choice);
+        #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+        self.observe_prearm_result(prearm_choice, 4);
         let result = writer(&record[..size]);
+        #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+        self.observe_prearm_result(prearm_choice, match result { Ok(()) => 1, Err(WriteError::WouldBlock) => 2, Err(WriteError::Uncertain) => 3 });
+        #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+        if conversion_choice && let Some(choice) = self.registry_window.target.as_mut()
+            .and_then(|p| p.conversion.first.as_mut()).and_then(|t| t.choice.as_mut())
+        { choice.result = match result { Ok(()) => 1, Err(WriteError::WouldBlock) => 2, Err(WriteError::Uncertain) => 3 }; }
+        #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+        if result.is_ok() && let Some((registry, _, _)) = borrowed_credit {
+            self.transmit[registry].registry_publication.mask |= 1 << 18;
+        }
+        #[cfg(feature = "sunfish-registry-converted-grant-turn")]
+        if result.is_ok() && let Some(slot) = converted_slot {
+            self.transmit[slot].registry_publication.mask |= 1 << 12;
+        }
+        #[cfg(feature = "sunfish-registry-between-grants")]
+        if result.is_ok() && let Some(slot) = borrowed_registry_slot {
+            self.transmit[slot].registry_publication.mask |= 1 << 9;
+        }
         #[cfg(feature = "sunfish-post-reg-oack-turn")]
         if let Some(i) = post_reg_turn {
             self.post_reg_turns.turns[i].written(u16::from_le_bytes([record[0], record[1]]), result);
@@ -8102,6 +8821,12 @@ impl Session {
         { self.intent_ack_yield = matches!(&commit, Commit::IntentAck); }
         match commit {
             Commit::Advertise(index) => {
+                #[cfg(feature = "sunfish-registry-converted-grant-turn")]
+                if self.registry_converted_grant.is_some_and(|(backing, _)| backing == self.receive[index].id) {
+                    #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+                    self.observe_conversion_exit(2);
+                    self.registry_converted_grant = None;
+                }
                 self.receive[index].state = RxState::Available;
                 #[cfg(feature = "sunfish-tftp-oack-prime-rx")]
                 if let Some((transfer, rx)) = prime && index == rx {
@@ -8119,6 +8844,14 @@ impl Session {
                             Some(_) => GrantAdWriter::OtherFollowup,
                         });
                         self.grant_backing.advertised_at = self.intent_ack_clock.map(|now| now());
+                        #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+                        if let Some(first) = self.registry_window.target.as_mut().and_then(|p| p.conversion.first.as_mut())
+                            && first.intent == self.receive[index].id && !first.advertised
+                        { first.advertised = true; first.advertised_at = self.grant_backing.advertised_at; }
+                        #[cfg(feature = "sunfish-registry-post-reply-trace")]
+                        if let Some(grant) = self.registry_window.predecessor.as_mut().and_then(|p| p.grant.as_mut())
+                            && grant.intent == self.receive[index].id && !grant.advertised
+                        { grant.advertised = true; grant.advertised_at = self.grant_backing.advertised_at; }
                     }
                     #[cfg(feature = "sunfish-tftp-oack-slot-follow")]
                     self.follow_oack_slot_available(index, 2);
@@ -8128,6 +8861,10 @@ impl Session {
                 self.follow_oack_slot_available(index, 1);
             },
             Commit::IntentAck => {
+                #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+                self.observe_conversion_exit(3);
+                #[cfg(feature = "sunfish-registry-converted-grant-turn")]
+                { self.registry_converted_grant = None; }
                 #[cfg(feature = "sunfish-glink-intent-denial-snapshot")]
                 if let Some((requested, request)) = self.pending_denial_slots.take()
                     && self.intent_request_ack == Some(false)
@@ -8144,13 +8881,41 @@ impl Session {
                     *count = count.saturating_add(1);
                     *maximum = (*maximum).max(age);
                 }
+                #[cfg(feature = "sunfish-registry-post-reply-trace")]
+                if self.intent_request_ack == Some(true)
+                    && let Some(grant) = self.registry_window.predecessor.as_mut().and_then(|p| p.grant.as_mut())
+                    && self.grant_backing.intent == Some(grant.intent) && grant.advertised && !grant.acked
+                { grant.acked = true; grant.ack_at = self.intent_ack_clock.map(|now| now()); }
+                #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+                if self.intent_request_ack == Some(true)
+                    && let Some(first) = self.registry_window.target.as_mut().and_then(|p| p.conversion.first.as_mut())
+                    && self.grant_backing.intent == Some(first.intent) && first.advertised && !first.acked
+                { first.acked = true; first.ack_at = self.intent_ack_clock.map(|now| now()); }
                 self.intent_request_ack = None;
+                #[cfg(feature = "sunfish-glink-announcement-reuse")]
+                { self.intent_ack_reused = None; }
                 #[cfg(feature = "sunfish-glink-retry-full-intent")]
                 { self.retry_full_intent = false; }
                 #[cfg(feature = "sunfish-wlan-registry-ack-trace")]
                 { self.intent_ack_started = None; }
             },
             Commit::Done(index) => {
+                #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+                if let Some(pair) = self.registry_window.target.as_mut()
+                    && !pair.prearm.own_done_seen
+                    && pair.newer == (RequestHandle { owner: self.owner, generation: self.generation, intent: self.receive[index].id })
+                { pair.prearm.own_done_seen = true; pair.prearm.own_done_at = self.intent_ack_clock.map(|now| now()); }
+                #[cfg(feature = "sunfish-ack-elf-phase-trace")]
+                {
+                    let request = TftpHandle { owner: self.owner, generation: self.generation,
+                        intent: self.receive[index].tftp_datagram_id() };
+                    let clock = self.intent_ack_clock;
+                    for write in self.server_check_traces_mut() {
+                        if let Some(data) = write.data.as_mut().filter(|d| d.request == request)
+                            && data.stages.returned_at.is_none()
+                        { data.stages.returned_at = clock.map(|clock| clock()); }
+                    }
+                }
                 #[cfg(feature = "sunfish-tftp-oack-repeat-turn")]
                 if repeat_release == Some(index) && let Some(trace) = self.oack_slot_follow.as_mut() {
                     trace.exact_repeat_done_at = self.intent_ack_clock.map(|clock| clock());
@@ -8209,6 +8974,8 @@ impl Session {
                             state: RxState::Available,
                             id: self.receive[index].id,
                             reused_datagram_id: Some(datagram_id),
+                            #[cfg(feature = "sunfish-glink-announcement-reuse")]
+                            announcement_reuse: self.receive[index].announcement_reuse,
                             ..receive
                         }
                     } else {
@@ -8222,6 +8989,18 @@ impl Session {
                     #[cfg(feature = "sunfish-tftp-oack-resources")]
                     if self.receive[index].state == RxState::Available {
                         self.observe_oack_intent_available(self.receive[index].id);
+                    }
+                    // A pending full-pool denial may use this exact return only
+                    // after RX_DONE_W_REUSE committed. Its original advertisement
+                    // and this return already precede the eventual positive ACK.
+                    #[cfg(all(feature = "sunfish-glink-announcement-reuse", feature = "sunfish-glink-retry-full-intent"))]
+                    if self.retry_full_intent && self.intent_request_ack == Some(false)
+                        && self.receive[index].state == RxState::Available
+                        && self.receive[index].announcement_reuse
+                    {
+                        self.intent_request_ack = Some(true);
+                        self.intent_ack_reused = Some(self.receive[index].id);
+                        self.retry_full_intent = false;
                     }
                     // Reserve the slot after RX_DONE commits, before another
                     // publisher pass can use it for a routine advertisement.
@@ -8239,6 +9018,62 @@ impl Session {
                         }
                         self.intent_request_ack = Some(true);
                         self.retry_full_intent = false;
+                        #[cfg(feature = "sunfish-registry-converted-grant-turn")]
+                        {
+                            let candidate = self.next_transmit_in_order([3]);
+                            for (slot, tx) in self.transmit.iter_mut().enumerate() {
+                                let TxKind::Reply { receive, route, .. } = tx.kind else { continue; };
+                                if route.service != Service::ServiceRegistry || tx.sent == tx.len { continue; }
+                                tx.registry_publication.mask |= (1 << 13)
+                                    | (u32::from(self.receive[receive].done_pending) << 14)
+                                    | (u32::from(candidate.is_none_or(|(target, _)| target != slot)) << 15)
+                                    | (u32::from(tx.registry_grant_turn_used) << 16);
+                            }
+                            #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+                            self.observe_conversion_exit(4);
+                            self.registry_converted_grant = candidate
+                                .filter(|(slot, _)| !self.transmit[*slot].registry_grant_turn_used)
+                                .map(|(slot, _)| {
+                                    let TxKind::Reply { receive, .. } = self.transmit[slot].kind else { unreachable!() };
+                                    self.transmit[slot].registry_publication.mask |= 1 << 10;
+                                    let request = RequestHandle { owner: self.owner, generation: self.generation,
+                                        intent: self.receive[receive].id };
+                                    #[cfg(feature = "sunfish-registry-post-reply-trace")]
+                                    if let Some(prior) = self.registry_window.predecessor.as_mut()
+                                        && prior.request == request && prior.grant.is_none()
+                                    {
+                                        prior.grant = Some(RegistryConvertedGrantTrace {
+                                            intent: id, converted_at: self.grant_backing.reserved_at,
+                                            advertised_at: None, ack_at: None, advertised: false, acked: false,
+                                        });
+                                    }
+                                    (id, request)
+                                });
+                            #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
+                            if let Some((intent, request)) = self.registry_converted_grant
+                                && let Some(pair) = self.registry_window.target.as_mut()
+                                && pair.newer == request
+                            {
+                                pair.conversion.arms = pair.conversion.arms.saturating_add(1);
+                                if pair.conversion.first.is_none() && let Some((slot, _)) = candidate {
+                                    let tx = &self.transmit[slot];
+                                    pair.conversion.first = Some(RegistryConversionTurn {
+                                        #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+                                        packed_len_sent: (u32::from(tx.registry_publication.bytes) << 16) | tx.sent as u32,
+                                        #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+                                        length_consistent: tx.len != 0 && tx.len == usize::from(tx.registry_publication.bytes),
+                                        #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+                                        credit_ports: None,
+                                        #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+                                        credit_nodes: None,
+                                        intent, request_intent: request.intent, bytes: tx.len as u16, sent: tx.sent as u16,
+                                        armed_at: self.grant_backing.reserved_at, entry: None, choice: None,
+                                        exit: None, advertised_at: None, ack_at: None,
+                                        active: true, advertised: false, acked: false,
+                                    });
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -8310,6 +9145,32 @@ impl Session {
                 self.transmit[index].remote_slot = Some(remote);
                 self.transmit[index].sent += chunk;
                 if self.transmit[index].sent == self.transmit[index].len {
+                    #[cfg(feature = "sunfish-registry-handoff-turn")]
+                    if let Some(prior) = self.registry_window.predecessor.as_mut()
+                        && let TxKind::Reply { receive, .. } = self.transmit[index].kind
+                        && prior.request == (RequestHandle { owner: self.owner, generation: self.generation, intent: self.receive[receive].id })
+                    {
+                        prior.published_at = self.intent_ack_clock.map(|clock| clock());
+                        #[cfg(feature = "sunfish-registry-predecessor-pressure")]
+                        {
+                            prior.publication = Some(self.transmit[index].registry_publication);
+                            prior.publication_frozen = true;
+                        }
+                    }
+                    #[cfg(feature = "sunfish-registry-window-trace")]
+                    if let Some(pair) = self.registry_window.target.as_mut()
+                        && pair.published_before_done.is_none()
+                        && let TxKind::Reply { receive, .. } = self.transmit[index].kind
+                        && pair.newer == (RequestHandle { owner: self.owner, generation: self.generation, intent: self.receive[receive].id })
+                    {
+                        #[cfg(feature = "sunfish-registry-post-reply-trace")]
+                        {
+                            pair.publication = Some(self.transmit[index].registry_publication);
+                            pair.publication_frozen = true;
+                        }
+                        pair.newer_published_at = self.intent_ack_clock.map(|clock| clock());
+                        pair.published_before_done = Some(!pair.older_completed);
+                    }
                     #[cfg(feature = "sunfish-tftp-oack-reserve")]
                     if index == TX_SLOTS && let Some(oack) = self.reserved_oack.as_mut() {
                         oack.published_at = self.intent_ack_clock.map(|clock| clock());
@@ -8405,6 +9266,51 @@ impl Session {
         #[cfg(not(feature = "sunfish-glink-credit-fairness-experiment"))]
         let order = [1, 0, 2];
         self.next_transmit_in_order(order)
+    }
+
+    #[cfg(feature = "sunfish-registry-converted-grant-turn")]
+    fn registry_conversion_protected_work(&self) -> (bool, bool) {
+        // Check protected work independently of prefer_ack: a conversion
+        // normally prefers its backing advertisement, whereas this exception
+        // may lend only a registry DATA turn, never another control turn.
+        let wrq_return = self.first_server_check.as_ref().is_some_and(|write|
+            write.before_elf && write.exact_wrq && !write.coalesced
+                && write.wrq_result == Some(0) && write.oack.phase >= 1 && write.timing.closes == 0
+                && self.receive.iter().any(|rx| rx.tftp_datagram_id() == write.request.intent
+                    && rx.state == RxState::Control && rx.done_pending));
+        let tftp = !wrq_return && self.tftp_control_turn_due && self.next_ready_tftp().is_some();
+        (wrq_return, tftp)
+    }
+
+    #[cfg(feature = "sunfish-registry-converted-credit-turn")]
+    fn converted_credit_candidate(&self, registry: Option<(usize, usize)>, converted: Option<(usize, usize)>)
+        -> Option<(usize, usize, usize)>
+    {
+        // Use only the real converted-token selector and normal ready order;
+        // no diagnostic counters, clocks or captured histories decide policy.
+        let (target, _) = converted?;
+        if registry != converted || self.transmit[target].registry_credit_turn_used { return None; }
+        if !matches!(self.transmit[target].kind, TxKind::Reply { route, .. }
+            if route.service == Service::ServiceRegistry && route.transaction == 4
+                && route.destination == (Address { node: 0, port: 9 })) { return None; }
+        let (credit, remote) = self.next_transmit_in_order([1])?;
+        let tx = &self.transmit[credit];
+        (matches!(tx.kind, TxKind::Resume) && tx.sent == 0 && tx.len == 52)
+            .then_some((target, credit, remote))
+    }
+
+    #[cfg(feature = "sunfish-registry-converted-grant-turn")]
+    fn converted_registry_candidate(&self) -> Option<(usize, usize)> {
+        let (backing, request) = self.registry_converted_grant?;
+        if request.owner != self.owner || request.generation != self.generation
+            || self.intent_request_ack != Some(true) || self.intent_ack_backing != Some(backing)
+            || !self.receive[..RX_SLOTS].iter().any(|rx| rx.id == backing && rx.state == RxState::Advertising)
+        { return None; }
+        let candidate = self.next_transmit_in_order([3])?;
+        let tx = &self.transmit[candidate.0];
+        let TxKind::Reply { receive, .. } = tx.kind else { return None; };
+        (!tx.registry_grant_turn_used && self.receive[receive].id == request.intent
+            && self.receive[receive].state == RxState::ReplyQueued).then_some(candidate)
     }
 
     #[cfg(feature = "sunfish-glink-tftp-control-fairness-experiment")]
@@ -8714,3 +9620,7 @@ impl Session {
         self.remote_for_transmit(tx)
     }
 }
+
+#[cfg(all(test, feature = "sunfish-first-data-ack-elf-trace"))]
+#[path = "qcom_tftp_completion_test.rs"]
+mod completion_identity_tests;

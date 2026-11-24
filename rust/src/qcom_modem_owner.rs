@@ -383,6 +383,23 @@ pub struct RegistryTxn4Timing {
     pub last_pressure: Option<crate::qcom_glink_qmi::RegistryQueuePressure>,
 }
 
+/// Opaque one-shot candidate created only by actual successful/blocked dispatches.
+#[cfg(feature = "sunfish-registry-handoff-turn")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RegistryHandoffToken { older: RequestHandle, waiting: RequestHandle, target: bool }
+#[cfg(feature = "sunfish-registry-handoff-turn")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RegistryHandoffTrace { pub attempts: u32, pub target: Option<RegistryHandoffAttempt> }
+#[cfg(feature = "sunfish-registry-handoff-turn")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RegistryHandoffAttempt {
+    token: RegistryHandoffToken,
+    pub writer_at: Option<u64>, pub writer_end: Option<u64>,
+    pub ready_at: Option<u64>, pub retry_at: Option<u64>, pub retry_end: Option<u64>,
+    /// 0 not ready/deferred, 1 queued, 2 waiting, 3 idle, 4 progress, 5 fatal.
+    pub result: u8,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ServiceRegistryTrace {
     /// GLINK QMI requests delivered to the manifest-backed LOC endpoint.
@@ -997,6 +1014,12 @@ pub struct Owner<I> {
     peer_tftp_cursor: usize,
     handlers_id: Option<u64>,
     service_registry_trace: ServiceRegistryTrace,
+    #[cfg(feature = "sunfish-registry-handoff-turn")]
+    registry_last_dispatch: Option<(RequestHandle, bool)>,
+    #[cfg(feature = "sunfish-registry-handoff-turn")]
+    registry_handoff: Option<RegistryHandoffToken>,
+    #[cfg(feature = "sunfish-registry-handoff-turn")]
+    registry_handoff_trace: RegistryHandoffTrace,
     first_service_registry_reply_handle: Option<RequestHandle>,
     #[cfg(feature = "sunfish-wlan-startup-trace")]
     first_registry_replies_by_name: [Option<RequestHandle>; crate::qcom_servreg::NAME_COUNTER_COUNT],
@@ -1260,6 +1283,12 @@ impl<I: Io> Owner<I> {
             peer_tftp_cursor: 0,
             handlers_id: None,
             service_registry_trace: ServiceRegistryTrace::new(),
+            #[cfg(feature = "sunfish-registry-handoff-turn")]
+            registry_last_dispatch: None,
+            #[cfg(feature = "sunfish-registry-handoff-turn")]
+            registry_handoff: None,
+            #[cfg(feature = "sunfish-registry-handoff-turn")]
+            registry_handoff_trace: RegistryHandoffTrace::default(),
             first_service_registry_reply_handle: None,
             #[cfg(feature = "sunfish-wlan-startup-trace")]
             first_registry_replies_by_name: [None; crate::qcom_servreg::NAME_COUNTER_COUNT],
@@ -1987,6 +2016,16 @@ impl<I: Io> Owner<I> {
     pub fn intent_ack_summary(&self) -> (u32, Option<u64>) {
         self.adapter.intent_ack_summary()
     }
+    #[cfg(feature = "sunfish-registry-window-trace")]
+    pub fn registry_window_trace(&self) -> crate::qcom_glink_qmi::RegistryWindowTrace { self.adapter.registry_window_trace() }
+    #[cfg(feature="sunfish-registry-tx3-wire-headers")]
+    pub fn registry_wire_headers(&self)->Option<crate::qcom_glink_fifo::RegistryWireTrace>{self.adapter.registry_wire_headers()}
+    #[cfg(feature = "sunfish-registry-post-reply-trace")]
+    pub fn registry_reply_fifo(&self) -> Option<crate::qcom_glink_fifo::RegistryReplyFifo> {
+        self.adapter.registry_reply_fifo()
+    }
+    #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+    pub fn registry_prearm_io(&self) -> Option<fifo::RegistryPrearmIo> { self.adapter.registry_prearm_io() }
     pub fn service_registry_trace(&self) -> ServiceRegistryTrace {
         let trace = self.service_registry_trace;
         #[cfg(feature = "sunfish-wlan-elf-exchange-trace")]
@@ -2035,6 +2074,14 @@ impl<I: Io> Owner<I> {
         #[cfg(feature = "sunfish-tftp-per-peer-reply-experiment")]
         if self.peer_tftp_replies.iter().any(Option::is_some) { return true; }
         self.pending_tftp_reply.is_some()
+    }
+    #[cfg(feature = "sunfish-first-data-ack-elf-trace")]
+    pub fn original_tftp_write_trace(&self) -> Option<crate::qcom_glink_qmi::ElfServerCheckTrace> {
+        self.adapter.original_tftp_write_trace()
+    }
+    #[cfg(feature = "sunfish-original-final-ack-turn")]
+    pub fn original_final_ack_queued(&self) -> bool {
+        self.adapter.original_final_ack_queued()
     }
     #[cfg(feature = "sunfish-native-tftp-server-check")]
     pub fn tftp_queue_snapshot(&self) -> (crate::qcom_glink_qmi::TftpQueueSnapshot, bool) {
@@ -2702,14 +2749,79 @@ impl<I: Io> Owner<I> {
         &mut self,
         interrupts: &mut impl Interrupts,
     ) -> Result<(ServiceProgress, Option<ServiceProgress>), Error> {
+        #[cfg(feature = "sunfish-registry-handoff-turn")]
+        { self.registry_handoff = None; }
         let first = self.dispatch_service_registry_step(interrupts)?;
+        #[cfg(feature = "sunfish-registry-handoff-turn")]
+        let queued = self.registry_last_dispatch.filter(|(_, success)| *success).map(|(handle, _)| handle);
         let elf_pending = self.elf_lookup_handle
             .is_some_and(|handle| self.requests.contains(&Some(handle)));
         if first != ServiceProgress::ReplyQueued || !elf_pending {
             return Ok((first, None));
         }
         let second = self.dispatch_service_registry_step(interrupts)?;
+        #[cfg(feature = "sunfish-registry-handoff-turn")]
+        if second == ServiceProgress::WaitingReply
+            && let (Some(older), Some((waiting, false))) = (queued, self.registry_last_dispatch)
+            && let Some((old_txn, new_txn, peer, false)) = self.adapter.registry_handoff_pair(&older, &waiting)
+        {
+            self.registry_handoff = Some(RegistryHandoffToken { older, waiting,
+                target: old_txn == 3 && new_txn == 4 && peer == (crate::qcom_qmi_router::Address {node:0,port:9}) });
+        }
         Ok((first, Some(second)))
+    }
+
+    #[cfg(feature = "sunfish-registry-handoff-turn")]
+    pub fn registry_handoff_trace(&self) -> RegistryHandoffTrace { self.registry_handoff_trace }
+
+    #[cfg(feature = "sunfish-registry-handoff-turn")]
+    pub fn take_registry_handoff(&mut self) -> Result<Option<RegistryHandoffToken>, Error> {
+        self.check()?;
+        let token = self.registry_handoff.take();
+        Ok(token.filter(|t| self.adapter.registry_handoff_pair(&t.older, &t.waiting).is_some()))
+    }
+
+    #[cfg(feature = "sunfish-registry-handoff-turn")]
+    pub fn observe_registry_handoff_writer(&mut self, token: RegistryHandoffToken, end: bool, failed: bool) {
+        let trace = &mut self.registry_handoff_trace;
+        if !end {
+            trace.attempts = trace.attempts.saturating_add(1);
+            if token.target && trace.target.is_none() {
+                trace.target = Some(RegistryHandoffAttempt { token,
+                    writer_at: self.rmtfs_event_clock.map(|clock| clock()), writer_end: None,
+                    ready_at: None, retry_at: None, retry_end: None, result: 0 });
+            }
+        } else if let Some(attempt) = trace.target.as_mut().filter(|a| a.token == token) {
+            attempt.writer_end = self.rmtfs_event_clock.map(|clock| clock());
+            if failed { attempt.result = 5; }
+        }
+    }
+
+    #[cfg(feature = "sunfish-registry-handoff-turn")]
+    pub fn retry_registry_handoff(&mut self, token: RegistryHandoffToken,
+        interrupts: &mut impl Interrupts) -> Result<Option<ServiceProgress>, Error>
+    {
+        if self.stopped { return Err(Error::Stopped); }
+        if self.firmware_close_is_pending() { return Ok(None); }
+        #[cfg(feature = "sunfish-tftp-close-handoff-prototype")]
+        if self.pending_tftp_close().is_some() { return Ok(None); }
+        self.check()?;
+        if !self.adapter.registry_handoff_pair(&token.older, &token.waiting).is_some_and(|p| p.3) { return Ok(None); }
+        if let Some(attempt) = self.registry_handoff_trace.target.as_mut().filter(|a| a.token == token) {
+            attempt.ready_at = self.rmtfs_event_clock.map(|clock| clock());
+        }
+        if self.pending_request_for_service(Service::ServiceRegistry)? != Some(token.waiting) { return Ok(None); }
+        if let Some(attempt) = self.registry_handoff_trace.target.as_mut().filter(|a| a.token == token) {
+            attempt.retry_at = self.rmtfs_event_clock.map(|clock| clock());
+        }
+        let result = self.dispatch_service_registry_step(interrupts);
+        if let Some(attempt) = self.registry_handoff_trace.target.as_mut().filter(|a| a.token == token) {
+            attempt.retry_end = self.rmtfs_event_clock.map(|clock| clock());
+            attempt.result = match result { Ok(ServiceProgress::ReplyQueued) => 1,
+                Ok(ServiceProgress::WaitingReply) => 2, Ok(ServiceProgress::Idle) => 3,
+                Ok(ServiceProgress::Progress) => 4, Err(_) => 5 };
+        }
+        result.map(Some)
     }
 
     /// Answer one manifest-backed SERVREG LOC request without requiring the
@@ -2720,6 +2832,8 @@ impl<I: Io> Owner<I> {
         interrupts: &mut impl Interrupts,
     ) -> Result<ServiceProgress, Error> {
         self.check()?;
+        #[cfg(feature = "sunfish-registry-handoff-turn")]
+        { self.registry_last_dispatch = None; }
         #[cfg(feature = "sunfish-wlan-elf-dispatch-timing")]
         if let Some(elf) = self.service_registry_trace.elf.as_mut()
             && elf.dispatch.selected.is_none()
@@ -2794,6 +2908,8 @@ impl<I: Io> Owner<I> {
             };
             elf.dispatch.turns.record(transaction, name_code, outcome, self.rmtfs_event_clock.map(|clock| clock()));
         }
+        #[cfg(feature = "sunfish-registry-handoff-turn")]
+        { self.registry_last_dispatch = Some((handle, queue_result.is_ok())); }
         match queue_result {
             Ok(()) => {
                 if self.service_registry_trace.replies_queued == 0 {
@@ -3129,7 +3245,7 @@ impl<I: Io> Owner<I> {
                 let busy = self.has_pending_tftp_reply() || self.tftp_requests.iter().any(Option::is_some);
                 self.adapter.set_tftp_owner_busy(self.generation, busy)?;
             }
-            #[cfg(feature = "sunfish-tftp-peer-close-experiment")]
+            #[cfg(all(feature = "sunfish-tftp-peer-close-experiment", not(feature = "sunfish-tftp-peer-metadata-batch")))]
             {
                 let mut peers = [None; crate::qcom_glink_qmi::TFTP_OWNER_PEER_SLOTS];
                 let mut snapshot = [(None, 0); crate::qcom_glink_qmi::TFTP_OWNER_PEER_SLOTS];
@@ -3181,6 +3297,29 @@ impl<I: Io> Owner<I> {
                 #[cfg(feature = "sunfish-tftp-close-owner-fence")]
                 { let _ = firmware_count; self.adapter.set_tftp_firmware_peers(self.generation, firmware_guard)?; }
                 self.tftp_owner_snapshot = snapshot;
+            }
+            #[cfg(feature = "sunfish-tftp-peer-metadata-batch")]
+            {
+                let mut retained = [(None, 0, false); crate::qcom_glink_qmi::TFTP_OWNER_PEER_SLOTS];
+                let mut count = 0;
+                if let Some(reply) = self.pending_tftp_reply {
+                    retained[count] = (Some(reply.route.destination), 2, false);
+                    count += 1;
+                }
+                for reply in self.peer_tftp_replies.iter().flatten() {
+                    *retained.get_mut(count).ok_or(Error::QueueFull)? =
+                        (Some(reply.meta.route.destination), 4, (0x5100..=0x51ff).contains(&reply.meta.route.source.port));
+                    count += 1;
+                }
+                for peer in self.firmware_peers.iter().flatten() {
+                    *retained.get_mut(count).ok_or(Error::QueueFull)? = (Some(*peer), 8, true);
+                    count += 1;
+                }
+                if count + self.tftp_requests.iter().flatten().count() > retained.len() {
+                    return Err(Error::QueueFull);
+                }
+                self.tftp_owner_snapshot = self.adapter.refresh_tftp_peer_snapshot(
+                    self.generation, &self.tftp_requests, &retained)?;
             }
             let rx = self.adapter.poll_receive(self.generation)?;
             #[cfg(feature = "sunfish-tftp-wlan-close-handoff")]

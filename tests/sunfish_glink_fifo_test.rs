@@ -89,6 +89,8 @@ struct Memory {
     fail_after_store: bool,
     append_on_rx_read: bool,
     panic_on_notify: bool,
+    #[cfg(feature = "sunfish-glink-announcement-reuse")]
+    append_notification_on_write: bool,
     diagnostic: u32,
 }
 #[derive(Clone)]
@@ -123,6 +125,8 @@ impl Fake {
             fail_after_store: false,
             append_on_rx_read: false,
             panic_on_notify: false,
+            #[cfg(feature = "sunfish-glink-announcement-reuse")]
+            append_notification_on_write: false,
             diagnostic: 0,
         })))
     }
@@ -225,6 +229,14 @@ impl Io for Fake {
         assert!(offset + bytes.len() <= FIFO_BYTES);
         self.op("write_tx", Op::Write(offset, bytes.to_vec()))?;
         let mut m = self.0.borrow_mut();
+        #[cfg(feature = "sunfish-glink-announcement-reuse")]
+        if m.append_notification_on_write {
+            m.append_notification_on_write = false;
+            let record = [13u8,0,0,0,0,0,0,0];
+            let at = m.words[3] as usize;
+            for (i,b) in record.into_iter().enumerate(){m.rx[(at+i)%FIFO_BYTES]=b;}
+            m.words[3] = ((at+8)%FIFO_BYTES) as u32;
+        }
         m.tx[offset..offset + bytes.len()].copy_from_slice(bytes);
         if m.revoke_after_write {
             m.observation.ready = false;
@@ -1399,3 +1411,110 @@ fn grant_read_trace_requires_the_last_byte_of_the_wrapped_offer() {
     assert!(offer.first_read.unwrap() > capture.visible.unwrap());
     assert_eq!(offer.order(capture.absent, capture.visible), 2);
 }
+
+#[cfg(feature="sunfish-registry-post-reply-trace")]
+#[test]
+fn registry_post_reply_fifo_matches_exact_receipt_across_wrap_and_preserves_checked_io() {
+    use core::sync::atomic::{AtomicU64,Ordering::Relaxed};
+    static NOW:AtomicU64=AtomicU64::new(100);
+    for clocked in [false,true] {
+        let mut s=session();
+        s.register(1,Service::ServiceRegistry,qcom_servreg::LOCAL_PORT).unwrap();
+        s.prepare_service_available(1,Service::ServiceRegistry).unwrap();
+        let peer=Fake::new(0x3ff8,0x3ff8);
+        let mut a=Adapter::attach(peer.clone(),s,1).unwrap();
+        if clocked {a.set_registry_ack_clock(||NOW.fetch_add(1,Relaxed));}
+        let mut remote=control(5,2,2);
+        for id in [7u32,8] {remote.extend(4096u32.to_le_bytes());remote.extend(id.to_le_bytes());}
+        peer.push(&remote);a.poll_receive(1).unwrap();
+        let id=advertised(&mut a,&peer);
+        let mut packet=qrtr(1,&[0,3,0,0x21,0,6,0,1,3,0,b'f',b'o',b'o']);
+        packet[28..32].copy_from_slice(&qcom_servreg::LOCAL_PORT.to_le_bytes());
+        peer.push(&data(id,&packet));
+        let Ok(Receive::Session(Event::Request(request)))=a.poll_receive(1) else{panic!("registry request")};
+        a.queue_reply(1,&request,Reply::Failure{error:3}).unwrap();
+        let mut intent=None;
+        for _ in 0..16 {
+            let e=a.publish_next(1).unwrap();
+            if let Transmit::Session(Published::Data{remote_intent,last_fragment:true})=e {intent=Some(remote_intent);break;}
+            peer.take_tx();
+        }
+        let intent=intent.expect("exact reply published");
+        let trace=a.registry_reply_fifo().expect("publication arms even without a clock");
+        assert!(!trace.finished); assert_eq!(trace.completion,None);
+        peer.take_tx();a.revalidate(1).unwrap();
+        assert_eq!(a.registry_reply_fifo().unwrap().peer_tail_at.is_some(),clocked);
+        // A read notification ahead of the exact receipt stays in FIFO order.
+        peer.push(&control(13,0,0));peer.push(&control(14,2,intent));
+        a.revalidate(1).unwrap();
+        assert_eq!(a.poll_receive(1),Ok(Receive::ReadNotification));
+        assert!(!a.registry_reply_fifo().unwrap().finished);
+        assert_eq!(a.poll_receive(1),Ok(Receive::Session(Event::ReplyRxDone(request))));
+        let done=a.registry_reply_fifo().unwrap();assert!(done.finished);
+        let bounds=done.completion.unwrap();assert_eq!(bounds.bytes_ahead,Some(8));
+        assert_eq!(bounds.first_visible.is_some(),clocked);
+        let log=peer.log();assert_eq!(a.registry_reply_fifo(),Some(done));assert_eq!(peer.log(),log,"getter adds no hardware reads");
+        a.revalidate(1).unwrap();assert_eq!(a.registry_reply_fifo(),Some(done));
+    }
+}
+
+
+#[cfg(feature="sunfish-registry-prearm-io-trace")]
+#[test]
+fn registry_prearm_adapter_observes_queue_first_sample_own_return_and_fault_without_extra_getter_io(){
+    use core::sync::atomic::{AtomicU64,Ordering::Relaxed};
+    static NOW:AtomicU64=AtomicU64::new(100);
+    for clocked in [false,true] {for fail_sample in [false,true] {
+        let mut s=session();s.register(1,Service::ServiceRegistry,qcom_servreg::LOCAL_PORT).unwrap();
+        s.prepare_service_available(1,Service::ServiceRegistry).unwrap();
+        let peer=Fake::new(0x3ff8,0x3ff8);let mut a=Adapter::attach(peer.clone(),s,1).unwrap();
+        if clocked{a.set_registry_ack_clock(||NOW.fetch_add(1,Relaxed));}
+        let mut remote=control(5,2,2);for id in [7u32,8]{remote.extend(4096u32.to_le_bytes());remote.extend(id.to_le_bytes());}
+        peer.push(&remote);a.poll_receive(1).unwrap();
+        for txn in [3u16,4]{
+            let id=advertised(&mut a,&peer);let mut payload=vec![0];payload.extend(txn.to_le_bytes());payload.extend([0x21,0,6,0,1,3,0,b'f',b'o',b'o']);
+            let mut packet=qrtr(1,&payload);packet[28..32].copy_from_slice(&qcom_servreg::LOCAL_PORT.to_le_bytes());peer.push(&data(id,&packet));
+            let Ok(Receive::Session(Event::Request(request)))=a.poll_receive(1)else{panic!("registry request")};
+            a.queue_reply(1,&request,Reply::Failure{error:3}).unwrap();
+            if txn==3{
+                assert_eq!(a.registry_prearm_io(),None);
+                for _ in 0..16{let event=a.publish_next(1).unwrap();peer.take_tx();if matches!(event,Transmit::Session(Published::Data{last_fragment:true,..})){break;}}
+            }else{
+                let queued=a.registry_prearm_io().expect("only exact transaction4 queues observation");assert!(queued.queued.is_some());assert_eq!(queued.queued_at.is_some(),clocked);assert_eq!(queued.first_enter,None);
+                if fail_sample{peer.0.borrow_mut().fail=Some("observe");assert!(a.publish_next(1).is_err());}
+                else{assert_eq!(a.publish_next(1),Ok(Transmit::Session(Published::ReceiveDone(id))));}
+                let t=a.registry_prearm_io().unwrap();assert!(t.first_enter.is_some());assert_eq!(t.first_enter_at.is_some(),clocked);assert_eq!(t.first_end.is_some(),!fail_sample);assert_eq!(t.arm,None);
+                let p=a.registry_window_trace().target.unwrap().prearm;assert_eq!(p.passes,u32::from(!fail_sample));assert_eq!(p.own_done_at.is_some(),clocked&&!fail_sample);
+                if !fail_sample{assert_eq!(p.first_choice.unwrap().command,6);assert_eq!(p.first_choice.unwrap().parameter,id);assert_eq!(p.first_choice.unwrap().result,1);assert!(t.total(false).is_some());}
+                let log=peer.log();assert_eq!(a.registry_prearm_io(),Some(t));assert_eq!(peer.log(),log,"diagnostic getter performs no I/O");
+            }
+        }
+    }}
+}
+
+#[cfg(feature="sunfish-registry-tx3-wire-headers")]
+#[test]
+fn registry_wire_adapter_scopes_committed_headers_to_exact_predecessor_and_reset(){
+    use core::sync::atomic::{AtomicU64,Ordering::Relaxed};static NOW:AtomicU64=AtomicU64::new(100);
+    for clocked in [false,true]{
+        let mut s=session();s.register(1,Service::ServiceRegistry,qcom_servreg::LOCAL_PORT).unwrap();s.prepare_service_available(1,Service::ServiceRegistry).unwrap();
+        let peer=Fake::new(0x3ff8,0x3ff8);let mut a=Adapter::attach(peer.clone(),s,1).unwrap();if clocked{a.set_registry_ack_clock(||NOW.fetch_add(1,Relaxed));}
+        let mut remote=control(5,2,2);for id in [7u32,8]{remote.extend(4096u32.to_le_bytes());remote.extend(id.to_le_bytes());}peer.push(&remote);a.poll_receive(1).unwrap();
+        let mut requests=std::vec::Vec::new();let mut intents=std::vec::Vec::new();
+        for txn in [3u16,4]{let id=advertised(&mut a,&peer);let mut b=vec![0];b.extend(txn.to_le_bytes());b.extend([0x21,0,6,0,1,3,0,b'f',b'o',b'o']);let mut packet=qrtr(1,&b);packet[28..32].copy_from_slice(&qcom_servreg::LOCAL_PORT.to_le_bytes());peer.push(&data(id,&packet));let Ok(Receive::Session(Event::Request(request)))=a.poll_receive(1)else{panic!("registry request")};
+            a.queue_reply(1,&request,Reply::Failure{error:3}).unwrap();if txn==3{assert!(a.registry_wire_headers().is_none());}
+            let mut published=None;for _ in 0..16{let event=a.publish_next(1).unwrap();peer.take_tx();if let Transmit::Session(Published::Data{remote_intent,last_fragment:true})=event{published=Some(remote_intent);break;}}
+            intents.push(published.expect("reply published"));requests.push(request);
+            if txn==3{let t=a.registry_wire_headers().unwrap();let h=t.headers[0].unwrap();assert_eq!(h.qmi,Some((2,3,0x21)));assert!(h.tx);assert_eq!(h.at.is_some(),clocked);assert!(!t.finished);}
+        }
+        peer.push(&control(14,2,intents[1]));assert_eq!(a.poll_receive(1),Ok(Receive::Session(Event::ReplyRxDone(requests[1]))));assert!(!a.registry_wire_headers().unwrap().finished,"transaction4 receipt cannot freeze3");
+        peer.push(&control(13,0,0));peer.push(&control(14,2,intents[0]));assert_eq!(a.poll_receive(1),Ok(Receive::ReadNotification));assert_eq!(a.poll_receive(1),Ok(Receive::Session(Event::ReplyRxDone(requests[0]))));
+        let t=a.registry_wire_headers().unwrap();assert!(t.finished);let h=t.completion.unwrap();assert_eq!((h.command,h.parameter),(14,intents[0]));assert_eq!(h.at.is_some(),clocked);assert!(t.headers.iter().flatten().any(|h|!h.tx&&h.command==13));
+        let before=peer.log();assert_eq!(a.registry_wire_headers().unwrap().completion,t.completion);assert_eq!(peer.log(),before,"getter adds no device I/O");peer.push(&control(13,0,0));a.poll_receive(1).unwrap();assert_eq!(a.registry_wire_headers().unwrap().completion,t.completion);assert_eq!(a.registry_wire_headers().unwrap().omitted,t.omitted);
+        peer.0.borrow_mut().observation.generation=2;a.reset_after_transport_reset(2).unwrap();assert!(a.registry_wire_headers().is_none());
+    }
+}
+
+#[cfg(feature = "sunfish-glink-announcement-reuse")]
+#[path = "sunfish_announcement_fixture.rs"]
+mod announcement_fixture;

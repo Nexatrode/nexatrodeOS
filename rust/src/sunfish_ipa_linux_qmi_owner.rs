@@ -858,6 +858,12 @@ impl<I: Io> Owner<I> {
             peer_tftp_cursor: 0,
             handlers_id: None,
             service_registry_trace: ServiceRegistryTrace::new(),
+            #[cfg(feature = "sunfish-registry-handoff-turn")]
+            registry_last_dispatch: None,
+            #[cfg(feature = "sunfish-registry-handoff-turn")]
+            registry_handoff: None,
+            #[cfg(feature = "sunfish-registry-handoff-turn")]
+            registry_handoff_trace: RegistryHandoffTrace::default(),
             first_service_registry_reply_handle: None,
             #[cfg(feature = "sunfish-wlan-startup-trace")]
             first_registry_replies_by_name: [None; crate::qcom_servreg::NAME_COUNTER_COUNT],

@@ -16,6 +16,48 @@ mod diagnostic;
 #[cfg(feature="sunfish-wrq-post-return-callers")]
 #[path="pixel_mpss_wrq_callers.rs"]
 mod wrq_callers;
+#[cfg(feature="sunfish-first-data-ack-elf-trace")]
+#[path="pixel_mpss_tftp_completion.rs"]
+mod tftp_completion;
+#[cfg(all(feature="sunfish-ack-elf-phase-trace", not(feature="sunfish-registry-window-trace")))]
+#[path="pixel_mpss_ack_elf_stages.rs"]
+mod ack_elf_stages;
+#[cfg(all(feature="sunfish-registry-window-trace", not(feature="sunfish-registry-handoff-turn")))]
+#[path="pixel_mpss_registry_window.rs"]
+mod registry_window;
+#[cfg(all(feature="sunfish-registry-handoff-turn", not(feature="sunfish-registry-predecessor-pressure")))]
+#[path="pixel_mpss_registry_handoff.rs"]
+mod registry_handoff;
+#[cfg(all(feature="sunfish-registry-predecessor-pressure", not(feature="sunfish-registry-grant-eligibility")))]
+#[path="pixel_mpss_registry_pressure.rs"]
+mod registry_pressure;
+#[cfg(all(feature="sunfish-registry-grant-eligibility",not(feature="sunfish-registry-post-reply-trace")))]
+#[path="pixel_mpss_registry_grant_eligibility.rs"]
+mod registry_grant_eligibility;
+#[cfg(all(feature="sunfish-registry-post-reply-trace",not(feature="sunfish-registry-conversion-lifetime-trace")))]
+#[path="pixel_mpss_registry_post_reply.rs"]
+mod registry_post_reply;
+#[cfg(all(feature="sunfish-registry-conversion-lifetime-trace",not(feature="sunfish-registry-converted-credit-turn")))]
+#[path="pixel_mpss_registry_conversion_lifetime.rs"]
+mod registry_conversion_lifetime;
+#[cfg(all(feature="sunfish-registry-converted-credit-turn",not(feature="sunfish-registry-prearm-io-trace")))]
+#[path="pixel_mpss_registry_credit_turn.rs"]
+mod registry_credit_turn;
+#[cfg(all(feature="sunfish-registry-prearm-io-trace",not(feature="sunfish-registry-elf-admission-panel")))]
+#[path="pixel_mpss_registry_prearm_io.rs"]
+mod registry_prearm_io;
+#[cfg(all(feature="sunfish-registry-elf-admission-panel",not(feature="sunfish-registry-tx3-receipt-panel")))]
+#[path="pixel_mpss_registry_elf_admission.rs"]
+mod registry_elf_admission;
+#[cfg(all(feature="sunfish-registry-tx3-receipt-panel",not(feature="sunfish-registry-tx3-wire-headers")))]
+#[path="pixel_mpss_registry_tx3_receipt.rs"]
+mod registry_tx3_receipt;
+#[cfg(feature="sunfish-registry-tx3-wire-headers")]
+#[path="pixel_mpss_registry_tx3_headers.rs"]
+mod registry_tx3_headers;
+#[cfg(feature="sunfish-registry-defer-paint")]
+#[path="pixel_mpss_registry_paint.rs"]
+mod registry_paint;
 
 #[cfg(all(feature = "sunfish-ipa-independent-server-experiment", not(feature = "sunfish-ipa-independent-server-runtime")))]
 compile_error!("independent IPA server experiment is offline only; native composition not validated");
@@ -58,6 +100,8 @@ enum Stage {
 /// receipt, and IPA receive runtime stay retained beside one transport phase;
 /// the only Native adapter is inside that phase's checked RefCell gate.
 pub(super) struct RuntimeDomain {
+    #[cfg(feature="sunfish-registry-defer-paint")]
+    registry_paint: registry_paint::Gate,
     stage: Option<Stage>,
     boot: ManuallyDrop<pixel_mpss_auth::NativeBoot>,
     ready: ManuallyDrop<personal_os_rust_server::sunfish_mpss_linux_smp2p::ReadyObservation>,
@@ -166,6 +210,8 @@ impl RuntimeDomain {
         let mut opening = transport::start_live(parts.gate, parts.auth, session, parts.hz);
         opening.with_io(|io| io.owner_timing_clock(counter));
         Self {
+            #[cfg(feature="sunfish-registry-defer-paint")]
+            registry_paint: registry_paint::Gate::default(),
             stage: Some(Stage::Opening(opening)),
             boot: ManuallyDrop::new(parts.boot),
             ready: ManuallyDrop::new(parts.ready),
@@ -462,6 +508,15 @@ impl RuntimeDomain {
                             #[cfg(not(feature = "sunfish-tftp-close-handoff-prototype"))]
                             let _ = dispatched;
                         }
+                        #[cfg(feature = "sunfish-original-final-ack-turn")]
+                        {
+                            self.router.dispatch_queued_original_final_ack(owner)
+                                .map_err(|_| 0x61u32)?;
+                            #[cfg(feature = "sunfish-tftp-wlan-close-handoff")]
+                            if owner.pending_firmware_close().is_some() {
+                                owner.resolve_firmware_close(&mut self.firmware).map_err(|_| 0x63u32)?;
+                            }
+                        }
                     },
                     qcom_modem_owner::TftpServiceProgress::Ignored(_) => self.server_check_ignored = self.server_check_ignored.saturating_add(1),
                     _ => {},
@@ -553,6 +608,18 @@ impl RuntimeDomain {
         #[cfg(feature = "sunfish-servreg-bounded-second-turn")]
         let registry_result = match owner.dispatch_service_registry_bounded(&mut self.router) {
             Ok((first, second)) => {
+                #[cfg(feature = "sunfish-registry-handoff-turn")]
+                {
+                    self.router.dispatch_registry_handoff(owner).map_err(|_| 0x61u32)?;
+                    #[cfg(feature = "sunfish-tftp-wlan-close-handoff")]
+                    if owner.pending_firmware_close().is_some() {
+                        owner.resolve_firmware_close(&mut self.firmware).map_err(|_| 0x63u32)?;
+                    }
+                    #[cfg(feature = "sunfish-tftp-close-handoff-prototype")]
+                    if owner.pending_tftp_close().is_some() {
+                        owner.resolve_pending_tftp_close(&mut self.server_check).map_err(|_| 0x62u32)?;
+                    }
+                }
                 if let Some(progress) = second {
                     self.registry_extra_attempts = self.registry_extra_attempts.saturating_add(1);
                     self.registry_extra_outcome = match progress {
@@ -621,6 +688,18 @@ impl RuntimeDomain {
         Ok(())
     }
 
+    #[cfg(feature="sunfish-registry-defer-paint")]
+    fn registry_display_busy(&self) -> bool {
+        matches!(self.stage, Some(Stage::Services(_))) && self.router.report().continuation_pending
+    }
+
+    #[cfg(feature="sunfish-registry-defer-paint")]
+    fn record_registry_paint(&mut self, start: u64, end: u64) {
+        if let Some(Stage::Services(owner)) = self.stage.as_ref()
+            && let Some(io) = owner.registry_prearm_io()
+        { self.registry_paint.record(io.queued_at, io.first_enter_at, start, end); }
+    }
+
     fn paint_progress(&mut self, display: &Display, phase: u32) {
         #[cfg(feature = "sunfish-ipa-schedule-trace")]
         self.schedule_sample(7);
@@ -628,12 +707,16 @@ impl RuntimeDomain {
         self.progress_trace.checkpoint(phase);
         #[cfg(feature = "sunfish-tftp-quiet-oack-experiment")]
         if self.awaiting_first_oack_completion() { return; }
+        #[cfg(feature="sunfish-registry-defer-paint")]
+        { let busy=self.registry_display_busy(); if !self.registry_paint.progress(self.error,busy) { return; } }
         display.runtime_progress(cfg!(feature = "sunfish-ipa-independent-server-runtime"),
             self.progress_trace.phase, self.progress_trace.wake_sent, self.progress_trace.wake_received,
             self.rmtfs_report.map_or(0, |r| r.chunks.min(u64::from(u32::MAX)) as u32));
         display.flush();
         let ended = counter();
         self.timing.record(3, ended.wrapping_sub(started));
+        #[cfg(feature="sunfish-registry-defer-paint")]
+        self.record_registry_paint(started,ended);
         #[cfg(feature = "sunfish-ipa-registration-prep-trace")]
         if let Some(Stage::Services(owner)) = self.stage.as_ref() {
             record_registration_prep_work(&mut self.registration_prep_work[3], owner.ipa_registration_trace(), started, ended);
@@ -649,6 +732,8 @@ impl RuntimeDomain {
         self.show(display);
         let ended = counter();
         self.timing.record(3, ended.wrapping_sub(started));
+        #[cfg(feature="sunfish-registry-defer-paint")]
+        self.record_registry_paint(started,ended);
         #[cfg(feature = "sunfish-ipa-registration-prep-trace")]
         if let Some(Stage::Services(owner)) = self.stage.as_ref() {
             record_registration_prep_work(&mut self.registration_prep_work[3], owner.ipa_registration_trace(), started, ended);
@@ -1025,6 +1110,8 @@ impl RuntimeDomain {
             let waiting = self.awaiting_first_oack_completion();
             self.oack_paint_gate.allow(waiting, self.error != 0, counter(), self.hz)
         } else { false };
+        #[cfg(feature="sunfish-registry-defer-paint")]
+        let repaint = { let busy=self.registry_display_busy(); self.registry_paint.full(self.error,busy,repaint) };
         if repaint { self.timed_show(display); }
         #[cfg(feature = "sunfish-wlan-elf-registry-gap")]
         self.registry_gap.end_callback(counter());
@@ -5778,6 +5865,7 @@ fn badge(channels: sel4_microkit::ChannelSet) -> u64 {
     result
 }
 
+#[cfg(not(feature="sunfish-runtime-handoff-stack-split"))]
 pub(super) fn start(display: &Display, state: &mut Startup) {
     if state._mpss_runtime.is_some() || !pixel_mpss_auth::runtime_ready(state) {
         return;
@@ -5793,6 +5881,47 @@ pub(super) fn start(display: &Display, state: &mut Startup) {
     let mut runtime = state._mpss_runtime.take().unwrap();
     runtime.begin(display, state);
     state._mpss_runtime = Some(runtime);
+}
+
+// Keep large construction temporaries out of the frame that begins GLINK and
+// services. The init-time path still holds Startup's initialization frame.
+#[cfg(feature="sunfish-runtime-handoff-stack-split")]
+#[inline(never)]
+fn construct_runtime(display: &Display, state: &mut Startup) -> bool {
+    let parts = match pixel_mpss_auth::take_runtime(state) {
+        Ok(parts) => parts,
+        Err(_) => {
+            pixel_mpss_auth::show(display, state);
+            return false;
+        }
+    };
+    state._mpss_runtime = Some(RuntimeDomain::new(parts));
+    true
+}
+
+#[cfg(feature="sunfish-runtime-handoff-stack-split")]
+#[inline(never)]
+fn begin_prepared_runtime(display: &Display, state: &mut Startup) {
+    display.hex(2,"HANDOFF STEP",3);
+    display.flush();
+    let mut runtime = state._mpss_runtime.take().unwrap();
+    runtime.begin(display, state);
+    state._mpss_runtime = Some(runtime);
+}
+
+#[cfg(feature="sunfish-runtime-handoff-stack-split")]
+#[inline(never)]
+pub(super) fn start(display: &Display, state: &mut Startup) {
+    if state._mpss_runtime.is_some() || !pixel_mpss_auth::runtime_ready(state) {
+        return;
+    }
+    display.replace_line(1,"RUNTIME HANDOFF START");
+    display.hex(2,"HANDOFF STEP",1);
+    display.flush();
+    if !construct_runtime(display,state) {return;}
+    display.hex(2,"HANDOFF STEP",2);
+    display.flush();
+    begin_prepared_runtime(display,state);
 }
 
 pub(super) fn notified(state: &mut Startup, channels: sel4_microkit::ChannelSet) {

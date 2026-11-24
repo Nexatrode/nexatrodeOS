@@ -322,6 +322,7 @@ impl LoRig {
 
 #[cfg(feature = "sunfish-qrtr-servreg-flow-experiment")]
 #[test]
+#[cfg(not(feature = "sunfish-wlan-registry-second-reply"))]
 fn servreg_reference_releases_reply_after_glink_without_qrtr_resume() {
     let mut r = LoRig::new();
     let _ipa_init = r.next();
@@ -1664,5 +1665,45 @@ fn wrq_prefix_identifies_a_server_announcement_and_requires_original_peer() {
         let header = &trace.headers()[0];
         assert_eq!((header.command, header.extra), (9, 0x24));
         assert_eq!(header.qrtr.unwrap()[0], 4);
+    }
+}
+
+#[cfg(feature = "sunfish-qrtr-servreg-flow-experiment")]
+#[test]
+fn servreg_startup_reply_window_keeps_distinct_intents_and_exact_receipts() {
+    use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    static CLOCK: AtomicU64 = AtomicU64::new(0);
+    for observed in [false,true] {
+        for reverse in [false,true] {
+            let mut r=LoRig::new();let _ipa=r.next();r.hold_host=true;
+            if observed {r.owner.set_rmtfs_event_clock(||CLOCK.fetch_add(1,Relaxed));}
+            let two=cfg!(feature="sunfish-wlan-registry-second-reply");
+            let transaction=|p:&[u8]|u16::from_le_bytes([p[33],p[34]]);
+            for (txn,name) in [(3,b"avs/audio".as_slice()),(4,b"tms/servreg".as_slice()),(5,b"kernel/elf_loader".as_slice())] {
+                let q=lo_message(0,0x21,txn,&[(1,name),(0x10,&0u32.to_le_bytes())]);
+                r.input(&lo_packet(1,9,qcom_servreg::LOCAL_PORT,true,&q)).unwrap();
+                assert!(r.held_host.len()<=if two{2}else{1});
+            }
+            assert_eq!(r.held_host.iter().map(|(_,p)|transaction(p)).collect::<Vec<_>>(),if two{vec![3,4]}else{vec![3]});
+            for (_,p) in &r.held_host {assert_eq!(lo_word(p,12),qcom_servreg::LOCAL_PORT);assert_eq!(lo_word(p,28),9);assert_eq!(p[32],2);}
+            if two {
+                assert_ne!(r.held_host[0].0,r.held_host[1].0,"live replies need distinct modem intents");
+                let freed=if reverse{1}else{0};let done=r.held_host.remove(freed);let retained=r.held_host[0].clone();
+                r.ack_one(&done,true).unwrap();
+                assert_eq!(r.held_host.len(),2);
+                assert_eq!(r.held_host[0],retained,"other reply retains its original intent and bytes");
+                let elf=r.held_host.iter().find(|(_,p)|transaction(p)==5).unwrap();
+                assert_ne!(elf.0,retained.0,"cannot reuse the still-busy older intent");
+            } else {
+                let first=r.held_host.remove(0);r.ack_one(&first,true).unwrap();
+                assert_eq!(r.held_host.len(),1);assert_eq!(transaction(&r.held_host[0].1),4);
+                let second=r.held_host.remove(0);r.ack_one(&second,true).unwrap();
+                assert_eq!(r.held_host.len(),1);assert_eq!(transaction(&r.held_host[0].1),5);
+            }
+            while !r.held_host.is_empty() {let record=r.held_host.remove(0);r.ack_one(&record,true).unwrap();}
+            assert!(r.owner.error().is_none());
+            assert!(r.owner.pending_request_for_service(Service::ServiceRegistry).unwrap().is_none());
+            assert!(r.owner.service_registry_trace().first_reply_glink_rx_done);
+        }
     }
 }

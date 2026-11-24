@@ -1,0 +1,7 @@
+# Retain the predecessor's existing publication evidence
+
+- [x] Replay staggered queue3/receive4/receiveELF order against current owner/router; reproduce zero handoff. Separately replay no fitting remote intent and fitting-buffer grant/credit pressure; preserve advertisement-before-ACK, request returns, actual credit checks and exact blocked-write retry. These demonstrate alternatives, not the physical cause of IMG_9700's10.022seconds.
+- [x] Add an optional identity-bound observation retaining transaction3's existing RegistryPublication counters at full publication, with a live read-only view while unpublished. Freeze independently of clocks, retain through retirement and clear on reset. Do not broaden handoff policy or force a write without evidence. Actual panel and lifecycle tests.
+- [x] Run current/prior suites, fault/pressure controls, native build/stack/audit,304capability mutations, unchanged pinned SDK/eight NC maps, packed archive/boot/source hashes; save notes and push main. Deliver manual cold temporary-boot command; no automatic device action.
+
+Completed:2staggered replays and actual credit limit control; owner575/575 with one prior ignored per profile, links223/222; capture lifecycle/actual renderer, native stack/source,304capability mutations, actual packed SDK/loader/maps and boot/hash checks pass. Image/command in docs/sunfish-registry-staggered-pressure.md. No device action.

@@ -71,6 +71,13 @@ pub trait Io {
     /// Copy existing CPU-side counters only, with no hardware observation.
     #[cfg(feature = "sunfish-wlan-elf-phase-io")]
     fn elf_io_totals(&self) -> Option<[u64; 12]> { None }
+    #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+    fn registry_prearm_timing(&mut self,_enabled:bool) {}
+    #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+    fn registry_prearm_totals(&self)->Option<[u64;12]>{
+        #[cfg(feature="sunfish-wlan-elf-phase-io")] {self.elf_io_totals()}
+        #[cfg(not(feature="sunfish-wlan-elf-phase-io"))] {None}
+    }
     /// Only return counters when the native profiler is enabled for this call.
     #[cfg(feature = "sunfish-tftp-reserved-writer-io")]
     fn reserved_io_totals(&self) -> Option<[u64; 12]> { None }
@@ -1073,6 +1080,114 @@ fn registration_header_capture_decodes_data_and_preserves_both_ends() {
     assert_eq!(retained, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 16, 17, 18, 19, 20, 21, 22, 23, 24]);
 }
 
+/// Counter-only snapshots around queueing and first writer/arming. No device reads.
+#[cfg(feature = "sunfish-registry-prearm-io-trace")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RegistryPrearmIo {
+    pub queued_at: Option<u64>,
+    pub first_enter_at: Option<u64>,
+    pub first_end_at: Option<u64>,
+    pub arm_at: Option<u64>,
+    pub queued: Option<[u64;12]>,
+    pub first_enter: Option<[u64;12]>,
+    pub first_end: Option<[u64;12]>,
+    pub arm: Option<[u64;12]>,
+    entered: bool,
+    ended: bool,
+    armed: bool,
+}
+#[cfg(feature = "sunfish-registry-prearm-io-trace")]
+impl RegistryPrearmIo {
+    pub fn delta(&self, to_arm: bool) -> Option<[u64;4]> {
+        let a=self.queued?;let b=if to_arm{self.arm?}else{self.first_enter?};
+        let mut d=[0;4];
+        for i in 0..4 { if a[i]==u64::MAX || b[i]==u64::MAX{return None;}d[i]=b[i].checked_sub(a[i])?; }
+        Some(d)
+    }
+    pub fn total(&self, to_arm: bool) -> Option<u64> {
+        self.delta(to_arm)?.iter().try_fold(0u64,|a,b|a.checked_add(*b))
+    }
+}
+
+
+/// Small scalar projection: no TFTP payload, filenames or per-transfer snapshots.
+#[cfg(feature="sunfish-registry-tx3-wire-headers")]
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct RegistryWireHeader {
+    pub at:Option<u64>,pub tx:bool,pub command:u16,pub channel:u16,pub parameter:u32,
+    pub bytes:u16,pub qrtr:Option<[u32;3]>,pub qmi:Option<(u8,u16,u16)>,pub del_client:Option<[u32;2]>,
+}
+#[cfg(feature="sunfish-registry-tx3-wire-headers")]
+impl RegistryWireHeader {
+    fn read(record:&[u8],tx:bool,at:Option<u64>)->Option<Self>{
+        if record.len()<8 || record.len()>u16::MAX as usize{return None;}
+        let h=RegistrationHeader::read(record,tx,at);
+        Some(Self{at:h.at,tx:h.tx,command:h.command,channel:h.channel,parameter:h.parameter,
+            bytes:h.bytes,qrtr:h.qrtr,qmi:h.qmi,del_client:h.del_client})
+    }
+}
+#[cfg(feature="sunfish-registry-tx3-wire-headers")]
+#[derive(Clone,Copy)]
+pub struct RegistryWireTrace {
+    pub headers:[Option<RegistryWireHeader>;79],pub completion:Option<RegistryWireHeader>,
+    pub omitted:u32,pub unparsed:u32,pub finished:bool,
+}
+#[cfg(feature="sunfish-registry-tx3-wire-headers")]
+impl Default for RegistryWireTrace{fn default()->Self{Self{headers:[None;79],completion:None,omitted:0,unparsed:0,finished:false}}}
+#[cfg(feature="sunfish-registry-tx3-wire-headers")]
+impl RegistryWireTrace {
+    fn record(&mut self,header:Option<RegistryWireHeader>,matching:bool){
+        if self.finished{return;}
+        if matching{self.finished=true;self.completion=header;if header.is_none(){self.unparsed=self.unparsed.saturating_add(1);}return;}
+        let Some(header)=header else{self.unparsed=self.unparsed.saturating_add(1);return;};
+        if let Some(slot)=self.headers.iter_mut().find(|h|h.is_none()){*slot=Some(header);}
+        else{let tail=&mut self.headers[40..];tail.rotate_left(1);tail[38]=Some(header);self.omitted=self.omitted.saturating_add(1);}
+    }
+}
+#[cfg(feature="sunfish-registry-tx3-wire-headers")]
+const _:()={assert!(::core::mem::size_of::<RegistryWireHeader>()<=128);assert!(::core::mem::size_of::<RegistryWireTrace>()<=12288);};
+
+/// Observes the exact registry predecessor using already validated cursor samples.
+/// Peer-tail crossing is transport consumption, not application acceptance.
+#[cfg(feature = "sunfish-registry-post-reply-trace")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RegistryReplyFifo {
+    pub peer_tail_at: Option<u64>,
+    pub completion: Option<ServerCheckRxDone>,
+    pub finished: bool,
+    pub history_evictions: u32,
+}
+#[cfg(feature = "sunfish-registry-post-reply-trace")]
+struct RegistryReplyWindow {
+    remaining: usize,
+    trace: RegistryReplyFifo,
+    rx: ServerCheckRxWindow,
+}
+#[cfg(feature = "sunfish-registry-post-reply-trace")]
+impl RegistryReplyWindow {
+    fn new(remaining: usize, unread: usize, at: Option<u64>) -> Self {
+        Self { remaining, trace: RegistryReplyFifo { peer_tail_at: at.filter(|_| remaining == 0),
+            ..RegistryReplyFifo::default() }, rx: ServerCheckRxWindow::new(unread, at) }
+    }
+    fn sample(&mut self, consumed: usize, advanced: usize, unread: usize, start: Option<u64>, end: Option<u64>) {
+        if self.trace.finished { return; }
+        if self.remaining != 0 {
+            self.remaining = self.remaining.saturating_sub(consumed);
+            if self.remaining == 0 { self.trace.peer_tail_at = end; }
+        }
+        if advanced != 0 && self.rx.advances[self.rx.next_advance].is_some() {
+            self.trace.history_evictions = self.trace.history_evictions.saturating_add(1);
+        }
+        self.rx.sample(advanced, unread, start, end);
+    }
+    fn finish(&mut self, unread: usize, size: usize) {
+        if self.trace.finished { return; }
+        self.rx.finish(unread, size);
+        self.trace.completion = self.rx.done;
+        self.trace.finished = true;
+    }
+}
+
 #[cfg(feature = "sunfish-ipa-registration-reply-path")]
 #[derive(Clone, Copy, Default)]
 pub struct RegistrationReplyFifo {
@@ -1317,6 +1432,12 @@ struct Ring<I> {
     registration_reply: Option<RegistrationReplyFifo>,
     #[cfg(feature = "sunfish-ipa-reply-fifo-visibility")]
     registration_reply_rx: Option<ServerCheckRxWindow>,
+    #[cfg(feature = "sunfish-registry-post-reply-trace")]
+    registry_reply: Option<RegistryReplyWindow>,
+    #[cfg(feature="sunfish-registry-tx3-wire-headers")]
+    registry_wire: Option<RegistryWireTrace>,
+    #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+    prearm_io: Option<RegistryPrearmIo>,
     #[cfg(feature = "sunfish-tftp-tail-observer")]
     tftp_tail_remaining: Option<usize>,
     #[cfg(feature = "sunfish-tftp-tail-observer")]
@@ -1424,6 +1545,14 @@ impl<I: Io> Ring<I> {
         }
     }
 
+    #[cfg(feature="sunfish-registry-tx3-wire-headers")]
+    fn capture_registry_wire_rx(&mut self,size:usize,matching:bool){
+        if self.registry_wire.as_ref().is_some_and(|t|!t.finished){
+            let h=RegistryWireHeader::read(&self.record[..size],false,self.first_server_check_clock.map(|clock|clock()));
+            self.registry_wire.as_mut().unwrap().record(h,matching);
+        }
+    }
+
     #[cfg(feature = "sunfish-tftp-first-oack-headers")]
     fn capture_first_oack_rx(&mut self, size: usize, matching: bool) {
         if let Some(trace) = self.server_check_rx.as_mut().filter(|trace| trace.done.is_none()) {
@@ -1444,6 +1573,9 @@ impl<I: Io> Ring<I> {
             .and(self.first_server_check_clock).map(|clock| clock());
         #[cfg(feature = "sunfish-tftp-oack-fifo-outcome")]
         let reserved_sample_start = self.reserved_oack_rx.as_ref().filter(|trace| trace.done.is_none())
+            .and(self.first_server_check_clock).map(|clock| clock());
+        #[cfg(feature = "sunfish-registry-post-reply-trace")]
+        let registry_reply_start = self.registry_reply.as_ref().filter(|w| !w.trace.finished)
             .and(self.first_server_check_clock).map(|clock| clock());
         #[cfg(feature = "sunfish-ipa-reply-fifo-visibility")]
         let registration_reply_start = self.registration_reply_rx.as_ref()
@@ -1561,6 +1693,14 @@ impl<I: Io> Ring<I> {
                     trace.last_empty_at = self.first_server_check_clock.map(|clock| clock());
                 }
             }
+        }
+        #[cfg(feature = "sunfish-registry-post-reply-trace")]
+        if let Some(trace) = self.registry_reply.as_mut().filter(|w| !w.trace.finished)
+            && let Some(length) = rx
+        {
+            trace.sample(consumed, ring_distance(old_rx_head, new[3], length),
+                ring_distance(new[2], new[3], length), registry_reply_start,
+                self.first_server_check_clock.map(|clock| clock()));
         }
         #[cfg(feature = "sunfish-ipa-registration-rx-visibility")]
         if let Some(start) = registration_start && let Some(length) = rx
@@ -1881,6 +2021,11 @@ impl<I: Io> Ring<I> {
             trace.push_header(RegistrationHeader::read(record, true,
                 self.first_server_check_clock.map(|clock| clock())));
         }
+        #[cfg(feature="sunfish-registry-tx3-wire-headers")]
+        if self.registry_wire.as_ref().is_some_and(|t|!t.finished){
+            let h=RegistryWireHeader::read(record,true,self.first_server_check_clock.map(|clock|clock()));
+            self.registry_wire.as_mut().unwrap().record(h,false);
+        }
         Ok(true)
     }
 
@@ -2037,6 +2182,12 @@ impl<I: Io> Adapter<I> {
                 registration_reply: None,
                 #[cfg(feature = "sunfish-ipa-reply-fifo-visibility")]
                 registration_reply_rx: None,
+                #[cfg(feature = "sunfish-registry-post-reply-trace")]
+                registry_reply: None,
+                #[cfg(feature="sunfish-registry-tx3-wire-headers")]
+                registry_wire: None,
+                #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+                prearm_io: None,
                 #[cfg(feature = "sunfish-tftp-tail-observer")]
                 tftp_tail_remaining: None,
                 #[cfg(feature = "sunfish-tftp-tail-observer")]
@@ -2157,6 +2308,21 @@ impl<I: Io> Adapter<I> {
     pub fn intent_ack_summary(&self) -> (u32, Option<u64>) {
         self.session.intent_ack_summary()
     }
+    #[cfg(feature = "sunfish-registry-handoff-turn")]
+    pub(crate) fn registry_handoff_pair(&self, older: &core::RequestHandle, waiting: &core::RequestHandle)
+        -> Option<(u16, u16, crate::qcom_qmi_router::Address, bool)>
+    { self.session.registry_handoff_pair(older, waiting) }
+    #[cfg(feature = "sunfish-registry-window-trace")]
+    pub fn registry_window_trace(&self) -> core::RegistryWindowTrace { self.session.registry_window_trace() }
+    #[cfg(feature="sunfish-registry-tx3-wire-headers")]
+    pub fn registry_wire_headers(&self)->Option<RegistryWireTrace>{self.ring.registry_wire}
+    #[cfg(feature = "sunfish-registry-post-reply-trace")]
+    pub fn registry_reply_fifo(&self) -> Option<RegistryReplyFifo> {
+        self.ring.registry_reply.as_ref().map(|w| w.trace)
+    }
+    #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+    pub fn registry_prearm_io(&self) -> Option<RegistryPrearmIo> { self.ring.prearm_io }
+
     #[cfg(feature = "sunfish-wlan-elf-queue-trace")]
     pub fn registry_queue_pressure(&self, handle: &core::RequestHandle) -> Option<core::RegistryQueuePressure> {
         self.session.registry_queue_pressure(handle)
@@ -2225,6 +2391,14 @@ impl<I: Io> Adapter<I> {
     #[cfg(feature = "sunfish-wlan-tftp-oack-compare")]
     pub(crate) fn server_check_oacks(&self) -> [Option<core::ServerCheckOackTrace>; 2] {
         self.session.server_check_oacks()
+    }
+    #[cfg(feature = "sunfish-first-data-ack-elf-trace")]
+    pub(crate) fn original_tftp_write_trace(&self) -> Option<core::ElfServerCheckTrace> {
+        self.session.original_tftp_write_trace()
+    }
+    #[cfg(feature = "sunfish-original-final-ack-turn")]
+    pub(crate) fn original_final_ack_queued(&self) -> bool {
+        self.session.original_final_ack_queued()
     }
     #[cfg(feature = "sunfish-wlan-first-wrq-window")]
     pub(crate) fn first_wrq_window(&self) -> core::FirstWrqWindow {
@@ -2637,6 +2811,56 @@ impl<I: Io> Adapter<I> {
         self.check(generation)?;
         self.session.set_tftp_owner_peers(generation, peers).map_err(Into::into)
     }
+    /// One fresh live gate for callback-free bookkeeping on host-owned packets.
+    /// No successful sample is carried into the next FIFO operation.
+    #[cfg(feature = "sunfish-tftp-peer-metadata-batch")]
+    pub(crate) fn refresh_tftp_peer_snapshot(
+        &mut self,
+        generation: u64,
+        held: &[Option<TftpHandle>],
+        retained: &[(Option<crate::qcom_qmi_router::Address>, u8, bool); core::TFTP_OWNER_PEER_SLOTS],
+    ) -> Result<[(Option<crate::qcom_qmi_router::Address>, u8); core::TFTP_OWNER_PEER_SLOTS], Error> {
+        self.gate(generation)?;
+        let mut peers = [None; core::TFTP_OWNER_PEER_SLOTS];
+        let mut firmware = [None; core::TFTP_OWNER_PEER_SLOTS];
+        let mut snapshot = [(None, 0); core::TFTP_OWNER_PEER_SLOTS];
+        let mut count = 0;
+        let mut firmware_count = 0;
+        for handle in held.iter().flatten() {
+            // Each opaque handle is still checked against the current Session
+            // owner, generation and held slot. Bytes were copied at ingress.
+            let (route, packet) = self.session.tftp_datagram(handle)?;
+            *peers.get_mut(count).ok_or(core::Error::NoCapacity)? = Some(route.destination);
+            snapshot[count] = (Some(route.destination), 1);
+            count += 1;
+            if (route.source.port == crate::qcom_tftp_server_check::SERVICE_PORT
+                    && crate::qcom_tftp::decode_read_request(packet).is_ok())
+                || (0x5100..=0x51ff).contains(&route.source.port) {
+                *firmware.get_mut(firmware_count).ok_or(core::Error::NoCapacity)? = Some(route.destination);
+                firmware_count += 1;
+            }
+        }
+        for &(peer, kind, is_firmware) in retained {
+            if let Some(peer) = peer {
+                *peers.get_mut(count).ok_or(core::Error::NoCapacity)? = Some(peer);
+                snapshot[count] = (Some(peer), kind);
+                count += 1;
+                if is_firmware {
+                    *firmware.get_mut(firmware_count).ok_or(core::Error::NoCapacity)? = Some(peer);
+                    firmware_count += 1;
+                }
+            }
+        }
+        // No callbacks, transport I/O or external state changes occur between
+        // the gate and these infallible-for-the-checked-generation setters.
+        self.session.set_tftp_owner_peers(generation, peers)?;
+        self.session.set_tftp_firmware_peers(generation, firmware)?;
+        Ok(snapshot)
+    }
+    #[cfg(all(test, feature = "sunfish-tftp-peer-metadata-batch"))]
+    pub(crate) fn test_peer_metadata(&self) -> ([Option<crate::qcom_qmi_router::Address>; core::TFTP_OWNER_PEER_SLOTS], [Option<crate::qcom_qmi_router::Address>; core::TFTP_OWNER_PEER_SLOTS]) {
+        self.session.test_peer_metadata()
+    }
     #[cfg(feature = "sunfish-tftp-close-owner-fence")]
     pub fn set_tftp_firmware_peers(&mut self, generation: u64, peers: [Option<crate::qcom_qmi_router::Address>; core::TFTP_OWNER_PEER_SLOTS]) -> Result<(), Error> {
         self.revalidate(generation)?;
@@ -2710,6 +2934,12 @@ impl<I: Io> Adapter<I> {
     ) -> Result<(), Error> {
         self.gate(generation)?;
         self.session.queue_reply(handle, reply)?;
+        #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+        if self.ring.prearm_io.is_none() && self.session.registry_prearm_queue_matches(handle) {
+            self.ring.io.registry_prearm_timing(true);
+            self.ring.prearm_io = Some(RegistryPrearmIo { queued: self.ring.io.registry_prearm_totals(),
+                queued_at: self.ring.first_server_check_clock.map(|now|now()), ..RegistryPrearmIo::default() });
+        }
         Ok(())
     }
     pub fn queue_ipa_service_reply(
@@ -2913,6 +3143,8 @@ impl<I: Io> Adapter<I> {
             }
             #[cfg(feature = "sunfish-ipa-registration-reply-headers")]
             self.ring.capture_registration_rx(size, false, &Receive::Control);
+            #[cfg(feature="sunfish-registry-tx3-wire-headers")]
+            self.ring.capture_registry_wire_rx(size,false);
             #[cfg(feature = "sunfish-tftp-first-oack-headers")]
             self.ring.capture_first_oack_rx(size, false);
             self.consume_received(size, false)?;
@@ -3067,6 +3299,21 @@ impl<I: Io> Adapter<I> {
                 let unread = ring_distance(self.ring.words[2], self.ring.words[3], length);
                 trace.finish(unread, size);
             }
+        }
+        #[cfg(feature="sunfish-registry-tx3-wire-headers")]
+        {
+            let matching=matches!(&event,Receive::Session(e) if self.session.registry_predecessor_completed_by(e));
+            self.ring.capture_registry_wire_rx(size,matching);
+        }
+        #[cfg(feature = "sunfish-registry-post-reply-trace")]
+        if let Receive::Session(ref completed) = event
+            && self.session.registry_predecessor_completed_by(completed)
+            && let Some(window) = self.ring.registry_reply.as_mut()
+            && let Some(length) = self.ring.rx_bytes
+        {
+            // Only the normal decoder's exact opaque request receipt freezes
+            // the window, before advancing the RX tail through that record.
+            window.finish(ring_distance(self.ring.words[2], self.ring.words[3], length), size);
         }
         #[cfg(feature = "sunfish-ipa-registration-reply-headers")]
         self.ring.capture_registration_rx(size,
@@ -3486,6 +3733,13 @@ impl<I: Io> Adapter<I> {
         #[cfg(feature = "sunfish-tftp-oack-followup")] followup: Option<core::OackFollowup>,
     ) -> Result<Transmit, Error> {
         self.check(generation)?;
+        #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+        let first_prearm_io = self.ring.prearm_io.is_some_and(|t| !t.entered);
+        #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+        if first_prearm_io {
+            let totals=self.ring.io.registry_prearm_totals();let at=self.ring.first_server_check_clock.map(|now|now());
+            let trace=self.ring.prearm_io.as_mut().unwrap();trace.entered=true;trace.first_enter=totals;trace.first_enter_at=at;
+        }
         self.quarantined = true;
         self.ring.sample()?;
         #[cfg(feature = "sunfish-first-oack-grant-window")]
@@ -3526,6 +3780,11 @@ impl<I: Io> Adapter<I> {
         let mut failure = None;
         #[cfg(feature = "sunfish-ipa-registration-reply-headers")]
         let mut opening_header = None;
+        #[cfg(feature="sunfish-registry-tx3-wire-headers")]
+        let watch_registry_wire=self.ring.registry_wire.is_none()
+            && self.session.registry_window_trace().predecessor.is_some_and(|p|!p.publication_frozen);
+        #[cfg(feature="sunfish-registry-tx3-wire-headers")]
+        let mut opening_registry_wire=None;
         #[cfg(feature = "sunfish-tftp-reserved-writer-io")]
         let watch_reserved = self.session.reserved_oack().is_some_and(|(oack, peer)|
             oack.peer.port == 0x49 && oack.published_at.is_none()
@@ -3546,14 +3805,21 @@ impl<I: Io> Adapter<I> {
             self.ring.grant_reads.oack_pool = (oack_pending && !self.ring.grant_reads.outcome.oack_captured)
                 .then(|| (self.session.grant_available_ids(), self.session.receive_snapshot().states));
         }
+        #[cfg(feature = "sunfish-glink-announcement-reuse")]
+        let reusable_ack = self.session.reusable_intent_ack_pending();
         let writer = |record: &[u8]| {
+            #[cfg(feature = "sunfish-glink-announcement-reuse")]
+            let yield_to_rx = first_grant || (reusable_ack && record.len() == 8
+                && u16::from_le_bytes([record[0],record[1]]) == 8 && word(record,4) == 1);
+            #[cfg(not(feature = "sunfish-glink-announcement-reuse"))]
+            let yield_to_rx = first_grant;
             #[cfg(feature = "sunfish-tftp-reserved-writer-io")]
             let before = watch_reserved.then(|| self.ring.io.reserved_io_totals()).flatten();
             #[cfg(feature = "sunfish-wrq-prefix-close")]
             { self.ring.wrq_prefix.watch_head = oack_pending || init_pending; }
             #[cfg(feature = "sunfish-grant-buffer-reads")]
             { self.ring.grant_session_write = true; }
-            let result = self.ring.write_checked(record, TX_RESERVE, first_grant);
+            let result = self.ring.write_checked(record, TX_RESERVE, yield_to_rx);
             #[cfg(feature = "sunfish-grant-buffer-reads")]
             { self.ring.grant_session_write = false; }
             #[cfg(feature = "sunfish-wrq-prefix-close")]
@@ -3569,6 +3835,9 @@ impl<I: Io> Adapter<I> {
                     Err(WriteError::WouldBlock)
                 }
                 Ok(true) => {
+                    #[cfg(feature="sunfish-registry-tx3-wire-headers")]
+                    if watch_registry_wire{opening_registry_wire=RegistryWireHeader::read(record,true,
+                        self.ring.first_server_check_clock.map(|clock|clock()));}
                     #[cfg(feature = "sunfish-ipa-registration-reply-headers")]
                     if registration_pending {
                         opening_header = Some(RegistrationHeader::read(record, true,
@@ -3590,6 +3859,17 @@ impl<I: Io> Adapter<I> {
         };
         #[cfg(not(feature = "sunfish-tftp-oack-followup"))]
         let result = self.session.publish_next(generation, writer);
+        #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+        {
+            let arm = self.session.registry_window_trace().target.is_some_and(|p| p.conversion.arms != 0);
+            if self.ring.prearm_io.is_some_and(|t| (first_prearm_io && !t.ended) || (arm && !t.armed)) {
+                let totals=self.ring.io.registry_prearm_totals();let at=self.ring.first_server_check_clock.map(|now|now());
+                let trace=self.ring.prearm_io.as_mut().unwrap();
+                if first_prearm_io && !trace.ended {trace.ended=true;trace.first_end=totals;trace.first_end_at=at;}
+                if arm && !trace.armed {trace.armed=true;trace.arm=totals;trace.arm_at=at;}
+                if arm {self.ring.io.registry_prearm_timing(false);}
+            }
+        }
         #[cfg(feature = "sunfish-oack-grant-outcome")]
         { self.ring.grant_reads.oack_pool = None; }
         if let Some(error) = failure {
@@ -3628,7 +3908,7 @@ impl<I: Io> Adapter<I> {
             Err(core::Error::NoRemoteIntent) => Transmit::AwaitingIntent,
             Err(core::Error::WouldBlock) if receive_arrived => {
                 #[cfg(feature = "sunfish-first-oack-grant-window")]
-                { self.record_grant_yield(self.tftp_rx_snapshot().ok_or(Error::NotReady)?.0); }
+                if first_grant { self.record_grant_yield(self.tftp_rx_snapshot().ok_or(Error::NotReady)?.0); }
                 Transmit::Idle
             }
             Err(core::Error::WouldBlock) => Transmit::Blocked {
@@ -3674,6 +3954,22 @@ impl<I: Io> Adapter<I> {
             self.ring.init_close.fresh_unread = self.ring.rx_bytes.map(|length|
                 ring_distance(self.ring.words[2], self.ring.words[3], length) as u32);
             self.ring.init_close.fresh_head = self.ring.registration_rx.as_ref().map(|h| h.head);
+        }
+        #[cfg(feature = "sunfish-registry-post-reply-trace")]
+        if self.ring.registry_reply.is_none()
+            && self.session.registry_window_trace().predecessor.is_some_and(|p| p.publication_frozen)
+            && let Some(length) = self.ring.rx_bytes
+        {
+            // Successful checked publication sampled the cursor pair on both
+            // sides of its head store. Reuse that pair; add no hardware reads.
+            self.ring.registry_reply = Some(RegistryReplyWindow::new(
+                distance(self.ring.words[0], self.ring.words[1]),
+                ring_distance(self.ring.words[2], self.ring.words[3], length),
+                self.ring.first_server_check_clock.map(|clock| clock())));
+        }
+        #[cfg(feature="sunfish-registry-tx3-wire-headers")]
+        if watch_registry_wire && self.session.registry_window_trace().predecessor.is_some_and(|p|p.publication_frozen){
+            let mut trace=RegistryWireTrace::default();trace.record(opening_registry_wire,false);self.ring.registry_wire=Some(trace);
         }
         #[cfg(feature = "sunfish-ipa-registration-reply-path")]
         if registration_pending
@@ -4052,6 +4348,12 @@ impl<I: Io> Adapter<I> {
         { self.ring.registration_reply = None; }
         #[cfg(feature = "sunfish-ipa-reply-fifo-visibility")]
         { self.ring.registration_reply_rx = None; }
+        #[cfg(feature = "sunfish-registry-post-reply-trace")]
+        { self.ring.registry_reply = None; }
+        #[cfg(feature="sunfish-registry-tx3-wire-headers")]
+        { self.ring.registry_wire=None; }
+        #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+        { self.ring.io.registry_prearm_timing(false); self.ring.prearm_io = None; }
         #[cfg(feature = "sunfish-ipa-init-close-visibility")]
         { self.ring.init_close = InitCloseFifo::default(); }
         #[cfg(feature = "sunfish-ipa-reg-close-fifo")]
@@ -4532,3 +4834,95 @@ impl WrqReceiveWork {
 mod wrq_validation_cost;
 #[cfg(feature = "sunfish-wrq-validation-path")]
 pub use wrq_validation_cost::*;
+
+#[cfg(all(test, feature = "sunfish-registry-post-reply-trace"))]
+#[test]
+fn registry_post_reply_window_retains_tail_visibility_and_reports_history_loss() {
+    for clocked in [false, true] {
+        let time = |n| clocked.then_some(n);
+        let mut w = RegistryReplyWindow::new(40, 0, time(10));
+        w.sample(16, 0, 0, time(20), time(21));
+        assert_eq!(w.trace.peer_tail_at, None);
+        w.sample(24, 80, 80, time(30), time(31));
+        assert_eq!(w.trace.peer_tail_at, time(31));
+        w.sample(0, 0, 8, time(40), time(41));
+        w.finish(8, 8);
+        let bounds = w.trace.completion.unwrap();
+        assert_eq!((bounds.last_absent, bounds.first_visible, bounds.bytes_ahead), (time(20), time(31), Some(72)));
+        assert!(w.trace.finished);
+        let frozen = w.trace;
+        w.sample(1, 8, 8, time(50), time(51)); w.finish(8,8);
+        assert_eq!(w.trace, frozen);
+    }
+    let mut w = RegistryReplyWindow::new(8, 0, Some(1));
+    w.sample(8, 8, 8, Some(2), Some(3));
+    for i in 0..RX_HEAD_HISTORY { w.sample(0, 8, 8, Some(4+i as u64), Some(5+i as u64)); }
+    assert_eq!(w.trace.history_evictions, 1);
+    // Original completion was not parsed until after its arrival span expired.
+    // Missing visibility is explicit; never substitute the latest observation.
+    w.finish(8*(RX_HEAD_HISTORY+1),8);
+    assert_eq!(w.trace.completion.unwrap().first_visible, None);
+    assert_eq!(w.trace.peer_tail_at, Some(3));
+}
+
+#[cfg(all(test,feature="sunfish-registry-prearm-io-trace"))]
+#[test]
+fn registry_prearm_io_delta_rejects_missing_saturated_regressed_or_overflowed_counters(){
+    let mut t=RegistryPrearmIo::default();assert_eq!(t.total(true),None);
+    t.queued=Some([10;12]);let mut b=[u64::MAX;12];b[..4].copy_from_slice(&[11,12,13,14]);t.arm=Some(b);
+    assert_eq!(t.delta(true),Some([1,2,3,4]));assert_eq!(t.total(true),Some(10)); // nested categories are not added
+    t.arm.as_mut().unwrap()[1]=9;assert_eq!(t.delta(true),None);
+    t.arm=Some([u64::MAX;12]);assert_eq!(t.delta(true),None);
+    t.queued=Some([0;12]);t.arm=Some([u64::MAX-1;12]);assert_eq!(t.total(true),None);
+}
+
+#[cfg(all(test,feature="sunfish-registry-tx3-wire-headers"))]
+#[test]
+fn registry_wire_header_projects_checked_ids_and_leaves_short_or_unknown_details_unavailable(){
+    let mut r=[0u8;56];
+    for (at,v) in [(0,0x0001_0009u32),(4,7),(8,40),(16,1),(20,1),(24,1),(28,0x4003),(36,7),(44,9)]{r[at..at+4].copy_from_slice(&v.to_le_bytes());}
+    r[48..55].copy_from_slice(&[2,3,0,0x21,0,0,0]);let h=RegistryWireHeader::read(&r,true,Some(100)).unwrap();
+    assert_eq!((h.command,h.channel,h.parameter,h.bytes),(9,1,7,56));assert_eq!(h.qrtr,Some([1,0x4003,9]));assert_eq!(h.qmi,Some((2,3,0x21)));assert_eq!(h.at,Some(100));assert!(h.tx);
+    r[8..12].copy_from_slice(&u32::MAX.to_le_bytes());assert_eq!(RegistryWireHeader::read(&r,false,None).unwrap().qrtr,None);
+    let mut close=[0u8;68];for(at,v)in[(0,0x0002_0009u32),(4,20),(8,52),(16,1),(20,6),(28,u32::MAX),(36,20),(44,u32::MAX),(48,6),(52,0),(56,0x49)]{close[at..at+4].copy_from_slice(&v.to_le_bytes());}
+    assert_eq!(RegistryWireHeader::read(&close,false,None).unwrap().del_client,Some([0,0x49]));
+    for len in 0..8{assert!(RegistryWireHeader::read(&r[..len],false,None).is_none());}
+    assert!(RegistryWireHeader::read(&std::vec![0;65536],false,None).is_none());
+}
+#[cfg(all(test,feature="sunfish-registry-tx3-wire-headers"))]
+#[test]
+fn registry_wire_trace_keeps_opening_tail_and_clockless_completion_without_late_overwrite(){
+    let mut t=RegistryWireTrace::default();let h=RegistryWireHeader::read(&[6,0,2,0,0,0,0,0],false,None).unwrap();
+    for parameter in 0..100{t.record(Some(RegistryWireHeader{parameter,..h}),false);}
+    let kept:std::vec::Vec<_>=t.headers.iter().flatten().map(|h|h.parameter).collect();assert_eq!(kept,(0..40).chain(61..100).collect::<std::vec::Vec<_>>());assert_eq!(t.omitted,21);
+    t.record(Some(RegistryWireHeader{parameter:100,..h}),true);assert!(t.finished);assert_eq!(t.completion.unwrap().parameter,100);assert_eq!(t.completion.unwrap().at,None);
+    t.record(Some(h),false);t.record(None,true);assert_eq!(t.omitted,21);assert_eq!(t.unparsed,0);assert_eq!(t.completion.unwrap().parameter,100);
+    let mut t=RegistryWireTrace::default();t.record(None,true);assert!(t.finished);assert_eq!(t.unparsed,1);assert_eq!(t.completion,None);t.record(Some(h),false);assert!(t.headers.iter().all(Option::is_none));
+    let mut t=RegistryWireTrace::default();t.unparsed=u32::MAX;t.record(None,false);assert_eq!(t.unparsed,u32::MAX);
+}
+
+#[cfg(all(test,mpss_glink_transport_tests,feature="sunfish-glink-announcement-reuse"))]
+mod announcement_reuse_fifo_tests {
+use super::*;
+use crate::{Fake,Op};
+#[test]
+fn announcement_reuse_fifo_ack_keeps_head_unpublished_for_visible_or_late_rx(){
+    for wrap in [0,0x3ff8]{for mode in 0..3{
+        let(mut s,id,_original)=crate::announcement_fixture::ready();
+        let mut packet=Vec::new();for value in [1u32,4,0,0xfffffffe,0,20,1,0xfffffffe,4,0x777,1,0,0x123]{packet.extend(value.to_le_bytes());}
+        assert!(matches!(s.ingest(1,&crate::data(id,&packet)),Ok(Event::QrtrControl(_))));
+        let mut returned=false;for _ in 0..32{let result=s.publish_next(1,|b|{if b[0]==14{assert_eq!(u32::from_le_bytes(b[4..8].try_into().unwrap()),id);returned=true;}Ok(())}).unwrap();if returned{break;}assert!(result.is_some());}assert!(returned);
+        assert_eq!(s.ingest(1,&crate::control(7,2,52)),Ok(Event::ReceiveIntentRequest{granted:true}));
+        let peer=Fake::new(wrap,wrap);let mut a=Adapter::attach(peer.clone(),crate::session(),1).unwrap();
+        // The pure Session fixture supplies a validated logical prefix; this
+        // test isolates the actual FIFO publication boundary, not boot setup.
+        a.session=s;peer.clear();
+        match mode{0=>peer.push(&crate::control(13,0,0)),1=>{let mut fragment=crate::data(id,&packet[..8]);fragment[12..16].copy_from_slice(&44u32.to_le_bytes());peer.push(&fragment);},_=>peer.0.borrow_mut().append_notification_on_write=true}
+        assert_eq!(a.publish_next(1),Ok(Transmit::Idle));assert_eq!(peer.0.borrow().words[1],wrap);
+        assert!(!peer.log().iter().any(|op|matches!(op,Op::Head(_))),"RX-visible ACK has not committed");
+        if mode==1{assert_eq!(a.poll_receive(1),Ok(Receive::Session(Event::Fragment)));}else{assert_eq!(a.poll_receive(1),Ok(Receive::ReadNotification));}
+        assert_eq!(a.publish_next(1),Ok(Transmit::Session(Published::IntentRequestAck{granted:mode!=1})));
+        let bytes=peer.take_tx();assert_eq!((bytes[0],u32::from_le_bytes(bytes[4..8].try_into().unwrap())),(8,u32::from(mode!=1)));
+    }}
+}
+}

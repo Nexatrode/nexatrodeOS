@@ -214,6 +214,18 @@ sunfish-wrq-validation-path = ["sunfish-wrq-stage-costs"]
 sunfish-wrq-domain-costs = ["sunfish-wrq-validation-path"]
 sunfish-wrq-table-normal-nc = ["sunfish-wrq-domain-costs"]
 sunfish-wrq-post-return-callers = ["sunfish-wrq-table-normal-nc"]
+sunfish-runtime-handoff-stack-split = ["sunfish-wrq-post-return-callers"]
+sunfish-tftp-peer-metadata-batch = ["sunfish-runtime-handoff-stack-split"]
+sunfish-smmu-normal-nc-table-pairs = ["sunfish-tftp-peer-metadata-batch"]
+sunfish-original-final-ack-turn = ["sunfish-ack-elf-phase-trace"]
+sunfish-registry-window-trace = ["sunfish-wlan-registry-second-reply", "sunfish-original-final-ack-turn"]
+sunfish-registry-handoff-turn = ["sunfish-registry-window-trace"]
+sunfish-registry-predecessor-pressure = ["sunfish-registry-handoff-turn"]
+sunfish-registry-between-grants = ["sunfish-registry-predecessor-pressure"]
+sunfish-registry-grant-eligibility = ["sunfish-registry-between-grants"]
+sunfish-registry-converted-grant-turn = ["sunfish-registry-grant-eligibility"]
+sunfish-ack-elf-phase-trace = ["sunfish-first-data-ack-elf-trace"]
+sunfish-first-data-ack-elf-trace = ["sunfish-smmu-normal-nc-table-pairs"]
 sunfish-first-oack-spare-buffer = ["sunfish-oack-retry-close"]
 sunfish-oack-retry-close = ["sunfish-oack-grant-ack-turn"]
 sunfish-first-wrq-return-oack = ["sunfish-spare-wrq-ingress"]
@@ -318,6 +330,25 @@ budget-pressure = []
 development-crypto = []
 storage-test = ["development-crypto"]
 host-backup = ["development-crypto"]
+
+# Exact transaction 3 completion visibility and transaction 4 pressure.
+sunfish-registry-post-reply-trace = ["sunfish-registry-converted-grant-turn", "sunfish-ipa-reply-fifo-visibility", "sunfish-grant-ad-writer-trace"]
+
+sunfish-registry-conversion-lifetime-trace = ["sunfish-registry-post-reply-trace"]
+
+sunfish-registry-converted-credit-turn = ["sunfish-registry-conversion-lifetime-trace"]
+
+sunfish-registry-prearm-io-trace = ["sunfish-registry-converted-credit-turn"]
+# Presentation only: retain repaint debt while the live continuation has work.
+sunfish-registry-defer-paint = ["sunfish-registry-prearm-io-trace"]
+# Existing exact completions and normal ELF admission observations on one panel.
+sunfish-registry-elf-admission-panel = ["sunfish-registry-defer-paint"]
+# Existing predecessor peer-tail, receipt visibility and exact grant observations.
+sunfish-registry-tx3-receipt-panel = ["sunfish-registry-elf-admission-panel"]
+# Bounded committed/accepted header IDs for the exact predecessor receipt window.
+sunfish-registry-tx3-wire-headers = ["sunfish-registry-tx3-receipt-panel", "sunfish-ipa-registration-reply-headers"]
+# Return only fully accepted NEW_SERVER buffers reusable; preserve retained requests.
+sunfish-glink-announcement-reuse = ["sunfish-wlan-first-wrq-reuse", "sunfish-glink-retry-full-intent"]
 
 [[bin]]
 name = "rust_sunfish_native_startup_preflight"

@@ -49,6 +49,8 @@ pub struct Report {
 /// Keeps physical notifications until the actual serialized owner requests
 /// their rearm. Continuations are a software work flag, not physical GSI bit3.
 pub struct Router<K: Kernel> {
+    #[cfg(feature = "sunfish-original-final-ack-turn")]
+    original_final_ack_turn: bool,
     kernel: K,
     generation: u64,
     identity: Option<u64>,
@@ -69,6 +71,8 @@ pub struct Router<K: Kernel> {
 impl<K: Kernel> Router<K> {
     pub fn new(kernel: K, generation: u64) -> Self {
         Self {
+            #[cfg(feature = "sunfish-original-final-ack-turn")]
+            original_final_ack_turn: false,
             kernel,
             generation,
             identity: None,
@@ -282,6 +286,42 @@ impl<K: Kernel> Router<K> {
         }
         result.map(|_| true)
     }
+
+    /// At most one ordinary checked dispatch for the exact original final ACK.
+    /// An attempted but blocked write consumes this turn; normal continuation
+    /// owns subsequent retries. Diagnostic clocks never gate the opportunity.
+    #[cfg(feature = "sunfish-original-final-ack-turn")]
+    pub fn dispatch_queued_original_final_ack<I: Io>(
+        &mut self, owner: &mut Owner<I>,
+    ) -> Result<bool, Error> {
+        if self.original_final_ack_turn || !self.continuation || self.other != 0 {
+            return Ok(false);
+        }
+        if !owner.original_final_ack_queued() { return Ok(false); }
+        self.original_final_ack_turn = true;
+        self.dispatch(owner).map(|_| true)
+    }
+
+    /// Consume before one ordinary writer turn; retry only the exact live pair.
+    /// Other owners, grant/credit work and backpressure keep the normal path.
+    #[cfg(feature = "sunfish-registry-handoff-turn")]
+    pub fn dispatch_registry_handoff<I: Io>(&mut self, owner: &mut Owner<I>)
+        -> Result<Option<modem::ServiceProgress>, Error>
+    {
+        if let Err(error) = self.live() { owner.fault(); return Err(error); }
+        if !self.continuation || self.other != 0 { return Ok(None); }
+        let token = owner.take_registry_handoff().map_err(|error| self.fail(Error::Owner(error)))?;
+        let Some(token) = token else { return Ok(None); };
+        owner.observe_registry_handoff_writer(token, false, false);
+        let result = self.dispatch(owner);
+        owner.observe_registry_handoff_writer(token, true, result.is_err());
+        result?;
+        if self.other != 0 { return Ok(None); }
+        owner.retry_registry_handoff(token, self).map_err(|error| self.fail(Error::Owner(error)))
+    }
+
+    #[cfg(feature = "sunfish-original-final-ack-turn")]
+    pub fn original_final_ack_turn(&self) -> bool { self.original_final_ack_turn }
 
     #[cfg(feature = "sunfish-wlan-first-server-check-early-turn")]
     pub fn first_oack_turn(&self) -> Option<(u64, u64)> {

@@ -1,6 +1,7 @@
 //! Settled read-only caller attribution for the original OACK window.
 use super::*;
 impl RuntimeDomain {
+    #[cfg(not(feature="sunfish-first-data-ack-elf-trace"))]
     pub(super) fn show_wrq_callers(&self,display:&Display,owner:&ModemOwner) {
         let reg=owner.ipa_registration_trace();
         let work=owner.wrq_receive_work();let path=&work.validation;
@@ -10,7 +11,14 @@ impl RuntimeDomain {
         let close=owner.init_close_fifo().bounds.and_then(|c|c.first_visible);
         let age=|t|self.time_from_us(Some(self.runtime_started),t);
         let us=|t|self.time_from_us(Some(0),Some(t));
+        #[cfg(not(feature="sunfish-runtime-handoff-stack-split"))]
         display.replace_line(1,"WRQ POST RETURN CALLERS");
+        #[cfg(all(feature="sunfish-runtime-handoff-stack-split",not(feature="sunfish-tftp-peer-metadata-batch")))]
+        display.replace_line(1,"WRQ CALLERS STACK SPLIT");
+        #[cfg(all(feature="sunfish-tftp-peer-metadata-batch",not(feature="sunfish-smmu-normal-nc-table-pairs")))]
+        display.replace_line(1,"WRQ PEER METADATA BATCH");
+        #[cfg(feature="sunfish-smmu-normal-nc-table-pairs")]
+        display.replace_line(1,"WRQ TABLE PAIR READS");
         for(i,(label,value)) in [("RUNTIME ERROR",self.error),("WRQ RXDONE US",age(returned)),
             ("REG QUEUE US",age(queued)),("REG PUB US",age(published)),("OACK HEAD US",age(head)),
             ("OACK READ US",age(read)),("CLOSE VIS US",age(close))].into_iter().enumerate(){display.hex(i+2,label,value);}
@@ -48,5 +56,12 @@ impl RuntimeDomain {
         display.hex(26,"IPA COMPLETE",u32::from(self.ipa_complete_seen));
         display.hex(27,"WLAN RRQ RX",owner.tftp_wire_counts()[2]);
         display.hex(28,"WLFW SERVERS",self.wlan_query.snapshot(owner)[7]);
+    }
+}
+
+#[cfg(feature="sunfish-first-data-ack-elf-trace")]
+impl RuntimeDomain {
+    pub(super) fn show_wrq_callers(&self, display:&Display, owner:&ModemOwner) {
+        self.show_tftp_completion(display, owner);
     }
 }

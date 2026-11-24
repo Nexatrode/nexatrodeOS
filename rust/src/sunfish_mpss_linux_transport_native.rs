@@ -34,6 +34,8 @@ pub struct Retained<'memory, F: FnMut(usize) -> Result<(), domain::Error>> {
     clock: Option<fn() -> u64>,
     #[cfg(feature = "sunfish-native-startup-mpss-runtime")]
     timing: IoTiming,
+    #[cfg(all(feature="sunfish-registry-prearm-io-trace",feature="sunfish-native-startup-mpss-runtime"))]
+    prearm_timing: io_timing::WindowTiming,
     #[cfg(feature = "sunfish-wrq-validation-path")]
     validation_clock: Option<fn()->u64>,
     #[cfg(feature = "sunfish-wrq-validation-path")]
@@ -64,6 +66,8 @@ pub fn start_live<'m, F: FnMut(usize) -> Result<(), domain::Error>>(
             clock: None,
             #[cfg(feature = "sunfish-native-startup-mpss-runtime")]
             timing: IoTiming::default(),
+            #[cfg(all(feature="sunfish-registry-prearm-io-trace",feature="sunfish-native-startup-mpss-runtime"))]
+            prearm_timing: io_timing::WindowTiming::default(),
             #[cfg(feature = "sunfish-wrq-validation-path")] validation_clock:None,
             #[cfg(feature = "sunfish-wrq-validation-path")] validation_samples:[[None;4];3],
             #[cfg(feature = "sunfish-wrq-validation-path")] validation_count:0,
@@ -108,13 +112,17 @@ impl<'m, F: FnMut(usize) -> Result<(), domain::Error>> Retained<'m, F> {
         action: impl FnOnce(&mut Owner<'m>) -> Result<T, smp::GlinkError>,
     ) -> Result<T, fifo::Fault> {
         #[cfg(feature = "sunfish-native-startup-mpss-runtime")]
-        let started = self.clock.filter(|_| self.timing.enabled()).map(|clock| (clock, clock()));
+        let enabled = self.timing.enabled();
+        #[cfg(all(feature="sunfish-registry-prearm-io-trace",feature="sunfish-native-startup-mpss-runtime"))]
+        let enabled = enabled || self.prearm_timing.enabled();
+        #[cfg(feature = "sunfish-native-startup-mpss-runtime")]
+        let started = self.clock.filter(|_| enabled).map(|clock| (clock, clock()));
         #[cfg(not(feature = "sunfish-native-startup-mpss-runtime"))]
         let _ = category;
         #[cfg(not(feature = "sunfish-tftp-publish-op-observer"))]
         let _ = detail;
         #[cfg(feature = "sunfish-tftp-barrier-domain-observer")]
-        let domain_clock = if detail == Some(4) { started.map(|(clock, _)| clock) } else { None };
+        let domain_clock = if detail == Some(4) && self.timing.enabled() { started.map(|(clock, _)| clock) } else { None };
         let result = self.run(action,
             #[cfg(feature = "sunfish-tftp-barrier-domain-observer")]
             domain_clock,
@@ -123,6 +131,8 @@ impl<'m, F: FnMut(usize) -> Result<(), domain::Error>> Retained<'m, F> {
         if let Some((clock, started)) = started {
             let elapsed = clock().wrapping_sub(started);
             self.timing.record(category, elapsed);
+            #[cfg(feature="sunfish-registry-prearm-io-trace")]
+            self.prearm_timing.record(category, elapsed);
             #[cfg(feature = "sunfish-tftp-publish-op-observer")]
             if let Some(detail) = detail { self.timing.record_detail(detail, elapsed); }
         }
@@ -254,6 +264,10 @@ impl<F: FnMut(usize) -> Result<(), domain::Error>> fifo::Io for Retained<'_, F> 
             self.timing.barrier_domain_total[0], self.timing.barrier_domain_total[1],
         ])
     }
+    #[cfg(all(feature="sunfish-registry-prearm-io-trace",feature="sunfish-native-startup-mpss-runtime"))]
+    fn registry_prearm_timing(&mut self,enabled:bool){if enabled{self.prearm_timing.begin();}else{self.prearm_timing.finish();}}
+    #[cfg(all(feature="sunfish-registry-prearm-io-trace",feature="sunfish-native-startup-mpss-runtime"))]
+    fn registry_prearm_totals(&self)->Option<[u64;12]>{self.clock.and(self.prearm_timing.snapshot())}
     #[cfg(feature = "sunfish-tftp-reserved-writer-io")]
     fn reserved_io_totals(&self) -> Option<[u64; 12]> {
         self.timing.enabled().then(|| self.elf_io_totals()).flatten()
