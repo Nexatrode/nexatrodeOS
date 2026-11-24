@@ -360,6 +360,7 @@ sunfish-elf-window-trace = ["sunfish-elf-queued-handoff"]
 sunfish-elf-first-slot-turn = ["sunfish-elf-window-trace", "sunfish-wlan-elf-completion-turn"]
 sunfish-elf-writer-trace = ["sunfish-elf-first-slot-turn", "sunfish-wlan-elf-publish-trace", "sunfish-wlan-registry-turn-gates", "sunfish-registry-grant-eligibility", "sunfish-wlan-registry-ack-trace"]
 sunfish-elf-third-reply = ["sunfish-elf-writer-trace", "sunfish-wlan-registry-second-reply"]
+sunfish-elf-third-phases = ["sunfish-elf-third-reply"]
 sunfish-elf-queued-handoff = ["sunfish-post-elf-mcfg-trace"]
 sunfish-post-elf-mcfg-trace = ["sunfish-post-elf-startup-panel", "sunfish-wrq-post-return-callers", "sunfish-ipa-registration-reply-headers"]
 
