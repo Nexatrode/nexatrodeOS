@@ -8,10 +8,9 @@ use core::{
     sync::atomic::{AtomicU32, Ordering, fence},
 };
 use personal_os_slint_notes_spike::{NotesWindow, guest_platform};
-use sel4_microkit::{
-    Channel, ChannelSet, Handler, Infallible, debug_println, memory_region_symbol,
-    protection_domain,
-};
+#[cfg(not(feature = "desktop-dynamic-ui"))]
+use sel4_microkit::memory_region_symbol;
+use sel4_microkit::{Channel, ChannelSet, Handler, Infallible, debug_println, protection_domain};
 use slint::{
     ComponentHandle, LogicalPosition, PhysicalSize, SharedString,
     platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
@@ -90,12 +89,18 @@ struct App {
     interactive: bool,
     held: [Option<SharedString>; 128],
     pointer: Option<LogicalPosition>,
+    #[cfg(feature = "desktop-dynamic-ui")]
+    generation: usize,
 }
 
 impl App {
     fn draw(&mut self) {
+        #[cfg(not(feature = "desktop-dynamic-ui"))]
         self.ui
             .set_status(format!("PROCESS {} / UPDATE {}", self.id, self.counter).into());
+        #[cfg(feature = "desktop-dynamic-ui")]
+        self.ui
+            .set_status(format!("INSTANCE {} / UPDATE {}", self.generation, self.counter).into());
         slint::platform::update_timers_and_animations();
         let header = unsafe { &mut *self.surface };
         let before = header.revision.load(Ordering::Relaxed);
@@ -118,7 +123,31 @@ impl App {
         header
             .revision
             .store(before.wrapping_add(2), Ordering::Release);
+        #[cfg(not(feature = "desktop-dynamic-ui"))]
         Channel::new(0).notify();
+        #[cfg(feature = "desktop-dynamic-ui")]
+        {
+            if self.counter == 0 {
+                let malformed = Channel::new(0).pp_call(sel4_microkit::MessageInfo::new(0x780, 0));
+                assert_eq!(malformed.label(), 1, "malformed publication accepted");
+                sel4_microkit::set_mr(0, self.generation.wrapping_add(1) as u64);
+                sel4_microkit::set_mr(1, 0);
+                let forged = Channel::new(0).pp_call(sel4_microkit::MessageInfo::new(0x780, 2));
+                assert_eq!(forged.label(), 1, "forged instance accepted");
+                sel4_microkit::set_mr(0, self.generation as u64);
+                let stride = header.stride;
+                header.stride = 0;
+                let invalid_frame =
+                    Channel::new(0).pp_call(sel4_microkit::MessageInfo::new(0x780, 2));
+                header.stride = stride;
+                assert_eq!(invalid_frame.label(), 1, "invalid frame accepted");
+                debug_println!("DYNAMIC_APP|RPC_DENIALS|generation={}", self.generation);
+            }
+            sel4_microkit::set_mr(0, self.generation as u64);
+            sel4_microkit::set_mr(1, self.counter as u64);
+            let reply = Channel::new(0).pp_call(sel4_microkit::MessageInfo::new(0x780, 2));
+            assert_eq!(reply.label(), 0, "surface publication rejected");
+        }
     }
 
     fn reset_input(&mut self) {
@@ -135,7 +164,10 @@ impl App {
     }
 
     fn input(&mut self) {
+        #[cfg(not(feature = "desktop-dynamic-ui"))]
         let queue = memory_region_symbol!(app_input: *mut InputQueue).as_ptr();
+        #[cfg(feature = "desktop-dynamic-ui")]
+        let queue = 0x66000000 as *mut InputQueue;
         let queue = unsafe { &*queue };
         let head = queue.head.load(Ordering::Acquire);
         let mut tail = queue.tail.load(Ordering::Acquire);
@@ -217,7 +249,10 @@ impl App {
 
 #[protection_domain]
 fn init() -> App {
+    #[cfg(not(feature = "desktop-dynamic-ui"))]
     let heap = memory_region_symbol!(app_heap: *mut u8);
+    #[cfg(feature = "desktop-dynamic-ui")]
+    let heap = core::ptr::NonNull::new(0x64000000 as *mut u8).unwrap();
     HEAP.set_bounds(sel4_dlmalloc::StaticHeapBounds::new(
         heap.as_ptr(),
         HEAP_BYTES,
@@ -231,12 +266,23 @@ fn init() -> App {
     let mut app = App {
         window,
         ui,
-        surface: memory_region_symbol!(app_surface: *mut Header).as_ptr(),
+        surface: {
+            #[cfg(not(feature = "desktop-dynamic-ui"))]
+            {
+                memory_region_symbol!(app_surface: *mut Header).as_ptr()
+            }
+            #[cfg(feature = "desktop-dynamic-ui")]
+            {
+                0x60000000 as *mut Header
+            }
+        },
         id: unsafe { ptr::read_volatile(ptr::addr_of!(APP_ID[0])) },
         counter: 0,
         interactive: unsafe { ptr::read_volatile(ptr::addr_of!(APP_ID[1])) != 0 },
         held: core::array::from_fn(|_| None),
         pointer: None,
+        #[cfg(feature = "desktop-dynamic-ui")]
+        generation: unsafe { ptr::read_volatile(0x68000000 as *const usize) },
     };
     app.ui.set_note(if app.interactive {
         SharedString::default()

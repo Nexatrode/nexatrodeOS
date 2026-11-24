@@ -6,7 +6,7 @@ import subprocess
 import time
 
 
-def run_headless(directory, interactive):
+def run_headless(directory, interactive, expected=None, interaction=None):
     """Independent QEMU/HVF check. It opens no real VM, disk or network."""
     from utm_vault_key_storage import QmpPipe
     pipe = directory / "monitor"
@@ -28,7 +28,7 @@ def run_headless(directory, interactive):
         try:
             monitor.connect()
             deadline = time.monotonic() + 60
-            expected = ("RUNTIME|PASS|complete", "SURFACE|PASS|interactive ready" if interactive else "SURFACE|PASS|complete")
+            expected = expected or ("RUNTIME|PASS|complete", "SURFACE|PASS|interactive ready" if interactive else "SURFACE|PASS|complete")
             while time.monotonic() < deadline:
                 text = trace.read_text(errors="replace") if trace.exists() else ""
                 if any(marker in text for marker in ("RUNTIME|FAIL|", "SURFACE|FAIL|", "MON|ERROR", "panicked at")) or process.poll() is not None:
@@ -38,7 +38,9 @@ def run_headless(directory, interactive):
                 time.sleep(.1)
             else:
                 raise RuntimeError("headless fixture timed out: " + text[-2000:])
-            if interactive:
+            if interaction:
+                interaction(monitor, trace, directory, directory)
+            elif interactive:
                 exercise(monitor, trace, directory, directory)
             monitor.send("screendump", {"filename": str(directory / "screen.ppm")})
             print("PASS combined runtime and graphics in headless four-vCPU HVF")

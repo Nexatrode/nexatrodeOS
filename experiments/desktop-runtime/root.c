@@ -1,5 +1,6 @@
 #include "runtime.h"
 #include "platform.h"
+#include "elf.h"
 
 #ifndef RUNTIME_HOSTED
 seL4_IPCBuffer *__sel4_ipc_buffer;
@@ -12,22 +13,12 @@ extern const uint8_t app_elf_start[], app_elf_end[];
 
 #define TEMP_ADDRESS 0x40000000UL
 #define POOL_BITS 20
+#ifndef MAX_OBJECTS
 #define MAX_OBJECTS 128
+#endif
 #define MAX_SEGMENTS 8
 #define MAX_PACKAGE_BYTES (128 * 1024)
 
-struct elf_header {
-    uint8_t ident[16];
-    uint16_t type, machine;
-    uint32_t version;
-    uint64_t entry, phoff, shoff;
-    uint32_t flags;
-    uint16_t ehsize, phentsize, phnum, shentsize, shnum, shstrndx;
-};
-struct program_header {
-    uint32_t type, flags;
-    uint64_t offset, address, physical, filesz, memsz, align;
-};
 struct process {
     seL4_CPtr cnode, vspace, tcb, sc, endpoint, ipc;
     seL4_CPtr start_slot, next_slot;
@@ -432,7 +423,7 @@ void root_main(seL4_BootInfo *info)
 #endif
 }
 
-#ifdef RUNTIME_HOSTED
+#if defined(RUNTIME_HOSTED) && !defined(RUNTIME_NO_ENTRY)
 void init(void)
 {
     root_main(NULL);

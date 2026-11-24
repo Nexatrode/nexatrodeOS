@@ -5,25 +5,25 @@ desktop app installation through a separate seL4 process manager. UTM is the
 integration environment. Slint and the existing CPU Skia and VirtIO display
 work remain the rendering foundation.
 
-The laboratory implementation now includes a combined image. A trusted
-Microkit-hosted manager creates and destroys small native test processes from
-a bounded resource pool, alongside two predeclared Slint domains and a trusted
-compositor. Click and keyboard focus use separate bounded app queues. The
-dedicated root-task version remains an independent lifecycle regression test.
-Connecting dynamically created graphical processes to these services is the
-next boundary.
+The laboratory implementation now includes a graphical lifecycle image. A
+trusted Microkit-hosted manager and compositor creates a Slint process after
+boot from a bounded resource pool. It clears that window's caches and input
+ownership, revokes its mappings and objects, and recreates a fresh instance.
+A second Slint window stays in a predeclared domain to test peer survival.
+The dedicated root-task and two-static-window systems remain regression tests.
+Real app services, protected files and lock integration are the next boundaries.
 
 ## Implementation order
 
 | Milestone | Completion requirement | Current state |
 | --- | --- | --- |
 | Reproducible baseline | Repeat app switching, typing, photos, scanning and receiving with stage timings and source/build identities | Existing timing tools and new root-task build hashes; combined workload remains |
-| App lifecycle | Fresh identity, memory and permissions on launch; reclaim after exit, fault and interrupted creation | Dedicated root-task and Microkit-hosted prototypes passed 100 alternating launches; graphical app creation remains |
-| Independent surfaces | Separate app renderers, bounded submissions, focus routing and trusted lock coverage | Combined image has two Slint domains, a compositor and isolated focus routing; trusted lock integration and dynamic surface lifetime remain |
+| App lifecycle | Fresh identity, memory and permissions on launch; reclaim after exit, fault and interrupted creation | 100 small-process launches and 13 graphical instances tested; general graphical-constructor rollback remains |
+| Independent surfaces | Separate app renderers, bounded submissions, focus routing and trusted lock coverage | Dynamic window close/fault/restart, cache cleanup and input ownership tested with a surviving static peer; lock coverage and multiple dynamic windows remain |
 | Frame presentation | Explicit buffer ownership/release, retained damage, bounded queues, presentation feedback | Existing band redraw and frame-copy work plus the new last-good surface snapshots; swapchain remains |
 | Protected storage and lock | Private app storage, scoped documents, recoverable writes, key eviction and recreated apps | Existing vault and wrapped-key tests; general documents and complete secret lifecycle remain |
 | Complete interface | Shared controls and navigation, useful Files and Settings, measured transitions | Existing shell, lock screen, SimpleX and NexaWal work; consistent independent app interfaces remain |
-| Native installation | Load packages from disk, owner approval, stable identity, permissions, update/rollback/uninstall | Embedded bounded native ELF loading demonstrated; disk packages and installer remain |
+| Native installation | Load packages from disk, owner approval, stable identity, permissions, update/rollback/uninstall | Embedded bounded native and Slint ELF loading demonstrated; disk packages and installer remain |
 | Network resilience | App recovery and fail-closed required routing across disconnects and retries | Existing wallet and SimpleX recovery; OS egress policy remains |
 | Physical devices and power | Verified storage, time, input and display; screen off, idle, suspend/resume tested independently | Separate hardware work; Pixel integration follows verified drivers |
 

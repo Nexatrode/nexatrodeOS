@@ -1,14 +1,15 @@
 # App architecture: Microkit phone, future desktop
 
-Status: design direction, not an implemented installer or application ABI.
+Status: experimental architecture, without a production installer or stable application ABI.
 
 Keep the current phone and UTM system on seL4 and Microkit. The applications,
 drivers, permissions, and channels in the current system image remain defined
 at build time. A future desktop may need to install, start, stop, update, and
 remove independent apps after the system boots. Dedicated root-task and
 Microkit-hosted prototypes now exercise creation and destruction of native
-processes at runtime. They load embedded test executables. A combined image
-also has two predeclared Slint domains and isolated input focus.
+processes at runtime. They load embedded test executables. A graphical
+lifecycle image now creates one Slint process after boot, with a second
+predeclared Slint process as a surviving peer.
 Disk-based installation and integration
 with the real app services remain work in the
 [shared phone and desktop plan](phone-desktop-plan.md).
@@ -424,9 +425,117 @@ network. The normal UTM runner creates a blank disk, restricts networking and
 removes its temporary VM. Neither path opens the saved wallet/chat disk or
 changes the Pixel Wi-Fi checkout.
 
-This does not yet provide dynamic Slint loading, a disk package installer,
-disk-backed storage for these dynamic payloads, lock coverage, a surface
-swapchain or lifecycle-safe surface/input revocation. The manager's private
-saves are synthetic in-memory words. The next integration must tie a created
-graphical process, its input/surface authority and teardown to one instance
-generation before promoting this to real apps.
+The graphical lifecycle experiment below now ties one created Slint process to
+its input, surface and instance generation. A disk package installer,
+disk-backed storage for these dynamic payloads, lock coverage and a surface
+swapchain remain. The manager's private saves in the earlier lifecycle probe
+are synthetic in-memory words.
+
+## Dynamic graphical process lifecycle
+
+`experiments/desktop-graphical/manager.c` combines the bounded object manager
+and compositor in one trusted Microkit domain. The new
+`tests/desktop_graphical_utm.py` image has one predeclared Slint peer. It embeds
+a separate real Slint executable that the manager loads after boot. That
+executable has no protection-domain entry in the system description.
+
+Each instance gets a fresh CNode, VSpace, page tables, TCB, notification and
+reply object. It has an 8 MiB heap, a 480 by 800 RGB surface backed by a 2 MiB
+page, a private input page, a read-only instance page and a 128 KiB stack. The
+manager maps aliases of the new surface and input page into its own address
+space for composition and routing. App object allocation uses a reusable
+16 MiB pool, with a 1024-capability quota. A separate 1 MiB manager pool and
+the application pool are reserved within a 64 MiB untyped grant. The second
+window's memory and services remain independent of that pool.
+
+The executable policy accepts bounded AArch64 ELF files with page-disjoint
+loadable segments. It validates lengths, offsets, alignment, entry coverage
+and the mapped ELF header, and rejects writable executable segments,
+interpreters and dynamic linking. It supports the fixture's zero-initialized
+TLS image. Image, stack, heap, input and surface frames are checked for zero
+contents before use. This is a policy for the embedded fixture; it is not a
+general package loader. GUI construction still uses a fail-fast allocation
+policy. General rollback of an arbitrary graphical package's failed
+construction remains work.
+
+The frontend uses a fixed experimental address/capability layout. Its bounded
+frame-publication request goes through Microkit's standard PPC dispatcher.
+The manager derives the instance from the endpoint badge and validates the
+message length, supplied generation and surface dimensions/stride. The test
+frontend checks rejection of malformed publications, forged generations and
+invalid frames before its first valid publication.
+
+The app has its own notification receiver, reply object and send-only service
+endpoint with GrantReply. It receives no CNode, page-management, TCB or Grant
+authority. The permanent manager endpoint has tracked per-instance aliases.
+The manager deletes those aliases on close; the private object's untyped
+revocation separately removes app objects and mapped page aliases. An escaped
+service alias in the manager's CSpace is included in the cleanup audit. Stale
+instance badges also fail the active-generation check. This fixture permits
+up to 61 sequential instance generations per boot, matching its bounded
+Microkit dispatcher encoding without reusing generation IDs.
+
+Closing suspends the app first. The compositor clears its held-key and pointer
+ownership, input producer state, cached pixels, revision tracking and scratch
+snapshot. It publishes a blank window while preserving the other window,
+then unbinds the app's CPU context and revokes its objects and mappings. A new
+instance reuses the same surface physical memory, with zero-on-reallocation
+checks. Kernel faults from the active instance take the same teardown path.
+The controlled peer-surface read fault is checked explicitly; other faults
+are contained and logged as unexpected so the test does not silently accept
+them. Watchdogs for a hung app remain work.
+
+The manager uses priority 99 with an 8 ms/10 ms budget. The dynamic app uses
+priority 98 and a reused 2.5 ms/10 ms context; the static peer uses priority
+100 and its own 2.5 ms/10 ms context. These are fixture settings, not measured
+optimal performance settings. All these domains use CPU 0 in a four-vCPU VM.
+
+The disposable interaction test creates 13 graphical instances, with eleven
+normal closes and one contained fault, ending with a fresh running instance.
+It checks separate typing, a blank closed-window framebuffer, input denial
+while closed, denial of an old held-key release to the new instance, fresh
+typed state, physical surface reuse, capability cleanup, and continued peer
+typing across the cycles. OCR and pixel checks observe the guest framebuffer
+with settling waits. They do not measure physical display latency. Host
+sanitizer tests also cover an unmapped window, cache/input cleanup, first
+revision reuse and 10,000 mutations of the graphical ELF header policy.
+
+On November 23, 2026, the 13-instance run passed in accelerated four-vCPU UTM
+and headless HVF. The skipped-revocation and retained-endpoint controls were
+detected in both backends. The ordinary Slint fixture rebuilt successfully,
+and the original 100-launch dedicated-root test and host compositor/input
+regressions passed after the shared-code changes. The UTM and headless results,
+loader/source hashes, serial traces and framebuffers are saved separately in
+their build output directories.
+
+```sh
+python3 experiments/desktop-integrated/build_composer.py \
+  --source /path/to/committed-microkit-source \
+  --output build/desktop-graphical/composer --pool-bits 26
+python3 tests/desktop_graphical_utm.py \
+  --inputs /path/to/utm-accelerated \
+  --surfaces build/desktop-surfaces/interactive \
+  --composer build/desktop-graphical/composer/target/release/microkit \
+  --output build/desktop-graphical/baseline
+```
+
+The surface artifacts come from the earlier interactive surface build.
+Use fresh output directories. `--hvc-sdk` selects the independent headless
+HVF backend. `--control-skip-revoke` deliberately leaves object capabilities
+alive. `--control-keep-endpoint` deliberately retains the escaped service
+alias. Both controls must produce the corresponding cleanup-audit failure;
+that detection is their expected test outcome. F5 closes the dynamic window,
+F6 recreates it, and F7 triggers its controlled peer-surface fault in this
+disposable fixture only.
+
+This work does not change the regular phone/UTM app layout or migrate saved
+data. The graphics slot is fixed in geometry and only one window is created
+dynamically at a time. Multiple dynamic windows, disk packages, identity-bound
+file/network services and lock coverage remain. Clearing these compositor
+caches and checking zero on reallocation does not establish immediate erasure
+of all physical RAM, registers, GPU/display buffers or host snapshots. The
+private composer and manager remain experimental trusted code.
+The fixture also uses the `smp-debug` kernel configuration. Its debugging
+syscalls include a user-invokable debug halt, so this configuration is
+unsuitable for deploying hostile apps. The tested memory, input and cleanup
+paths do not establish a hardened production app sandbox.

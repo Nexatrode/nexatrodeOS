@@ -15,7 +15,7 @@ def replace(path, before, after):
     path.write_text(text.replace(before, after))
 
 
-def build(source, output):
+def build(source, output, pool_bits=24):
     if output.is_relative_to(source.resolve()):
         raise ValueError("composer output must be outside the shared source checkout")
     output.mkdir(parents=True, exist_ok=True)
@@ -46,8 +46,13 @@ def build(source, output):
                 },
                 CapMapType::RuntimeCNode => {
                     if cap_map.pd != pd.name { return Err("runtime resources must be local".into()); }
+                    let mut initial = Vec::new();
+                    if let Some(endpoint) = pd_src_shadow_cspace.endpoint {
+                        initial.push(capdl_util_make_cte(0,
+                            capdl_util_make_endpoint_cap(endpoint, RIGHTS_FAULT_HANDLER_EP, 0)));
+                    }
                     let id = capdl_util_make_cnode_obj(&mut spec_container,
-                        &format!("{}_runtime", pd.name), 12, Vec::new());
+                        &format!("{}_runtime", pd.name), 12, initial);
                     // Full-depth alias for CNode invocations, alongside the
                     // root branch used to address newly allocated capabilities.
                     pd_shadow_cspaces[&pd.name].insert_cap_into_microkit_cnode(
@@ -69,6 +74,8 @@ def build(source, output):
     }
 
     // Only for aesthetic purposes:""")
+    if pool_bits != 24:
+        replace(builder, "size_bits: 24, paddr: None", f"size_bits: {pool_bits}, paddr: None")
     sizes = checkout / "tool/microkit/src/capdl/spec.rs"
     replace(sizes, "        Object::Endpoint => ObjectType::Endpoint.fixed_size_bits(sel4_config).unwrap(),",
             "        Object::Untyped(ut) => ut.size_bits as u64,\n"
@@ -80,6 +87,7 @@ def build(source, output):
     (output / "composer.patch").write_bytes(patch)
     (output / "provenance.json").write_text(json.dumps({
         "microkit_revision": REVISION,
+        "runtime_pool_bits": pool_bits,
         "patch_sha256": hashlib.sha256(patch).hexdigest(),
         "composer_sha256": hashlib.sha256((output / "target/release/microkit").read_bytes()).hexdigest(),
         "scope": "private disposable experiment; bounded resources for the trusted manager",
@@ -91,5 +99,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--pool-bits", type=int, choices=(24, 26), default=24)
     arguments = parser.parse_args()
-    print(build(arguments.source, arguments.output.resolve()))
+    print(build(arguments.source, arguments.output.resolve(), arguments.pool_bits))

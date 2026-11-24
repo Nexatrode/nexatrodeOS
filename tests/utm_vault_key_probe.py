@@ -34,9 +34,13 @@ def main():
     parser.add_argument("--screenshot-output", type=Path, help="capture the disposable guest framebuffer as PPM")
     parser.add_argument("--desktop-input-test", action="store_true",
                         help="exercise the disposable two-window input fixture through QMP")
+    parser.add_argument("--desktop-lifecycle-test", choices=("normal", "skip-revoke", "keep-endpoint"),
+                        help="exercise a dynamically created graphical process")
     args = parser.parse_args()
-    if args.desktop_input_test and not args.screenshot_output:
+    if (args.desktop_input_test or args.desktop_lifecycle_test) and not args.screenshot_output:
         parser.error("the desktop input test requires an evidence screenshot destination")
+    if args.desktop_input_test and args.desktop_lifecycle_test:
+        parser.error("choose one disposable interaction fixture")
     state = subprocess.run(["ioreg", "-n", "Root", "-d", "1", "-a"],
                            capture_output=True, check=True, timeout=10)
     console = plistlib.loads(state.stdout)
@@ -122,6 +126,10 @@ def main():
                     if args.desktop_input_test:
                         from desktop_input_utm import exercise
                         exercise(monitor, trace, data, args.screenshot_output.parent)
+                    if args.desktop_lifecycle_test:
+                        from desktop_graphical_input import exercise
+                        exercise(monitor, trace, data, args.screenshot_output.parent,
+                                 control=None if args.desktop_lifecycle_test == "normal" else args.desktop_lifecycle_test)
                     if monitor:
                         # The guest marker precedes asynchronous device presentation.
                         # This capture is a final-state check and carries no latency claim.

@@ -2,11 +2,24 @@
 #include <microkit.h>
 #ifdef SURFACE_INTERACTIVE
 #include "input.h"
+#ifdef SURFACE_DYNAMIC
+static bool dynamic_active;
+static void dynamic_input_notify(void);
+static bool dynamic_control(struct input_event_record event);
+#endif
 uintptr_t input_handoff, input_a, input_b;
 static struct desktop_router router;
 static uint32_t sent[2], driver_tail, driver_dropped;
 static bool reset_pending[2];
 static bool focus_dirty, input_ready;
+
+static void input_notify(unsigned owner)
+{
+#ifdef SURFACE_DYNAMIC
+    if (owner == 1) { if (dynamic_active) dynamic_input_notify(); return; }
+#endif
+    microkit_notify(owner + 6);
+}
 
 static struct desktop_queue *queue_for(unsigned owner)
 {
@@ -24,12 +37,15 @@ static void flush_reset(unsigned owner)
         (struct desktop_event){.kind = DESKTOP_RESET};
     __atomic_store_n(&queue->head, *head, __ATOMIC_RELEASE);
     reset_pending[owner - 1] = false;
-    microkit_notify(owner + 6);
+    input_notify(owner);
 }
 
 static void emit(unsigned owner, struct desktop_event event)
 {
     if (owner < 1 || owner > 2) return;
+#ifdef SURFACE_DYNAMIC
+    if (owner == 1 && !dynamic_active) return;
+#endif
     flush_reset(owner);
     struct desktop_queue *queue = queue_for(owner);
     uint32_t *head = &sent[owner - 1];
@@ -37,12 +53,12 @@ static void emit(unsigned owner, struct desktop_event event)
     if (*head - tail >= DESKTOP_EVENT_CAPACITY) {
         /* Never overwrite unread events or modify the consumer's tail. */
         reset_pending[owner - 1] = true;
-        microkit_notify(owner + 6);
+        input_notify(owner);
         return;
     }
     queue->events[(*head)++ % DESKTOP_EVENT_CAPACITY] = event;
     __atomic_store_n(&queue->head, *head, __ATOMIC_RELEASE);
-    microkit_notify(owner + 6);
+    input_notify(owner);
 }
 
 static void input(void)
@@ -58,7 +74,16 @@ static void input(void)
     unsigned before = router.focus;
     while (driver_tail != head) {
         struct input_event_record event = ring->events[driver_tail++ & INPUT_EVENT_MASK];
+#ifdef SURFACE_DYNAMIC
+        if (dynamic_control(event)) continue;
+#endif
         desktop_route(&router, event, emit);
+#ifdef SURFACE_DYNAMIC
+        if (!dynamic_active && router.focus == 1) {
+            router.focus = 0;
+            router.pointer_owner = 0;
+        }
+#endif
     }
     __atomic_store_n(&ring->tail, driver_tail, __ATOMIC_RELEASE);
     focus_dirty |= before != router.focus;
@@ -123,7 +148,22 @@ static bool compose(void)
 {
     slint_frame_header_t *output = (void *)output_frame;
     uint32_t next_a, next_b;
-    bool ready = blit(surface_a, 0, 40, 500, &next_a) && blit(surface_b, 1, 560, 500, &next_b);
+    bool ready;
+#ifdef SURFACE_DYNAMIC
+    next_a = 0;
+    if (!dynamic_active || !blit(surface_a, 0, 40, 500, &next_a)) {
+        for (unsigned y = 500; y < 1300; ++y)
+            for (unsigned x = 40; x < 520; ++x) {
+                size_t offset = (y * SLINT_FRAME_WIDTH + x) * 3;
+                composed_pixels[offset] = 4;
+                composed_pixels[offset + 1] = 12;
+                composed_pixels[offset + 2] = 22;
+            }
+    }
+    ready = blit(surface_b, 1, 560, 500, &next_b);
+#else
+    ready = blit(surface_a, 0, 40, 500, &next_a) && blit(surface_b, 1, 560, 500, &next_b);
+#endif
     if (!ready)
         return false;
     if (next_a == revisions[0] && next_b == revisions[1]
@@ -165,6 +205,25 @@ static bool compose(void)
     microkit_notify(2);
     return true;
 }
+
+#ifdef SURFACE_DYNAMIC
+/* Caller must suspend the producer before this, and revoke mappings afterward. */
+static void discard_dynamic_surface(void)
+{
+    dynamic_active = false;
+    for (unsigned i = 0; i <= DESKTOP_KEY_MAX; ++i) if (router.keys[i] == 1) router.keys[i] = 0;
+    if (router.pointer_owner == 1) router.pointer_owner = 0;
+    if (router.focus == 1) router.focus = 0;
+    sent[0] = 0;
+    reset_pending[0] = false;
+    cached_revisions[0] = 0;
+    revisions[0] = UINT32_MAX;
+    for (size_t i = 0; i < sizeof(cached_pixels[0]); ++i) cached_pixels[0][i] = 0;
+    focus_dirty = true;
+    compose();
+    for (size_t i = 0; i < sizeof(candidate_pixels); ++i) candidate_pixels[i] = 0;
+}
+#endif
 
 void init(void)
 {
