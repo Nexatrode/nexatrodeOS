@@ -44,3 +44,11 @@ All numeric values are hexadecimal. Timestamps are microseconds from runtime sta
 - **OTHER KIND PEER LEN OP:** existing first other accepted request (8 exact `mbn_hw.dig`, 5 WLAN, 6 other); **MCFG W FILE READ IPA / PD STATE WLAN WLFW** are existing outcome counters. **JOURNAL N OMIT BAD** exposes bounded-window saturation; this panel does not display or reconstruct omitted traffic.
 
 The success question is whether the turn actually publishes ELF sooner **and whether a WLAN RRQ or WLFW announcement follows**. Faster queue publication without those outcomes is an isolated scheduling improvement, not working Wi-Fi. If the largest delay remains before queueing, the phase/predecessor rows identify that separately. No physical outcome is claimed before the new image is booted.
+
+## Verified delivery
+
+Private profile: `.cache/sunfish-native-wifi/private/native-elf-queued-handoff-v1`. Temporary image: **68,943,872 bytes**, SHA-256 `3ef6fac6b2570e63534254f55609124c7c6c5f9441b7c3652ba09d85c68330d9`. Native ELF SHA-256: `20e9dbced7ed6389bb69fe8e23085385be764323f81cfd4eb057d506c4b66850`.
+
+The selected and prior profiles each pass 589 Owner tests and 271 Core tests, with one pre-existing private-firmware Owner case ignored. The actual router suites pass 612 selected / 602 prior cases, including all ten new boundary schedules. Twenty-four paired owner-only schedules preserve full I/O and peer-event order; two staggered-arrival schedules and actual credit pressure pass. The native selected stack audit leaves **860,016 bytes** within the existing 5 MiB mapping, with its stated whole-program exclusions. All **304** capability mutations are rejected. Actual packed archive decoding verifies **eight** Normal-NC mappings, and pinned SDK tool/loader/report/CapDL reproduction and final boot payload/layout checks pass. The previously rebuilt SDK is reused; this is not a new SDK build.
+
+The private manifest binds verification artifacts, source pins, reference inputs and the final source revision. Earlier delivered images remain unchanged. The committed native source rebuilt to the identical already packed/audited ELF. No device command, physical success, firmware read or working WLAN is claimed before the new handset boot.
