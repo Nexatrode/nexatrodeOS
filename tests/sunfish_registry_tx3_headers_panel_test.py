@@ -13,7 +13,7 @@ class RegistryHeadersPanel(unittest.TestCase):
 use std::cell::RefCell;
 #[path=DISPLAY_PATH]mod physical;
 struct Display{real:physical::Display,values:RefCell<[u32;30]>,headers:RefCell<Vec<(usize,usize,Vec<(u32,usize)>)>>}
-impl Display{fn replace_line(&self,n:usize,s:&str){assert!(n<30);if n==1{assert_eq!(s,"REGISTRY TX3 WIRE LOG");assert!(s.len()<=24);}self.real.replace_line(n,s);}fn hex(&self,n:usize,s:&str,v:u32){assert!(s.len()<=15);self.values.borrow_mut()[n]=v;self.real.hex(n,s,v);}fn wire_row(&self,row:usize,lane:usize,fields:&[(u32,usize)]){assert!((8..=27).contains(&row));assert!(fields.iter().all(|(_,w)|*w>0&&*w<=8));assert!(fields.iter().map(|(_,w)|w+1).sum::<usize>()<=96);self.headers.borrow_mut().push((row,lane,fields.to_vec()));self.real.wire_row(row,lane,fields);}}
+impl Display{fn replace_line(&self,n:usize,s:&str){assert!(n<30);if n==1{assert_eq!(s,if cfg!(feature="sunfish-glink-announcement-reuse"){ "REGISTRY ANNOUNCE REUSE" }else{ "REGISTRY TX3 WIRE LOG" });assert!(s.len()<=24);}self.real.replace_line(n,s);}fn hex(&self,n:usize,s:&str,v:u32){assert!(s.len()<=15);self.values.borrow_mut()[n]=v;self.real.hex(n,s,v);}fn wire_row(&self,row:usize,lane:usize,fields:&[(u32,usize)]){assert!((8..=27).contains(&row));assert!(fields.iter().all(|(_,w)|*w>0&&*w<=8));assert!(fields.iter().map(|(_,w)|w+1).sum::<usize>()<=96);self.headers.borrow_mut().push((row,lane,fields.to_vec()));self.real.wire_row(row,lane,fields);}}
 mod diagnostic{pub(super) PACKED}
 #[derive(Clone,Copy)]struct Prior{published_at:Option<u64>,done_at:Option<u64>}
 #[derive(Clone,Copy)]struct Window{predecessor:Option<Prior>}
@@ -39,5 +39,5 @@ fn main(){let mut pixels=vec![0x00122b52u32;2*1080*2340];let d=Display{real:unsa
  println!("Actual compact80record layout, QMI/DEL_CLIENT/unknown tags, omitted/unparsed packing, clockless/missing window and both buffers passed");}
 '''.replace('DISPLAY_PATH',json.dumps(str(ROOT/'rust/src/pixel_probe_display.rs'))).replace('PACKED',packed).replace('CLOCK',function(runtime,'time_from_us')).replace('PANEL_PATH',json.dumps(str(ROOT/'rust/src/pixel_mpss_registry_tx3_headers.rs')))
   with tempfile.TemporaryDirectory()as tmp:
-   p=Path(tmp);(p/'panel.rs').write_text(code);subprocess.run(['rustc','+nightly-2026-09-25','--edition=2024','--cfg','feature="sunfish-registry-tx3-wire-headers"','-Adead_code',str(p/'panel.rs'),'-o',str(p/'panel')],check=True);subprocess.run([str(p/'panel')],check=True)
+   p=Path(tmp);(p/'panel.rs').write_text(code);subprocess.run(['rustc','+nightly-2026-09-25','--edition=2024','--cfg','feature="sunfish-registry-tx3-wire-headers"',*(['--cfg','feature="sunfish-glink-announcement-reuse"']if os.environ.get('SUNFISH_ANNOUNCEMENT_REUSE_PANEL')else[]),'-Adead_code',str(p/'panel.rs'),'-o',str(p/'panel')],check=True);subprocess.run([str(p/'panel')],check=True)
 if __name__=='__main__':unittest.main()

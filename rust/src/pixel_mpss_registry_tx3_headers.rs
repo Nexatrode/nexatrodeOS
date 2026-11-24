@@ -5,6 +5,9 @@ impl RuntimeDomain {
         let prior=owner.registry_window_trace().predecessor;let fifo=owner.registry_reply_fifo();
         let receipt=fifo.and_then(|f|f.completion);let wire=owner.registry_wire_headers();
         let age=|at|self.time_from_us(Some(self.runtime_started),at);
+        #[cfg(feature="sunfish-glink-announcement-reuse")]
+        display.replace_line(1,"REGISTRY ANNOUNCE REUSE");
+        #[cfg(not(feature="sunfish-glink-announcement-reuse"))]
         display.replace_line(1,"REGISTRY TX3 WIRE LOG");
         for(row,(label,value))in[("RUNTIME ERROR",self.error),("OMIT UNPARSED",wire.map_or(u32::MAX,|w|diagnostic::packed_counts(w.omitted,w.unparsed))),
             ("TX3 PUB US",age(prior.and_then(|p|p.published_at))),("TX3 TAIL US",age(fifo.and_then(|f|f.peer_tail_at))),

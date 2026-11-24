@@ -4714,3 +4714,7 @@ fn registry_post_reply_tx4_pressure_is_live_then_frozen_against_original_identit
 #[cfg(feature="sunfish-registry-conversion-lifetime-trace")]
 #[path="sunfish_registry_conversion_lifetime_fixture.rs"]
 mod registry_conversion_lifetime_fixture;
+
+#[cfg(feature = "sunfish-glink-announcement-reuse")]
+#[path = "sunfish_announcement_reuse_test.rs"]
+mod announcement_reuse;

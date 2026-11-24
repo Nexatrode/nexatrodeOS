@@ -3805,14 +3805,21 @@ impl<I: Io> Adapter<I> {
             self.ring.grant_reads.oack_pool = (oack_pending && !self.ring.grant_reads.outcome.oack_captured)
                 .then(|| (self.session.grant_available_ids(), self.session.receive_snapshot().states));
         }
+        #[cfg(feature = "sunfish-glink-announcement-reuse")]
+        let reusable_ack = self.session.reusable_intent_ack_pending();
         let writer = |record: &[u8]| {
+            #[cfg(feature = "sunfish-glink-announcement-reuse")]
+            let yield_to_rx = first_grant || (reusable_ack && record.len() == 8
+                && u16::from_le_bytes([record[0],record[1]]) == 8 && word(record,4) == 1);
+            #[cfg(not(feature = "sunfish-glink-announcement-reuse"))]
+            let yield_to_rx = first_grant;
             #[cfg(feature = "sunfish-tftp-reserved-writer-io")]
             let before = watch_reserved.then(|| self.ring.io.reserved_io_totals()).flatten();
             #[cfg(feature = "sunfish-wrq-prefix-close")]
             { self.ring.wrq_prefix.watch_head = oack_pending || init_pending; }
             #[cfg(feature = "sunfish-grant-buffer-reads")]
             { self.ring.grant_session_write = true; }
-            let result = self.ring.write_checked(record, TX_RESERVE, first_grant);
+            let result = self.ring.write_checked(record, TX_RESERVE, yield_to_rx);
             #[cfg(feature = "sunfish-grant-buffer-reads")]
             { self.ring.grant_session_write = false; }
             #[cfg(feature = "sunfish-wrq-prefix-close")]
@@ -3901,7 +3908,7 @@ impl<I: Io> Adapter<I> {
             Err(core::Error::NoRemoteIntent) => Transmit::AwaitingIntent,
             Err(core::Error::WouldBlock) if receive_arrived => {
                 #[cfg(feature = "sunfish-first-oack-grant-window")]
-                { self.record_grant_yield(self.tftp_rx_snapshot().ok_or(Error::NotReady)?.0); }
+                if first_grant { self.record_grant_yield(self.tftp_rx_snapshot().ok_or(Error::NotReady)?.0); }
                 Transmit::Idle
             }
             Err(core::Error::WouldBlock) => Transmit::Blocked {
@@ -4892,4 +4899,30 @@ fn registry_wire_trace_keeps_opening_tail_and_clockless_completion_without_late_
     t.record(Some(h),false);t.record(None,true);assert_eq!(t.omitted,21);assert_eq!(t.unparsed,0);assert_eq!(t.completion.unwrap().parameter,100);
     let mut t=RegistryWireTrace::default();t.record(None,true);assert!(t.finished);assert_eq!(t.unparsed,1);assert_eq!(t.completion,None);t.record(Some(h),false);assert!(t.headers.iter().all(Option::is_none));
     let mut t=RegistryWireTrace::default();t.unparsed=u32::MAX;t.record(None,false);assert_eq!(t.unparsed,u32::MAX);
+}
+
+#[cfg(all(test,mpss_glink_transport_tests,feature="sunfish-glink-announcement-reuse"))]
+mod announcement_reuse_fifo_tests {
+use super::*;
+use crate::{Fake,Op};
+#[test]
+fn announcement_reuse_fifo_ack_keeps_head_unpublished_for_visible_or_late_rx(){
+    for wrap in [0,0x3ff8]{for mode in 0..3{
+        let(mut s,id,_original)=crate::announcement_fixture::ready();
+        let mut packet=Vec::new();for value in [1u32,4,0,0xfffffffe,0,20,1,0xfffffffe,4,0x777,1,0,0x123]{packet.extend(value.to_le_bytes());}
+        assert!(matches!(s.ingest(1,&crate::data(id,&packet)),Ok(Event::QrtrControl(_))));
+        let mut returned=false;for _ in 0..32{let result=s.publish_next(1,|b|{if b[0]==14{assert_eq!(u32::from_le_bytes(b[4..8].try_into().unwrap()),id);returned=true;}Ok(())}).unwrap();if returned{break;}assert!(result.is_some());}assert!(returned);
+        assert_eq!(s.ingest(1,&crate::control(7,2,52)),Ok(Event::ReceiveIntentRequest{granted:true}));
+        let peer=Fake::new(wrap,wrap);let mut a=Adapter::attach(peer.clone(),crate::session(),1).unwrap();
+        // The pure Session fixture supplies a validated logical prefix; this
+        // test isolates the actual FIFO publication boundary, not boot setup.
+        a.session=s;peer.clear();
+        match mode{0=>peer.push(&crate::control(13,0,0)),1=>{let mut fragment=crate::data(id,&packet[..8]);fragment[12..16].copy_from_slice(&44u32.to_le_bytes());peer.push(&fragment);},_=>peer.0.borrow_mut().append_notification_on_write=true}
+        assert_eq!(a.publish_next(1),Ok(Transmit::Idle));assert_eq!(peer.0.borrow().words[1],wrap);
+        assert!(!peer.log().iter().any(|op|matches!(op,Op::Head(_))),"RX-visible ACK has not committed");
+        if mode==1{assert_eq!(a.poll_receive(1),Ok(Receive::Session(Event::Fragment)));}else{assert_eq!(a.poll_receive(1),Ok(Receive::ReadNotification));}
+        assert_eq!(a.publish_next(1),Ok(Transmit::Session(Published::IntentRequestAck{granted:mode!=1})));
+        let bytes=peer.take_tx();assert_eq!((bytes[0],u32::from_le_bytes(bytes[4..8].try_into().unwrap())),(8,u32::from(mode!=1)));
+    }}
+}
 }

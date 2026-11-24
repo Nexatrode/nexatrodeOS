@@ -89,6 +89,8 @@ struct Memory {
     fail_after_store: bool,
     append_on_rx_read: bool,
     panic_on_notify: bool,
+    #[cfg(feature = "sunfish-glink-announcement-reuse")]
+    append_notification_on_write: bool,
     diagnostic: u32,
 }
 #[derive(Clone)]
@@ -123,6 +125,8 @@ impl Fake {
             fail_after_store: false,
             append_on_rx_read: false,
             panic_on_notify: false,
+            #[cfg(feature = "sunfish-glink-announcement-reuse")]
+            append_notification_on_write: false,
             diagnostic: 0,
         })))
     }
@@ -225,6 +229,14 @@ impl Io for Fake {
         assert!(offset + bytes.len() <= FIFO_BYTES);
         self.op("write_tx", Op::Write(offset, bytes.to_vec()))?;
         let mut m = self.0.borrow_mut();
+        #[cfg(feature = "sunfish-glink-announcement-reuse")]
+        if m.append_notification_on_write {
+            m.append_notification_on_write = false;
+            let record = [13u8,0,0,0,0,0,0,0];
+            let at = m.words[3] as usize;
+            for (i,b) in record.into_iter().enumerate(){m.rx[(at+i)%FIFO_BYTES]=b;}
+            m.words[3] = ((at+8)%FIFO_BYTES) as u32;
+        }
         m.tx[offset..offset + bytes.len()].copy_from_slice(bytes);
         if m.revoke_after_write {
             m.observation.ready = false;
@@ -1502,3 +1514,7 @@ fn registry_wire_adapter_scopes_committed_headers_to_exact_predecessor_and_reset
         peer.0.borrow_mut().observation.generation=2;a.reset_after_transport_reset(2).unwrap();assert!(a.registry_wire_headers().is_none());
     }
 }
+
+#[cfg(feature = "sunfish-glink-announcement-reuse")]
+#[path = "sunfish_announcement_fixture.rs"]
+mod announcement_fixture;

@@ -498,6 +498,8 @@ impl RxState {
 struct Receive {
     state: RxState,
     id: u32,
+    #[cfg(feature = "sunfish-glink-announcement-reuse")]
+    announcement_reuse: bool,
     #[cfg(feature = "sunfish-wlan-first-wrq-reuse")]
     reused_datagram_id: Option<u32>,
     bytes: [u8; MAX_DATAGRAM_BYTES],
@@ -520,6 +522,8 @@ impl Receive {
         Self {
             state: RxState::Free,
             id: 0,
+            #[cfg(feature = "sunfish-glink-announcement-reuse")]
+            announcement_reuse: false,
             #[cfg(feature = "sunfish-wlan-first-wrq-reuse")]
             reused_datagram_id: None,
             bytes: [0; MAX_DATAGRAM_BYTES],
@@ -984,6 +988,8 @@ pub struct Session {
     retry_full_intent: bool,
     #[cfg(feature = "sunfish-wlan-intent-ack-turn")]
     intent_ack_backing: Option<u32>,
+    #[cfg(feature = "sunfish-glink-announcement-reuse")]
+    intent_ack_reused: Option<u32>,
     #[cfg(feature = "sunfish-registry-converted-grant-turn")]
     registry_converted_grant: Option<(u32, RequestHandle)>,
     #[cfg(feature = "sunfish-grant-ad-writer-trace")]
@@ -1879,6 +1885,8 @@ impl Session {
             retry_full_intent: false,
             #[cfg(feature = "sunfish-wlan-intent-ack-turn")]
             intent_ack_backing: None,
+            #[cfg(feature = "sunfish-glink-announcement-reuse")]
+            intent_ack_reused: None,
             #[cfg(feature = "sunfish-registry-converted-grant-turn")]
             registry_converted_grant: None,
             #[cfg(feature = "sunfish-grant-ad-writer-trace")]
@@ -2871,6 +2879,8 @@ impl Session {
         self.retired_rmtfs_peers = [None; 64];
         self.remote = [None; REMOTE_INTENTS];
         self.intent_request_ack = None;
+        #[cfg(feature = "sunfish-glink-announcement-reuse")]
+        { self.intent_ack_reused = None; }
         #[cfg(feature = "sunfish-glink-retry-full-intent")]
         { self.retry_full_intent = false; }
         #[cfg(feature = "sunfish-registry-converted-grant-turn")]
@@ -4455,6 +4465,12 @@ impl Session {
         Ok(self.completed_ipa_service_response.take())
     }
 
+    /// The FIFO writer must yield to visible RX before ACKing existing backing.
+    #[cfg(feature = "sunfish-glink-announcement-reuse")]
+    pub(crate) fn reusable_intent_ack_pending(&self) -> bool {
+        self.intent_request_ack == Some(true) && self.intent_ack_reused.is_some()
+    }
+
     /// Queue a one-shot receive intent backed by a private 4096-byte slot.
     /// The peer cannot use it until publish_next successfully advertises it.
     pub fn offer_receive(&mut self, generation: u64) -> Result<u32, Error> {
@@ -4492,9 +4508,16 @@ impl Session {
                 if self.intent_request_ack.is_some() {
                     return Err(Error::NoCapacity);
                 }
+                #[cfg(feature = "sunfish-glink-announcement-reuse")]
+                let reusable = if parameter != 0 && parameter as usize <= MAX_DATAGRAM_BYTES {
+                    self.receive[..RX_SLOTS].iter().find(|rx|
+                        rx.state == RxState::Available && rx.announcement_reuse).map(|rx|rx.id)
+                } else { None };
+                #[cfg(not(feature = "sunfish-glink-announcement-reuse"))]
+                let reusable: Option<u32> = None;
                 let granted = parameter != 0
                     && parameter as usize <= MAX_DATAGRAM_BYTES
-                    && self.receive[..RX_SLOTS].iter().any(|rx| rx.state == RxState::Free);
+                    && (reusable.is_some() || self.receive[..RX_SLOTS].iter().any(|rx| rx.state == RxState::Free));
                 #[cfg(feature = "sunfish-glink-intent-denial-snapshot")]
                 if !granted && self.ipa_registration_trace().is_some_and(|trace|
                     trace.published_at.is_some() && trace.completed_at.is_none())
@@ -4514,7 +4537,9 @@ impl Session {
                 }
                 #[cfg(feature = "sunfish-grant-ad-writer-trace")]
                 { self.grant_backing = GrantBackingTrace { requested: parameter, ..Default::default() }; }
-                if granted {
+                #[cfg(feature = "sunfish-glink-announcement-reuse")]
+                { self.intent_ack_reused = reusable; }
+                if granted && reusable.is_none() {
                     let _id = self.offer_receive(generation)?;
                     #[cfg(feature = "sunfish-wlan-intent-ack-turn")]
                     { self.intent_ack_backing = Some(_id); }
@@ -4620,6 +4645,19 @@ impl Session {
         let rx = &mut self.receive[index];
         match (command, rx.state) {
             (9, RxState::Available) => {
+                // Available reuse never follows this buffer into a new packet
+                // unless that packet is itself a completely accepted announcement.
+                #[cfg(feature = "sunfish-glink-announcement-reuse")]
+                {
+                    // A previously returned buffer may be consumed while its
+                    // grant ACK is blocked. Never promise that consumed backing.
+                    if self.intent_ack_reused == Some(rx.id) && self.intent_request_ack == Some(true) {
+                        self.intent_ack_reused = None;
+                        self.intent_request_ack = Some(false);
+                        self.retry_full_intent = true;
+                    }
+                    rx.announcement_reuse = false;
+                }
                 #[cfg(feature = "sunfish-wlan-elf-server-check-timing")]
                 { rx.elf_wrq_observed = false; }
             }
@@ -5625,6 +5663,12 @@ impl Session {
         {
             *slot = Some(server);
         }
+        #[cfg(feature = "sunfish-glink-announcement-reuse")]
+        { self.receive[index].announcement_reuse = matches!(command, control::Command::NewServer(_))
+            && self.receive[index].context.is_none() && self.receive[index].ticket.is_none()
+            && self.transmit.iter().any(|tx| tx.len != 0 && tx.sent == tx.len && !tx.glink_done
+                && matches!(tx.kind, TxKind::Reply { route, .. }
+                    if route.service == Service::ServiceRegistry && route.transaction == 3)); }
         self.receive[index].state = RxState::Control;
         self.receive[index].done_pending = true;
         Ok(Event::QrtrControl(event))
@@ -8514,20 +8558,24 @@ impl Session {
                 return Ok(None);
             }
         }
-        // Keep the wire intent for this one completion. Reserve a distinct
-        // datagram ID so a stale TFTP handle cannot reach its next packet.
+        // Keep the wire intent only for the existing exact WRQ exception or
+        // a fully accepted NEW_SERVER. Retained service requests never qualify.
         #[cfg(feature = "sunfish-wlan-first-wrq-reuse")]
-        let reuse = if let Commit::Done(index) = &commit
-            && priority_wrq_done == Some(*index)
-        {
-            let id = self.next_local_intent;
-            let next = id.checked_add(1).ok_or(Error::IdExhausted)?;
-            glink_header(&mut record, crate::wlfw_protocol::GLINK_CMD_RX_DONE_W_REUSE,
-                self.config.local_channel, self.receive[*index].id);
-            Some((id, next))
-        } else {
-            None
-        };
+        let reuse = if let Commit::Done(index) = &commit {
+            #[cfg(feature = "sunfish-glink-announcement-reuse")]
+            let announcement = self.receive[*index].state == RxState::Control
+                && self.receive[*index].announcement_reuse
+                && self.receive[*index].context.is_none() && self.receive[*index].ticket.is_none();
+            #[cfg(not(feature = "sunfish-glink-announcement-reuse"))]
+            let announcement = false;
+            if priority_wrq_done == Some(*index) || announcement {
+                let id = self.next_local_intent;
+                let next = id.checked_add(1).ok_or(Error::IdExhausted)?;
+                glink_header(&mut record, crate::wlfw_protocol::GLINK_CMD_RX_DONE_W_REUSE,
+                    self.config.local_channel, self.receive[*index].id);
+                Some((id, next))
+            } else { None }
+        } else { None };
         // An unwinding host writer is also an uncertain publication. Leave the
         // guard set unless it returns one of the explicit known outcomes.
         self.quarantined = true;
@@ -8844,6 +8892,8 @@ impl Session {
                     && self.grant_backing.intent == Some(first.intent) && first.advertised && !first.acked
                 { first.acked = true; first.ack_at = self.intent_ack_clock.map(|now| now()); }
                 self.intent_request_ack = None;
+                #[cfg(feature = "sunfish-glink-announcement-reuse")]
+                { self.intent_ack_reused = None; }
                 #[cfg(feature = "sunfish-glink-retry-full-intent")]
                 { self.retry_full_intent = false; }
                 #[cfg(feature = "sunfish-wlan-registry-ack-trace")]
@@ -8924,6 +8974,8 @@ impl Session {
                             state: RxState::Available,
                             id: self.receive[index].id,
                             reused_datagram_id: Some(datagram_id),
+                            #[cfg(feature = "sunfish-glink-announcement-reuse")]
+                            announcement_reuse: self.receive[index].announcement_reuse,
                             ..receive
                         }
                     } else {
@@ -8937,6 +8989,18 @@ impl Session {
                     #[cfg(feature = "sunfish-tftp-oack-resources")]
                     if self.receive[index].state == RxState::Available {
                         self.observe_oack_intent_available(self.receive[index].id);
+                    }
+                    // A pending full-pool denial may use this exact return only
+                    // after RX_DONE_W_REUSE committed. Its original advertisement
+                    // and this return already precede the eventual positive ACK.
+                    #[cfg(all(feature = "sunfish-glink-announcement-reuse", feature = "sunfish-glink-retry-full-intent"))]
+                    if self.retry_full_intent && self.intent_request_ack == Some(false)
+                        && self.receive[index].state == RxState::Available
+                        && self.receive[index].announcement_reuse
+                    {
+                        self.intent_request_ack = Some(true);
+                        self.intent_ack_reused = Some(self.receive[index].id);
+                        self.retry_full_intent = false;
                     }
                     // Reserve the slot after RX_DONE commits, before another
                     // publisher pass can use it for a routine advertisement.

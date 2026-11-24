@@ -343,6 +343,8 @@ sunfish-registry-elf-admission-panel = ["sunfish-registry-defer-paint"]
 sunfish-registry-tx3-receipt-panel = ["sunfish-registry-elf-admission-panel"]
 # Bounded committed/accepted header IDs for the exact predecessor receipt window.
 sunfish-registry-tx3-wire-headers = ["sunfish-registry-tx3-receipt-panel", "sunfish-ipa-registration-reply-headers"]
+# Return only fully accepted NEW_SERVER buffers reusable; preserve retained requests.
+sunfish-glink-announcement-reuse = ["sunfish-wlan-first-wrq-reuse", "sunfish-glink-retry-full-intent"]
 
 [[bin]]
 name = "rust_sunfish_native_startup_preflight"
