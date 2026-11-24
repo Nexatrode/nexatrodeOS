@@ -2,12 +2,12 @@
 use super::*;
 impl RuntimeDomain {
  pub(super) fn show_tftp_completion(&self,d:&Display,owner:&ModemOwner){
-  for n in 2..=28{d.replace_line(n,"");}d.replace_line(1,"ELF WRITER PUBLICATION");d.hex(2,"RUNTIME ERROR",self.error);
+  for n in 2..=28{d.replace_line(n,"");}d.replace_line(1,if cfg!(feature="sunfish-elf-third-reply"){"ELF THIRD REPLY WINDOW"}else{"ELF WRITER PUBLICATION"});d.hex(2,"RUNTIME ERROR",self.error);
   let s=owner.service_registry_trace();let e=s.elf;let w=owner.elf_window_trace();let p=w.map(|w|&w.writer);let a=p.and_then(|p|p.publication);
   let age=|t|self.time_from_us(Some(self.runtime_started),t);let span=|t|self.time_from_us(Some(0),t);
   let row=|n,label,v:&[u32]|{d.header_label(n,label);let mut f=[(0,8);4];for(i,v)in v.iter().enumerate(){f[i]=(*v,8);}d.header_row(n,true,&f[..v.len()]);};
   row(3,"ELF RX QUEUE PUB DONE",&[age(e.and_then(|e|e.received)),age(e.and_then(|e|e.queued)),age(e.and_then(|e|e.published)),age(e.and_then(|e|e.done))]);
-  row(4,"SLOT TURN ADMIT SEQ N RX",&[u32::from(owner.elf_completion_turn_taken()),w.and_then(|w|w.admitted).map_or(u32::MAX,|a|a.sequence),w.and_then(|w|w.admitted).map_or(u32::MAX,|a|u32::from(a.count)),w.and_then(|w|w.last_before_admission).map_or(u32::MAX,u32::from)]);
+  row(4,if cfg!(feature="sunfish-elf-third-reply"){"LIMIT ADMIT SEQ N RX"}else{"SLOT TURN ADMIT SEQ N RX"},&[if cfg!(feature="sunfish-elf-third-reply"){3}else{u32::from(owner.elf_completion_turn_taken())},w.and_then(|w|w.admitted).map_or(u32::MAX,|a|a.sequence),w.and_then(|w|w.admitted).map_or(u32::MAX,|a|u32::from(a.count)),w.and_then(|w|w.last_before_admission).map_or(u32::MAX,u32::from)]);
   let t=owner.elf_queued_turn_trace();row(5,"QUEUED TURN ENTER END FLAGS",&[age(t.entry),age(t.end),t.flags]);
   row(6,"WRITER FIRST LAST FINISHED",&[age(p.and_then(|p|p.first)),age(p.and_then(|p|p.last)),p.map_or(0,|p|u32::from(p.finished))]);
   row(7,"PASSES TIMED OMIT ACTIVE",&[p.map_or(0,|p|p.passes),p.map_or(0,|p|p.timed),p.map_or(0,|p|p.omitted),p.map_or(0,|p|u32::from(p.active))]);

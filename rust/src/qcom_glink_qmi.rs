@@ -22,6 +22,9 @@ mod elf_window;
 #[cfg(feature="sunfish-elf-first-slot-turn")]
 #[path="qcom_elf_slot_turn.rs"]
 mod elf_slot_turn;
+#[cfg(feature="sunfish-elf-third-reply")]
+#[path="qcom_elf_third_reply.rs"]
+mod elf_third_reply;
 #[cfg(feature="sunfish-elf-window-trace")]
 pub use elf_window::{ElfWindowTrace,ElfWindowSnapshot,ElfWindowEntry,ElfWindowReceipt};
 
@@ -6701,7 +6704,8 @@ impl Session {
     /// router ticket until BOTH peer GLINK completion and QRTR RESUME_TX arrive.
     /// One reply per destination flow is allowed; every reply requests a credit.
     pub fn queue_reply(&mut self, handle: &RequestHandle, reply: Reply<'_>) -> Result<(), Error> {
-        self.queue_reply_with_ipa_token(handle, reply, None)
+        self.queue_reply_with_ipa_token(handle, reply, None,
+            #[cfg(feature="sunfish-elf-third-reply")] false)
     }
 
     /// Queue the exact success response prepared by the bounded AP IPA
@@ -6760,6 +6764,7 @@ impl Session {
             handle,
             Reply::Success { optional_tlvs: &[] },
             Some(response.token()),
+            #[cfg(feature="sunfish-elf-third-reply")] false,
         )
     }
 
@@ -6984,6 +6989,7 @@ impl Session {
         handle: &RequestHandle,
         reply: Reply<'_>,
         ipa_token: Option<u64>,
+        #[cfg(feature="sunfish-elf-third-reply")] elf_third:bool,
     ) -> Result<(), Error> {
         #[cfg(feature = "sunfish-wlan-elf-queue-trace")]
         { self.registry_pressure = None; }
@@ -7012,7 +7018,7 @@ impl Session {
                     .is_some_and(|(_, destination)| destination == route.destination)
         });
         if let Some((_previous_index, _previous)) = same_peer.next() {
-            #[cfg(feature = "sunfish-wlan-registry-second-reply")]
+            #[cfg(all(feature = "sunfish-wlan-registry-second-reply",not(feature="sunfish-elf-third-reply")))]
             let allow_second = route.service == Service::ServiceRegistry
                 && matches!(_previous.kind, TxKind::Reply { route: older, .. }
                     if older.service == Service::ServiceRegistry && older.source == route.source)
@@ -7022,6 +7028,19 @@ impl Session {
                 && _previous.qrtr_done
                 && _previous.reference_flow.is_some()
                 && same_peer.next().is_none();
+            #[cfg(feature="sunfish-elf-third-reply")]
+            let allow_second={
+                let eligible=|tx:&Transmit| route.service==Service::ServiceRegistry
+                    && matches!(tx.kind,TxKind::Reply{route:old,..}if old.service==Service::ServiceRegistry && old.source==route.source)
+                    && tx.sent==tx.len && tx.remote_slot.is_some() && !tx.glink_done
+                    && tx.qrtr_done && tx.reference_flow.is_some();
+                eligible(_previous) && match same_peer.next(){
+                    None=>true,
+                    Some((_,second))=>elf_third && eligible(second)
+                        && _previous.remote_slot!=second.remote_slot
+                        && _previous.reference_flow!=second.reference_flow && same_peer.next().is_none(),
+                }
+            };
             #[cfg(not(feature = "sunfish-wlan-registry-second-reply"))]
             let allow_second = false;
             if !allow_second {

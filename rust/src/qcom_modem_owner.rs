@@ -3210,7 +3210,13 @@ impl<I: Io> Owner<I> {
         if let Err(error) = self.adapter.revalidate(self.generation) {
             return Err(self.stop(error.into()));
         }
-        match self.adapter.queue_reply(self.generation, handle, reply) {
+        #[cfg(feature="sunfish-elf-third-reply")]
+        let result=if self.elf_lookup_handle==Some(*handle){
+            self.adapter.queue_elf_third_reply(self.generation,handle,reply)
+        }else{self.adapter.queue_reply(self.generation,handle,reply)};
+        #[cfg(not(feature="sunfish-elf-third-reply"))]
+        let result=self.adapter.queue_reply(self.generation, handle, reply);
+        match result {
             Ok(()) => {}
             Err(
                 error @ fifo::Error::Session(

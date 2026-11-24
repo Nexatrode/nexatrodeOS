@@ -146,3 +146,6 @@ fn elf_writer_uncertain_callback_remains_unfinished_and_cannot_invent_commit(){
 
  let(mut s,h3,_,elf,i3,_)=setup(false,true);done(&mut s,h3,i3);queue(&mut s,&elf,b"kernel/elf_loader").unwrap();assert_eq!(s.publish_next(1,|_|Err(WriteError::Uncertain)),Err(Error::PublicationUncertain));assert!(!s.elf_window_trace().unwrap().writer.finished);assert!(!s.reply_fully_published(&elf));
 }
+
+#[cfg(feature="sunfish-elf-third-reply")]
+include!("sunfish_elf_third_cases.rs");

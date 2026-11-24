@@ -2981,6 +2981,23 @@ impl<I: Io> Adapter<I> {
         }
         Ok(())
     }
+    #[cfg(feature="sunfish-elf-third-reply")]
+    pub(crate) fn queue_elf_third_reply(
+        &mut self,
+        generation: u64,
+        handle: &RequestHandle,
+        reply: Reply<'_>,
+    ) -> Result<(), Error> {
+        self.gate(generation)?;
+        self.session.queue_elf_third_reply(handle, reply)?;
+        #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+        if self.ring.prearm_io.is_none() && self.session.registry_prearm_queue_matches(handle) {
+            self.ring.io.registry_prearm_timing(true);
+            self.ring.prearm_io = Some(RegistryPrearmIo { queued: self.ring.io.registry_prearm_totals(),
+                queued_at: self.ring.first_server_check_clock.map(|now|now()), ..RegistryPrearmIo::default() });
+        }
+        Ok(())
+    }
     pub fn queue_ipa_service_reply(
         &mut self,
         generation: u64,

@@ -1682,7 +1682,15 @@ fn servreg_startup_reply_window_keeps_distinct_intents_and_exact_receipts() {
             for (txn,name) in [(3,b"avs/audio".as_slice()),(4,b"tms/servreg".as_slice()),(5,b"kernel/elf_loader".as_slice())] {
                 let q=lo_message(0,0x21,txn,&[(1,name),(0x10,&0u32.to_le_bytes())]);
                 r.input(&lo_packet(1,9,qcom_servreg::LOCAL_PORT,true,&q)).unwrap();
-                assert!(r.held_host.len()<=if two{2}else{1});
+                assert!(r.held_host.len()<=if cfg!(feature="sunfish-elf-third-reply"){3}else if two{2}else{1});
+            }
+            #[cfg(feature="sunfish-elf-third-reply")]
+            {
+                assert_eq!(r.held_host.iter().map(|(_,p)|transaction(p)).collect::<Vec<_>>(),vec![3,4,5]);
+                let c=r.owner.elf_window_trace().unwrap();assert_eq!(c.admitted.unwrap().count,2);assert_eq!(c.receipt_count,0);assert!(!r.owner.elf_completion_turn_taken());
+                let mut ids=r.held_host.iter().map(|(id,_)|*id).collect::<Vec<_>>();ids.sort();ids.dedup();assert_eq!(ids.len(),3);
+                while !r.held_host.is_empty(){let i=if reverse{r.held_host.len()-1}else{0};let x=r.held_host.remove(i);r.ack_one(&x,true).unwrap();}
+                assert!(r.owner.error().is_none());continue;
             }
             assert_eq!(r.held_host.iter().map(|(_,p)|transaction(p)).collect::<Vec<_>>(),if two{vec![3,4]}else{vec![3]});
             for (_,p) in &r.held_host {assert_eq!(lo_word(p,12),qcom_servreg::LOCAL_PORT);assert_eq!(lo_word(p,28),9);assert_eq!(p[32],2);}
@@ -1714,7 +1722,7 @@ fn servreg_startup_reply_window_keeps_distinct_intents_and_exact_receipts() {
     }
 }
 
-#[cfg(feature="sunfish-elf-first-slot-turn")]
+#[cfg(all(feature="sunfish-elf-first-slot-turn",not(feature="sunfish-elf-third-reply")))]
 #[test]
 fn elf_slot_owner_yields_after_first_of_two_pending_receipts(){
  for reverse in [false,true]{
@@ -1728,4 +1736,22 @@ fn elf_slot_owner_yields_after_first_of_two_pending_receipts(){
  // A later receipt is handled normally; the one-shot remains consumed.
  r.owner.notified(8,&mut r.irqs).unwrap();assert!(r.owner.elf_completion_turn_taken());
  }
+}
+
+#[cfg(feature="sunfish-elf-third-reply")]
+#[test]
+fn elf_third_owner_publishes_without_old_receipts_and_keeps_all_identities(){
+ use core::sync::atomic::{AtomicU64,Ordering::Relaxed};static CLOCK:AtomicU64=AtomicU64::new(0);
+ for clock in [false,true]{for order in [[3,4,5],[3,5,4],[4,3,5],[4,5,3],[5,3,4],[5,4,3]]{
+ let mut r=LoRig::new();let _ipa=r.next();r.hold_host=true;if clock{r.owner.set_rmtfs_event_clock(||CLOCK.fetch_add(1,Relaxed));}
+ for(txn,name)in[(3,b"avs/audio".as_slice()),(4,b"tms/servreg".as_slice()),(5,b"kernel/elf_loader".as_slice())]{let q=lo_message(0,0x21,txn,&[(1,name),(0x10,&0u32.to_le_bytes())]);r.input(&lo_packet(1,9,qcom_servreg::LOCAL_PORT,true,&q)).unwrap();}
+ assert_eq!(r.held_host.len(),3);let c=r.owner.elf_window_trace().unwrap();assert_eq!((c.admitted.unwrap().count,c.receipt_count,c.last_before_admission),(2,0,None));assert!(!r.owner.elf_completion_turn_taken());assert!(c.writer.finished);
+ for txn in order{let i=r.held_host.iter().position(|(_,p)|u16::from_le_bytes([p[33],p[34]])==txn).unwrap();let packet=r.held_host.remove(i);let retained=r.held_host.clone();r.ack_one(&packet,true).unwrap();assert_eq!(r.held_host,retained);}
+ assert!(r.owner.error().is_none());assert!(r.owner.pending_request_for_service(Service::ServiceRegistry).unwrap().is_none());
+ }}
+ // Native lifecycle loss after request acceptance prevents any third admission.
+ let mut r=LoRig::new();let _ipa=r.next();r.hold_host=true;
+ for(txn,name)in[(3,b"avs/audio".as_slice()),(4,b"tms/servreg".as_slice())]{let q=lo_message(0,0x21,txn,&[(1,name),(0x10,&0u32.to_le_bytes())]);r.input(&lo_packet(1,9,qcom_servreg::LOCAL_PORT,true,&q)).unwrap();}
+ let q=lo_message(0,0x21,5,&[(1,b"kernel/elf_loader"),(0x10,&0u32.to_le_bytes())]);r.enqueue(&lo_packet(1,9,qcom_servreg::LOCAL_PORT,true,&q));r.owner.notified(1,&mut r.irqs).unwrap();let before=r.held_host.clone();r.peer.0.borrow_mut().observation.ready=false;
+ assert!(r.owner.dispatch_service_registry_step(&mut r.irqs).is_err());assert!(r.owner.elf_window_trace().unwrap().admitted.is_none());assert_eq!(r.held_host,before);assert!(r.owner.error().is_some());
 }
