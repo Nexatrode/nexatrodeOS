@@ -8,6 +8,8 @@ publish = false
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mpss_smp2p_tests)', 'cfg(mpss_glink_tests)', 'cfg(mpss_glink_transport_tests)'] }
 
 [features]
+vault-key-prototype = []
+utm-wrapped-vault-experiment = ["vault-key-prototype", "utm-device-lock", "development-crypto"]
 utm-device-lock = []
 wallet-wide-rx = []
 iphone-shell = []
@@ -604,6 +606,27 @@ bench = false
 [[bin]]
 name = "rust_input_service"
 path = "src/input_service.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rust_vault_key_prototype_probe"
+path = "src/vault_key_prototype_probe.rs"
+required-features = ["vault-key-prototype"]
+test = false
+bench = false
+
+[[bin]]
+name = "rust_vault_key_storage_probe"
+path = "src/vault_key_storage_probe.rs"
+required-features = ["vault-key-prototype", "storage-test"]
+test = false
+bench = false
+
+[[bin]]
+name = "desktop_test_wallet"
+path = "../experiments/desktop-handoff/test_wallet.rs"
+required-features = ["utm-wrapped-vault-experiment"]
 test = false
 bench = false
 

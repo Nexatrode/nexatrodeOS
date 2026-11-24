@@ -57,6 +57,19 @@ impl DevelopmentCryptoProvider {
     pub const fn with_key(key: [u8; KEY_SIZE]) -> Self {
         Self { key }
     }
+
+    #[cfg(feature = "utm-wrapped-vault-experiment")]
+    pub fn replace_key(&mut self, key: &[u8; KEY_SIZE]) {
+        use zeroize::Zeroize;
+        self.key.zeroize();
+        self.key.copy_from_slice(key);
+    }
+
+    #[cfg(feature = "utm-wrapped-vault-experiment")]
+    pub fn clear_key(&mut self) {
+        use zeroize::Zeroize;
+        self.key.zeroize();
+    }
 }
 
 #[cfg(feature = "development-crypto")]

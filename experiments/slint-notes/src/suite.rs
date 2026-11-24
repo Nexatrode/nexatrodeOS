@@ -8,7 +8,7 @@ use alloc::{
 use core::cell::RefCell;
 use slint::ComponentHandle;
 
-use crate::NotesWindow;
+use crate::{NotesWindow, calculator::{Calculator, Command, Operation}};
 
 /// Matches the guest agent SQLCipher key and official archive passphrase file.
 const DATABASE_PASSPHRASE: &str = "qemu-agentstore-test-key-v1";
@@ -82,67 +82,22 @@ fn apply_contact_phone(current: &str, key: &str) -> String {
     }
 }
 
-#[derive(Default)]
-struct Calculator {
-    entry: i64,
-    accumulator: Option<i64>,
-    operation: Option<char>,
-    replace_entry: bool,
-    error: bool,
-}
-
-impl Calculator {
-    fn press(&mut self, key: &str) -> String {
-        if key == "C" {
-            *self = Self::default();
-            return String::from("0");
+fn calculator_key(calculator: &mut Calculator, key: &str) -> String {
+    let command = match key {
+        "C" => Some(Command::Clear),
+        "=" => Some(Command::Equals),
+        "+" => Some(Command::Operation(Operation::Add)),
+        "−" => Some(Command::Operation(Operation::Subtract)),
+        "×" => Some(Command::Operation(Operation::Multiply)),
+        "÷" => Some(Command::Operation(Operation::Divide)),
+        _ if key.len() == 1 && key.as_bytes()[0].is_ascii_digit() => {
+            Some(Command::Digit(key.as_bytes()[0] - b'0'))
         }
-        if let Some(digit) = key
-            .as_bytes()
-            .first()
-            .filter(|_| key.len() == 1)
-            .and_then(|byte| byte.checked_sub(b'0'))
-            .filter(|digit| *digit <= 9)
-        {
-            if self.error {
-                *self = Self::default();
-            }
-            let next = if self.replace_entry {
-                Some(digit as i64)
-            } else {
-                self.entry
-                    .checked_mul(10)
-                    .and_then(|value| value.checked_add(digit as i64))
-            };
-            if let Some(value) = next.filter(|value| *value <= 999_999_999) {
-                self.entry = value;
-                self.replace_entry = false;
-            }
-            return self.entry.to_string();
-        }
-        if self.error {
-            return String::from("ERROR");
-        }
-        if key == "=" || matches!(key, "+" | "−" | "×" | "÷") {
-            if let (Some(left), Some(op)) = (self.accumulator, self.operation) {
-                let result = match op {
-                    '+' => left.checked_add(self.entry),
-                    '−' => left.checked_sub(self.entry),
-                    '×' => left.checked_mul(self.entry),
-                    '÷' if self.entry != 0 => left.checked_div(self.entry),
-                    _ => None,
-                };
-                let Some(result) = result else {
-                    self.error = true;
-                    return String::from("ERROR");
-                };
-                self.entry = result;
-            }
-            self.accumulator = if key == "=" { None } else { Some(self.entry) };
-            self.operation = if key == "=" { None } else { key.chars().next() };
-            self.replace_entry = true;
-        }
-        self.entry.to_string()
+        _ => None,
+    };
+    match command {
+        Some(command) => calculator.press(command),
+        None => calculator.display(),
     }
 }
 
@@ -488,7 +443,7 @@ where
     let calculator = Rc::new(RefCell::new(Calculator::default()));
     ui.on_calculator_key(move |key| {
         if let Some(ui) = weak.upgrade() {
-            let display = calculator.borrow_mut().press(key.as_str());
+            let display = calculator_key(&mut calculator.borrow_mut(), key.as_str());
             ui.set_calc_display(display.into());
         }
     });
@@ -555,21 +510,21 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_contact_name, apply_contact_phone, apply_key, edit_wallet_field, Calculator,
+        apply_contact_name, apply_contact_phone, apply_key, calculator_key, edit_wallet_field, Calculator,
     };
 
     #[test]
     fn calculator_arithmetic_and_zero_division() {
         let mut calc = Calculator::default();
         for key in ["7", "+", "5"] {
-            calc.press(key);
+            calculator_key(&mut calc, key);
         }
-        assert_eq!(calc.press("="), "12");
+        assert_eq!(calculator_key(&mut calc, "="), "12");
         for key in ["C", "9", "÷", "0"] {
-            calc.press(key);
+            calculator_key(&mut calc, key);
         }
-        assert_eq!(calc.press("="), "ERROR");
-        assert_eq!(calc.press("C"), "0");
+        assert_eq!(calculator_key(&mut calc, "="), "ERROR");
+        assert_eq!(calculator_key(&mut calc, "C"), "0");
     }
 
     #[test]

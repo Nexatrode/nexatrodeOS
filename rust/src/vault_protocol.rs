@@ -25,6 +25,13 @@ pub const DEVICE_LOCK_CHANNEL: Channel = Channel::new(10);
 pub const REQUEST_DEVICE_LOCK_READ: MessageLabel = 0x450;
 #[cfg(feature = "utm-device-lock")]
 pub const REQUEST_DEVICE_LOCK_WRITE: MessageLabel = 0x451;
+#[cfg(feature = "utm-wrapped-vault-experiment")]
+pub const REQUEST_DEVICE_VAULT_UNLOCK: MessageLabel = 0x452;
+#[cfg(feature = "utm-wrapped-vault-experiment")]
+pub const REQUEST_DEVICE_VAULT_LOCK: MessageLabel = 0x453;
+/// Test-only status exposed only to the SimpleX agent startup gate.
+#[cfg(feature = "utm-wrapped-vault-experiment")]
+pub const REQUEST_DEVICE_VAULT_STATUS: MessageLabel = 0x454;
 // Local app endpoint shared by the supervisor's explicit namespace test calls.
 pub const APP_TEST_SUPERVISOR_CHANNEL: Channel = Channel::new(1);
 pub const NAMESPACE_COUNT: usize = 5;

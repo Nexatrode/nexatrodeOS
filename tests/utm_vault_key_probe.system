@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<system>
+  <protection_domain name="key_probe" priority="100" stack_size="0x10000" cpu="0">
+    <program_image path="rust_vault_key_prototype_probe.elf" />
+  </protection_domain>
+</system>

@@ -23,6 +23,7 @@ utm-photo-worker = ["simplex-agent-ui"]
 utm-transcript-worker = ["simplex-agent-ui"]
 utm-pd = []
 utm-device-lock = ["personal-os-rust-server/utm-device-lock"]
+utm-wrapped-vault-experiment = ["utm-device-lock", "personal-os-rust-server/utm-wrapped-vault-experiment"]
 utm-nexawal-rpc-bridge = []
 full-suite-profile = ["full-suite-ui", "frame-timing"]
 full-suite-input-profile = ["full-suite-profile"]
@@ -69,6 +70,11 @@ required-features = ["utm-transcript-worker"]
 name = "slint_notes_utm"
 path = "src/utm.rs"
 required-features = ["utm-pd", "full-suite-ui"]
+
+[[bin]]
+name = "slint_surface_fixture"
+path = "../../experiments/desktop-surfaces/app.rs"
+required-features = ["utm-pd"]
 
 [dependencies]
 slint = { version = "=1.18.1", default-features = false, features = ["renderer-software", "unsafe-single-threaded", "libm", "compat-1-18"] }

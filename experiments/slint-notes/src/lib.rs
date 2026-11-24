@@ -7,6 +7,8 @@ extern crate std;
 slint::include_modules!();
 
 pub mod frame;
+pub mod frame_copy;
+pub mod calculator;
 pub mod chat_photo_loader;
 pub mod chat_refresh;
 pub mod chat_unread;

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<system>
+  <memory_region name="slot_shared" size="0x1000" />
+  <memory_region name="parent_private" size="0x1000" />
+  <protection_domain name="parent" priority="99" budget="10000" period="10000">
+    <program_image path="parent.elf" />
+    <map mr="slot_shared" vaddr="0x40000000" perms="rw" setvar_vaddr="slot_shared" />
+    <map mr="parent_private" vaddr="0x60000000" perms="rw" />
+    <protection_domain name="child" id="1" priority="100" budget="10000" period="10000">
+      <program_image path="child.elf" />
+      <map mr="slot_shared" vaddr="0x40000000" perms="rw" setvar_vaddr="slot_shared" />
+    </protection_domain>
+  </protection_domain>
+  <channel>
+    <end pd="parent" id="0" />
+    <end pd="child" id="0" />
+  </channel>
+</system>
