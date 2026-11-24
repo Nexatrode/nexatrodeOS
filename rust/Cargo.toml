@@ -339,6 +339,8 @@ sunfish-registry-prearm-io-trace = ["sunfish-registry-converted-credit-turn"]
 sunfish-registry-defer-paint = ["sunfish-registry-prearm-io-trace"]
 # Existing exact completions and normal ELF admission observations on one panel.
 sunfish-registry-elf-admission-panel = ["sunfish-registry-defer-paint"]
+# Existing predecessor peer-tail, receipt visibility and exact grant observations.
+sunfish-registry-tx3-receipt-panel = ["sunfish-registry-elf-admission-panel"]
 
 [[bin]]
 name = "rust_sunfish_native_startup_preflight"

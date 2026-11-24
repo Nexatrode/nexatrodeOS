@@ -46,9 +46,12 @@ mod registry_credit_turn;
 #[cfg(all(feature="sunfish-registry-prearm-io-trace",not(feature="sunfish-registry-elf-admission-panel")))]
 #[path="pixel_mpss_registry_prearm_io.rs"]
 mod registry_prearm_io;
-#[cfg(feature="sunfish-registry-elf-admission-panel")]
+#[cfg(all(feature="sunfish-registry-elf-admission-panel",not(feature="sunfish-registry-tx3-receipt-panel")))]
 #[path="pixel_mpss_registry_elf_admission.rs"]
 mod registry_elf_admission;
+#[cfg(feature="sunfish-registry-tx3-receipt-panel")]
+#[path="pixel_mpss_registry_tx3_receipt.rs"]
+mod registry_tx3_receipt;
 #[cfg(feature="sunfish-registry-defer-paint")]
 #[path="pixel_mpss_registry_paint.rs"]
 mod registry_paint;
