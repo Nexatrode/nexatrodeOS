@@ -23,6 +23,7 @@ struct PhotoJob {
     row: usize,
     id: u64,
     visible: bool,
+    on_screen: bool,
     claimed: bool,
     total: Option<usize>,
     bytes: Vec<u8>,
@@ -40,10 +41,17 @@ impl PhotoLoader {
                 job.claimed = false;
             }
             job.visible = visible;
+            job.on_screen = visible;
         }
     }
     /// Replacing a transcript discards its partial reads and row indices.
     pub fn reset(&mut self, stamp: u64, chat: u64, photos: &[(usize, u64)]) {
+        // ListView reuses an unchanged photo row when text is appended. Its
+        // init/has-photo callback does not run again. Preserve that row's
+        // actual viewport membership, separately from a claimed reader job.
+        let visible: Vec<(usize,u64)> = if self.chat == chat {
+            self.jobs.iter().filter(|job|job.on_screen).map(|job|(job.row,job.id)).collect()
+        } else { Vec::new() };
         self.stamp = stamp;
         self.chat = chat;
         self.jobs.clear();
@@ -54,7 +62,8 @@ impl PhotoLoader {
                 .map(|&(row, id)| PhotoJob {
                     row,
                     id,
-                    visible: false,
+                    visible: visible.contains(&(row,id)),
+                    on_screen: visible.contains(&(row,id)),
                     claimed: false,
                     total: None,
                     bytes: Vec::new(),

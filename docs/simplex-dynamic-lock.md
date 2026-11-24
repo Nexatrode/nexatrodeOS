@@ -6,9 +6,9 @@ chat disk. Pixel drivers and Wi-Fi are outside this experiment.
 
 The trusted lock manager now supervises a bounded group containing the real
 GHC SimpleX agent, Rust Messages service, receive/transcript worker, photo reader,
-photo decoder and a native test client. The existing dynamic Slint Notes panel
-and trusted passphrase screen remain in the graphical fixture. The regular full
-SimpleX frontend is not installed under this boundary by this test.
+photo decoder and a native test client. The default backend fixture retains the dynamic Slint Notes panel and trusted
+passphrase screen. The full frontend mode described below replaces the native
+test client with the existing full-resolution SimpleX interface.
 
 ## Lock and unlock
 
@@ -26,7 +26,13 @@ and verifies every writable image/stack/IPC byte, the decoder and reader heaps,
 the client heap, transfer pages, receive/photo/transcript/navigation/snapshot
 mailboxes, agent IPC and offline TCP transfer pages. Cache maintenance operates
 within individual mapped page boundaries. It clears integer thread contexts and
-TLS bases and drains latched notifications. Lock completion follows cleanup.
+TLS bases and drains latched notifications. After the vault finishes eviction,
+it also detaches every managed scheduling context from its old donation/reply
+chain. Suspending an MCS caller cancels IPC without necessarily returning its
+donated budget; restarting only registers could strand Messages after a later
+auto-lock. Unlock explicitly binds each service's original budget back to its
+TCB before resuming it. Only the parent holds these scheduling-context aliases.
+Lock completion follows cleanup.
 
 After successful passphrase verification and the manager's epoch-matched vault
 commit, the manager restores only the original public template, supplies fresh
@@ -165,6 +171,109 @@ the independent native peer recorded both guest replies. All disposable UTM
 registrations were removed, and the regular VM was left stopped. The detailed
 cross-check is `build/desktop-simplex/live-complete/verification.json`.
 
+## Full SimpleX frontend
+
+`--wrapped --simplex-session GATED_AGENT --simplex-live --simplex-frontend`
+selects the real `slint_notes_utm` frontend, built with the opt-in
+`desktop-simplex-frontend` Cargo feature. It uses the existing SimpleX chat list,
+chat thread, full keyboard, QR invitation view, cached thumbnails, transcript
+worker, background receive worker and photo reader/decoder. The native backend
+test client and demo Notes window are absent in this mode.
+
+The frontend is the sixth parent-managed service child. Its writable image,
+stack, IPC buffer, 32 MiB UI heap, cached page pictures, shared mailboxes, input
+ring, transfer pages, observation page and 1080×2340 RGB framebuffer participate
+in the same restart-and-erasure boundary. Its entry point and public boot data
+are restored only after the wrapped vault key commits. Drafts, widget objects,
+held keys, cached thumbnails and previous-session queue state are reconstructed
+from scratch. Committed conversations and photos come from the encrypted vault.
+This remains a trusted, statically provisioned service group; it does not run the
+large frontend through the separate small untrusted ELF loader.
+
+The trusted manager owns display and input routing. It accepts full-sized frames
+through a private RGB surface, validates the header, and skips copies of an
+unchanged revision. The frontend's input/focus page is distinct from the GPU
+client's always-live focus page, so erasing app input cannot disable the lock
+cover. Only unlocked physical input enters the bounded frontend queue. F9 and
+the idle deadline are handled by the trusted manager; locked input reaches only
+the authenticator. The frontend has no authenticator, GPU-output or vault-key
+control capability. Lock presents the cover and overwrites the compositor's
+application pixels before the larger service cleanup completes.
+
+The SimpleX-only fixture starts directly on the chat list and omits unrelated
+wallet/Notes/Contacts/Calendar and wall-clock services. Those app endpoints deny
+requests. The regular shell's wallet boot sequence and internal lock UI are not
+used: authentication and key ownership belong to the external trusted manager.
+The existing regular VM build is unchanged by these feature flags.
+
+The full UI test exposed a stale connection-list case after a fresh invitation
+was accepted. Messages now refreshes pending connection metadata at most once
+every two seconds, using the empty-receive gap rather than taking a page from an
+in-flight Agent operation. It stops polling after named chats are available.
+The policy has a standalone regression test in `rust/src/simplex_ipc.rs`.
+
+Appending text or changing a delivery marker can reuse an existing photo row.
+The loader now preserves viewport membership for the same row/photo in the same
+chat across a transcript refresh, independently from whether its reader job was
+claimed. Cached images set their ready state immediately, and photo-ready and
+pending states participate in the cached-page fingerprint. The integration test
+counts the generated JPEG's actual presented pixels before/after unlock, so a
+decoded image behind a stale “Loading photo” screenshot cannot pass.
+
+`tests/desktop_simplex_frontend_input.py` drives actual pointer and hardware
+keyboard input in a new live-relay UTM instance. The observation page is read-only
+from the host test's perspective and contains current UI state, not a command or
+receive-injection seam. Tests cover enrollment, invitation creation, chat
+selection before any incoming message, typing and clicking Send, independent
+peer delivery, real incoming text and an inline JPEG, manual lock, a wrong
+passphrase, messages queued while locked, discarded draft/keyboard state,
+restored transcript/photo, auto-lock and a locked reboot. Every unlocked phase
+uses the actual UI and production Messages/worker paths. Captured frames also
+check that the real interface is visible and application content is absent
+behind the locked cover. The image travels through the real SMP protocol as an
+inline preview; remote XFTP file transfer is outside this test.
+
+Host checks for the trusted frontend router/compositor run with:
+
+```sh
+clang -std=gnu11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined \
+  tests/desktop_simplex_frontend_test.c -o build/desktop-simplex/frontend-test
+build/desktop-simplex/frontend-test
+rustc --edition=2021 --test rust/src/simplex_ipc.rs \
+  -o build/desktop-simplex/simplex-ipc-tests
+build/desktop-simplex/simplex-ipc-tests
+```
+
+Local full-UI evidence belongs under `build/desktop-simplex/frontend-recovery-photo`,
+including the manifest, serial trace, screenshots, independent peer events and
+`frontend-result.json`. Disposable invitations, raw traces, test disks and peer
+databases remain excluded from Git. Saved wallet/chats, regular VM configuration
+and Pixel Wi-Fi work are outside this fixture.
+
+## Full frontend verification on 2026-11-24
+
+The source-built full-UI image passed all five disposable live-relay checks,
+including the auto-lock restart that had previously stranded Messages' donated
+scheduling context. The independent upstream peer received `frontbefore`,
+`frontafter`, `frontthird` and `frontreboot`. The guest recovered the earlier
+conversation, the message queued while locked and the same encrypted inline
+photo after manual unlock, auto-lock and a locked reboot. Unsent draft and
+keyboard state were absent from the fresh frontend.
+
+Actual captured frames contained 193,045 pixels matching the generated JPEG
+before lock, after unlock and after reboot. This check distinguishes a visible
+photo from a decoded image hidden behind a stale loading frame. Six complete
+managed-service erasures each verified 457,011,200 bytes. All disposable VM
+registrations were removed; the regular VM remained stopped.
+
+`build/desktop-simplex/frontend-recovery-photo/verification.json` records the
+independent receipts, presented-pixel counts and identities of all 68 recorded
+sources and 28 build artifacts. Host checks passed for the frontend router and
+compositor and eight parent restart/SC-rebinding cycles under ASan/UBSan, plus
+17 SimpleX IPC tests, 10 photo-loader tests, four cache tests and one photo-row
+ownership test. The backend-only live fixture also rebuilt with the revised SC
+wiring. No regular VM installation, saved-data migration or Pixel work occurred.
+
 ## Limits
 
 This retains the existing development-kernel, software-passphrase and wrapped-key
@@ -175,4 +284,4 @@ memory, physical RAM remnants or host snapshots. A lock discards unsaved drafts
 and uncommitted/in-flight work; committed data is recovered from encrypted disk.
 The live test covers text-message reconnection and delivery across this lock
 boundary. It does not establish at-most-once delivery during an interrupted
-send, live XFTP/photo-transfer recovery, or the regular full frontend rollout.
+send, live XFTP file-transfer recovery, or a regular VM rollout.

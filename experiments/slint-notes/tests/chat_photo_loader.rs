@@ -150,3 +150,21 @@ fn background_reader_claims_only_visible_job_once() {
     loader.set_visible(0, true);
     assert_eq!(loader.claim_visible(), Some((4, 33, 0)));
 }
+
+#[test]
+fn appended_text_keeps_reused_visible_photo_loadable() {
+    let mut loader=PhotoLoader::default();
+    loader.reset(1,7,&[(2,42)]);loader.set_visible(2,true);
+    assert_eq!(loader.claim_visible(),Some((7,42,2)));loader.complete(2);
+    loader.reset(2,7,&[(2,42)]);
+    assert_eq!(loader.claim_visible(),Some((7,42,2)));
+    loader.set_visible(2,false);loader.reset(3,7,&[(2,42)]);
+    assert_eq!(loader.claim_visible(),None);
+    loader.set_visible(2,true);loader.reset(4,8,&[(2,42)]);
+    assert_eq!(loader.claim_visible(),None); // other chat has its own viewport
+}
+#[test]
+fn row_replacement_does_not_inherit_an_unrelated_visible_photo() {
+    let mut loader=PhotoLoader::default();loader.reset(1,7,&[(2,42)]);loader.set_visible(2,true);
+    loader.reset(2,7,&[(2,43),(3,42)]);assert_eq!(loader.claim_visible(),None);
+}

@@ -59,6 +59,11 @@ static void simplex_session_suspend(void)
 }
 static void simplex_session_scrub(void)
 {
+    /* Suspend cancels IPC but does not return a donated scheduling context.
+     * The vault has now completed key eviction. Detach every service SC from
+     * old call/reply chains before reconstructing the stopped threads. */
+    for (unsigned i = 0; i < SESSION_CHILD_COUNT; ++i)
+        check(seL4_SchedContext_Unbind((SESSION_SC_CAP_BASE + (seL4_Word)i) << 58), "SimpleX detach budget");
     size_t total = 0;
     for (unsigned i = 0; i < SESSION_RANGE_COUNT; ++i) {
         const struct session_range *range = &session_ranges[i];
@@ -126,6 +131,9 @@ static bool simplex_session_start(void)
               (8UL + i) << 58), "SimpleX bind wake");
     }
     session_notifications_bound = true;
+    for (unsigned i = 0; i < SESSION_CHILD_COUNT; ++i)
+        check(seL4_SchedContext_Bind((SESSION_SC_CAP_BASE + (seL4_Word)i) << 58,
+              BASE_TCB_CAP + SESSION_FIRST_CHILD + i), "SimpleX restore budget");
 #ifdef DYNAMIC_SIMPLEX_LIVE
     if (!simplex_net_transition(true)) return false;
 #endif

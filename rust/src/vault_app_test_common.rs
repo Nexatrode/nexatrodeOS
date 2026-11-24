@@ -250,6 +250,8 @@ pub struct NamespaceTest {
     #[cfg(feature = "simplex-agent")]
     simplex_agent_connection_handles_length: usize,
     #[cfg(feature = "simplex-agent")]
+    simplex_metadata_refresh: crate::simplex_ipc::MetadataRefresh,
+    #[cfg(feature = "simplex-agent")]
     simplex_agent_contact_name: [u8; 32],
     #[cfg(feature = "simplex-agent")]
     simplex_agent_contact_name_length: usize,
@@ -431,6 +433,8 @@ impl NamespaceTest {
             #[cfg(feature = "simplex-agent")]
             simplex_agent_connection_handles_length: 0,
             #[cfg(feature = "simplex-agent")]
+            simplex_metadata_refresh: crate::simplex_ipc::MetadataRefresh::new(),
+            #[cfg(feature = "simplex-agent")]
             simplex_agent_contact_name: [0; 32],
             #[cfg(feature = "simplex-agent")]
             simplex_agent_contact_name_length: 0,
@@ -552,6 +556,19 @@ impl NamespaceTest {
     #[cfg(feature = "simplex-agent")]
     pub fn set_simplex_agent_page(&mut self, page: NonNull<AgentPage>) {
         self.simplex_agent_page = Some(page);
+    }
+
+    #[cfg(feature = "simplex-agent")]
+    fn refresh_pending_connection_metadata(&mut self) {
+        let pending = self.simplex_agent_connection_handles_length > self.simplex_agent_chat_count;
+        let busy = self.agent_busy();
+        if pending {
+            if let Some(now) = Self::read_message_clock() {
+                if self.simplex_metadata_refresh.due(true, busy, now) {
+                    self.request_agent_connection_snapshot();
+                }
+            }
+        } else { self.simplex_metadata_refresh.due(false, busy, 0); }
     }
 
     #[cfg(feature = "simplex-agent")]
@@ -2237,6 +2254,9 @@ impl NamespaceTest {
             Some((Status::NoEvent, payload)) if payload.is_empty() => {
                 self.simplex_agent_receive_status = 3;
                 debug_println!("SIMPLEXIPC|MESSAGES_APP|RECEIVE_EMPTY");
+                // An empty receive releases the Agent page before a new poll
+                // starts. Use that gap for paced pending-connection metadata.
+                self.refresh_pending_connection_metadata();
                 // Do not immediately re-poll: that spins when the inbox is
                 // quiet. A message that arrived during this empty poll sets
                 // pending_inbox_wake in the agent bridge; the follow-up notify
@@ -3556,6 +3576,7 @@ impl NamespaceTest {
             if self.agent_connection_count.is_none() {
                 self.request_agent_connection_snapshot();
             }
+            self.refresh_pending_connection_metadata();
         }
         if !self.ensure_messages_loaded() {
             debug_println!("SLINT MESSAGES SERVICE LOAD FAILED: ensure_messages_loaded");

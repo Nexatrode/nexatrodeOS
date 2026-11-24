@@ -28,10 +28,10 @@ def programs(path):
     return struct.unpack_from('<Q', data, 24)[0], [struct.unpack_from('<IIQQQQQQ', data, offset + size*i) for i in range(count)]
 
 
-def prepare(out, agent, cargo, flags, run, live=False):
-    target = cargo('experiments/slint-notes/Cargo.toml', 'desktop-simplex-live-test' if live else 'utm-pd,utm-photo-worker,utm-transcript-worker',
-        [name.removesuffix('.elf') for name in IMAGES[2:-1]] + ['simplex_live_client' if live else 'simplex_session_client'], 'build/desktop-simplex-ui-cargo')
-    for name in IMAGES[2:]: shutil.copyfile(target/('simplex_live_client.elf' if live and name==IMAGES[-1] else name), out/name)
+def prepare(out, agent, cargo, flags, run, live=False, frontend=False):
+    target = cargo('experiments/slint-notes/Cargo.toml', 'desktop-simplex-frontend' if frontend else 'desktop-simplex-live-test' if live else 'utm-pd,utm-photo-worker,utm-transcript-worker',
+        [name.removesuffix('.elf') for name in IMAGES[2:-1]] + ['slint_notes_utm' if frontend else 'simplex_live_client' if live else 'simplex_session_client'], 'build/desktop-simplex-ui-cargo')
+    for name in IMAGES[2:]: shutil.copyfile(target/('slint_notes_utm.elf' if frontend and name==IMAGES[-1] else 'simplex_live_client.elf' if live and name==IMAGES[-1] else name), out/name)
     shutil.copyfile(agent, out/IMAGES[0])
     # The old startup gate remains defense in depth. It rechecks vault status
     # after the parent has committed the new key before entering GHC.
@@ -48,12 +48,15 @@ def prepare(out, agent, cargo, flags, run, live=False):
     return children
 
 
-def compose(system, manager, out, children, mapping, channel, mr, live=False):
+def compose(system, manager, out, children, mapping, channel, mr, live=False, frontend=False):
     source=ET.parse(ROOT/'experiments/hvf-smp/accelerated.system').getroot()
     oldnames=('simplex_agent','messages_app','transcript_worker','photo_worker','photo_reader')
     remap=dict(zip(oldnames,layout.NAMES))
     manager.set('priority','109')
     manager.set('budget','8000')
+    cspace=manager.find('cspace')
+    for i,name in enumerate(layout.NAMES):
+        ET.SubElement(cspace,'cap_sc',slot=str(16+i),pd=name)
     group=[]
     for i,(old,new) in enumerate(remap.items()):
         pd=copy.deepcopy(source.find(f"protection_domain[@name='{old}']"))
@@ -69,10 +72,19 @@ def compose(system, manager, out, children, mapping, channel, mr, live=False):
         ('transcript_mailbox',0x50400000,'transcript_mailbox'),('live_receive_mailbox',0x50600000,'live_receive_mailbox'),
         ('messages_ui_transfer',0x50800000,'messages_ui_transfer'),('session_client_heap',0x50a00000,'session_client_heap')]
     for name,addr,symbol in client_maps:
-        if not live or name not in ('photo_mailbox','photo_read_mailbox'): mapping(client,name,addr,'rw',symbol)
+        if not frontend and (not live or name not in ('photo_mailbox','photo_read_mailbox')): mapping(client,name,addr,'rw',symbol)
+    if frontend:
+        original=source.find("protection_domain[@name='slint_ui']")
+        for m in original.findall('map'):
+            if m.get('mr') in ('device_lock_transfer','clock_view','haskell_tcp_io'): continue
+            m=copy.deepcopy(m)
+            if m.get('mr')=='slint_frame':m.set('mr','frontend_frame')
+            if m.get('mr')=='ui_focus':m.set('mr','frontend_focus')
+            if m.get('mr')=='messages_transfer':m.set('mr','messages_ui_transfer')
+            client.append(m)
     mr('simplex_test_result',4096)
     system.find("memory_region[@name='simplex_test_result']").set('phys_addr','0x5fbb1000' if live else '0x5fd91000')
-    mapping(client,'simplex_test_result',0x51200000,'rw','session_result')
+    mapping(client,'simplex_test_result',0x72001000 if frontend else 0x51200000,'rw','session_result')
     # Rename the old frontend-only page, keeping Messages' vault transfer separate.
     messages=group[1]
     for m in messages.findall('map'):
@@ -91,14 +103,31 @@ def compose(system, manager, out, children, mapping, channel, mr, live=False):
     channel('session_agent',3,'entropy_rng',2,True)
     channel('session_messages',3,'entropy_rng',1,True)
     channel('session_agent',4,'timer_driver',3,True)
-    channel('session_client',0,'timer_driver',8,True)
-    channel('session_client',1,'session_messages',5,True)
-    channel('session_client',2,'session_photo',0)
-    channel('session_client',3,'session_reader',0)
-    channel('session_client',4,'session_transcript',0)
-    channel('session_client',5,'session_transcript',2)
+    if frontend:
+        channel('session_client',8,'timer_driver',8,True)
+        link=system.findall('channel')[-1]
+        link[0].set('setvar_id','slint_timer_channel')
+        channel('session_client',5,'session_messages',5,True)
+        channel('session_client',9,'session_photo',0)
+        channel('session_client',10,'session_reader',0)
+        channel('session_client',11,'session_transcript',0)
+        channel('session_client',12,'session_transcript',2)
+        channel('session_client',13,'session_transcript',3)
+        channel('session_client',14,'session_transcript',4)
+        channel('runtime_manager',18,'session_client',1)
+    else:
+        channel('session_client',0,'timer_driver',8,True)
+        channel('session_client',1,'session_messages',5,True)
+        channel('session_client',2,'session_photo',0)
+        channel('session_client',3,'session_reader',0)
+        channel('session_client',4,'session_transcript',0)
+        channel('session_client',5,'session_transcript',2)
     environment=ET.SubElement(system,'protection_domain',name='session_environment',priority='120',passive='true')
     ET.SubElement(environment,'program_image',path='environment.elf')
+    if frontend:
+        # Unrelated app services have no data authority and immediately deny.
+        for local,remote in ((2,3),(3,4),(4,5),(6,6),(7,7)):
+            channel('session_client',local,'session_environment',remote,True)
     channel('session_agent',2,'session_environment',0,True)
     channel('session_messages',2,'session_environment',2,True)
     if live:
@@ -108,7 +137,7 @@ def compose(system, manager, out, children, mapping, channel, mr, live=False):
     # Offline mode has no Ethernet. Neither mode includes a phone or wallet PD.
     names={m.get('mr') for pd in group for m in pd.findall('map')}
     sizes={m.get('name'):int(m.get('size').replace('_',''),0) for m in source.findall('memory_region')}
-    sizes.update(messages_ui_transfer=4096,session_client_heap=0x200000,simplex_test_result=4096)
+    sizes.update(messages_ui_transfer=4096,session_client_heap=0x200000,simplex_test_result=4096,frontend_frame=0x800000,frontend_focus=4096)
     existing={m.get('name') for m in system.findall('memory_region')}
     ranges=[]
     for i,name in enumerate(IMAGES):
@@ -133,10 +162,11 @@ def compose(system, manager, out, children, mapping, channel, mr, live=False):
     mr('simplex_session_state',4096)
     system.find("memory_region[@name='simplex_session_state']").set('phys_addr','0x5fbb0000' if live else '0x5fd90000')
     mapping(manager,'simplex_session_state',0x71000000,'rw')
-    mapping(client,'simplex_session_state',0x51000000,'r','session_state')
+    mapping(client,'simplex_session_state',0x72000000 if frontend else 0x51000000,'r','session_state')
     header='''#pragma once
 #define SESSION_CHILD_COUNT 6u
 #define SESSION_FIRST_CHILD 32u
+#define SESSION_SC_CAP_BASE 16u
 #define SESSION_STACK_TOP ((seL4_UserVSpaceTop & ~4095UL) - 4096)
 #define SESSION_STATE_ADDRESS 0x71000000UL
 struct session_child { uintptr_t address; size_t pages; uintptr_t entry; };
@@ -145,8 +175,10 @@ static const struct session_child session_children[] = {
 '''+''.join(f'{{{addr}UL,{pages},{entry}UL}},\n' for addr,pages,entry in children)+'};\n'
     header+='static const struct session_range session_ranges[] = {\n'+''.join(f'{{{addr}UL,{size}}},\n' for addr,size in ranges)+'};\n'
     header+=f'#define SESSION_RANGE_COUNT {len(ranges)}u\n'
+    if frontend:
+        header+=f'#define FRONTEND_FRAME_ADDRESS {aliases["frontend_frame"][0]}UL\n#define FRONTEND_FOCUS_ADDRESS {aliases["frontend_focus"][0]}UL\n'
     (out/'session_layout.h').write_text(header)
     # Test evidence can map each scrubbed range to its component/queue.
     import json
     (out/'session-layout.json').write_text(json.dumps({'children':dict(zip(layout.NAMES,children)),
-        'shared':aliases,'network':'live public SMP relay' if live else 'offline stub','saved_data_used':False},indent=2)+'\n')
+        'frontend':frontend,'shared':aliases,'network':'live public SMP relay' if live else 'offline stub','saved_data_used':False},indent=2)+'\n')

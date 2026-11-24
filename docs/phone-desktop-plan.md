@@ -17,8 +17,12 @@ frames before revocation. Its optional wrapped-key mode synchronously evicts
 the random disposable vault key and commits unlock before launching an app.
 A scoped broker now gives that dynamic Notes app a private encrypted document,
 with lock/unlock and interrupted-save recovery tested in disposable UTM.
-Real app workers, their installation-key migration and general file services
-remain separate integration boundaries.
+A separate disposable live-relay fixture now also gates the full SimpleX
+frontend, agent and receive/photo/transcript workers on the wrapped-key lock.
+Manual/auto lock, a locked reboot, live delivery and actual photo presentation
+passed; see [the SimpleX lifecycle evidence](simplex-dynamic-lock.md).
+Regular installation-key migration, NexaWal lifecycle integration and general
+file services remain separate boundaries.
 
 ## Implementation order
 

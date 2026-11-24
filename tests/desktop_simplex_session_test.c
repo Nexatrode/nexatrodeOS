@@ -16,11 +16,15 @@ static uint64_t state_words[2], lock_epoch=1;
 static unsigned stopped, resumed, polls, cleared, tls_cleared, cache_ops, scrub_logs;
 static seL4_UserContext contexts[6];
 static bool bound[6] = {true,true,true,true,true,true};
+static bool scheduled[6] = {true,true,true,true,true,true};
+static unsigned budget_detaches,budget_restores;
 static unsigned index_of(uintptr_t cap) { assert(cap>=234 && cap<240); return cap-234; }
 static int seL4_TCB_Suspend(uintptr_t cap) { (void)index_of(cap); assert(!state_words[1]); stopped++; return 0; }
-static int seL4_TCB_Resume(uintptr_t cap) { unsigned i=index_of(cap); assert(state_words[1] && bound[i]); assert(contexts[i].pc==(i+1)*0x10000); resumed++;return 0; }
+static int seL4_TCB_Resume(uintptr_t cap) { unsigned i=index_of(cap); assert(state_words[1] && bound[i] && scheduled[i]); assert(contexts[i].pc==(i+1)*0x10000); resumed++;return 0; }
 static int seL4_TCB_UnbindNotification(uintptr_t cap) { unsigned i=index_of(cap);assert(bound[i]);bound[i]=false;return 0; }
 static int seL4_TCB_BindNotification(uintptr_t cap,uintptr_t notification) { unsigned i=index_of(cap);assert(!bound[i] && notification==((8UL+i)<<58));bound[i]=true;return 0; }
+static int seL4_SchedContext_Unbind(uintptr_t sc) { unsigned i=(sc>>58)-16;assert(i<6 && !state_words[1]);scheduled[i]=false;budget_detaches++;return 0; }
+static int seL4_SchedContext_Bind(uintptr_t sc,uintptr_t tcb) { unsigned i=(sc>>58)-16;assert(i<6 && !scheduled[i] && index_of(tcb)==i);scheduled[i]=true;budget_restores++;return 0; }
 static int seL4_TCB_WriteRegisters(uintptr_t cap,bool resume,unsigned flags,size_t count,seL4_UserContext *context) {
     assert(!resume && !flags && count==sizeof(*context)/sizeof(seL4_Word));
     contexts[index_of(cap)]=*context;if(!context->pc){assert(!state_words[1]);cleared++;}return 0;
@@ -56,6 +60,7 @@ int main(void) {
         assert(!state_words[1] && state_words[0]==lock_epoch);
         all_zero((void *)private_pages,sizeof(private_pages));all_zero(shared,sizeof(shared));
     }
+    assert(budget_detaches==54 && budget_restores==48);
     assert(stopped==54 && resumed==48 && cleared==54 && tls_cleared==54 && polls==54);
     session_failed=true;assert(!simplex_session_start() && resumed==48);
     puts("PASS SimpleX parent session: eight restart/scrub cycles, complete ranges, fresh contexts, stale wakes, failure latch");

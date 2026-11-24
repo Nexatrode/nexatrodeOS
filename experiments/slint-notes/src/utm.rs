@@ -11,6 +11,9 @@ use core::{
     sync::atomic::{AtomicBool, AtomicPtr, AtomicU16, AtomicU64, AtomicUsize, Ordering},
 };
 mod skia_guest;
+#[cfg(feature = "desktop-simplex-frontend")]
+#[path = "../../desktop-simplex/frontend_probe.rs"]
+mod frontend_probe;
 
 use personal_os_rust_server::messages::{decode_direct_text, split_direct_text};
 use personal_os_rust_server::messages::{photo_reference, split_file_reference, split_message_time, split_photo_reference};
@@ -2952,8 +2955,11 @@ fn sync_message_bubbles(
         let (image, body) = match indexed_photo {
             Some(photo) => {
                 let id = photo.display_id;
+                #[cfg(feature = "utm-photo-worker")]
+                let image = owner.and_then(|owner| cache.borrow_mut().get(owner,id));
+                #[cfg(not(feature = "utm-photo-worker"))]
                 let image: Option<slint::Image> = None;
-                if id != 0 && image.is_none() { photo_jobs.push((bodies.len(), id)); }
+                if id != 0 { photo_jobs.push((bodies.len(), id)); }
                 photo_pending.push(id != 0 && image.is_none());
                 (image, photo.caption)
             }
@@ -3363,6 +3369,14 @@ impl SlintService {
                 mix(&mut hash, self._ui.get_message_send_status().as_str().as_bytes());
                 mix(&mut hash, self._ui.get_message_receive_status().as_str().as_bytes());
                 mix(&mut hash, self._ui.get_message_transcript().as_str().as_bytes());
+                // A decoded/released photo changes pixels without changing the
+                // transcript. Do not restore an older Loading-photo picture.
+                let ready=self._ui.get_message_bubble_photo_ready();
+                let pending=self._ui.get_message_bubble_photo_pending();
+                for row in 0..ready.row_count() {
+                    mix(&mut hash, &[u8::from(ready.row_data(row).unwrap_or(false)),
+                        u8::from(pending.row_data(row).unwrap_or(false))]);
+                }
                 mix(&mut hash, self._ui.get_message_selected().as_str().as_bytes());
                 mix(&mut hash, &[u8::from(self._ui.get_message_image_visible())]);
                 mix(
@@ -3475,6 +3489,8 @@ impl SlintService {
     }
 
     fn load_vault_apps(&mut self) {
+        #[cfg(not(feature = "desktop-simplex-frontend"))]
+        {
         match self.notes_service.borrow().load() {
             Ok(note) => {
                 self._ui.set_note(note.into());
@@ -3505,6 +3521,7 @@ impl SlintService {
                 debug_println!("SLINT CALENDAR LOAD FAIL {}", error);
                 self._ui.set_calendar_status("VAULT UNAVAILABLE".into());
             }
+        }
         }
         #[cfg(feature = "simplex-agent-ui")]
         match self.messages_service.borrow().load() {
@@ -5478,7 +5495,7 @@ fn init() -> SlintService {
             transfer: NonNull::new(wallet_transfer.as_ptr()).expect("Wallet transfer page"),
         },
         wallet_opened: false,
-        wallet_boot_phase: 1,
+        wallet_boot_phase: if cfg!(feature="desktop-simplex-frontend") {0} else {1},
         wallet_boot_sync_queued: false,
         wallet_boot_opened: alloc::string::String::new(),
         wallet_sync_polls: 0,
@@ -5508,7 +5525,7 @@ fn init() -> SlintService {
     // Paint ARMED only. Open+queue runs on the first GPU→input→SLINT pulse
     // after scanout — init-time OPEN/REFRESH Calls left the shell with no
     // handler bounce, so WaitConnect never got notify pumps.
-    if !service._ui.get_device_lock_screen() { service._ui.set_page(16); }
+    if !service._ui.get_device_lock_screen() { service._ui.set_page(if cfg!(feature="desktop-simplex-frontend") {6} else {16}); }
     let page_now = service._ui.get_page();
     #[cfg(not(feature = "utm-wrapped-vault-experiment"))]
     service
@@ -5527,7 +5544,17 @@ fn init() -> SlintService {
         // us — required when gpu timer is slow to pick up the first revision.
         focus.as_ptr().add(1).write_volatile(1);
     }
-    service.wallet_boot_phase = 1;
+    #[cfg(not(feature="desktop-simplex-frontend"))]
+    { service.wallet_boot_phase = 1; }
+    #[cfg(feature="desktop-simplex-frontend")]
+    {
+        service._ui.set_wallet_available(false);
+        service.load_vault_apps();
+        service.chat_refresh.request(true);
+        service.publish_frame();
+        frontend_probe::publish(&service._ui);
+        debug_println!("SIMPLEX_FRONTEND|STARTED");
+    }
     SLINT_INPUT.notify();
     debug_println!("SLINT FIRST FRAME PAGE {} PHASE ARMED", page_now);
     let revision = unsafe { service.header.as_ref() }
@@ -6461,6 +6488,7 @@ impl SlintService {
             self.photo_cache.borrow_mut().insert(ticket.owner, ticket.id, bytes, image.clone());
             self._ui.get_message_bubble_photos().set_row_data(ticket.row, image);
             self._ui.get_message_bubble_photo_ready().set_row_data(ticket.row, true);
+            self.window.request_redraw();
             debug_println!("SLINT SIMPLEX MESSAGE PHOTO {} worker", ticket.id);
         }
         self._ui.get_message_bubble_photo_pending().set_row_data(ticket.row, false);
@@ -6496,6 +6524,8 @@ impl SlintService {
             let photo_delay = core::time::Duration::from_millis(50);
             delay = Some(delay.map_or(photo_delay, |wake| wake.min(photo_delay)));
         }
+        #[cfg(feature="desktop-simplex-frontend")]
+        { let tick=core::time::Duration::from_millis(100); delay=Some(delay.map_or(tick,|d|d.min(tick))); }
         let Some(delay) = delay else {
             // The timer API has no cancellation; a stale one-shot can wake us once.
             return;
@@ -7714,6 +7744,8 @@ impl Handler for SlintService {
             self.refresh_wall_clock();
         }
         self.handle_notification(channels)?;
+        #[cfg(feature="desktop-simplex-frontend")]
+        if timer_fired { self.chat_refresh.request(true); }
         #[cfg(feature = "utm-wrapped-vault-experiment")]
         if device_lock_utm::take_vault_unlocked() {
             self.load_vault_apps();
@@ -7831,6 +7863,8 @@ impl Handler for SlintService {
                 SLINT_INPUT.notify();
             }
         }
+        #[cfg(feature="desktop-simplex-frontend")]
+        frontend_probe::publish(&self._ui);
         self.arm_frame_timer();
         Ok(())
     }

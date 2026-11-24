@@ -32,6 +32,12 @@ static void begin_device_lock(bool force);
 static void lock_timer(void);
 static void publish_lock_status(void);
 static void scrub_private_frames(void);
+#ifdef DYNAMIC_SIMPLEX_FRONTEND
+static uint32_t frontend_revision;
+static bool frontend_input(struct input_event_record);
+static bool frontend_compose(void);
+static void frontend_notify(void);
+#endif
 static unsigned private_frame_count;
 #ifdef DYNAMIC_WRAPPED_LOCK
 static bool evict_vault(void);
@@ -133,6 +139,10 @@ static void image_page(struct process *p, const struct program_header *ph, uintp
 
 static void launch(void)
 {
+#ifdef DYNAMIC_SIMPLEX_FRONTEND
+    /* The real UI is already a managed session child; no demo Notes process. */
+    return;
+#endif
 #ifdef DYNAMIC_LOCK
     if (device_locked) return;
     if (generation >= 59) { print("DYNAMIC|LIMIT|instance generation quota\n"); return; }
@@ -260,6 +270,9 @@ static bool dynamic_control(struct input_event_record event)
     }
     if (device_locked) return false;
 #endif
+#ifdef DYNAMIC_SIMPLEX_FRONTEND
+    if (frontend_input(event)) return true;
+#endif
     if (event.device || event.type != 1 || event.code < 63 || event.code > 65 || event.reserved || event.value > 2)
         return false;
     if (event.value == 1) pending_action = event.code - 62;
@@ -268,6 +281,9 @@ static bool dynamic_control(struct input_event_record event)
 
 static void notifications(seL4_Word badge)
 {
+#ifdef DYNAMIC_SIMPLEX_FRONTEND
+    if (badge & (1UL << 18)) frontend_notify();
+#endif
 #ifdef DYNAMIC_LOCK
     if (badge & (1UL << LOCK_TIMER_CHANNEL)) lock_timer();
     if (badge & (1UL << LOCK_AUTH_SURFACE_CHANNEL)) { flush_reset(2); compose(); }
@@ -357,4 +373,8 @@ seL4_Bool fault(microkit_child child, microkit_msginfo info, microkit_msginfo *r
 #endif
 #ifdef DYNAMIC_PRIVATE_NOTES
 #include "../desktop-notes/broker.h"
+#endif
+
+#ifdef DYNAMIC_SIMPLEX_FRONTEND
+#include "../desktop-simplex/frontend.h"
 #endif

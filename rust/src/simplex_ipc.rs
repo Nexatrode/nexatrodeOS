@@ -678,3 +678,33 @@ impl<'a> DirectFrame<'a> {
         Some(Self { kind, handle, message, part, id, total, first })
     }
 }
+
+/// A pending invitation can gain a peer name after the first connection list.
+/// Pace metadata reads while that happens; completed lists need no polling.
+#[derive(Default)]
+pub struct MetadataRefresh { last: Option<u32> }
+impl MetadataRefresh {
+    pub const fn new() -> Self { Self { last: None } }
+    pub fn due(&mut self, pending: bool, busy: bool, now: u32) -> bool {
+        if !pending { self.last=None; return false; }
+        if busy { return false; }
+        if self.last.is_some_and(|last| now>=last && now-last<2) { return false; }
+        self.last=Some(now);true
+    }
+}
+#[cfg(test)]
+mod metadata_refresh_tests {
+    use super::MetadataRefresh;
+    #[test]
+    fn pending_metadata_is_paced_and_never_steals_an_inflight_operation() {
+        let mut refresh=MetadataRefresh::new();
+        assert!(!refresh.due(false,false,100));
+        assert!(!refresh.due(true,true,100));
+        assert!(refresh.due(true,false,100));
+        for _ in 0..100 { assert!(!refresh.due(true,false,101)); }
+        assert!(refresh.due(true,false,102));
+        assert!(!refresh.due(false,false,103));
+        assert!(refresh.due(true,false,103));
+        assert!(refresh.due(true,false,90)); // changed wall clock cannot strand the list
+    }
+}

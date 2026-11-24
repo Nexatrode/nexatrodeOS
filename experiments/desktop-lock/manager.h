@@ -120,6 +120,9 @@ static void begin_device_lock(bool force)
     bool vault_evicted = evict_vault();
 #endif
     auth_revision = 0;
+#ifdef DYNAMIC_SIMPLEX_FRONTEND
+    frontend_revision = 0;
+#endif
     for (size_t i = 0; i < sizeof(auth_pixels); ++i) auth_pixels[i] = 0;
     publish_lock_status();
     compose(); /* Replace displayed app before potentially expensive cleanup. */
@@ -178,6 +181,9 @@ static bool lock_input(struct input_event_record event)
 }
 static bool lock_compose(void)
 {
+#ifdef DYNAMIC_SIMPLEX_FRONTEND
+    if (!device_locked && session_state->active) return frontend_compose();
+#endif
     uint32_t offered = atomic_load_explicit(&auth_surface->revision, memory_order_acquire);
     bool valid = offered && !(offered & 1) && auth_surface->width == SLINT_FRAME_WIDTH &&
                  auth_surface->height == SLINT_FRAME_HEIGHT && auth_surface->stride == SLINT_FRAME_STRIDE_BYTES &&

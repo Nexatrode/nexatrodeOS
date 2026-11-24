@@ -1,6 +1,7 @@
 #pragma once
 #define SESSION_CHILD_COUNT 6u
 #define SESSION_FIRST_CHILD 32u
+#define SESSION_SC_CAP_BASE 16u
 #define SESSION_STATE_ADDRESS ((uintptr_t)state_words)
 #define SESSION_STACK_TOP 0x7ffffff000UL
 struct session_child { uintptr_t address; size_t pages; uintptr_t entry; };
