@@ -16,6 +16,12 @@
 //! supports a narrower profile than the complete Linux transports.
 #![forbid(unsafe_code)]
 
+#[cfg(feature="sunfish-elf-window-trace")]
+#[path="qcom_elf_window.rs"]
+mod elf_window;
+#[cfg(feature="sunfish-elf-window-trace")]
+pub use elf_window::{ElfWindowTrace,ElfWindowSnapshot,ElfWindowEntry,ElfWindowReceipt};
+
 #[cfg(feature="sunfish-post-elf-mcfg-trace")]
 #[path="qcom_post_elf_mcfg.rs"]
 mod post_elf_mcfg;
@@ -951,6 +957,8 @@ pub struct Session {
     elf_exchange: Option<ElfExchangeTrace>,
     #[cfg(feature="sunfish-post-elf-mcfg-trace")]
     post_elf_mcfg: Option<PostElfMcfgTrace>,
+    #[cfg(feature="sunfish-elf-window-trace")]
+    elf_window:Option<ElfWindowTrace>,
     #[cfg(feature = "sunfish-wlan-first-server-check-trace")]
     first_server_check: Option<ElfServerCheckTrace>,
     #[cfg(feature = "sunfish-ipa-announcement-timeline")]
@@ -1919,6 +1927,8 @@ impl Session {
             elf_exchange: None,
             #[cfg(feature="sunfish-post-elf-mcfg-trace")]
             post_elf_mcfg: None,
+            #[cfg(feature="sunfish-elf-window-trace")]
+            elf_window:None,
             #[cfg(feature = "sunfish-wlan-first-server-check-trace")]
             first_server_check: None,
             #[cfg(feature = "sunfish-ipa-announcement-timeline")]
@@ -2860,6 +2870,8 @@ impl Session {
         { self.elf_exchange = None; }
         #[cfg(feature="sunfish-post-elf-mcfg-trace")]
         { self.post_elf_mcfg = None; }
+        #[cfg(feature="sunfish-elf-window-trace")]
+        {self.elf_window=None;}
         #[cfg(feature = "sunfish-wlan-first-server-check-trace")]
         { self.first_server_check = None; }
         #[cfg(feature = "sunfish-ipa-announcement-timeline")]
@@ -5365,6 +5377,8 @@ impl Session {
         }
         #[cfg(feature="sunfish-post-elf-mcfg-trace")]
         if first_elf { self.start_post_elf_mcfg(handle,index); }
+        #[cfg(feature="sunfish-elf-window-trace")]
+        if first_elf {self.start_elf_window(handle,index);}
         Ok(Event::Request(handle))
     }
 
@@ -6379,6 +6393,8 @@ impl Session {
             self.record_completion_error(id, reuse, CompletionFailure::NoFullyPublishedTransmit);
             return Err(Error::InvalidCompletion);
         };
+        #[cfg(feature="sunfish-elf-window-trace")]
+        let elf_window_route=match self.transmit[index].kind {TxKind::Reply{route,..} if route.service==Service::ServiceRegistry=>Some(route),_=>None};
         // Clear this link before a reusable remote slot can be reserved again.
         let completion = match self.transmit[index].kind {
             TxKind::Reply { receive, .. } => Event::ReplyRxDone(RequestHandle {
@@ -6446,6 +6462,8 @@ impl Session {
             self.remote[remote] = None;
         }
         self.retire_transmit(index)?;
+        #[cfg(feature="sunfish-elf-window-trace")]
+        if let Some(route)=elf_window_route {self.observe_elf_window_receipt(completion,id,route);}
         #[cfg(feature = "sunfish-registry-handoff-turn")]
         if let Some(prior) = self.registry_window.predecessor.as_mut()
             && completion == Event::ReplyRxDone(prior.request)
@@ -6783,6 +6801,8 @@ impl Session {
             }
         }
         self.registry_pressure = Some((*handle, pressure));
+        #[cfg(feature="sunfish-elf-window-trace")]
+        self.observe_elf_window_admission(*handle,route,reason);
     }
 
     /// Pure live ownership metadata, never a display history or timing guard.
@@ -7154,6 +7174,8 @@ impl Session {
                 });
             }
         }
+        #[cfg(feature="sunfish-elf-window-trace")]
+        self.observe_elf_window_admission(*handle,route,0);
         Ok(())
     }
 

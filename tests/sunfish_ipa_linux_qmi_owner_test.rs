@@ -1688,12 +1688,18 @@ fn servreg_startup_reply_window_keeps_distinct_intents_and_exact_receipts() {
             for (_,p) in &r.held_host {assert_eq!(lo_word(p,12),qcom_servreg::LOCAL_PORT);assert_eq!(lo_word(p,28),9);assert_eq!(p[32],2);}
             if two {
                 assert_ne!(r.held_host[0].0,r.held_host[1].0,"live replies need distinct modem intents");
+                #[cfg(feature="sunfish-elf-window-trace")]
+                {let c=r.owner.elf_window_trace().unwrap();let f=c.first_failure.unwrap();assert_eq!((f.count,f.gates),(2,1));let mut ids=f.entries.map(|e|e.unwrap().transaction);ids.sort();assert_eq!(ids,[3,4]);}
+
                 let freed=if reverse{1}else{0};let done=r.held_host.remove(freed);let retained=r.held_host[0].clone();
                 r.ack_one(&done,true).unwrap();
                 assert_eq!(r.held_host.len(),2);
                 assert_eq!(r.held_host[0],retained,"other reply retains its original intent and bytes");
                 let elf=r.held_host.iter().find(|(_,p)|transaction(p)==5).unwrap();
                 assert_ne!(elf.0,retained.0,"cannot reuse the still-busy older intent");
+                #[cfg(feature="sunfish-elf-window-trace")]
+                {let c=r.owner.elf_window_trace().unwrap();assert_eq!((c.admitted.unwrap().count,c.admitted.unwrap().gates),(1,0));assert_eq!(c.last_before_admission,Some(transaction(&done.1)));assert_eq!(c.receipts[0].unwrap().remaining,1);}
+
             } else {
                 let first=r.held_host.remove(0);r.ack_one(&first,true).unwrap();
                 assert_eq!(r.held_host.len(),1);assert_eq!(transaction(&r.held_host[0].1),4);

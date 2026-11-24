@@ -2341,6 +2341,8 @@ impl<I: Io> Adapter<I> {
     { self.session.registry_handoff_pair(older, waiting) }
     #[cfg(feature = "sunfish-registry-window-trace")]
     pub fn registry_window_trace(&self) -> core::RegistryWindowTrace { self.session.registry_window_trace() }
+    #[cfg(feature="sunfish-elf-window-trace")]
+    pub fn elf_window_trace(&self)->Option<&core::ElfWindowTrace>{self.session.elf_window_trace()}
     #[cfg(feature="sunfish-post-elf-mcfg-trace")]
     pub fn post_elf_mcfg(&self)->Option<&core::PostElfMcfgTrace>{self.session.post_elf_mcfg()}
     #[cfg(feature="sunfish-post-elf-mcfg-trace")]

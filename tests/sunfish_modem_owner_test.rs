@@ -1930,7 +1930,9 @@ fn owner_announces_servreg_and_returns_bounded_domain_map_through_fifo() {
             {
                 // Optional observation clock calls advance this synthetic counter;
                 // neither clock values nor this trace participate in protocol policy.
-                let clocks = if cfg!(feature="sunfish-post-elf-mcfg-trace") {
+                let clocks = if cfg!(feature="sunfish-elf-window-trace") {
+                    (Some(110), Some(160), Some(180), Some(220))
+                } else if cfg!(feature="sunfish-post-elf-mcfg-trace") {
                     (Some(110), Some(150), Some(170), Some(200))
                 } else {(Some(100), Some(140), Some(150), Some(160))};
                 assert_eq!((trace.received, trace.queued, trace.published, trace.done), clocks);

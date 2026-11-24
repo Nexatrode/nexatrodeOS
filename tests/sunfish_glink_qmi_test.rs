@@ -4718,3 +4718,6 @@ mod registry_conversion_lifetime_fixture;
 #[cfg(feature = "sunfish-glink-announcement-reuse")]
 #[path = "sunfish_announcement_reuse_test.rs"]
 mod announcement_reuse;
+
+#[cfg(feature="sunfish-elf-queued-handoff")]
+mod elf_window_cases {include!("sunfish_elf_window_cases.rs");}

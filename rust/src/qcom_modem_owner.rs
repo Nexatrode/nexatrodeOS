@@ -2034,6 +2034,8 @@ impl<I: Io> Owner<I> {
     }
     #[cfg(feature = "sunfish-registry-window-trace")]
     pub fn registry_window_trace(&self) -> crate::qcom_glink_qmi::RegistryWindowTrace { self.adapter.registry_window_trace() }
+    #[cfg(feature="sunfish-elf-window-trace")]
+    pub fn elf_window_trace(&self)->Option<&crate::qcom_glink_qmi::ElfWindowTrace>{self.adapter.elf_window_trace()}
     #[cfg(feature="sunfish-post-elf-mcfg-trace")]
     pub fn post_elf_mcfg(&self)->Option<&crate::qcom_glink_qmi::PostElfMcfgTrace>{self.adapter.post_elf_mcfg()}
     #[cfg(feature="sunfish-registry-tx3-wire-headers")]
