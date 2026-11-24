@@ -1,5 +1,8 @@
 # Passphrase-gated dynamic app experiment
 
+The [private Notes storage milestone](dynamic-notes-storage.md) now connects the
+actual dynamic app to a scoped encrypted document and tests interrupted saves.
+
 This is an isolated UTM integration of the dynamic Slint lifecycle and the
 existing `Credential`, `LockController` and `LockSettings` policy. It does not
 install anything in the regular VM or migrate a wallet or chat database.

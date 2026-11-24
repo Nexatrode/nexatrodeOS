@@ -339,6 +339,8 @@ fn init() -> Vault {
         wrapped_unlocked: false,
         #[cfg(feature = "utm-dynamic-vault-lock")]
         lifecycle: personal_os_rust_server::vault_lifecycle::VaultLifecycle::new(),
+        #[cfg(feature = "utm-notes-interruption-test")]
+        notes_interrupt: 0,
         blob_transfer: [
             {
                 #[cfg(feature = "utm-device-lock")]
@@ -371,6 +373,8 @@ struct Vault {
     wrapped_unlocked: bool,
     #[cfg(feature = "utm-dynamic-vault-lock")]
     lifecycle: personal_os_rust_server::vault_lifecycle::VaultLifecycle,
+    #[cfg(feature = "utm-notes-interruption-test")]
+    notes_interrupt: u64,
     blob_transfer: [*mut BlobTransferPage; NAMESPACE_COUNT],
     wallet_transfer: *mut BlobTransferPage,
     #[cfg(feature = "utm-photo-reader")]
@@ -1098,12 +1102,20 @@ impl Vault {
         };
 
         self.write_blob_slot_unflushed(namespace, target, &staged)?;
+        #[cfg(feature = "utm-notes-interruption-test")]
+        self.notes_checkpoint(namespace, 1);
         self.block.flush()?;
+        #[cfg(feature = "utm-notes-interruption-test")]
+        self.notes_checkpoint(namespace, 2);
         if !vault_blob_record::set_committed(&mut staged) {
             return Err(REPLY_CORRUPT);
         }
         self.write_blob_slot_unflushed(namespace, target, &staged)?;
+        #[cfg(feature = "utm-notes-interruption-test")]
+        self.notes_checkpoint(namespace, 3);
         self.block.flush()?;
+        #[cfg(feature = "utm-notes-interruption-test")]
+        self.notes_checkpoint(namespace, 4);
         self.set_slot(
             namespace,
             target,
@@ -1113,6 +1125,14 @@ impl Vault {
             }),
         );
         Ok(next_generation)
+    }
+
+    #[cfg(feature = "utm-notes-interruption-test")]
+    fn notes_checkpoint(&self, namespace: usize, point: u64) {
+        if namespace == NOTES_NAMESPACE && self.notes_interrupt == point {
+            debug_println!("PRIVATE_NOTES_VAULT|PAUSED|point={}", point);
+            loop { sel4::r#yield(); } // Disposable guest reset injects the interruption.
+        }
     }
 
     fn run_namespace_test(
@@ -2392,6 +2412,11 @@ impl Handler for Vault {
     ) -> Result<MessageInfo, Self::Error> {
         #[cfg(feature = "utm-dynamic-vault-lock")]
         if channel == vault_protocol::VAULT_LIFECYCLE_CHANNEL {
+            #[cfg(feature = "utm-notes-interruption-test")]
+            if request.label() == 0x457 && request.count() == 1 && self.wrapped_unlocked && (1..=4).contains(&get_mr(0)) {
+                self.notes_interrupt = get_mr(0);
+                return Ok(MessageInfo::new(REPLY_OK, 0));
+            }
             if request.label() == vault_protocol::REQUEST_DEVICE_VAULT_STATUS && request.count() == 0 {
                 return Ok(self.lifecycle_status());
             }

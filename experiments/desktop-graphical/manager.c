@@ -32,6 +32,13 @@ static unsigned private_frame_count;
 static bool evict_vault(void);
 #endif
 #endif
+#ifdef DYNAMIC_PRIVATE_NOTES
+#include "../desktop-notes/protocol.h"
+static uintptr_t private_notes_page;
+static void private_notes_clear(void);
+static bool private_notes_control(struct input_event_record event);
+static microkit_msginfo private_notes_request(microkit_channel, microkit_msginfo);
+#endif
 
 extern const uint8_t gui_elf_start[], gui_elf_end[];
 #define GUI_HEAP 0x64000000UL
@@ -171,6 +178,15 @@ static void launch(void)
     map_with_tables(alias(&gui, queue), ROOT_VSPACE, input_a, seL4_AllRights,
                     seL4_ARM_Default_VMAttributes | seL4_ARM_ExecuteNever, NULL);
     frame(&gui, GUI_BOOT, &generation, sizeof(generation), 4);
+#ifdef DYNAMIC_PRIVATE_NOTES
+    seL4_CPtr notes = frame(&gui, PRIVATE_NOTE_PAGE, NULL, 0, 6);
+    map_with_tables(alias(&gui, notes), ROOT_VSPACE, PRIVATE_NOTE_PARENT_PAGE, seL4_AllRights,
+                    seL4_ARM_Default_VMAttributes | seL4_ARM_ExecuteNever, NULL);
+    private_notes_page = PRIVATE_NOTE_PARENT_PAGE;
+    seL4_ARM_Page_GetAddress_t note_physical = seL4_ARM_Page_GetAddress(notes);
+    check(note_physical.error, "private Notes exchange address");
+    line("PRIVATE_NOTES|TEST_PAGE_PHYSICAL|base=", note_physical.paddr);
+#endif
     const struct elf_header *h = (const void *)gui_elf_start;
     const struct program_header *programs = (const void *)(gui_elf_start + h->phoff);
     for (unsigned i = 0; i < h->phnum; ++i) {
@@ -204,6 +220,9 @@ static void close_window(void)
 #ifdef DYNAMIC_LOCK
     scrub_private_frames();
 #endif
+#ifdef DYNAMIC_PRIVATE_NOTES
+    private_notes_clear();
+#endif
     discard_dynamic_surface();
     /* The service endpoint is permanent. Delete its tracked instance aliases;
      * the client has no CNode or Grant authority to create external copies. */
@@ -220,6 +239,9 @@ static void close_window(void)
 static void dynamic_input_notify(void) { seL4_Signal(input_signal); }
 static bool dynamic_control(struct input_event_record event)
 {
+#ifdef DYNAMIC_PRIVATE_NOTES
+    if (private_notes_control(event)) return true;
+#endif
 #ifdef DYNAMIC_LOCK
     if (event.device == 0 && event.type == 1 && event.code == 67 && event.value <= 2) {
         if (event.value == 1) begin_device_lock(true);
@@ -282,6 +304,10 @@ microkit_msginfo protected(microkit_channel channel, microkit_msginfo message)
     if (channel == LOCK_AUTH_CHANNEL || channel == LOCK_PROBE_CHANNEL) return lock_request(channel, message);
     if (device_locked) return microkit_msginfo_new(1, 0);
 #endif
+#ifdef DYNAMIC_PRIVATE_NOTES
+    if (microkit_msginfo_get_label(message) == PRIVATE_NOTE_LOAD || microkit_msginfo_get_label(message) == PRIVATE_NOTE_SAVE)
+        return private_notes_request(channel, message);
+#endif
     if (!dynamic_active || channel != generation || microkit_msginfo_get_label(message) != 0x780 ||
         microkit_msginfo_get_count(message) != 2 || seL4_MessageInfo_get_extraCaps(message) ||
         microkit_mr_get(0) != generation) return microkit_msginfo_new(1, 0);
@@ -307,4 +333,7 @@ seL4_Bool fault(microkit_child child, microkit_msginfo info, microkit_msginfo *r
 }
 #ifdef DYNAMIC_LOCK
 #include "../desktop-lock/manager.h"
+#endif
+#ifdef DYNAMIC_PRIVATE_NOTES
+#include "../desktop-notes/broker.h"
 #endif

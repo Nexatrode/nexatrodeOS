@@ -11,6 +11,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mpss_smp2p_tests)', 'cfg(m
 vault-key-prototype = []
 utm-wrapped-vault-experiment = ["vault-key-prototype", "utm-device-lock", "development-crypto"]
 utm-dynamic-vault-lock = ["utm-wrapped-vault-experiment"]
+utm-notes-interruption-test = ["utm-dynamic-vault-lock"]
 utm-dynamic-vault-skip-evict = ["utm-dynamic-vault-lock"]
 utm-device-lock = []
 wallet-wide-rx = []
