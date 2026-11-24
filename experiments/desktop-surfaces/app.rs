@@ -22,8 +22,16 @@ use slint::{
     platform::{Key, PointerEventButton, WindowEvent},
 };
 
+#[cfg(not(feature = "desktop-shell-app"))]
 const WIDTH: usize = 480;
+#[cfg(not(feature = "desktop-shell-app"))]
 const HEIGHT: usize = 800;
+#[cfg(feature = "desktop-shell-app")]
+const WIDTH: usize = 560 * DESKTOP_SCALE;
+#[cfg(feature = "desktop-shell-app")]
+const HEIGHT: usize = 520 * DESKTOP_SCALE;
+#[cfg(feature = "desktop-shell-app")]
+const DESKTOP_SCALE: usize = if cfg!(feature = "desktop-shell-2x") { 2 } else { 1 };
 const HEAP_BYTES: usize = 8 * 1024 * 1024;
 #[used]
 #[unsafe(link_section = ".app_identity")]
@@ -59,6 +67,13 @@ struct InputQueue {
 }
 const _: () = assert!(core::mem::size_of::<InputEvent>() == 20);
 
+fn input_address() -> *mut InputQueue {
+    #[cfg(not(feature = "desktop-dynamic-ui"))]
+    { memory_region_symbol!(app_input: *mut InputQueue).as_ptr() }
+    #[cfg(feature = "desktop-dynamic-ui")]
+    { 0x66000000 as *mut InputQueue }
+}
+
 fn key_text(code: usize) -> Option<SharedString> {
     let character = match code {
         2..=10 => Some((b'1' + (code - 2) as u8) as char),
@@ -86,12 +101,28 @@ fn key_text(code: usize) -> Option<SharedString> {
     })
 }
 
+#[cfg(feature = "desktop-shell-app")]
+fn calculator_key(ui: &NotesWindow, state: &core::cell::RefCell<personal_os_slint_notes_spike::calculator::Calculator>, key: &str) {
+    use personal_os_slint_notes_spike::calculator::{Command, Operation};
+    let command = match key {
+        "C" => Command::Clear, "=" | "\n" => Command::Equals,
+        "+" => Command::Operation(Operation::Add), "-" => Command::Operation(Operation::Subtract),
+        "*" => Command::Operation(Operation::Multiply), "/" => Command::Operation(Operation::Divide),
+        _ if key.len() == 1 && key.as_bytes()[0].is_ascii_digit() => Command::Digit(key.as_bytes()[0] - b'0'),
+        _ => return,
+    };
+    let result = state.borrow_mut().press(command);
+    ui.set_result(result.as_str().into());
+    debug_println!("DESKTOP_CALC|DISPLAY|{}", result);
+}
 struct App {
     window: Rc<MinimalSoftwareWindow>,
     ui: NotesWindow,
     surface: *mut Header,
     id: usize,
     counter: usize,
+    #[cfg(feature = "desktop-shell-app")]
+    calculator: Rc<core::cell::RefCell<personal_os_slint_notes_spike::calculator::Calculator>>,
     interactive: bool,
     held: [Option<SharedString>; 128],
     pointer: Option<LogicalPosition>,
@@ -105,10 +136,10 @@ struct App {
 
 impl App {
     fn draw(&mut self) {
-        #[cfg(not(feature = "desktop-dynamic-ui"))]
+        #[cfg(all(not(feature = "desktop-dynamic-ui"), not(feature = "desktop-shell-app")))]
         self.ui
             .set_status(format!("PROCESS {} / UPDATE {}", self.id, self.counter).into());
-        #[cfg(all(feature = "desktop-dynamic-ui", not(feature = "desktop-private-notes")))]
+        #[cfg(all(feature = "desktop-dynamic-ui", not(feature = "desktop-private-notes"), not(feature = "desktop-shell-app")))]
         self.ui
             .set_status(format!("INSTANCE {} / UPDATE {}", self.generation, self.counter).into());
         slint::platform::update_timers_and_animations();
@@ -181,11 +212,7 @@ impl App {
     }
 
     fn input(&mut self) {
-        #[cfg(not(feature = "desktop-dynamic-ui"))]
-        let queue = memory_region_symbol!(app_input: *mut InputQueue).as_ptr();
-        #[cfg(feature = "desktop-dynamic-ui")]
-        let queue = 0x66000000 as *mut InputQueue;
-        let queue = unsafe { &*queue };
+        let queue = unsafe { &*input_address() };
         let head = queue.head.load(Ordering::Acquire);
         let mut tail = queue.tail.load(Ordering::Acquire);
         if head.wrapping_sub(tail) > 64 {
@@ -207,6 +234,14 @@ impl App {
                             if self.store.snapshot(self.ui.get_note().as_str()).is_ok() {
                                 debug_println!("PRIVATE_NOTES_APP|SNAPSHOT|generation={}", self.generation);
                             }
+                        }
+                        continue;
+                    }
+                    #[cfg(feature = "desktop-shell-app")]
+                    if self.id == 2 {
+                        if event.value == 1 {
+                            let key = match code { 13 | 28 => Some("=".into()), 12 => Some("-".into()), 53 => Some("/".into()), 1 => Some("C".into()), _ => key_text(code) };
+                            if let Some(key) = key { calculator_key(&self.ui, &self.calculator, &key); }
                         }
                         continue;
                     }
@@ -304,6 +339,8 @@ fn init() -> App {
     .unwrap();
     let window = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
     guest_platform::install(&window);
+    #[cfg(feature = "desktop-shell-app")]
+    window.dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor: DESKTOP_SCALE as f32 });
     let ui = NotesWindow::new().unwrap();
     ui.show().unwrap();
     window.set_size(PhysicalSize::new(WIDTH as u32, HEIGHT as u32));
@@ -322,6 +359,8 @@ fn init() -> App {
         },
         id: unsafe { ptr::read_volatile(ptr::addr_of!(APP_ID[0])) },
         counter: 0,
+        #[cfg(feature = "desktop-shell-app")]
+        calculator: Rc::new(core::cell::RefCell::new(Default::default())),
         interactive: unsafe { ptr::read_volatile(ptr::addr_of!(APP_ID[1])) != 0 },
         held: core::array::from_fn(|_| None),
         pointer: None,
@@ -351,6 +390,15 @@ fn init() -> App {
             Err(_) => { app.ui.set_note("".into()); app.ui.set_status("Unable to load".into()); debug_println!("PRIVATE_NOTES_APP|LOAD_FAILED"); }
         }
     }
+    #[cfg(feature = "desktop-shell-app")]
+    {
+        app.ui.set_kind(app.id as i32);
+        let weak = app.ui.as_weak();
+        let calculator = app.calculator.clone();
+        app.ui.on_calculator_key(move |key| {
+            if let Some(ui) = weak.upgrade() { calculator_key(&ui, &calculator, &key); }
+        });
+    }
     app.draw();
     app
 }
@@ -358,17 +406,34 @@ fn init() -> App {
 impl Handler for App {
     type Error = Infallible;
     fn notified(&mut self, channels: ChannelSet) -> Result<(), Self::Error> {
+        #[cfg(feature = "desktop-shell-app")]
+        if channels.contains(Channel::new(1)) {
+            // Reset takes precedence over a coalesced input notification. Drop
+            // unread events so a later reopen cannot replay old button presses.
+            let queue = unsafe { &*input_address() };
+            queue.tail.store(queue.head.load(Ordering::Acquire), Ordering::Release);
+            self.reset_input();
+            *self.calculator.borrow_mut() = Default::default();
+            self.ui.set_result("0".into()); self.draw();
+            debug_println!("DESKTOP_CALC|RESET");
+            return Ok(());
+        }
         if self.interactive && channels.contains(Channel::new(2)) {
             self.input();
         } else if channels.contains(Channel::new(1)) {
+            #[cfg(not(feature = "desktop-shell-app"))]
             unsafe {
                 ptr::read_volatile(0x61000000 as *const u8);
             }
+            #[cfg(not(feature = "desktop-shell-app"))]
             debug_println!("SURFACE|FAIL|peer surface readable");
         } else if channels.contains(Channel::new(0)) {
+            #[cfg(not(feature = "desktop-shell-app"))]
+            {
             self.counter += 1;
             self.ui
                 .set_note(format!("App {}\nIndependent counter {}", self.id, self.counter).into());
+            }
             self.draw();
         }
         Ok(())

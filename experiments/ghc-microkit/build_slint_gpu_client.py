@@ -16,7 +16,15 @@ def main():
     parser.add_argument('--board', default='qemu_virt_aarch64')
     parser.add_argument('--config', default='debug')
     parser.add_argument('--perf-trace', action='store_true')
+    parser.add_argument('--width', type=int, default=1080)
+    parser.add_argument('--height', type=int, default=2340)
+    parser.add_argument('--cursor-scale', type=int, choices=(4,8), default=4)
+    parser.add_argument('--frame-region-bytes', type=lambda s: int(s, 0), default=0x800000)
     args = parser.parse_args()
+    if not (320 <= args.width <= 2560 and 240 <= args.height <= 2560
+            and args.frame_region_bytes in (0x800000, 0x1000000)
+            and args.width * args.height * 3 + 28 <= args.frame_region_bytes):
+        parser.error('frame dimensions must fit the bounded shared surface')
     root = Path(__file__).resolve().parents[2]
     sdk, sddf, build = (p.resolve() for p in (args.sdk, args.sddf, args.build))
     overlay = build / 'overlay'
@@ -33,10 +41,13 @@ def main():
     shutil.copy2(sddf / 'examples/gpu/gpu.mk', build / 'Makefile')
     image = build / 'initial.ppm'
     with image.open('wb') as f:
-        f.write(b'P6\n1080 2340\n255\n')
-        f.write(bytes(1080 * 2340 * 3))
+        f.write(f'P6\n{args.width} {args.height}\n255\n'.encode())
+        f.write(bytes(args.width * args.height * 3))
     compat = root / 'tools/sddf-gpu-compat'
     flags = f'-mstrict-align -I{compat} -I{include} -include {compat / "ialloc_compat.h"}'
+    flags += f' -DSLINT_FRAME_WIDTH={args.width}u -DSLINT_FRAME_HEIGHT={args.height}u -DSLINT_FRAME_REGION_BYTES={args.frame_region_bytes}u -DNEXATRODE_CURSOR_SCALE={args.cursor_scale}'
+    # Make does not track changed command-line dimensions: always rebuild this TU.
+    (build / 'client.o').unlink(missing_ok=True)
     if args.perf_trace:
         flags += ' -DNEXATRODE_GPU_PERF_TRACE=1'
     env = os.environ.copy()

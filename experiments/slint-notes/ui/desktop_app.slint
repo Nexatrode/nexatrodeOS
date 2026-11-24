@@ -1,0 +1,47 @@
+import "../assets/fonts/Roboto-Variable.ttf";
+component CalcButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> accent;
+    callback activate(string);
+    background: area.pressed ? #386278 : area.has-hover ? #26485d : root.accent ? #254a57 : #172f40;
+    border-radius: 12px;
+    Text { width: 100%; height: 100%; text: root.label; color: root.accent ? #88ecdc : #e7f1f6; font-size: 25px; horizontal-alignment: center; vertical-alignment: center; }
+    area := TouchArea { clicked => { root.activate(root.label); } }
+}
+export component NotesWindow inherits Window {
+    width: 560px; height: 520px;
+    default-font-family: "Roboto";
+    default-font-weight: 400;
+    background: #0c1e2c;
+    in property <int> kind: 1;
+    in-out property <string> note;
+    in-out property <string> status;
+    in-out property <string> result: "0";
+    callback calculator-key(string);
+    if root.kind == 1: Rectangle {
+        width: 100%; height: 100%; background: #0c1e2c;
+        Text { x: 28px; y: 24px; text: "A little room to think"; color: #e2f3fa; font-size: 25px; font-weight: 600; }
+        Text { x: 29px; y: 62px; text: "Make yourself at home."; color: #8eafc2; font-size: 14px; }
+        Rectangle {
+            x: 24px; y: 100px; width: parent.width - 48px; height: parent.height - 154px;
+            background: #102938; border-color: #294658; border-width: 1px; border-radius: 10px;
+            TextInput { x: 18px; y: 18px; width: parent.width - 36px; height: parent.height - 36px; text <=> root.note; color: #e2eef4; font-size: 20px; single-line: false; wrap: word-wrap; }
+            if root.note == "": Text { x: 18px; y: 18px; text: "Start writing…"; color: #6c8c9f; font-size: 20px; }
+        }
+        Text { x: 28px; y: parent.height - 33px; text: "This note stays here until you close the window."; color: #819faf; font-size: 12px; }
+    }
+    if root.kind == 2: Rectangle {
+        width: 100%; height: 100%; background: #0c1e2c;
+        Text { x: 32px; y: 18px; text: "Calculator"; color: #8eafc2; font-size: 15px; }
+        Text { x: 30px; y: 47px; width: parent.width - 60px; height: 70px; text: root.result; color: #effaff; font-size: 48px; horizontal-alignment: right; vertical-alignment: center; overflow: elide; }
+        for row in 4: Rectangle {
+            x: 0px; y: 139px + row * 86px; width: 100%; height: 76px; background: transparent;
+            for col in 4: CalcButton {
+            x: 24px + col * 130px; y: 0px; width: 122px; height: 76px;
+            label: row == 0 ? (col == 0 ? "7" : col == 1 ? "8" : col == 2 ? "9" : "/") : row == 1 ? (col == 0 ? "4" : col == 1 ? "5" : col == 2 ? "6" : "*") : row == 2 ? (col == 0 ? "1" : col == 1 ? "2" : col == 2 ? "3" : "-") : (col == 0 ? "C" : col == 1 ? "0" : col == 2 ? "=" : "+");
+            accent: col == 3 || (row == 3 && col != 1);
+            activate(key) => { root.calculator-key(key); }
+            }
+        }
+    }
+}
