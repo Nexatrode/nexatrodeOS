@@ -1,6 +1,11 @@
 #![no_std]
 #![no_main]
 extern crate alloc;
+#[cfg(feature = "desktop-private-notes")]
+#[path = "../desktop-notes/client.rs"]
+mod private_notes;
+#[cfg(feature = "desktop-private-notes")]
+use core::cell::Cell;
 
 use alloc::{format, rc::Rc};
 use core::{
@@ -71,6 +76,7 @@ fn key_text(code: usize) -> Option<SharedString> {
         14 => Key::Backspace.into(),
         28 => Key::Return.into(),
         42 | 54 => Key::Shift.into(),
+        29 | 97 => Key::Control.into(),
         111 => Key::Delete.into(),
         103 => Key::UpArrow.into(),
         108 => Key::DownArrow.into(),
@@ -91,6 +97,10 @@ struct App {
     pointer: Option<LogicalPosition>,
     #[cfg(feature = "desktop-dynamic-ui")]
     generation: usize,
+    #[cfg(feature = "desktop-private-notes")]
+    store: private_notes::Store,
+    #[cfg(feature = "desktop-private-notes")]
+    save_requested: Rc<Cell<bool>>,
 }
 
 impl App {
@@ -98,7 +108,7 @@ impl App {
         #[cfg(not(feature = "desktop-dynamic-ui"))]
         self.ui
             .set_status(format!("PROCESS {} / UPDATE {}", self.id, self.counter).into());
-        #[cfg(feature = "desktop-dynamic-ui")]
+        #[cfg(all(feature = "desktop-dynamic-ui", not(feature = "desktop-private-notes")))]
         self.ui
             .set_status(format!("INSTANCE {} / UPDATE {}", self.generation, self.counter).into());
         slint::platform::update_timers_and_animations();
@@ -190,6 +200,16 @@ impl App {
             match event.kind {
                 1 if event.code < 128 && event.value <= 2 => {
                     let code = event.code as usize;
+                    #[cfg(feature = "desktop-private-notes")]
+                    if code == 60 || code == 61 {
+                        if event.value == 1 && code == 60 { self.save_requested.set(true); }
+                        if event.value == 1 && code == 61 {
+                            if self.store.snapshot(self.ui.get_note().as_str()).is_ok() {
+                                debug_println!("PRIVATE_NOTES_APP|SNAPSHOT|generation={}", self.generation);
+                            }
+                        }
+                        continue;
+                    }
                     if event.value == 1 && self.held[code].is_none() {
                         self.held[code] = key_text(code);
                     }
@@ -247,11 +267,26 @@ impl App {
         queue.tail.store(tail, Ordering::Release);
         let after = self.ui.get_note();
         if before != after {
+            #[cfg(feature = "desktop-private-notes")]
+            self.ui.set_status("Unsaved changes".into());
             // The fixture uses disposable text only. This is not a shipping input trace.
             #[cfg(not(feature = "desktop-lock-app"))]
             debug_println!("INPUT|TEXT|app={}|{}", self.id, after);
         }
         self.counter += 1;
+        #[cfg(feature = "desktop-private-notes")]
+        if self.save_requested.replace(false) {
+            self.ui.set_status("Saving…".into());
+            self.draw();
+            let note = self.ui.get_note();
+            match self.store.save(note.as_str()) {
+                Ok(()) => {
+                    self.ui.set_status("Saved encrypted".into());
+                    debug_println!("PRIVATE_NOTES_APP|SAVED|revision={}", self.store.revision());
+                }
+                Err(_) => { self.ui.set_status("Unable to save".into()); debug_println!("PRIVATE_NOTES_APP|SAVE_FAILED"); }
+            }
+        }
         self.draw();
     }
 }
@@ -292,12 +327,30 @@ fn init() -> App {
         pointer: None,
         #[cfg(feature = "desktop-dynamic-ui")]
         generation: unsafe { ptr::read_volatile(0x68000000 as *const usize) },
+        #[cfg(feature = "desktop-private-notes")]
+        store: private_notes::Store::new(unsafe { ptr::read_volatile(0x68000000 as *const u64) }),
+        #[cfg(feature = "desktop-private-notes")]
+        save_requested: Rc::new(Cell::new(false)),
     };
+    #[cfg(not(feature = "desktop-private-notes"))]
     app.ui.set_note(if app.interactive {
         SharedString::default()
     } else {
         format!("App {}\nIndependent counter {}", app.id, app.counter).into()
     });
+    #[cfg(feature = "desktop-private-notes")]
+    {
+        let save = app.save_requested.clone();
+        app.ui.on_save_note(move |_| save.set(true));
+        app.store.check_isolation();
+        match app.store.load() {
+            Ok(note) => {
+                app.ui.set_note(note); app.ui.set_status("Private encrypted note".into());
+                debug_println!("PRIVATE_NOTES_APP|LOADED|revision={}", app.store.revision());
+            }
+            Err(_) => { app.ui.set_note("".into()); app.ui.set_status("Unable to load".into()); debug_println!("PRIVATE_NOTES_APP|LOAD_FAILED"); }
+        }
+    }
     app.draw();
     app
 }

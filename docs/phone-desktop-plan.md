@@ -15,7 +15,9 @@ A separate disposable lock fixture now gates launch on passphrase verification,
 destroys the dynamic app on manual or idle lock, and erases its private user
 frames before revocation. Its optional wrapped-key mode synchronously evicts
 the random disposable vault key and commits unlock before launching an app.
-Real app workers, their installation-key migration and protected file services
+A scoped broker now gives that dynamic Notes app a private encrypted document,
+with lock/unlock and interrupted-save recovery tested in disposable UTM.
+Real app workers, their installation-key migration and general file services
 remain separate integration boundaries.
 
 ## Implementation order
@@ -26,7 +28,7 @@ remain separate integration boundaries.
 | App lifecycle | Fresh identity, memory and permissions on launch; reclaim after exit, fault and interrupted creation | 100 small-process launches and 13 graphical instances tested; general graphical-constructor rollback remains |
 | Independent surfaces | Separate app renderers, bounded submissions, focus routing and trusted lock coverage | Dynamic close/fault/restart with a surviving peer, plus a separate passphrase-gated one-app fixture with trusted full-screen lock coverage; multiple dynamic windows remain |
 | Frame presentation | Explicit buffer ownership/release, retained damage, bounded queues, presentation feedback | Existing band redraw and frame-copy work plus the new last-good surface snapshots; swapchain remains |
-| Protected storage and lock | Private app storage, scoped documents, recoverable writes, key eviction and recreated apps | Disposable wrapped-key eviction, leased unlock commit, encrypted-note recovery and fresh app memory tested together; real app checkpointing/migration, general documents and complete secret lifecycle remain |
+| Protected storage and lock | Private app storage, scoped documents, recoverable writes, key eviction and recreated apps | Dynamic Notes now uses scoped encrypted storage with stale-handle denial, key eviction and all four interrupted-save boundaries tested; real app checkpointing/migration, general documents and complete secret lifecycle remain |
 | Complete interface | Shared controls and navigation, useful Files and Settings, measured transitions | Existing shell, lock screen, SimpleX and NexaWal work; consistent independent app interfaces remain |
 | Native installation | Load packages from disk, owner approval, stable identity, permissions, update/rollback/uninstall | Embedded bounded native and Slint ELF loading demonstrated; disk packages and installer remain |
 | Network resilience | App recovery and fail-closed required routing across disconnects and retries | Existing wallet and SimpleX recovery; OS egress policy remains |

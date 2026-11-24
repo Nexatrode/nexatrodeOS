@@ -54,6 +54,17 @@ static void attempt(void) {
     microkit_msginfo reply = microkit_ppcall(0, microkit_msginfo_new(0x791, 1));
     if (microkit_msginfo_get_label(reply) != 1) microkit_dbg_puts("LOCK|FAIL|foreign unlock accepted\n");
     else microkit_dbg_puts("LOCK_PROBE|UNLOCK_DENIED\n");
+#ifdef DYNAMIC_PRIVATE_NOTES
+    /* The other app's own namespace cap cannot select Notes, and this
+     * manager channel is not a Notes instance capability. */
+    microkit_mr_set(0, 1);
+    reply = microkit_ppcall(0, microkit_msginfo_new(0x7a0, 1));
+    if (microkit_msginfo_get_label(reply) != 1) microkit_dbg_puts("LOCK|FAIL|other app read Notes\n");
+    microkit_mr_set(0, 1); microkit_mr_set(1, 0);
+    reply = microkit_ppcall(0, microkit_msginfo_new(0x7a1, 2));
+    if (microkit_msginfo_get_label(reply) != 1) microkit_dbg_puts("LOCK|FAIL|other app wrote Notes\n");
+    else microkit_dbg_puts("PRIVATE_NOTES_PROBE|DENIED\n");
+#endif
 #ifdef DYNAMIC_WRAPPED_LOCK
     note_probe();
 #endif
