@@ -49,9 +49,12 @@ mod registry_prearm_io;
 #[cfg(all(feature="sunfish-registry-elf-admission-panel",not(feature="sunfish-registry-tx3-receipt-panel")))]
 #[path="pixel_mpss_registry_elf_admission.rs"]
 mod registry_elf_admission;
-#[cfg(feature="sunfish-registry-tx3-receipt-panel")]
+#[cfg(all(feature="sunfish-registry-tx3-receipt-panel",not(feature="sunfish-registry-tx3-wire-headers")))]
 #[path="pixel_mpss_registry_tx3_receipt.rs"]
 mod registry_tx3_receipt;
+#[cfg(feature="sunfish-registry-tx3-wire-headers")]
+#[path="pixel_mpss_registry_tx3_headers.rs"]
+mod registry_tx3_headers;
 #[cfg(feature="sunfish-registry-defer-paint")]
 #[path="pixel_mpss_registry_paint.rs"]
 mod registry_paint;

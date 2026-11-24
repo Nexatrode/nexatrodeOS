@@ -1109,6 +1109,44 @@ impl RegistryPrearmIo {
     }
 }
 
+
+/// Small scalar projection: no TFTP payload, filenames or per-transfer snapshots.
+#[cfg(feature="sunfish-registry-tx3-wire-headers")]
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct RegistryWireHeader {
+    pub at:Option<u64>,pub tx:bool,pub command:u16,pub channel:u16,pub parameter:u32,
+    pub bytes:u16,pub qrtr:Option<[u32;3]>,pub qmi:Option<(u8,u16,u16)>,pub del_client:Option<[u32;2]>,
+}
+#[cfg(feature="sunfish-registry-tx3-wire-headers")]
+impl RegistryWireHeader {
+    fn read(record:&[u8],tx:bool,at:Option<u64>)->Option<Self>{
+        if record.len()<8 || record.len()>u16::MAX as usize{return None;}
+        let h=RegistrationHeader::read(record,tx,at);
+        Some(Self{at:h.at,tx:h.tx,command:h.command,channel:h.channel,parameter:h.parameter,
+            bytes:h.bytes,qrtr:h.qrtr,qmi:h.qmi,del_client:h.del_client})
+    }
+}
+#[cfg(feature="sunfish-registry-tx3-wire-headers")]
+#[derive(Clone,Copy)]
+pub struct RegistryWireTrace {
+    pub headers:[Option<RegistryWireHeader>;79],pub completion:Option<RegistryWireHeader>,
+    pub omitted:u32,pub unparsed:u32,pub finished:bool,
+}
+#[cfg(feature="sunfish-registry-tx3-wire-headers")]
+impl Default for RegistryWireTrace{fn default()->Self{Self{headers:[None;79],completion:None,omitted:0,unparsed:0,finished:false}}}
+#[cfg(feature="sunfish-registry-tx3-wire-headers")]
+impl RegistryWireTrace {
+    fn record(&mut self,header:Option<RegistryWireHeader>,matching:bool){
+        if self.finished{return;}
+        if matching{self.finished=true;self.completion=header;if header.is_none(){self.unparsed=self.unparsed.saturating_add(1);}return;}
+        let Some(header)=header else{self.unparsed=self.unparsed.saturating_add(1);return;};
+        if let Some(slot)=self.headers.iter_mut().find(|h|h.is_none()){*slot=Some(header);}
+        else{let tail=&mut self.headers[40..];tail.rotate_left(1);tail[38]=Some(header);self.omitted=self.omitted.saturating_add(1);}
+    }
+}
+#[cfg(feature="sunfish-registry-tx3-wire-headers")]
+const _:()={assert!(::core::mem::size_of::<RegistryWireHeader>()<=128);assert!(::core::mem::size_of::<RegistryWireTrace>()<=12288);};
+
 /// Observes the exact registry predecessor using already validated cursor samples.
 /// Peer-tail crossing is transport consumption, not application acceptance.
 #[cfg(feature = "sunfish-registry-post-reply-trace")]
@@ -1396,6 +1434,8 @@ struct Ring<I> {
     registration_reply_rx: Option<ServerCheckRxWindow>,
     #[cfg(feature = "sunfish-registry-post-reply-trace")]
     registry_reply: Option<RegistryReplyWindow>,
+    #[cfg(feature="sunfish-registry-tx3-wire-headers")]
+    registry_wire: Option<RegistryWireTrace>,
     #[cfg(feature = "sunfish-registry-prearm-io-trace")]
     prearm_io: Option<RegistryPrearmIo>,
     #[cfg(feature = "sunfish-tftp-tail-observer")]
@@ -1502,6 +1542,14 @@ impl<I: Io> Ring<I> {
             } else {
                 trace.push_header(header);
             }
+        }
+    }
+
+    #[cfg(feature="sunfish-registry-tx3-wire-headers")]
+    fn capture_registry_wire_rx(&mut self,size:usize,matching:bool){
+        if self.registry_wire.as_ref().is_some_and(|t|!t.finished){
+            let h=RegistryWireHeader::read(&self.record[..size],false,self.first_server_check_clock.map(|clock|clock()));
+            self.registry_wire.as_mut().unwrap().record(h,matching);
         }
     }
 
@@ -1973,6 +2021,11 @@ impl<I: Io> Ring<I> {
             trace.push_header(RegistrationHeader::read(record, true,
                 self.first_server_check_clock.map(|clock| clock())));
         }
+        #[cfg(feature="sunfish-registry-tx3-wire-headers")]
+        if self.registry_wire.as_ref().is_some_and(|t|!t.finished){
+            let h=RegistryWireHeader::read(record,true,self.first_server_check_clock.map(|clock|clock()));
+            self.registry_wire.as_mut().unwrap().record(h,false);
+        }
         Ok(true)
     }
 
@@ -2131,6 +2184,8 @@ impl<I: Io> Adapter<I> {
                 registration_reply_rx: None,
                 #[cfg(feature = "sunfish-registry-post-reply-trace")]
                 registry_reply: None,
+                #[cfg(feature="sunfish-registry-tx3-wire-headers")]
+                registry_wire: None,
                 #[cfg(feature = "sunfish-registry-prearm-io-trace")]
                 prearm_io: None,
                 #[cfg(feature = "sunfish-tftp-tail-observer")]
@@ -2259,6 +2314,8 @@ impl<I: Io> Adapter<I> {
     { self.session.registry_handoff_pair(older, waiting) }
     #[cfg(feature = "sunfish-registry-window-trace")]
     pub fn registry_window_trace(&self) -> core::RegistryWindowTrace { self.session.registry_window_trace() }
+    #[cfg(feature="sunfish-registry-tx3-wire-headers")]
+    pub fn registry_wire_headers(&self)->Option<RegistryWireTrace>{self.ring.registry_wire}
     #[cfg(feature = "sunfish-registry-post-reply-trace")]
     pub fn registry_reply_fifo(&self) -> Option<RegistryReplyFifo> {
         self.ring.registry_reply.as_ref().map(|w| w.trace)
@@ -3086,6 +3143,8 @@ impl<I: Io> Adapter<I> {
             }
             #[cfg(feature = "sunfish-ipa-registration-reply-headers")]
             self.ring.capture_registration_rx(size, false, &Receive::Control);
+            #[cfg(feature="sunfish-registry-tx3-wire-headers")]
+            self.ring.capture_registry_wire_rx(size,false);
             #[cfg(feature = "sunfish-tftp-first-oack-headers")]
             self.ring.capture_first_oack_rx(size, false);
             self.consume_received(size, false)?;
@@ -3240,6 +3299,11 @@ impl<I: Io> Adapter<I> {
                 let unread = ring_distance(self.ring.words[2], self.ring.words[3], length);
                 trace.finish(unread, size);
             }
+        }
+        #[cfg(feature="sunfish-registry-tx3-wire-headers")]
+        {
+            let matching=matches!(&event,Receive::Session(e) if self.session.registry_predecessor_completed_by(e));
+            self.ring.capture_registry_wire_rx(size,matching);
         }
         #[cfg(feature = "sunfish-registry-post-reply-trace")]
         if let Receive::Session(ref completed) = event
@@ -3716,6 +3780,11 @@ impl<I: Io> Adapter<I> {
         let mut failure = None;
         #[cfg(feature = "sunfish-ipa-registration-reply-headers")]
         let mut opening_header = None;
+        #[cfg(feature="sunfish-registry-tx3-wire-headers")]
+        let watch_registry_wire=self.ring.registry_wire.is_none()
+            && self.session.registry_window_trace().predecessor.is_some_and(|p|!p.publication_frozen);
+        #[cfg(feature="sunfish-registry-tx3-wire-headers")]
+        let mut opening_registry_wire=None;
         #[cfg(feature = "sunfish-tftp-reserved-writer-io")]
         let watch_reserved = self.session.reserved_oack().is_some_and(|(oack, peer)|
             oack.peer.port == 0x49 && oack.published_at.is_none()
@@ -3759,6 +3828,9 @@ impl<I: Io> Adapter<I> {
                     Err(WriteError::WouldBlock)
                 }
                 Ok(true) => {
+                    #[cfg(feature="sunfish-registry-tx3-wire-headers")]
+                    if watch_registry_wire{opening_registry_wire=RegistryWireHeader::read(record,true,
+                        self.ring.first_server_check_clock.map(|clock|clock()));}
                     #[cfg(feature = "sunfish-ipa-registration-reply-headers")]
                     if registration_pending {
                         opening_header = Some(RegistrationHeader::read(record, true,
@@ -3887,6 +3959,10 @@ impl<I: Io> Adapter<I> {
                 distance(self.ring.words[0], self.ring.words[1]),
                 ring_distance(self.ring.words[2], self.ring.words[3], length),
                 self.ring.first_server_check_clock.map(|clock| clock())));
+        }
+        #[cfg(feature="sunfish-registry-tx3-wire-headers")]
+        if watch_registry_wire && self.session.registry_window_trace().predecessor.is_some_and(|p|p.publication_frozen){
+            let mut trace=RegistryWireTrace::default();trace.record(opening_registry_wire,false);self.ring.registry_wire=Some(trace);
         }
         #[cfg(feature = "sunfish-ipa-registration-reply-path")]
         if registration_pending
@@ -4267,6 +4343,8 @@ impl<I: Io> Adapter<I> {
         { self.ring.registration_reply_rx = None; }
         #[cfg(feature = "sunfish-registry-post-reply-trace")]
         { self.ring.registry_reply = None; }
+        #[cfg(feature="sunfish-registry-tx3-wire-headers")]
+        { self.ring.registry_wire=None; }
         #[cfg(feature = "sunfish-registry-prearm-io-trace")]
         { self.ring.io.registry_prearm_timing(false); self.ring.prearm_io = None; }
         #[cfg(feature = "sunfish-ipa-init-close-visibility")]
@@ -4789,4 +4867,29 @@ fn registry_prearm_io_delta_rejects_missing_saturated_regressed_or_overflowed_co
     t.arm.as_mut().unwrap()[1]=9;assert_eq!(t.delta(true),None);
     t.arm=Some([u64::MAX;12]);assert_eq!(t.delta(true),None);
     t.queued=Some([0;12]);t.arm=Some([u64::MAX-1;12]);assert_eq!(t.total(true),None);
+}
+
+#[cfg(all(test,feature="sunfish-registry-tx3-wire-headers"))]
+#[test]
+fn registry_wire_header_projects_checked_ids_and_leaves_short_or_unknown_details_unavailable(){
+    let mut r=[0u8;56];
+    for (at,v) in [(0,0x0001_0009u32),(4,7),(8,40),(16,1),(20,1),(24,1),(28,0x4003),(36,7),(44,9)]{r[at..at+4].copy_from_slice(&v.to_le_bytes());}
+    r[48..55].copy_from_slice(&[2,3,0,0x21,0,0,0]);let h=RegistryWireHeader::read(&r,true,Some(100)).unwrap();
+    assert_eq!((h.command,h.channel,h.parameter,h.bytes),(9,1,7,56));assert_eq!(h.qrtr,Some([1,0x4003,9]));assert_eq!(h.qmi,Some((2,3,0x21)));assert_eq!(h.at,Some(100));assert!(h.tx);
+    r[8..12].copy_from_slice(&u32::MAX.to_le_bytes());assert_eq!(RegistryWireHeader::read(&r,false,None).unwrap().qrtr,None);
+    let mut close=[0u8;68];for(at,v)in[(0,0x0002_0009u32),(4,20),(8,52),(16,1),(20,6),(28,u32::MAX),(36,20),(44,u32::MAX),(48,6),(52,0),(56,0x49)]{close[at..at+4].copy_from_slice(&v.to_le_bytes());}
+    assert_eq!(RegistryWireHeader::read(&close,false,None).unwrap().del_client,Some([0,0x49]));
+    for len in 0..8{assert!(RegistryWireHeader::read(&r[..len],false,None).is_none());}
+    assert!(RegistryWireHeader::read(&std::vec![0;65536],false,None).is_none());
+}
+#[cfg(all(test,feature="sunfish-registry-tx3-wire-headers"))]
+#[test]
+fn registry_wire_trace_keeps_opening_tail_and_clockless_completion_without_late_overwrite(){
+    let mut t=RegistryWireTrace::default();let h=RegistryWireHeader::read(&[6,0,2,0,0,0,0,0],false,None).unwrap();
+    for parameter in 0..100{t.record(Some(RegistryWireHeader{parameter,..h}),false);}
+    let kept:std::vec::Vec<_>=t.headers.iter().flatten().map(|h|h.parameter).collect();assert_eq!(kept,(0..40).chain(61..100).collect::<std::vec::Vec<_>>());assert_eq!(t.omitted,21);
+    t.record(Some(RegistryWireHeader{parameter:100,..h}),true);assert!(t.finished);assert_eq!(t.completion.unwrap().parameter,100);assert_eq!(t.completion.unwrap().at,None);
+    t.record(Some(h),false);t.record(None,true);assert_eq!(t.omitted,21);assert_eq!(t.unparsed,0);assert_eq!(t.completion.unwrap().parameter,100);
+    let mut t=RegistryWireTrace::default();t.record(None,true);assert!(t.finished);assert_eq!(t.unparsed,1);assert_eq!(t.completion,None);t.record(Some(h),false);assert!(t.headers.iter().all(Option::is_none));
+    let mut t=RegistryWireTrace::default();t.unparsed=u32::MAX;t.record(None,false);assert_eq!(t.unparsed,u32::MAX);
 }

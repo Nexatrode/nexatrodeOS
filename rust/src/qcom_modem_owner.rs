@@ -2018,6 +2018,8 @@ impl<I: Io> Owner<I> {
     }
     #[cfg(feature = "sunfish-registry-window-trace")]
     pub fn registry_window_trace(&self) -> crate::qcom_glink_qmi::RegistryWindowTrace { self.adapter.registry_window_trace() }
+    #[cfg(feature="sunfish-registry-tx3-wire-headers")]
+    pub fn registry_wire_headers(&self)->Option<crate::qcom_glink_fifo::RegistryWireTrace>{self.adapter.registry_wire_headers()}
     #[cfg(feature = "sunfish-registry-post-reply-trace")]
     pub fn registry_reply_fifo(&self) -> Option<crate::qcom_glink_fifo::RegistryReplyFifo> {
         self.adapter.registry_reply_fifo()

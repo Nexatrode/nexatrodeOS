@@ -1479,3 +1479,26 @@ fn registry_prearm_adapter_observes_queue_first_sample_own_return_and_fault_with
         }
     }}
 }
+
+#[cfg(feature="sunfish-registry-tx3-wire-headers")]
+#[test]
+fn registry_wire_adapter_scopes_committed_headers_to_exact_predecessor_and_reset(){
+    use core::sync::atomic::{AtomicU64,Ordering::Relaxed};static NOW:AtomicU64=AtomicU64::new(100);
+    for clocked in [false,true]{
+        let mut s=session();s.register(1,Service::ServiceRegistry,qcom_servreg::LOCAL_PORT).unwrap();s.prepare_service_available(1,Service::ServiceRegistry).unwrap();
+        let peer=Fake::new(0x3ff8,0x3ff8);let mut a=Adapter::attach(peer.clone(),s,1).unwrap();if clocked{a.set_registry_ack_clock(||NOW.fetch_add(1,Relaxed));}
+        let mut remote=control(5,2,2);for id in [7u32,8]{remote.extend(4096u32.to_le_bytes());remote.extend(id.to_le_bytes());}peer.push(&remote);a.poll_receive(1).unwrap();
+        let mut requests=std::vec::Vec::new();let mut intents=std::vec::Vec::new();
+        for txn in [3u16,4]{let id=advertised(&mut a,&peer);let mut b=vec![0];b.extend(txn.to_le_bytes());b.extend([0x21,0,6,0,1,3,0,b'f',b'o',b'o']);let mut packet=qrtr(1,&b);packet[28..32].copy_from_slice(&qcom_servreg::LOCAL_PORT.to_le_bytes());peer.push(&data(id,&packet));let Ok(Receive::Session(Event::Request(request)))=a.poll_receive(1)else{panic!("registry request")};
+            a.queue_reply(1,&request,Reply::Failure{error:3}).unwrap();if txn==3{assert!(a.registry_wire_headers().is_none());}
+            let mut published=None;for _ in 0..16{let event=a.publish_next(1).unwrap();peer.take_tx();if let Transmit::Session(Published::Data{remote_intent,last_fragment:true})=event{published=Some(remote_intent);break;}}
+            intents.push(published.expect("reply published"));requests.push(request);
+            if txn==3{let t=a.registry_wire_headers().unwrap();let h=t.headers[0].unwrap();assert_eq!(h.qmi,Some((2,3,0x21)));assert!(h.tx);assert_eq!(h.at.is_some(),clocked);assert!(!t.finished);}
+        }
+        peer.push(&control(14,2,intents[1]));assert_eq!(a.poll_receive(1),Ok(Receive::Session(Event::ReplyRxDone(requests[1]))));assert!(!a.registry_wire_headers().unwrap().finished,"transaction4 receipt cannot freeze3");
+        peer.push(&control(13,0,0));peer.push(&control(14,2,intents[0]));assert_eq!(a.poll_receive(1),Ok(Receive::ReadNotification));assert_eq!(a.poll_receive(1),Ok(Receive::Session(Event::ReplyRxDone(requests[0]))));
+        let t=a.registry_wire_headers().unwrap();assert!(t.finished);let h=t.completion.unwrap();assert_eq!((h.command,h.parameter),(14,intents[0]));assert_eq!(h.at.is_some(),clocked);assert!(t.headers.iter().flatten().any(|h|!h.tx&&h.command==13));
+        let before=peer.log();assert_eq!(a.registry_wire_headers().unwrap().completion,t.completion);assert_eq!(peer.log(),before,"getter adds no device I/O");peer.push(&control(13,0,0));a.poll_receive(1).unwrap();assert_eq!(a.registry_wire_headers().unwrap().completion,t.completion);assert_eq!(a.registry_wire_headers().unwrap().omitted,t.omitted);
+        peer.0.borrow_mut().observation.generation=2;a.reset_after_transport_reset(2).unwrap();assert!(a.registry_wire_headers().is_none());
+    }
+}
