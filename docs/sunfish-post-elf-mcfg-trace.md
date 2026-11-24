@@ -39,3 +39,16 @@ The capture adds bounded CPU parsing/copies, optional diagnostic clock calls and
 ## Manual cold boot
 
 Only use the verified `native-post-elf-mcfg-trace-v1` artifact. Fully power off, enter bootloader with Volume Down + Power, and temporarily boot it with the command in the delivery response. Do not flash. Wait at least a minute, then photograph the entire settled panel, especially request/reply options, client ending and journal rows. No device command is needed during offline preparation.
+
+## Verified delivery
+
+Private profile: `.cache/sunfish-native-wifi/private/native-post-elf-mcfg-trace-v1`.
+
+- Image: 68,943,872 bytes; SHA-256 `d61535d7003b99bdd3ed50cabb23536b4ae7a579425d4fe9320db1acc62f8953`.
+- Current/prior Owner: 589/586 passed, one existing private-firmware test ignored in each; Core: 271/269 passed.
+- Four new filtered parser/lifecycle/actual-dispatch cases; an 816-byte committed-wire schedule matches the prior profile exactly. Seven native MCFG alternatives and the pinned Linux actual-C oracle pass.
+- Twenty-four paired full-I/O and peer-event schedules pass. The actual 1080x2340 renderer passes both-buffer and field-width checks and was visually inspected.
+- Selected stack headroom: 860,416 bytes within the existing 5 MiB mapping, with the exclusions above. Capability audit rejects all 304 mutations. Actual packed initializer has eight Normal-NC mappings; pinned SDK tool, loader, report and CapDL reproduction passed. SDK was reused, not newly rebuilt.
+- Existing main changes were merged and pushed; rebuilding after that merge yielded the byte-identical native ELF `b272fa85c5c08b64b0fddc66efa4f2ef569b9aaa3dadc6ff23acb19f9d38d026`.
+
+The profile manifest binds the final source revision, 508 source pins, reference inputs and verification artifacts. Earlier delivered image hashes remain unchanged. No physical boot result or device action is claimed for this image.
