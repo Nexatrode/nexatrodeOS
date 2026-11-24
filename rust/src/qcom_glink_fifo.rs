@@ -1116,15 +1116,42 @@ impl RegistryPrearmIo {
 pub struct RegistryWireHeader {
     pub at:Option<u64>,pub tx:bool,pub command:u16,pub channel:u16,pub parameter:u32,
     pub bytes:u16,pub qrtr:Option<[u32;3]>,pub qmi:Option<(u8,u16,u16)>,pub del_client:Option<[u32;2]>,
+    #[cfg(feature="sunfish-registry-tftp-wire")]
+    pub tftp:Option<[u32;2]>,
 }
 #[cfg(feature="sunfish-registry-tx3-wire-headers")]
 impl RegistryWireHeader {
     fn read(record:&[u8],tx:bool,at:Option<u64>)->Option<Self>{
         if record.len()<8 || record.len()>u16::MAX as usize{return None;}
         let h=RegistrationHeader::read(record,tx,at);
+        #[cfg(feature="sunfish-registry-tftp-wire")]
+        let tftp=Self::tftp_ids(record,tx,&h);
         Some(Self{at:h.at,tx:h.tx,command:h.command,channel:h.channel,parameter:h.parameter,
-            bytes:h.bytes,qrtr:h.qrtr,qmi:h.qmi,del_client:h.del_client})
+            bytes:h.bytes,qrtr:h.qrtr,qmi:h.qmi,del_client:h.del_client,
+            #[cfg(feature="sunfish-registry-tftp-wire")]
+            tftp,
+        })
     }
+    /// Raw scalar IDs from complete existing bytes, not TFTP service acceptance.
+    #[cfg(feature="sunfish-registry-tftp-wire")]
+    fn tftp_ids(record:&[u8],tx:bool,h:&RegistrationHeader)->Option<[u32;2]>{
+        let [kind,source,destination]=h.qrtr?;
+        let local=if tx{source}else{destination};
+        if kind!=1 || (local!=crate::qcom_tftp_server_check::SERVICE_PORT
+            && !crate::qcom_tftp_server_check::is_transfer_port(local)
+            && !(0x5100..=0x51ff).contains(&local)) || h.command!=9
+            || record.len()<16 || word(record,12)!=0 {return None;}
+        let end=16usize.checked_add(word(record,8)as usize)?;
+        let packet=record.get(16..end)?;
+        if packet.len()<32 || word(packet,0)!=1{return None;}
+        let body=packet.get(32..32usize.checked_add(word(packet,20)as usize)?)?;
+        let opcode=u16::from_be_bytes(body.get(..2)?.try_into().ok()?);
+        if !(1..=6).contains(&opcode){return None;}
+        let number=if matches!(opcode,3|4|5){u16::from_be_bytes(body.get(2..4)?.try_into().ok()?)}else{u16::MAX};
+        let category=h.tftp_request.map_or(0,|r|u32::from(r.kind));
+        Some([(u32::from(opcode)<<16)|u32::from(number),(category<<24)|body.len()as u32])
+    }
+
 }
 #[cfg(feature="sunfish-registry-tx3-wire-headers")]
 #[derive(Clone,Copy)]
@@ -4925,4 +4952,30 @@ fn announcement_reuse_fifo_ack_keeps_head_unpublished_for_visible_or_late_rx(){
         let bytes=peer.take_tx();assert_eq!((bytes[0],u32::from_le_bytes(bytes[4..8].try_into().unwrap())),(8,u32::from(mode!=1)));
     }}
 }
+}
+
+#[cfg(all(test,feature="sunfish-registry-tftp-wire"))]
+#[test]
+fn registry_tftp_identity_projects_actual_server_replies_and_bounds_unknown_packets(){
+    fn record(body:&[u8],tx:bool,local:u32,peer:u32)->std::vec::Vec<u8>{
+        let mut packet=std::vec::Vec::new();
+        for value in [1,1,if tx{1}else{0},if tx{local}else{peer},0,body.len()as u32,if tx{0}else{1},if tx{peer}else{local}]{packet.extend(value.to_le_bytes());}
+        packet.extend(body);packet.resize((packet.len()+3)&!3,0);
+        let mut r=std::vec::Vec::new();r.extend(9u16.to_le_bytes());r.extend((if tx{1u16}else{2u16}).to_le_bytes());r.extend(7u32.to_le_bytes());r.extend((packet.len()as u32).to_le_bytes());r.extend(0u32.to_le_bytes());r.extend(packet);r.resize((r.len()+7)&!7,0);r
+    }
+    use crate::qcom_tftp_server_check::{ServerCheck,Route,Address,REQUEST};
+    let mut server=ServerCheck::new();let mut out=[0u8;512];let incoming=Route{source:Address{node:0,port:0x49},destination:Address{node:1,port:0x5000}};
+    let request=record(REQUEST,false,0x5000,0x49);let h=RegistryWireHeader::read(&request,false,None).unwrap();assert_eq!(h.tftp,Some([0x0002ffff,0x01000049]));
+    let reply=server.receive(incoming,REQUEST,&mut out).unwrap();assert_eq!(reply.len,39);
+    let oack=record(&out[..reply.len],true,reply.route.source.port,0x49);assert_eq!(oack.len(),88);assert_eq!(RegistryWireHeader::read(&oack,true,None).unwrap().tftp,Some([0x0006ffff,39]));
+    let missing=b"\0\x01/readwrite/ota_firewall/ruleset\0octet\0";
+    let mut second=incoming;second.source.port=0x4a;let reply=server.receive(second,missing,&mut out).unwrap();assert_eq!(reply.len,19);
+    let error=record(&out[..reply.len],true,reply.route.source.port,0x4a);assert_eq!(error.len(),72);assert_eq!(RegistryWireHeader::read(&error,true,None).unwrap().tftp,Some([0x00050001,19]));
+    assert_eq!(RegistryWireHeader::read(&record(missing,false,0x5000,0x4a),false,None).unwrap().tftp,Some([0x0001ffff,0x03000000|missing.len()as u32]));
+    for(opcode,number,body)in [(3,7,&b"\0\x03\0\x07ab"[..]),(4,3,&b"\0\x04\0\x03"[..]),(5,1,&b"\0\x05\0\x01\0"[..])]{let h=RegistryWireHeader::read(&record(body,true,0x5100,0x49),true,None).unwrap();assert_eq!(h.tftp,Some([(opcode<<16)|number,body.len()as u32]));}
+    assert_eq!(RegistryWireHeader::read(&record(REQUEST,false,0x4003,0x5005),false,None).unwrap().tftp,None,"peer port alone never identifies local TFTP");
+    for body in [&b"\0"[..],&b"\0\x03\0"[..],&b"\xff\xff\0\0"[..]]{assert_eq!(RegistryWireHeader::read(&record(body,true,0x5005,0x49),true,None).unwrap().tftp,None);}
+    let mut partial=oack.clone();partial[12..16].copy_from_slice(&8u32.to_le_bytes());assert_eq!(RegistryWireHeader::read(&partial,true,None).unwrap().tftp,None);
+    let mut invalid=oack.clone();invalid[36..40].copy_from_slice(&u32::MAX.to_le_bytes());assert_eq!(RegistryWireHeader::read(&invalid,true,None).unwrap().tftp,None);
+    println!("Actual server-check OACK:39payload/88wire; missing-file error:19payload/72wire. Scalar request categories/block/error IDs, direction, fragments and bounds passed.");
 }

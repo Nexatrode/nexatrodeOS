@@ -345,6 +345,8 @@ sunfish-registry-tx3-receipt-panel = ["sunfish-registry-elf-admission-panel"]
 sunfish-registry-tx3-wire-headers = ["sunfish-registry-tx3-receipt-panel", "sunfish-ipa-registration-reply-headers"]
 # Return only fully accepted NEW_SERVER buffers reusable; preserve retained requests.
 sunfish-glink-announcement-reuse = ["sunfish-wlan-first-wrq-reuse", "sunfish-glink-retry-full-intent"]
+# Scalar TFTP opcode/path category and existing ELF milestones in the wire panel.
+sunfish-registry-tftp-wire = ["sunfish-glink-announcement-reuse", "sunfish-registry-tx3-wire-headers", "sunfish-ipa-grant-tftp-peer"]
 
 [[bin]]
 name = "rust_sunfish_native_startup_preflight"
