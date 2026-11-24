@@ -1,0 +1,77 @@
+import "../assets/fonts/Roboto-Variable.ttf";
+export struct DesktopWindow { id: int, left: int, top: int, shown: bool, active: bool }
+component DockItem inherits Rectangle {
+    in property <string> label;
+    in property <image> icon;
+    in property <bool> running;
+    callback launch();
+    width: 76px; height: 82px;
+    background: touch.pressed ? #2a5265 : touch.has-hover ? #234254 : transparent;
+    border-radius: 16px;
+    Image { x: 20px; y: 10px; width: 36px; height: 36px; source: root.icon; colorize: #b9f7ef; }
+    Text { y: 51px; width: 100%; text: root.label; color: #e8f4fa; font-size: 12px; horizontal-alignment: center; }
+    if root.running: Rectangle { x: 35px; y: 73px; width: 6px; height: 3px; border-radius: 2px; background: #71e4ce; }
+    touch := TouchArea { clicked => { root.launch(); } }
+}
+export component DesktopShell inherits Window {
+    title: "NexatrodeOS Desktop";
+    width: 1280px; height: 800px;
+    default-font-family: "Roboto";
+    default-font-weight: 400;
+    in property <string> clock: "";
+    in property <[DesktopWindow]> windows;
+    in property <bool> notes-running;
+    in property <bool> calculator-running;
+    callback command(int, int, int, int);
+    Image { width: 100%; height: 100%; source: @image-url("../assets/nexatrode-aurora-wallpaper.png"); image-fit: cover; }
+    Rectangle { width: 100%; height: 100%; background: #04111c35; }
+    Rectangle {
+        x: 0px; y: 0px; width: 100%; height: 38px; background: #081923dc;
+        Text { x: 24px; height: 100%; text: "NexatrodeOS"; color: #e9f9ff; font-size: 15px; font-weight: 700; vertical-alignment: center; }
+        Text { x: 152px; height: 100%; text: "Desktop"; color: #adc7d5; font-size: 14px; vertical-alignment: center; }
+        Text { x: parent.width - 140px; width: 112px; height: 100%; text: root.clock; color: #e9f9ff; font-size: 14px; horizontal-alignment: right; vertical-alignment: center; }
+    }
+    Text { visible: !root.notes-running && !root.calculator-running; x: 48px; y: 82px; text: "Your space."; color: #e4f9ff; font-size: 38px; font-weight: 600; }
+    Text { visible: !root.notes-running && !root.calculator-running; x: 50px; y: 133px; text: "A quieter desktop, built around you."; color: #bbd9e8; font-size: 16px; }
+    for win in root.windows: Rectangle {
+        x: win.left * 1px - 1px; y: win.top * 1px - 43px;
+        width: 562px; height: 564px;
+        visible: win.shown;
+        border-radius: 14px; border-width: 1px;
+        border-color: win.active ? #7bc8ce : #425c6c;
+        background: #0b1c2a;
+        Text { x: 20px; y: 1px; height: 42px; text: win.id == 1 ? "Notes" : "Calculator"; color: win.active ? #e9fcff : #95adbd; font-size: 15px; font-weight: 600; vertical-alignment: center; }
+        drag := TouchArea {
+            x: 0px; y: 0px; width: parent.width - 92px; height: 42px;
+            property <float> start-x;
+            property <float> start-y;
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down {
+                    self.start-x = self.mouse-x / 1px;
+                    self.start-y = self.mouse-y / 1px;
+                    root.command(5, win.id, 0, 0);
+                }
+            }
+            moved => { if self.pressed { root.command(4, win.id, win.left + self.mouse-x / 1px - self.start-x, win.top + self.mouse-y / 1px - self.start-y); } }
+        }
+        Rectangle {
+            x: parent.width - 88px; y: 7px; width: 34px; height: 28px; border-radius: 7px;
+            background: mini.pressed ? #365063 : mini.has-hover ? #263f50 : transparent;
+            Text { width: 100%; height: 100%; text: "−"; color: #c6dce8; font-size: 20px; horizontal-alignment: center; vertical-alignment: center; }
+            mini := TouchArea { clicked => { root.command(2, win.id, 0, 0); } }
+        }
+        Rectangle {
+            x: parent.width - 48px; y: 7px; width: 34px; height: 28px; border-radius: 7px;
+            background: close.pressed ? #9b4b58 : close.has-hover ? #623344 : transparent;
+            Text { width: 100%; height: 100%; text: "×"; color: #c6dce8; font-size: 22px; horizontal-alignment: center; vertical-alignment: center; }
+            close := TouchArea { clicked => { root.command(3, win.id, 0, 0); } }
+        }
+    }
+    Rectangle {
+        x: (parent.width - self.width) / 2; y: parent.height - 114px;
+        width: 192px; height: 98px; border-radius: 24px;
+        border-width: 1px; border-color: #729eaf80; background: #0d2434ed;
+        DockItem { x: 16px; y: 8px; label: "Notes"; icon: @image-url("../assets/icons/notes.svg"); running: root.notes-running; launch => { root.command(1, 1, 0, 0); } }
+        DockItem { x: 100px; y: 8px; label: "Calculator"; icon: @image-url("../assets/icons/calculator.svg"); running: root.calculator-running; launch => { root.command(1, 2, 0, 0); } }
+    }
+}

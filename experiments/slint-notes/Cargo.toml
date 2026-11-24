@@ -23,6 +23,9 @@ utm-photo-worker = ["simplex-agent-ui"]
 utm-transcript-worker = ["simplex-agent-ui"]
 utm-pd = []
 desktop-dynamic-ui = ["utm-pd"]
+desktop-shell-ui = ["utm-pd"]
+desktop-shell-app = ["utm-pd"]
+desktop-shell-2x = []
 desktop-lock-app = ["desktop-dynamic-ui"]
 desktop-private-notes = ["desktop-lock-app"]
 desktop-simplex-frontend = ["utm-pd", "full-suite-ui", "utm-photo-worker", "utm-transcript-worker"]
@@ -92,6 +95,11 @@ required-features = ["utm-pd", "utm-photo-worker", "utm-transcript-worker"]
 name = "simplex_live_client"
 path = "../desktop-simplex/live_client.rs"
 required-features = ["desktop-simplex-live-test"]
+
+[[bin]]
+name = "desktop_shell"
+path = "../desktop-shell/shell.rs"
+required-features = ["desktop-shell-ui"]
 
 [[bin]]
 name = "slint_surface_fixture"

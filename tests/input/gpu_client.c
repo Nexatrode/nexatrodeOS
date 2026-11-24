@@ -682,6 +682,10 @@ static void draw_notes_list(uint8_t *frame, const char *text, uint32_t length,
     }
 }
 
+#ifndef NEXATRODE_CURSOR_SCALE
+#define NEXATRODE_CURSOR_SCALE 4
+#endif
+
 static void draw_pointer_cursor(uint8_t *frame, uint32_t x, uint32_t y)
 {
     /* Neon light-blue arrow with a dark halo so UTM USB Tablet mode stays aimable.
@@ -699,7 +703,7 @@ static void draw_pointer_cursor(uint8_t *frame, uint32_t x, uint32_t y)
         "XX     ",
         "X      ",
     };
-    const int scale = 4;
+    const int scale = NEXATRODE_CURSOR_SCALE;
     for (int row = 0; row < 11; row++) {
         for (int column = 0; column < 7; column++) {
             if (rows[row][column] != 'X') {
@@ -1010,11 +1014,11 @@ static void draw_app_page(uint8_t *frame, uint32_t focus, const char *text,
     }
 }
 
-#define CURSOR_SCALE 4
+#define CURSOR_SCALE NEXATRODE_CURSOR_SCALE
 #define CURSOR_COLS 7
 #define CURSOR_ROWS 11
-#define CURSOR_BACKUP_W 40
-#define CURSOR_BACKUP_H 56
+#define CURSOR_BACKUP_W (40 * CURSOR_SCALE / 4)
+#define CURSOR_BACKUP_H (56 * CURSOR_SCALE / 4)
 
 static int cursor_saved;
 static int saved_x, saved_y, saved_w, saved_h;

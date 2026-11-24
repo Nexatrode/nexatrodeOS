@@ -8,14 +8,22 @@ static void track_private_frame(seL4_CPtr cap, size_t bytes);
 #endif
 #define RUNTIME_HOSTED
 #define RUNTIME_NO_ENTRY
+#ifdef DESKTOP_SHELL
+#define MAX_OBJECTS 2048
+#else
 #define MAX_OBJECTS 1024
+#endif
 #include "../desktop-runtime/root.c"
 #define SURFACE_INTERACTIVE
 #define SURFACE_DYNAMIC
 #define init compositor_init
 #define notified compositor_notified
 #define fault compositor_fault
+#ifdef DESKTOP_SHELL
+#include "../desktop-shell/compositor.c"
+#else
 #include "../desktop-surfaces/compositor.c"
+#endif
 #undef init
 #undef notified
 #undef fault
@@ -195,6 +203,13 @@ static void launch(void)
     original_surface = physical.paddr;
     map_with_tables(alias(&gui, surface), ROOT_VSPACE, surface_a, seL4_CapRights_new(0, 0, 1, 0),
                     seL4_ARM_Default_VMAttributes | seL4_ARM_ExecuteNever, NULL);
+#ifdef DESKTOP_SHELL
+    for (uintptr_t offset = LARGE_BYTES; offset < sizeof(struct surface_header) + APP_BYTES; offset += LARGE_BYTES) {
+        seL4_CPtr extra = large_page(&gui, 0x60000000 + offset);
+        map_with_tables(alias(&gui, extra), ROOT_VSPACE, surface_a + offset, seL4_CapRights_new(0, 0, 1, 0),
+                        seL4_ARM_Default_VMAttributes | seL4_ARM_ExecuteNever, NULL);
+    }
+#endif
     seL4_CPtr queue = frame(&gui, GUI_INPUT, NULL, 0, 6);
     map_with_tables(alias(&gui, queue), ROOT_VSPACE, input_a, seL4_AllRights,
                     seL4_ARM_Default_VMAttributes | seL4_ARM_ExecuteNever, NULL);
@@ -260,6 +275,9 @@ static void close_window(void)
 static void dynamic_input_notify(void) { seL4_Signal(input_signal); }
 static bool dynamic_control(struct input_event_record event)
 {
+#ifdef DESKTOP_SHELL
+    (void)event; return false; /* Window management belongs only to the shell endpoint. */
+#else
 #ifdef DYNAMIC_PRIVATE_NOTES
     if (private_notes_control(event)) return true;
 #endif
@@ -277,10 +295,14 @@ static bool dynamic_control(struct input_event_record event)
         return false;
     if (event.value == 1) pending_action = event.code - 62;
     return true;
+#endif
 }
 
 static void notifications(seL4_Word badge)
 {
+#ifdef DESKTOP_SHELL
+    if (badge & (1UL << 20)) compositor_notified(20);
+#endif
 #ifdef DYNAMIC_SIMPLEX_FRONTEND
     if (badge & (1UL << 18)) frontend_notify();
 #endif
@@ -303,7 +325,13 @@ void init(void)
     check(seL4_SchedContext_UnbindObject(HOSTED_SC, HOSTED_BUDGET_TCB), "take GUI CPU budget");
     manager_slot = 1;
     manager_pool = allocate(HOSTED_POOL, &manager_slot, seL4_UntypedObject, 20);
-    app_pool = allocate(HOSTED_POOL, &manager_slot, seL4_UntypedObject, 24);
+    app_pool = allocate(HOSTED_POOL, &manager_slot, seL4_UntypedObject,
+#ifdef DESKTOP_SHELL
+                        25
+#else
+                        24
+#endif
+                       );
     temporary_cap = manager_slot++;
     escaped_cap = manager_slot++;
     reply_cap = allocate(manager_pool, &manager_slot, seL4_ReplyObject, 0);
@@ -322,13 +350,53 @@ void init(void)
     lock_timer();
     compose();
     print("LOCK|BOOT|locked\n");
+#elif defined(DESKTOP_SHELL)
+    print("DESKTOP|BOOT|workspace\n");
 #else
     launch();
 #endif
 }
 void notified(microkit_channel channel) { notifications(1UL << channel); }
+#ifdef DESKTOP_SHELL
+static microkit_msginfo shell_request(microkit_msginfo message)
+{
+    if (microkit_msginfo_get_label(message) != SHELL_REQUEST || microkit_msginfo_get_count(message) != 4 || seL4_MessageInfo_get_extraCaps(message)) return microkit_msginfo_new(1, 0);
+    uint64_t command = microkit_mr_get(0), id = microkit_mr_get(1);
+    if (id < 1 || id > 2 || command < 1 || command > 5) return microkit_msginfo_new(1, 0);
+    struct shell_window *w = &desktop.windows[id - 1];
+    if (command == SHELL_APP_LAUNCH) {
+        if (id == 1 && !dynamic_active && generation >= 60) return microkit_msginfo_new(1, 0);
+        w->open = w->visible = 1;
+        if (id == 1) launch();
+        focus(id);
+    } else if (command == SHELL_APP_MINIMIZE) {
+        if (!w->open) return microkit_msginfo_new(1, 0);
+        w->visible = 0;
+        if (desktop.focused == id) focus(0);
+        release_owner(id);
+    } else if (command == SHELL_APP_CLOSE) {
+        if (id == 1) close_window();
+        else { w->visible = w->open = 0; release_owner(2); microkit_notify(23); if (desktop.focused == 2) focus(0); }
+    } else if (command == SHELL_APP_MOVE) {
+        if (!w->visible) return microkit_msginfo_new(1, 0);
+        /* Reject values outside signed 32-bit ABI before clamping coordinates. */
+        int64_t x = (int64_t)microkit_mr_get(2), y = (int64_t)microkit_mr_get(3);
+        if (x < INT32_MIN || x > INT32_MAX || y < INT32_MIN || y > INT32_MAX) return microkit_msginfo_new(1, 0);
+        shell_position(w, x, y);
+    } else {
+        if (!w->visible) return microkit_msginfo_new(1, 0);
+        focus(id);
+    }
+    publish_state(); compose();
+    line("DESKTOP|COMMAND|", command * 10 + id);
+    return microkit_msginfo_new(0, 0);
+}
+#endif
 microkit_msginfo protected(microkit_channel channel, microkit_msginfo message)
 {
+#ifdef DESKTOP_SHELL
+    if (channel == SHELL_CHANNEL) return shell_request(message);
+#endif
 #ifdef DYNAMIC_LOCK
     extern microkit_msginfo lock_request(microkit_channel, microkit_msginfo);
     if (channel == LOCK_AUTH_CHANNEL || channel == LOCK_PROBE_CHANNEL) return lock_request(channel, message);
@@ -343,8 +411,13 @@ microkit_msginfo protected(microkit_channel channel, microkit_msginfo message)
         microkit_mr_get(0) != generation) return microkit_msginfo_new(1, 0);
     const struct surface_header *header = (const void *)surface_a;
     uint32_t revision = atomic_load_explicit(&header->revision, memory_order_acquire);
-    if (!revision || (revision & 1) || header->width != APP_WIDTH || header->height != APP_HEIGHT ||
-        header->stride != APP_WIDTH * 3) return microkit_msginfo_new(1, 0);
+    if (!revision || (revision & 1) || header->width !=
+#ifdef DESKTOP_SHELL
+        APP_PIXEL_WIDTH || header->height != APP_PIXEL_HEIGHT || header->stride != APP_PIXEL_WIDTH * 3
+#else
+        APP_WIDTH || header->height != APP_HEIGHT || header->stride != APP_WIDTH * 3
+#endif
+       ) return microkit_msginfo_new(1, 0);
     compositor_notified(0);
     if (!first_frame) { first_frame = true; line("DYNAMIC|READY|generation=", generation); }
     return microkit_msginfo_new(0, 0);

@@ -24,6 +24,109 @@ passed; see [the SimpleX lifecycle evidence](simplex-dynamic-lock.md).
 Regular installation-key migration, NexaWal lifecycle integration and general
 file services remain separate boundaries.
 
+## Landscape desktop shell
+
+The opt-in `DESKTOP_SHELL` image adds a 1280×800 logical workspace to the
+graphical lifecycle experiment. The default desktop build now renders at
+2560×1600 physical pixels (2×); `--scale 1` builds the comparison mode. It boots
+directly to the existing aurora wallpaper, a
+Mac-local clock in the top bar, and a two-app dock. Notes and Calculator use
+separate Slint renderers, input queues and content surfaces. The trusted manager
+owns window positions, stacking, keyboard focus and the management endpoint;
+app content cannot paint over a higher window's title bar.
+
+The dock launches or restores windows. Title bars support moving, minimizing
+and closing. Notes is constructed after boot and destroyed on close; reopening
+creates a fresh process, input ownership and document. This shell's note is
+explicitly session-only and its UI says that closing discards it. Calculator
+uses a predeclared isolated PD; closing hides it and resets its arithmetic state,
+rather than reclaiming that PD. The separate encrypted Notes and wrapped-lock
+fixtures remain available; this desktop image does not yet combine them.
+
+Reproduce from this worktree, using the same prepared public driver inputs and
+private composer as the graphical tests:
+
+```sh
+caffeinate -di python3 tests/desktop_shell_utm.py \
+  --inputs /Volumes/untitled/sel4-personal-os/.cache/utm-accelerated \
+  --surfaces build/desktop-surfaces/interactive-final \
+  --base build/desktop-graphical/final-utm \
+  --sddf /Volumes/untitled/sel4-personal-os/.cache/sddf-personal-os \
+  --composer build/desktop-simplex/composer-large/target/release/microkit \
+  --output build/desktop-shell/new-run
+```
+
+`new-run` must not already exist. The desktop shell and both app renderers use
+the same fixed density. Slint pre-rasterizes glyphs and SVG resources at that
+density, and receives the matching scale factor and physical window size.
+Window placement, hit testing and pointer events remain in logical coordinates;
+composition, strides, damage bands and the cursor use physical coordinates.
+The 2× output and shell frame regions are 16 MiB and app surfaces are 4 MiB;
+phone defaults retain their existing 8 MiB output contract.
+
+Both desktop UIs explicitly import the pinned Roboto variable font in
+`experiments/slint-notes/assets/fonts/Roboto-Variable.ttf`. Its source commit and
+license are adjacent. The builder rejects a fallback family or missing weights
+400/600/700 and checks that the 15-logical-pixel label has a 30-physical-pixel
+glyph at 2×. It also copies the font's OFL notice into the staging directory.
+This fixes the initial shell's accidental Helvetica-regular fallback.
+
+The builder compiles the shell, app interfaces, manager and landscape GPU client from source. It reuses the prepared kernel,
+VirtIO/input drivers and clock service. The runner creates its own VM UUID and
+blank disk, restricts networking, disables host sharing and removes that VM on
+exit. It never opens the regular VM disk or installation key. No wallet, vault,
+SimpleX database or Wi-Fi driver is part of the landscape image.
+
+Verification on 2026-11-24 uses actual guest mouse/keyboard input, presented
+1280×800 and 2560×1600 frames, OCR and serial diagnostics: dock launch, typed note, calculator
+arithmetic, independent focus, minimize/restore, title-bar drag and Notes
+close/recreation. Host tests cover geometry/clamping, overlapping window chrome,
+malformed surfaces, closed input and cache cleanup, under ASan/UBSan. Existing
+portrait surface and frame-copy tests also pass. The run stores `build.json`,
+`shell-result.json`, serial output and screenshots in its own ignored directory.
+The actual scanout tests also sample typing and minimize/restore 12 times each.
+`responsiveness.json` measures QMP input submission through first changed scanout
+capture, including capture and file overhead. Full-frame readback itself grows
+with pixel count, so those values must not be interpreted as UI-only latency.
+The optional runner flag `--desktop-shell-frame-profile` adds a smaller,
+sequence-checked readback of the completed public RGB frame. Its
+`frame-publication.json` still includes QMP overhead and excludes GPU transfer
+and the physical host display. It reads only the disposable guest's declared
+output pages; private app memory and real-data disks are outside the probe.
+
+Run `tests/desktop_shell_sharpness.py --one <1x-output> --two <2x-output>` to
+compare the same Roboto title at both densities. The test requires independent
+physical samples within logical text pixels at 2×, rather than a stretched 1×
+bitmap, and produces native crops for visual review. Scale selection is fixed
+per build; live monitor-DPI changes remain future work.
+
+The 2026-11-24 comparison in `build/desktop-shell/retina-ready-{1x,2x}` passed
+all interaction checks. The same title uses Roboto 700 at 15 physical pixels in
+1× and 30 in 2×. The native crop has 375 logical text blocks with independent
+2× pixel samples; the nearest-enlarged 1× crop has none.
+
+Observed medians for the smaller coherent-frame probe, 12 samples per action:
+
+| Action | 1× | 2× |
+| --- | ---: | ---: |
+| Typing | 126 ms | 138 ms |
+| Minimize | 126 ms | 177 ms |
+| Restore | 140 ms | 188 ms |
+
+The three-readback capture itself had medians of 74 and 76 ms. These values
+include test overhead, exclude GPU/physical-display latency, and were collected
+under the Mac's uncontrolled current workload. They establish functioning
+interactions and a measurable cost for 2× window updates, not a controlled
+measurement of user-perceived latency or a frame-rate guarantee.
+
+This is an initial desktop shell. It does not add a desktop login, durable
+session saving, resize/maximize, multiple dynamic windows, package installation,
+a general file manager or GPU drawing acceleration. The Notes lifecycle fixture
+has a bounded 60-instance generation space per boot; hitting the limit rejects
+another launch without restarting the manager. Broader process admission and
+construction-failure rollback remain part of the lifecycle milestone below.
+Phone rendering dimensions and the regular accelerated VM build stay unchanged.
+
 ## Implementation order
 
 | Milestone | Completion requirement | Current state |

@@ -33,6 +33,8 @@ def main():
                         help="partition the newly created scratch disk for a vault integration test")
     parser.add_argument("--serial-output", type=Path, help="save this disposable guest's serial output")
     parser.add_argument("--screenshot-output", type=Path, help="capture the disposable guest framebuffer as PPM")
+    parser.add_argument("--desktop-shell-frame-profile", action="store_true", help="profile only the disposable desktop output frame")
+    parser.add_argument("--desktop-shell-test", action="store_true", help="exercise the disposable landscape shell and dock")
     parser.add_argument("--desktop-input-test", action="store_true",
                         help="exercise the disposable two-window input fixture through QMP")
     parser.add_argument("--desktop-lock-test", choices=("normal", "skip-scrub", "wrapped", "skip-evict"),
@@ -44,8 +46,12 @@ def main():
     parser.add_argument("--desktop-lifecycle-test", choices=("normal", "skip-revoke", "keep-endpoint"),
                         help="exercise a dynamically created graphical process")
     args = parser.parse_args()
-    if (args.desktop_input_test or args.desktop_lifecycle_test or args.desktop_lock_test or args.desktop_notes_test or args.desktop_simplex_test or args.desktop_simplex_live_test or args.desktop_simplex_frontend_test) and not args.screenshot_output:
+    if args.desktop_shell_frame_profile and not args.desktop_shell_test:
+        parser.error("frame profiling requires the isolated desktop shell fixture")
+    if (args.desktop_shell_test or args.desktop_input_test or args.desktop_lifecycle_test or args.desktop_lock_test or args.desktop_notes_test or args.desktop_simplex_test or args.desktop_simplex_live_test or args.desktop_simplex_frontend_test) and not args.screenshot_output:
         parser.error("the desktop input test requires an evidence screenshot destination")
+    if args.desktop_shell_test and any((args.desktop_input_test, args.desktop_lifecycle_test, args.desktop_lock_test, args.desktop_notes_test, args.desktop_simplex_test, args.desktop_simplex_live_test, args.desktop_simplex_frontend_test)):
+        parser.error("the shell requires an exclusive offline disposable callback")
     if args.desktop_input_test and args.desktop_lifecycle_test:
         parser.error("choose one disposable interaction fixture")
     if args.desktop_lock_test and (not args.blank_gpt or args.desktop_input_test or args.desktop_lifecycle_test):
@@ -75,7 +81,7 @@ def main():
         config = plistlib.loads(args.template.read_bytes())
         assert len(config["Drive"]) == 1 and config["Network"] == []
         assert config["System"]["CPUCount"] == 4 and config["QEMU"]["Hypervisor"] is True
-        config["Information"].update(UUID=tag, Name="Disposable vault key probe")
+        config["Information"].update(UUID=tag, Name="Disposable NexatrodeOS desktop" if args.desktop_shell_test else "Disposable vault key probe")
         config["Serial"] = []
         config["Sharing"].update(ClipboardSharing=False, DirectoryShareMode="None")
         config["QEMU"]["DebugLog"] = False
@@ -140,6 +146,15 @@ def main():
                 if any(marker in output for marker in rejected):
                     raise RuntimeError("guest reported failure: " + output[-3000:])
                 if all(marker in output for marker in expected):
+                    if args.desktop_shell_test:
+                        from desktop_shell_input import exercise
+                        exercise(monitor, trace, data, args.screenshot_output.parent)
+                        if args.desktop_shell_frame_profile:
+                            import json
+                            from desktop_shell_frame_perf import measure
+                            evidence=args.screenshot_output.parent
+                            scale=json.loads((evidence/'build.json').read_text())['scale']
+                            measure(monitor,data,evidence,scale)
                     if args.desktop_simplex_frontend_test:
                         from desktop_simplex_frontend_input import exercise
                         exercise(monitor, trace, data, args.screenshot_output.parent)
