@@ -11,7 +11,12 @@ boot from a bounded resource pool. It clears that window's caches and input
 ownership, revokes its mappings and objects, and recreates a fresh instance.
 A second Slint window stays in a predeclared domain to test peer survival.
 The dedicated root-task and two-static-window systems remain regression tests.
-Real app services, protected files and lock integration are the next boundaries.
+A separate disposable lock fixture now gates launch on passphrase verification,
+destroys the dynamic app on manual or idle lock, and erases its private user
+frames before revocation. Its optional wrapped-key mode synchronously evicts
+the random disposable vault key and commits unlock before launching an app.
+Real app workers, their installation-key migration and protected file services
+remain separate integration boundaries.
 
 ## Implementation order
 
@@ -19,9 +24,9 @@ Real app services, protected files and lock integration are the next boundaries.
 | --- | --- | --- |
 | Reproducible baseline | Repeat app switching, typing, photos, scanning and receiving with stage timings and source/build identities | Existing timing tools and new root-task build hashes; combined workload remains |
 | App lifecycle | Fresh identity, memory and permissions on launch; reclaim after exit, fault and interrupted creation | 100 small-process launches and 13 graphical instances tested; general graphical-constructor rollback remains |
-| Independent surfaces | Separate app renderers, bounded submissions, focus routing and trusted lock coverage | Dynamic window close/fault/restart, cache cleanup and input ownership tested with a surviving static peer; lock coverage and multiple dynamic windows remain |
+| Independent surfaces | Separate app renderers, bounded submissions, focus routing and trusted lock coverage | Dynamic close/fault/restart with a surviving peer, plus a separate passphrase-gated one-app fixture with trusted full-screen lock coverage; multiple dynamic windows remain |
 | Frame presentation | Explicit buffer ownership/release, retained damage, bounded queues, presentation feedback | Existing band redraw and frame-copy work plus the new last-good surface snapshots; swapchain remains |
-| Protected storage and lock | Private app storage, scoped documents, recoverable writes, key eviction and recreated apps | Existing vault and wrapped-key tests; general documents and complete secret lifecycle remain |
+| Protected storage and lock | Private app storage, scoped documents, recoverable writes, key eviction and recreated apps | Disposable wrapped-key eviction, leased unlock commit, encrypted-note recovery and fresh app memory tested together; real app checkpointing/migration, general documents and complete secret lifecycle remain |
 | Complete interface | Shared controls and navigation, useful Files and Settings, measured transitions | Existing shell, lock screen, SimpleX and NexaWal work; consistent independent app interfaces remain |
 | Native installation | Load packages from disk, owner approval, stable identity, permissions, update/rollback/uninstall | Embedded bounded native and Slint ELF loading demonstrated; disk packages and installer remain |
 | Network resilience | App recovery and fail-closed required routing across disconnects and retries | Existing wallet and SimpleX recovery; OS egress policy remains |
@@ -77,3 +82,5 @@ projects.
 See [the app architecture and experiments](desktop-app-direction.md),
 [the frame handoff](utm-frame-handoff.md), and
 [the wrapped-key prototype](vault-key-prototype.md) for current evidence.
+The [dynamic app lock experiment](dynamic-app-lock.md) records the separate
+passphrase/lifecycle test and its security limits.

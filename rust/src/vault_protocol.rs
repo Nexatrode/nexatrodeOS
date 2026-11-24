@@ -32,6 +32,13 @@ pub const REQUEST_DEVICE_VAULT_LOCK: MessageLabel = 0x453;
 /// Test-only status exposed only to the SimpleX agent startup gate.
 #[cfg(feature = "utm-wrapped-vault-experiment")]
 pub const REQUEST_DEVICE_VAULT_STATUS: MessageLabel = 0x454;
+/// Private manager-only endpoint in the disposable dynamic-lock fixture.
+#[cfg(feature = "utm-dynamic-vault-lock")]
+pub const VAULT_LIFECYCLE_CHANNEL: Channel = Channel::new(12);
+#[cfg(feature = "utm-dynamic-vault-lock")]
+pub const REQUEST_VAULT_COMMIT: MessageLabel = 0x455;
+#[cfg(feature = "utm-dynamic-vault-lock")]
+pub const REQUEST_VAULT_ARM: MessageLabel = 0x456;
 // Local app endpoint shared by the supervisor's explicit namespace test calls.
 pub const APP_TEST_SUPERVISOR_CHANNEL: Channel = Channel::new(1);
 pub const NAMESPACE_COUNT: usize = 5;

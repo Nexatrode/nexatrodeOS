@@ -1,0 +1,50 @@
+component Keycap inherits Rectangle {
+    in property <string> label;
+    callback pressed(string);
+    height: 34px; background: touch.pressed ? #25485b : #102330;
+    border-width: 1px; border-color: #294657; border-radius: 4px;
+    Text { text: root.label; color: #e1eff7; font-size: 13px; horizontal-alignment: center; vertical-alignment: center; }
+    touch := TouchArea { clicked => { root.pressed(root.label); } }
+}
+export component LockWindow inherits Window {
+    width: 360px; height: 780px; background: #060d15;
+    in property <int> stage: 2;
+    in property <bool> welcome: false;
+    in property <string> status;
+    in property <string> feedback;
+    callback key(string);
+    callback submit();
+    callback reveal();
+    callback lock-now();
+    if root.stage != 0: Rectangle {
+        width: parent.width; height: parent.height;
+        Image { width: parent.width; height: parent.height; source: @image-url("../assets/nexatrode-aurora-wallpaper.png"); image-fit: cover; }
+        Rectangle { width: parent.width; height: parent.height; background: #020912b8; }
+        Text { x: 20px; y: 22px; text: "NEXATRODE OS"; color: #9dc4d5; font-size: 12px; }
+        Text { x: 20px; y: 110px; width: parent.width - 40px; text: root.welcome ? "Device locked" : root.stage == 2 ? "Set passphrase" : root.stage == 3 ? "Confirm passphrase" : "Unlock";
+            font-size: 28px; color: #e4f3fa; horizontal-alignment: center; }
+        Text { x: 20px; y: 170px; width: parent.width - 40px; text: root.status; color: #a9c7d7; font-size: 13px; wrap: word-wrap; horizontal-alignment: center; }
+        if root.welcome: Rectangle {
+            x: 30px; y: 300px; width: parent.width - 60px; height: 380px;
+            Text { text: "Swipe up to unlock"; color: #70e2d7; font-size: 16px; horizontal-alignment: center; vertical-alignment: bottom; }
+            touch := TouchArea {
+                pointer-event(event) => { if event.kind == PointerEventKind.up && self.pressed-y - self.mouse-y > 45px { root.reveal(); } }
+            }
+        }
+        if !root.welcome && root.stage > 0 && root.stage < 4: VerticalLayout {
+            x: 15px; y: 450px; width: parent.width - 30px; spacing: 5px;
+            Text { height: 30px; text: root.feedback; color: #a9c7d7; font-size: 13px; horizontal-alignment: center; }
+            HorizontalLayout { spacing: 3px; for letter in ["1","2","3","4","5","6","7","8","9","0"]: Keycap { label: letter; pressed(text) => { root.key(text); } } }
+            HorizontalLayout { spacing: 3px; for letter in ["q","w","e","r","t","y","u","i","o","p"]: Keycap { label: letter; pressed(text) => { root.key(text); } } }
+            HorizontalLayout { spacing: 3px; for letter in ["a","s","d","f","g","h","j","k","l"]: Keycap { label: letter; pressed(text) => { root.key(text); } } }
+            HorizontalLayout { spacing: 3px; for letter in ["z","x","c","v","b","n","m"]: Keycap { label: letter; pressed(text) => { root.key(text); } } }
+            HorizontalLayout { spacing: 3px; for letter in ["CLEAR","SPACE","DELETE"]: Keycap { label: letter; pressed(text) => { root.key(text); } } }
+            Keycap { label: root.stage == 1 ? "UNLOCK" : "CONTINUE"; pressed(text) => { root.submit(); } }
+        }
+    }
+    if root.stage == 0: Rectangle {
+        x: 190px; y: 170px; width: 150px; height: 260px; background: #102330; border-radius: 10px;
+        Text { x: 10px; y: 20px; width: parent.width - 20px; text: "Trusted desktop\n\nDisposable notes app\n\nF9 locks immediately"; color: #c4dfe9; font-size: 14px; wrap: word-wrap; }
+        Keycap { x: 10px; y: 190px; width: parent.width - 20px; label: "LOCK NOW"; pressed(text) => { root.lock-now(); } }
+    }
+}

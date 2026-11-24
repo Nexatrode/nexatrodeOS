@@ -34,13 +34,17 @@ def main():
     parser.add_argument("--screenshot-output", type=Path, help="capture the disposable guest framebuffer as PPM")
     parser.add_argument("--desktop-input-test", action="store_true",
                         help="exercise the disposable two-window input fixture through QMP")
+    parser.add_argument("--desktop-lock-test", choices=("normal", "skip-scrub", "wrapped", "skip-evict"),
+                        help="exercise passphrase-gated dynamic processes using a fresh disk")
     parser.add_argument("--desktop-lifecycle-test", choices=("normal", "skip-revoke", "keep-endpoint"),
                         help="exercise a dynamically created graphical process")
     args = parser.parse_args()
-    if (args.desktop_input_test or args.desktop_lifecycle_test) and not args.screenshot_output:
+    if (args.desktop_input_test or args.desktop_lifecycle_test or args.desktop_lock_test) and not args.screenshot_output:
         parser.error("the desktop input test requires an evidence screenshot destination")
     if args.desktop_input_test and args.desktop_lifecycle_test:
         parser.error("choose one disposable interaction fixture")
+    if args.desktop_lock_test and (not args.blank_gpt or args.desktop_input_test or args.desktop_lifecycle_test):
+        parser.error("the lock fixture requires its own fresh GPT disk and exclusive callback")
     state = subprocess.run(["ioreg", "-n", "Root", "-d", "1", "-a"],
                            capture_output=True, check=True, timeout=10)
     console = plistlib.loads(state.stdout)
@@ -123,6 +127,12 @@ def main():
                 if any(marker in output for marker in rejected):
                     raise RuntimeError("guest reported failure: " + output[-3000:])
                 if all(marker in output for marker in expected):
+                    if args.desktop_lock_test:
+                        from desktop_lock_input import exercise
+                        exercise(monitor, trace, data, args.screenshot_output.parent,
+                                 control=args.desktop_lock_test == "skip-scrub",
+                                 wrapped=args.desktop_lock_test in ("wrapped", "skip-evict"),
+                                 eviction_control=args.desktop_lock_test == "skip-evict")
                     if args.desktop_input_test:
                         from desktop_input_utm import exercise
                         exercise(monitor, trace, data, args.screenshot_output.parent)

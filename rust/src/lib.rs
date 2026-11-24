@@ -251,6 +251,8 @@ pub mod vault_backup;
 pub mod vault_blob_record;
 pub mod vault_blob_transfer;
 pub mod vault_crypto;
+#[cfg(any(test, feature = "utm-dynamic-vault-lock"))]
+pub mod vault_lifecycle;
 pub mod vault_file;
 pub mod vault_history;
 pub mod history_batch;

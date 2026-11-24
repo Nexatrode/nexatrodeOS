@@ -128,6 +128,13 @@ impl App {
         #[cfg(feature = "desktop-dynamic-ui")]
         {
             if self.counter == 0 {
+                #[cfg(feature = "desktop-lock-app")]
+                {
+                    sel4_microkit::set_mr(0, 1);
+                    let reply = Channel::new(0).pp_call(sel4_microkit::MessageInfo::new(0x791, 1));
+                    assert_eq!(reply.label(), 1, "app unlocked device");
+                    debug_println!("LOCK_APP|UNLOCK_DENIED");
+                }
                 let malformed = Channel::new(0).pp_call(sel4_microkit::MessageInfo::new(0x780, 0));
                 assert_eq!(malformed.label(), 1, "malformed publication accepted");
                 sel4_microkit::set_mr(0, self.generation.wrapping_add(1) as u64);
@@ -192,6 +199,7 @@ impl App {
                             1 => WindowEvent::KeyPressed { text },
                             _ => WindowEvent::KeyPressRepeated { text },
                         });
+                        #[cfg(not(feature = "desktop-lock-app"))]
                         debug_println!(
                             "INPUT|KEY|app={}|code={}|value={}",
                             self.id,
@@ -240,6 +248,7 @@ impl App {
         let after = self.ui.get_note();
         if before != after {
             // The fixture uses disposable text only. This is not a shipping input trace.
+            #[cfg(not(feature = "desktop-lock-app"))]
             debug_println!("INPUT|TEXT|app={}|{}", self.id, after);
         }
         self.counter += 1;

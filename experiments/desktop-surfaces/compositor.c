@@ -7,6 +7,10 @@ static bool dynamic_active;
 static void dynamic_input_notify(void);
 static bool dynamic_control(struct input_event_record event);
 #endif
+#ifdef SURFACE_LOCK
+static bool lock_input(struct input_event_record event);
+static bool lock_compose(void);
+#endif
 uintptr_t input_handoff, input_a, input_b;
 static struct desktop_router router;
 static uint32_t sent[2], driver_tail, driver_dropped;
@@ -43,6 +47,9 @@ static void flush_reset(unsigned owner)
 static void emit(unsigned owner, struct desktop_event event)
 {
     if (owner < 1 || owner > 2) return;
+#ifdef SURFACE_LOCK
+    if (owner == 2 && event.kind == DESKTOP_POINTER) { event.x += 560; event.y += 500; }
+#endif
 #ifdef SURFACE_DYNAMIC
     if (owner == 1 && !dynamic_active) return;
 #endif
@@ -74,8 +81,19 @@ static void input(void)
     unsigned before = router.focus;
     while (driver_tail != head) {
         struct input_event_record event = ring->events[driver_tail++ & INPUT_EVENT_MASK];
+#ifdef SURFACE_LOCK
+        ring->events[(driver_tail - 1) & INPUT_EVENT_MASK] = (struct input_event_record){0};
+#endif
 #ifdef SURFACE_DYNAMIC
-        if (dynamic_control(event)) continue;
+        if (dynamic_control(event)) {
+#ifdef SURFACE_LOCK
+            head = __atomic_load_n(&ring->head, __ATOMIC_ACQUIRE);
+#endif
+            continue;
+        }
+#endif
+#ifdef SURFACE_LOCK
+        if (lock_input(event)) continue;
 #endif
         desktop_route(&router, event, emit);
 #ifdef SURFACE_DYNAMIC
@@ -146,6 +164,9 @@ static bool blit(uintptr_t source, unsigned index, unsigned x, unsigned y, uint3
 
 static bool compose(void)
 {
+#ifdef SURFACE_LOCK
+    return lock_compose();
+#else
     slint_frame_header_t *output = (void *)output_frame;
     uint32_t next_a, next_b;
     bool ready;
@@ -204,6 +225,7 @@ static bool compose(void)
     revisions[1] = next_b;
     microkit_notify(2);
     return true;
+#endif
 }
 
 #ifdef SURFACE_DYNAMIC

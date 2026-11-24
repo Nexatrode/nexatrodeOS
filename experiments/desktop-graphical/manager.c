@@ -1,4 +1,11 @@
 /* Disposable one-dynamic-window lifecycle experiment. The other window is static. */
+#ifdef DYNAMIC_LOCK
+#include <sel4/sel4.h>
+#include <stddef.h>
+static void track_private_frame(seL4_CPtr cap, size_t bytes);
+#define RUNTIME_TRACK_FRAME track_private_frame
+#define SURFACE_LOCK
+#endif
 #define RUNTIME_HOSTED
 #define RUNTIME_NO_ENTRY
 #define MAX_OBJECTS 1024
@@ -13,6 +20,18 @@
 #undef notified
 #undef fault
 #include "image.h"
+#ifdef DYNAMIC_LOCK
+#include "../desktop-lock/protocol.h"
+static bool device_locked = true;
+static void begin_device_lock(bool force);
+static void lock_timer(void);
+static void publish_lock_status(void);
+static void scrub_private_frames(void);
+static unsigned private_frame_count;
+#ifdef DYNAMIC_WRAPPED_LOCK
+static bool evict_vault(void);
+#endif
+#endif
 
 extern const uint8_t gui_elf_start[], gui_elf_end[];
 #define GUI_HEAP 0x64000000UL
@@ -60,6 +79,14 @@ static void mint_local(struct process *p, seL4_CPtr source, seL4_CPtr *result, u
 static seL4_CPtr large_page(struct process *p, uintptr_t address)
 {
     seL4_CPtr cap = app_object(p, seL4_ARM_LargePageObject, 0);
+#ifdef DYNAMIC_LOCK
+    track_private_frame(cap, LARGE_BYTES);
+    if (address == GUI_HEAP) {
+        seL4_ARM_Page_GetAddress_t physical = seL4_ARM_Page_GetAddress(cap);
+        check(physical.error, "private heap address");
+        line("LOCK|TEST_HEAP_PHYSICAL|base=", physical.paddr);
+    }
+#endif
     check(seL4_CNode_Copy(ROOT_NODE, temporary_cap, ROOT_DEPTH, ROOT_NODE, cap_slot(cap),
                           ROOT_DEPTH, seL4_AllRights), "large temporary copy");
     map_with_tables(slot_cap(temporary_cap), ROOT_VSPACE, LARGE_TEMP, seL4_AllRights,
@@ -75,6 +102,9 @@ static seL4_CPtr large_page(struct process *p, uintptr_t address)
 static void image_page(struct process *p, const struct program_header *ph, uintptr_t address)
 {
     seL4_CPtr cap = app_object(p, seL4_ARM_SmallPageObject, 0);
+#ifdef DYNAMIC_LOCK
+    track_private_frame(cap, PAGE_BYTES);
+#endif
     uint8_t *buffer = temporary_mapping(cap);
     for (size_t i = 0; i < PAGE_BYTES; ++i)
         if (buffer[i]) fail("old graphical image RAM", 0);
@@ -91,7 +121,14 @@ static void image_page(struct process *p, const struct program_header *ph, uintp
 
 static void launch(void)
 {
+#ifdef DYNAMIC_LOCK
+    if (device_locked) return;
+    if (generation >= 59) { print("DYNAMIC|LIMIT|instance generation quota\n"); return; }
+#endif
     if (dynamic_active) return;
+#ifdef DYNAMIC_LOCK
+    private_frame_count = 0;
+#endif
     if (generation >= 61) { print("DYNAMIC|LIMIT|instance generation quota\n"); return; }
     size_t length = gui_elf_end - gui_elf_start;
     if (!graphical_image_valid(gui_elf_start, length)) fail("graphical executable policy", 0);
@@ -164,6 +201,9 @@ static void close_window(void)
 {
     if (!dynamic_active) return;
     check(seL4_TCB_Suspend(gui.tcb), "GUI quiesce");
+#ifdef DYNAMIC_LOCK
+    scrub_private_frames();
+#endif
     discard_dynamic_surface();
     /* The service endpoint is permanent. Delete its tracked instance aliases;
      * the client has no CNode or Grant authority to create external copies. */
@@ -180,6 +220,13 @@ static void close_window(void)
 static void dynamic_input_notify(void) { seL4_Signal(input_signal); }
 static bool dynamic_control(struct input_event_record event)
 {
+#ifdef DYNAMIC_LOCK
+    if (event.device == 0 && event.type == 1 && event.code == 67 && event.value <= 2) {
+        if (event.value == 1) begin_device_lock(true);
+        return true;
+    }
+    if (device_locked) return false;
+#endif
     if (event.device || event.type != 1 || event.code < 63 || event.code > 65 || event.reserved || event.value > 2)
         return false;
     if (event.value == 1) pending_action = event.code - 62;
@@ -188,6 +235,10 @@ static bool dynamic_control(struct input_event_record event)
 
 static void notifications(seL4_Word badge)
 {
+#ifdef DYNAMIC_LOCK
+    if (badge & (1UL << LOCK_TIMER_CHANNEL)) lock_timer();
+    if (badge & (1UL << LOCK_AUTH_SURFACE_CHANNEL)) { flush_reset(2); compose(); }
+#endif
     for (unsigned ch = 0; ch < 7; ++ch)
         if (badge & (1UL << ch)) compositor_notified(ch);
     unsigned action = pending_action;
@@ -211,11 +262,26 @@ void init(void)
     surface_a = 0x60000000;
     input_a = 0x66001000;
     compositor_init();
+#ifdef DYNAMIC_LOCK
+#ifdef DYNAMIC_WRAPPED_LOCK
+    evict_vault();
+#endif
+    publish_lock_status();
+    lock_timer();
+    compose();
+    print("LOCK|BOOT|locked\n");
+#else
     launch();
+#endif
 }
 void notified(microkit_channel channel) { notifications(1UL << channel); }
 microkit_msginfo protected(microkit_channel channel, microkit_msginfo message)
 {
+#ifdef DYNAMIC_LOCK
+    extern microkit_msginfo lock_request(microkit_channel, microkit_msginfo);
+    if (channel == LOCK_AUTH_CHANNEL || channel == LOCK_PROBE_CHANNEL) return lock_request(channel, message);
+    if (device_locked) return microkit_msginfo_new(1, 0);
+#endif
     if (!dynamic_active || channel != generation || microkit_msginfo_get_label(message) != 0x780 ||
         microkit_msginfo_get_count(message) != 2 || seL4_MessageInfo_get_extraCaps(message) ||
         microkit_mr_get(0) != generation) return microkit_msginfo_new(1, 0);
@@ -239,3 +305,6 @@ seL4_Bool fault(microkit_child child, microkit_msginfo info, microkit_msginfo *r
     line("DYNAMIC|FAULT_CONTAINED|generation=", generation);
     return seL4_False;
 }
+#ifdef DYNAMIC_LOCK
+#include "../desktop-lock/manager.h"
+#endif

@@ -23,6 +23,9 @@ utm-photo-worker = ["simplex-agent-ui"]
 utm-transcript-worker = ["simplex-agent-ui"]
 utm-pd = []
 desktop-dynamic-ui = ["utm-pd"]
+desktop-lock-app = ["desktop-dynamic-ui"]
+desktop-lock-ui = ["utm-pd", "utm-device-lock"]
+desktop-wrapped-lock-ui = ["desktop-lock-ui", "personal-os-rust-server/utm-dynamic-vault-lock"]
 utm-device-lock = ["personal-os-rust-server/utm-device-lock"]
 utm-wrapped-vault-experiment = ["utm-device-lock", "personal-os-rust-server/utm-wrapped-vault-experiment"]
 utm-nexawal-rpc-bridge = []
@@ -71,6 +74,11 @@ required-features = ["utm-transcript-worker"]
 name = "slint_notes_utm"
 path = "src/utm.rs"
 required-features = ["utm-pd", "full-suite-ui"]
+
+[[bin]]
+name = "slint_lifecycle_lock"
+path = "../desktop-lock/auth.rs"
+required-features = ["desktop-lock-ui"]
 
 [[bin]]
 name = "slint_surface_fixture"

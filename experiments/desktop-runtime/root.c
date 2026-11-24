@@ -112,6 +112,9 @@ static seL4_CPtr frame(struct process *p, uintptr_t address, const void *bytes, 
                        unsigned flags)
 {
     seL4_CPtr cap = app_object(p, seL4_ARM_SmallPageObject, 0);
+#ifdef RUNTIME_TRACK_FRAME
+    RUNTIME_TRACK_FRAME(cap, PAGE_BYTES);
+#endif
     uint8_t *buffer = temporary_mapping(cap);
     for (size_t i = 0; i < PAGE_BYTES; ++i)
         if (buffer[i])

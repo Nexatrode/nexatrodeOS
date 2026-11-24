@@ -531,7 +531,8 @@ disposable fixture only.
 This work does not change the regular phone/UTM app layout or migrate saved
 data. The graphics slot is fixed in geometry and only one window is created
 dynamically at a time. Multiple dynamic windows, disk packages, identity-bound
-file/network services and lock coverage remain. Clearing these compositor
+file/network services remain. Lock coverage is tested separately in the
+[disposable passphrase/lifecycle fixture](dynamic-app-lock.md). Clearing these compositor
 caches and checking zero on reallocation does not establish immediate erasure
 of all physical RAM, registers, GPU/display buffers or host snapshots. The
 private composer and manager remain experimental trusted code.

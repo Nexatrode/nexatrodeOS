@@ -70,6 +70,11 @@ impl DevelopmentCryptoProvider {
         use zeroize::Zeroize;
         self.key.zeroize();
     }
+
+    /// No key bytes leave the provider; used by the disposable lifecycle's
+    /// synchronous eviction acknowledgement, including its failure control.
+    #[cfg(feature = "utm-dynamic-vault-lock")]
+    pub fn key_is_cleared(&self) -> bool { self.key.iter().all(|byte| *byte == 0) }
 }
 
 #[cfg(feature = "development-crypto")]

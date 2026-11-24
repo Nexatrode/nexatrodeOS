@@ -337,6 +337,8 @@ fn init() -> Vault {
         crypto,
         #[cfg(feature = "utm-wrapped-vault-experiment")]
         wrapped_unlocked: false,
+        #[cfg(feature = "utm-dynamic-vault-lock")]
+        lifecycle: personal_os_rust_server::vault_lifecycle::VaultLifecycle::new(),
         blob_transfer: [
             {
                 #[cfg(feature = "utm-device-lock")]
@@ -367,6 +369,8 @@ struct Vault {
     crypto: DevelopmentCryptoProvider,
     #[cfg(feature = "utm-wrapped-vault-experiment")]
     wrapped_unlocked: bool,
+    #[cfg(feature = "utm-dynamic-vault-lock")]
+    lifecycle: personal_os_rust_server::vault_lifecycle::VaultLifecycle,
     blob_transfer: [*mut BlobTransferPage; NAMESPACE_COUNT],
     wallet_transfer: *mut BlobTransferPage,
     #[cfg(feature = "utm-photo-reader")]
@@ -445,10 +449,15 @@ impl Vault {
 
     #[cfg(feature = "utm-wrapped-vault-experiment")]
     fn wrapped_lock(&mut self) {
+        self.wrapped_clear(true);
+    }
+
+    #[cfg(feature = "utm-wrapped-vault-experiment")]
+    fn wrapped_clear(&mut self, erase_key: bool) {
         use zeroize::Zeroize;
         let was_unlocked = self.wrapped_unlocked;
         self.wrapped_unlocked = false;
-        self.crypto.clear_key();
+        if erase_key { self.crypto.clear_key(); }
         self.wallet_tx_stage.zeroize();
         self.wallet_tx_staged = 0;
         self.photo_staged = 0;
@@ -458,8 +467,28 @@ impl Vault {
                 slots: [[RecordSlot::INVALID; SLOT_COUNT]; NAMESPACE_COUNT],
                 files: [PersistentFileState::UNLOADED; vault_file::FILE_COUNT], loaded: 0,
             });
+            #[cfg(feature = "utm-dynamic-vault-lock")]
+            {
+                for page in self.blob_transfer { if !page.is_null() { (*page).set_payload(&[]); } }
+                if !self.wallet_transfer.is_null() { (*self.wallet_transfer).set_payload(&[]); }
+                if !self.wallet_identity_transfer.is_null() { (*self.wallet_identity_transfer).set_payload(&[]); }
+                #[cfg(feature = "utm-photo-reader")]
+                if !self.photo_read_transfer.is_null() { (*self.photo_read_transfer).set_payload(&[]); }
+                #[cfg(feature = "simplex-agent-vault")]
+                if !self.simplex_agent_transfer.is_null() { (*self.simplex_agent_transfer).set_payload(&[]); }
+                // Block I/O may contain decrypted scratch bytes from a read.
+                core::slice::from_raw_parts_mut(self.block.data, STORAGE_BLOCK_COUNT as usize * BLOCK_SIZE).zeroize();
+            }
         }
         if was_unlocked { debug_println!("WRAPPED_VAULT|LOCKED"); }
+    }
+
+    #[cfg(feature = "utm-dynamic-vault-lock")]
+    fn lifecycle_status(&self) -> MessageInfo {
+        set_mr(0, self.lifecycle.epoch());
+        set_mr(1, self.lifecycle.phase() as u64);
+        set_mr(2, u64::from(self.crypto.key_is_cleared()));
+        MessageInfo::new(REPLY_OK, 3)
     }
 
     fn loaded(&self) -> bool {
@@ -2361,6 +2390,34 @@ impl Handler for Vault {
         channel: Channel,
         request: MessageInfo,
     ) -> Result<MessageInfo, Self::Error> {
+        #[cfg(feature = "utm-dynamic-vault-lock")]
+        if channel == vault_protocol::VAULT_LIFECYCLE_CHANNEL {
+            if request.label() == vault_protocol::REQUEST_DEVICE_VAULT_STATUS && request.count() == 0 {
+                return Ok(self.lifecycle_status());
+            }
+            if request.count() != 1 { return Ok(MessageInfo::new(REPLY_DENIED, 0)); }
+            let epoch = get_mr(0);
+            if request.label() == vault_protocol::REQUEST_DEVICE_VAULT_LOCK && self.lifecycle.evict(epoch) {
+                let erase = !cfg!(feature = "utm-dynamic-vault-skip-evict");
+                self.wrapped_clear(erase);
+                debug_println!("DYNAMIC_VAULT|EVICT|epoch={}|cleared={}", epoch, self.crypto.key_is_cleared());
+                return Ok(self.lifecycle_status());
+            }
+            if request.label() == vault_protocol::REQUEST_VAULT_ARM && self.crypto.key_is_cleared() && self.lifecycle.arm(epoch) {
+                return Ok(self.lifecycle_status());
+            }
+            if request.label() == vault_protocol::REQUEST_VAULT_COMMIT && !self.crypto.key_is_cleared() && self.lifecycle.commit(epoch) {
+                self.wrapped_unlocked = true;
+                debug_println!("DYNAMIC_VAULT|COMMIT|epoch={}", epoch);
+                return Ok(self.lifecycle_status());
+            }
+            // A malformed/stale control cannot change the key or current epoch.
+            return Ok(MessageInfo::new(REPLY_DENIED, 0));
+        }
+        #[cfg(feature = "utm-dynamic-vault-lock")]
+        if channel != vault_protocol::DEVICE_LOCK_CHANNEL && (0x452..=0x456).contains(&request.label()) {
+            return Ok(MessageInfo::new(REPLY_DENIED, 0));
+        }
         #[cfg(feature = "utm-wrapped-vault-experiment")]
         if channel == vault_protocol::DEVICE_LOCK_CHANNEL {
             let page = match self.transfer_page(SYSTEM_NAMESPACE) {
@@ -2393,11 +2450,24 @@ impl Handler for Vault {
                 };
             }
             if request.label() == vault_protocol::REQUEST_DEVICE_VAULT_LOCK && request.count() == 0 {
+                #[cfg(feature = "utm-dynamic-vault-lock")]
+                return Ok(MessageInfo::new(REPLY_DENIED, 0));
+                #[cfg(not(feature = "utm-dynamic-vault-lock"))]
+                {
                 unsafe { &mut *page }.set_payload(&[]);
                 self.wrapped_lock();
                 return Ok(MessageInfo::new(REPLY_OK, 0));
+                }
             }
-            if request.label() == vault_protocol::REQUEST_DEVICE_VAULT_UNLOCK && request.count() == 0 {
+            if request.label() == vault_protocol::REQUEST_DEVICE_VAULT_UNLOCK && request.count() == usize::from(cfg!(feature = "utm-dynamic-vault-lock")) {
+                #[cfg(feature = "utm-dynamic-vault-lock")]
+                let epoch = get_mr(0);
+                #[cfg(feature = "utm-dynamic-vault-lock")]
+                if !self.lifecycle.may_prepare(epoch) {
+                    unsafe { &mut *page }.set_payload(&[]);
+                    debug_println!("DYNAMIC_VAULT|STALE_PREPARE_DENIED");
+                    return Ok(MessageInfo::new(REPLY_DENIED, 0));
+                }
                 use sha2::{Digest, Sha256};
                 use subtle::ConstantTimeEq;
                 use zeroize::Zeroizing;
@@ -2419,15 +2489,23 @@ impl Handler for Vault {
                 }
                 self.wrapped_lock();
                 self.crypto.replace_key(&key);
-                self.wrapped_unlocked = true;
+                #[cfg(not(feature = "utm-dynamic-vault-lock"))]
+                { self.wrapped_unlocked = true; }
                 if let Err(label) = self.load_from_disk() {
                     self.wrapped_lock();
                     return Ok(MessageInfo::new(label, 0));
                 }
+                #[cfg(feature = "utm-dynamic-vault-lock")]
+                {
+                    assert!(self.lifecycle.prepared(epoch));
+                    debug_println!("DYNAMIC_VAULT|PREPARED|epoch={}", epoch);
+                }
+                #[cfg(not(feature = "utm-dynamic-vault-lock"))]
                 debug_println!("WRAPPED_VAULT|UNLOCKED");
                 // The experimental system description connects this channel
                 // only to the SimpleX agent's startup gate. The agent rechecks
                 // vault state after waking, so a stale signal is harmless.
+                #[cfg(not(feature = "utm-dynamic-vault-lock"))]
                 Channel::new(11).notify();
                 return Ok(MessageInfo::new(REPLY_OK, 0));
             }

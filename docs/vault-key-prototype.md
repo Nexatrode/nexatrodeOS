@@ -45,6 +45,12 @@ startup integration, not a complete lifecycle or memory-clearing design. Do not
 use this build as a regular VM. Disabling the experimental lock is intentionally
 unsupported.
 
+The separate [dynamic-app lock fixture](dynamic-app-lock.md#wrapped-key-integration)
+now connects a disposable wrapped key to process destruction and recreation.
+Its manager owns the vault eviction/commit endpoint, cancels stale epochs and
+expires abandoned preparations. This is separate from the full-UI agent gate;
+it does not migrate or change the saved wallet/chat installation key.
+
 Before any real-data integration, design and independently review enrollment,
 credential changes, authenticated storage and recovery, safe migration without
 discarding the old key, lock/auto-lock key eviction, and the behavior of running
