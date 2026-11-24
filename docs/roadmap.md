@@ -44,6 +44,8 @@ Initially the app set is built into the system image. Installing arbitrary apps,
 dynamic process loading, and Android compatibility are separate major projects.
 The static starting point fits Microkit's architecture.
 [Microkit manual](https://docs.sel4.systems/projects/microkit/manual/2.3.1/).
+For a future desktop with installable apps, see the proposed boundaries and
+open runtime decisions in [App architecture: phone and desktop](desktop-app-direction.md).
 
 ## Size legend
 

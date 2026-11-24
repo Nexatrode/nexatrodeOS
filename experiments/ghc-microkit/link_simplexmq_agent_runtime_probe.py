@@ -75,7 +75,7 @@ def main() -> None:
         "-ffreestanding", "-fno-builtin", "-fno-stack-protector", "-std=gnu11",
         "-O2", "-g", "-Wall", "-Wextra", "-Werror",
         f"-I{MICROKIT / 'freestanding-headers'}",
-        f"-I{ROOT / '.cache/microkit-sdk-2.3.1/board/qemu_virt_aarch64/debug/include'}",
+        f"-I{Path(os.environ.get('SIMPLEX_AGENT_MICROKIT_INCLUDE', str(ROOT / '.cache/microkit-sdk-2.3.1/board/qemu_virt_aarch64/debug/include')))}",
         f"-I{ROOT / 'tests/net/include'}",
         f"-I{ROOT / 'tests'}",
         f"-I{ROOT / '.cache/simplex-chat-upstream/dist-newstyle/src/direct-sq_-fd066e285bc22458/cbits'}",
@@ -122,8 +122,9 @@ def main() -> None:
         str(MICROKIT / "build/guest-simplex-sqlcipher-crypto/source/libtomcrypt.a"),
         str(ROOT / ".cache/ghc-port/openlibm/libopenlibm.a"),
         str(MICROKIT / "build/compiler-rt-quad/libquad-builtins.a"),
-        str(MICROKIT / "build/haskell-hello/haskell_microkit_entry.o"),
-        str(ROOT / ".cache/microkit-sdk-2.3.1/board/qemu_virt_aarch64/debug/lib/libmicrokit.a"),
+        os.environ.get("SIMPLEX_AGENT_ENTRY_OBJECT", str(MICROKIT / "build/haskell-hello/haskell_microkit_entry.o")),
+        *([os.environ["SIMPLEX_AGENT_GATE_OBJECT"]] if os.environ.get("SIMPLEX_AGENT_GATE_OBJECT") else []),
+        os.environ.get("SIMPLEX_AGENT_MICROKIT_LIB", str(ROOT / ".cache/microkit-sdk-2.3.1/board/qemu_virt_aarch64/debug/lib/libmicrokit.a")),
     ]
     missing = [path for path in objects if not Path(path).exists()]
     if missing:
@@ -158,7 +159,7 @@ def main() -> None:
         "-optc-Dssize_t=long", "-optc-ffreestanding", "-optc-fuse-ld=lld",
         "-optc-nostdlib", "-optc-Wl,-e,init", "-o", str(image),
     ]
-    run(args, OUTPUT / "link.log", GHC_TREE)
+    run(args, OUTPUT / "link.log", Path(os.environ.get("SIMPLEX_AGENT_LINK_CWD", str(GHC_TREE))))
     nm = "/opt/homebrew/opt/llvm/bin/llvm-nm"
     undefined = subprocess.run(
         [nm, "-u", str(image)], check=True, text=True, stdout=subprocess.PIPE,

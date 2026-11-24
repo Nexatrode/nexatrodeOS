@@ -10,12 +10,18 @@
 extern StgClosure ZCMain_main_closure;
 void sel4_simplex_ipc_init(void) __attribute__((weak));
 void sel4_simplex_ipc_notified(microkit_channel channel) __attribute__((weak));
+#ifdef SIMPLEX_WAIT_FOR_WRAPPED_VAULT
+void simplex_wait_for_vault(void);
+#endif
 
 void init(void)
 {
     if (sel4_simplex_ipc_init != 0) {
         sel4_simplex_ipc_init();
     }
+#ifdef SIMPLEX_WAIT_FOR_WRAPPED_VAULT
+    simplex_wait_for_vault();
+#endif
     static char program_name[] = "haskell-probe";
     char *argv[] = { program_name, NULL };
     int argc = 1;

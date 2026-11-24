@@ -53,6 +53,42 @@ int main(void)
            bgra[dst_row + 2] == 0x12 && bgra[dst_row + 3] == 0xff);
     for (size_t i = 0; i < dst_row; i++) assert(bgra[dst_row + i] == unaligned[1 + dst_row + i]);
 
+    /* If two non-overlapping updates were published, both must reach scanout. */
+    uint32_t copied, y, height;
+    size_t row_a = 10u * rgb_row, row_b = 20u * rgb_row;
+    rgb[row_a] = 0x71;
+    rgb[row_b] = 0x93;
+    atomic_store_explicit(&header->revision, 6, memory_order_release);
+    atomic_store_explicit(&header->damage_y, 20, memory_order_relaxed);
+    atomic_store_explicit(&header->damage_height, 1, memory_order_relaxed);
+    assert(slint_frame_copy_update_to_bgra(header, rgb, sizeof(surface), bgra, sizeof(bgra),
+                                           2, &copied, &y, &height));
+    assert(copied == 6 && y == 0 && height == SLINT_FRAME_HEIGHT);
+    assert(bgra[10u * dst_row + 2] == 0x71 && bgra[20u * dst_row + 2] == 0x93);
+
+    /* A consecutive update still copies just the changed band. */
+    rgb[row_b] = 0xa4;
+    atomic_store_explicit(&header->revision, 8, memory_order_release);
+    assert(slint_frame_copy_update_to_bgra(header, rgb, sizeof(surface), bgra, sizeof(bgra),
+                                           6, &copied, &y, &height));
+    assert(copied == 8 && y == 20 && height == 1);
+    assert(bgra[20u * dst_row + 2] == 0xa4);
+
+    /* After an interrupted copy the consumer forces a fresh whole frame. */
+    assert(slint_frame_copy_update_to_bgra(header, rgb, sizeof(surface), bgra, sizeof(bgra),
+                                           UINT32_MAX, &copied, &y, &height));
+    assert(y == 0 && height == SLINT_FRAME_HEIGHT);
+
+    /* Revision zero is invalid during wrap, so the first valid revision
+     * after wrap must conservatively include the skipped publication. */
+    atomic_store_explicit(&header->revision, 2, memory_order_release);
+    assert(slint_frame_copy_update_to_bgra(header, rgb, sizeof(surface), bgra, sizeof(bgra),
+                                           UINT32_MAX - 1u, &copied, &y, &height));
+    assert(y == 0 && height == SLINT_FRAME_HEIGHT);
+    atomic_store_explicit(&header->revision, 3, memory_order_release);
+    assert(!slint_frame_copy_update_to_bgra(header, rgb, sizeof(surface), bgra, sizeof(bgra),
+                                            2, &copied, &y, &height));
+
     atomic_store_explicit(&header->revision, 3, memory_order_release);
     assert(!slint_frame_header_valid(header, required, &revision));
     atomic_store_explicit(&header->revision, 4, memory_order_release);

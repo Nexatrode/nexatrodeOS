@@ -114,4 +114,41 @@ static inline bool slint_frame_copy_band_to_bgra(const slint_frame_header_t *hea
     return slint_frame_revision_unchanged(header, revision);
 }
 
+static inline bool slint_frame_copy_update_to_bgra(const slint_frame_header_t *header,
+                                                   const uint8_t *rgb_pixels,
+                                                   size_t mapped_bytes,
+                                                   uint8_t *bgra_pixels,
+                                                   size_t destination_bytes,
+                                                   uint32_t previous_revision,
+                                                   uint32_t *copied_revision,
+                                                   uint32_t *damage_y,
+                                                   uint32_t *damage_height)
+{
+    uint32_t revision;
+    if (copied_revision == NULL || damage_y == NULL || damage_height == NULL ||
+        !slint_frame_header_valid(header, mapped_bytes, &revision)) {
+        return false;
+    }
+    uint32_t y = atomic_load_explicit(&header->damage_y, memory_order_relaxed);
+    uint32_t height = atomic_load_explicit(&header->damage_height, memory_order_relaxed);
+    /* The header records only the newest band's damage. If the consumer
+     * missed any revisions, the shared RGB image is still complete but the
+     * damage metadata is not. Copy it all before resuming partial updates. */
+    if (previous_revision == UINT32_MAX || revision - previous_revision != 2u ||
+        height == 0 || y >= SLINT_FRAME_HEIGHT || height > SLINT_FRAME_HEIGHT - y) {
+        y = 0;
+        height = SLINT_FRAME_HEIGHT;
+    }
+    if (!slint_frame_revision_unchanged(header, revision) ||
+        !slint_frame_copy_band_to_bgra(header, rgb_pixels, mapped_bytes, bgra_pixels,
+                                       destination_bytes, y, height) ||
+        !slint_frame_revision_unchanged(header, revision)) {
+        return false;
+    }
+    *copied_revision = revision;
+    *damage_y = y;
+    *damage_height = height;
+    return true;
+}
+
 #endif

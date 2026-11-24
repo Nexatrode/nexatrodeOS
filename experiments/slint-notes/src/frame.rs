@@ -60,12 +60,22 @@ impl FrameSurfaceHeader {
         }
         let odd = self.revision.load(Ordering::Relaxed).wrapping_add(1) | 1;
         self.revision.store(odd, Ordering::Release);
+        // Publish the in-progress marker before either damage metadata or
+        // pixels can become visible to a reader on another CPU.
+        core::sync::atomic::fence(Ordering::SeqCst);
         self.damage_y.store(y, Ordering::Relaxed);
         self.damage_height.store(height, Ordering::Relaxed);
         let stride = FRAME_STRIDE_BYTES as usize;
         let start = y as usize * stride;
         let bytes = height as usize * stride;
-        pixels[start..start + bytes].copy_from_slice(&source[start..start + bytes]);
+        // These slices are distinct, bounded ordinary RAM mappings. The
+        // freestanding libc memcpy copies one byte at a time; use aligned
+        // words for the large frame handoff instead.
+        unsafe {
+            crate::frame_copy::copy_nonoverlapping_ram(
+                pixels.as_mut_ptr().add(start), source.as_ptr().add(start), bytes,
+            );
+        }
         self.revision.store(odd.wrapping_add(1), Ordering::Release);
         true
     }

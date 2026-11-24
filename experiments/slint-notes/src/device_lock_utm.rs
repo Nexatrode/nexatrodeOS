@@ -5,6 +5,8 @@ use personal_os_rust_server::{device_lock::{Credential, LockController, LockSett
 use sel4_microkit::{Channel, MessageInfo, get_mr, set_mr};
 use slint::ComponentHandle;
 use zeroize::Zeroize;
+#[cfg(feature = "utm-wrapped-vault-experiment")]
+use zeroize::Zeroizing;
 use crate::NotesWindow;
 
 const VAULT: Channel = Channel::new(15);
@@ -14,11 +16,23 @@ const WRITE: usize = 0x451;
 const OK: usize = 0x300;
 const NO_BLOB: usize = 0x30d;
 const IDLE_MS: u64 = 60_000;
+#[cfg(feature = "utm-wrapped-vault-experiment")]
+static VAULT_UNLOCKED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+#[cfg(feature = "utm-wrapped-vault-experiment")]
+pub fn take_vault_unlocked() -> bool { VAULT_UNLOCKED.swap(false, core::sync::atomic::Ordering::AcqRel) }
+#[cfg(not(feature = "utm-wrapped-vault-experiment"))]
+const LOCK_RECORD_SIZE: usize = personal_os_rust_server::device_lock::SETTINGS_SIZE;
+#[cfg(feature = "utm-wrapped-vault-experiment")]
+const LOCK_RECORD_SIZE: usize = personal_os_rust_server::wrapped_vault_bootstrap::BOOTSTRAP_SIZE;
 
 pub struct DeviceLock {
     page: NonNull<BlobTransferPage>,
     controller: Option<LockController>,
     pending: Option<Credential>,
+    #[cfg(feature = "utm-wrapped-vault-experiment")]
+    pending_wrapped: Option<([u8; personal_os_rust_server::vault_key_prototype::ENVELOPE_SIZE], [u8; 32])>,
+    #[cfg(feature = "utm-wrapped-vault-experiment")]
+    wrapped: Option<[u8; personal_os_rust_server::vault_key_prototype::ENVELOPE_SIZE]>,
     input: [u8; 128],
     length: usize,
     stage: u8,
@@ -54,14 +68,14 @@ fn close_screen(ui: &NotesWindow) {
 impl DeviceLock {
     fn clear(&mut self) { self.input.zeroize(); self.length = 0; }
 
-    fn read(&mut self) -> Result<(u64, Option<[u8; personal_os_rust_server::device_lock::SETTINGS_SIZE]>), ()> {
+    fn read(&mut self) -> Result<(u64, Option<[u8; LOCK_RECORD_SIZE]>), ()> {
         let reply = VAULT.pp_call(MessageInfo::new(READ as _, 0));
         if reply.count() != 1 { return Err(()); }
         let generation = get_mr(0);
         if reply.label() == NO_BLOB as _ { return Ok((generation, None)); }
         if reply.label() != OK as _ { return Err(()); }
         let page = unsafe { self.page.as_mut() };
-        let mut settings = [0; personal_os_rust_server::device_lock::SETTINGS_SIZE];
+        let mut settings = [0; LOCK_RECORD_SIZE];
         let payload = page.payload().ok_or(())?;
         if payload.len() != settings.len() { page.set_payload(&[]); return Err(()); }
         settings.copy_from_slice(payload);
@@ -78,7 +92,11 @@ impl DeviceLock {
             set_mr(0, generation);
             let reply = VAULT.pp_call(MessageInfo::new(WRITE as _, 1));
             unsafe { self.page.as_mut() }.set_payload(&[]);
-            if reply.label() != OK as _ || reply.count() != 1 { return Err(()); }
+            if reply.label() != OK as _ || reply.count() != 1 {
+                #[cfg(feature = "utm-wrapped-vault-experiment")]
+                sel4_microkit::debug_println!("WRAPPED_UI|SAVE_FAIL|label={:x}|count={}", reply.label(), reply.count());
+                return Err(());
+            }
             let (generation_after, stored) = self.read()?;
             if generation_after <= generation || stored.as_ref().is_none_or(|saved| saved.as_slice() != settings) { return Err(()); }
         }
@@ -92,6 +110,40 @@ impl DeviceLock {
         salt[..8].copy_from_slice(&get_mr(0).to_le_bytes());
         salt[8..].copy_from_slice(&get_mr(1).to_le_bytes());
         Ok(salt)
+    }
+
+    #[cfg(feature = "utm-wrapped-vault-experiment")]
+    fn prepare_wrapped(password: &[u8]) -> Result<([u8; personal_os_rust_server::vault_key_prototype::ENVELOPE_SIZE], [u8; 32]), ()> {
+        let mut key = Zeroizing::new([0u8; 32]);
+        key[..16].copy_from_slice(&Self::salt()?);
+        key[16..].copy_from_slice(&Self::salt()?);
+        let mut entropy = [0; 28];
+        entropy[..16].copy_from_slice(&Self::salt()?);
+        entropy[16..].copy_from_slice(&Self::salt()?[..12]);
+        if key.iter().all(|b| *b == 0) || entropy.iter().all(|b| *b == 0) { return Err(()); }
+        let envelope = personal_os_rust_server::vault_key_prototype::seal(password, &entropy, &key).ok_or(())?;
+        let hash = personal_os_rust_server::vault_key_prototype::key_hash(&key);
+        Ok((envelope, hash))
+    }
+
+    #[cfg(feature = "utm-wrapped-vault-experiment")]
+    fn vault_lock(&mut self) -> Result<(), ()> {
+        unsafe { self.page.as_mut() }.set_payload(&[]);
+        let reply = VAULT.pp_call(MessageInfo::new(0x453, 0));
+        if reply.label() == OK as _ { Ok(()) } else { Err(()) }
+    }
+
+    #[cfg(feature = "utm-wrapped-vault-experiment")]
+    fn vault_unlock(&mut self) -> Result<(), ()> {
+        let envelope = self.wrapped.as_ref().ok_or(())?;
+        let key = personal_os_rust_server::vault_key_prototype::open(&self.input[..self.length], envelope).ok_or(())?;
+        if !unsafe { self.page.as_mut() }.set_payload(&*key) { return Err(()); }
+        let reply = VAULT.pp_call(MessageInfo::new(0x452, 0));
+        unsafe { self.page.as_mut() }.set_payload(&[]);
+        if reply.label() == OK as _ {
+            VAULT_UNLOCKED.store(true, core::sync::atomic::Ordering::Release);
+            Ok(())
+        } else { Err(()) }
     }
 
     fn key(&mut self, key: &str) {
@@ -111,6 +163,12 @@ impl DeviceLock {
         match self.stage {
             2 => {
                 let candidate = Self::salt().and_then(|salt| Credential::create(&self.input[..self.length], salt).map_err(|_| ()));
+                #[cfg(feature = "utm-wrapped-vault-experiment")]
+                let candidate = candidate.and_then(|credential| {
+                    let wrapped = Self::prepare_wrapped(&self.input[..self.length])?;
+                    self.pending_wrapped = Some(wrapped);
+                    Ok(credential)
+                });
                 self.clear();
                 match candidate {
                     Ok(credential) => { self.pending = Some(credential); self.stage = 3; open_screen(ui, 3, "Enter the same passphrase again."); }
@@ -123,9 +181,17 @@ impl DeviceLock {
                 if !matches { self.pending = None; self.stage = 2; open_screen(ui, 2, "Passphrases did not match. Start again."); return; }
                 let Some(credential) = self.pending.take() else { return; };
                 let Ok(settings) = LockSettings::enabled(credential, IDLE_MS) else { return; };
+                #[cfg(not(feature = "utm-wrapped-vault-experiment"))]
                 let record = settings.encode();
+                #[cfg(feature = "utm-wrapped-vault-experiment")]
+                let record = {
+                    let Some((envelope, hash)) = self.pending_wrapped.take() else { open_screen(ui, 0, "Lock setup failed."); return; };
+                    let Some(record) = personal_os_rust_server::wrapped_vault_bootstrap::encode(&settings.encode(), &envelope, &hash) else { open_screen(ui, 0, "Lock setup failed."); return; };
+                    self.wrapped = Some(envelope);
+                    record
+                };
                 if self.save(&record).is_err() { self.stage = 0; open_screen(ui, 0, "Lock storage unavailable; restart required."); return; }
-                match LockSettings::decode(&record).and_then(|s| s.into_controller(now_ms())) {
+                match settings.into_controller(now_ms()) {
                     Ok(Some(mut controller)) => {
                         // Enrollment confirmation already verified the passphrase.
                         // Unlock via a second entry to avoid retaining its plaintext.
@@ -142,14 +208,24 @@ impl DeviceLock {
                     c.authentication_finished(now_ms(), result);
                     if c.is_locked() && result == UnlockResult::Unlocked { UnlockResult::Denied } else { result }
                 });
+                #[cfg(feature = "utm-wrapped-vault-experiment")]
+                let result = if result == Some(UnlockResult::Unlocked) && self.vault_unlock().is_err() {
+                    if let Some(c) = self.controller.as_mut() { c.lock(); }
+                    Some(UnlockResult::Denied)
+                } else { result };
                 self.clear();
                 if result != Some(UnlockResult::Unlocked) { ui.set_device_lock_status("Unable to unlock. Wait and try again.".into()); return; }
                 if self.stage == 4 {
+                    #[cfg(feature = "utm-wrapped-vault-experiment")]
+                    { if let Some(c) = self.controller.as_mut() { c.lock(); } if self.vault_lock().is_err() { self.stage = 0; open_screen(ui, 0, "Vault lock failed; restart required."); return; } ui.set_device_lock_status("Disabling this experimental lock is unavailable.".into()); return; }
+                    #[cfg(not(feature = "utm-wrapped-vault-experiment"))]
+                    {
                     if self.save(&LockSettings::disabled().encode()).is_err() {
                         if let Some(c) = self.controller.as_mut() { c.lock(); }
                         ui.set_device_lock_status("Lock storage unavailable.".into()); return;
                     }
                     self.controller = None; ui.set_device_lock_enabled(false);
+                    }
                 }
                 self.stage = 0; close_screen(ui);
             }
@@ -161,6 +237,8 @@ impl DeviceLock {
         if let Some(controller) = self.controller.as_mut() {
             controller.activity(now_ms());
             if controller.is_locked() && !ui.get_device_lock_screen() {
+                #[cfg(feature = "utm-wrapped-vault-experiment")]
+                if self.vault_lock().is_err() { self.clear(); self.stage = 0; open_screen(ui, 0, "Vault lock failed; restart required."); return; }
                 self.clear(); self.stage = 1; open_screen(ui, 1, "Enter your passphrase.");
             }
         }
@@ -170,6 +248,8 @@ impl DeviceLock {
         if let Some(controller) = self.controller.as_mut() {
             controller.tick(now_ms());
             if controller.is_locked() && !ui.get_device_lock_screen() {
+                #[cfg(feature = "utm-wrapped-vault-experiment")]
+                if self.vault_lock().is_err() { self.clear(); self.stage = 0; open_screen(ui, 0, "Vault lock failed; restart required."); return; }
                 self.clear(); self.stage = 1; open_screen(ui, 1, "Enter your passphrase.");
             }
         }
@@ -180,12 +260,21 @@ impl DeviceLock {
 
 pub fn initialize(ui: &NotesWindow, page: NonNull<BlobTransferPage>) -> Rc<RefCell<DeviceLock>> {
     open_screen(ui, 0, "Checking device lock…");
-    let state = Rc::new(RefCell::new(DeviceLock { page, controller: None, pending: None, input: [0; 128], length: 0, stage: 0 }));
+    let state = Rc::new(RefCell::new(DeviceLock { page, controller: None, pending: None,
+        #[cfg(feature = "utm-wrapped-vault-experiment")] pending_wrapped: None,
+        #[cfg(feature = "utm-wrapped-vault-experiment")] wrapped: None,
+        input: [0; 128], length: 0, stage: 0 }));
     {
         let mut lock = state.borrow_mut();
         match lock.read().and_then(|(_, settings)| match settings {
             None => Ok(None),
-            Some(bytes) => LockSettings::decode(&bytes).map_err(|_| ())?.into_controller(now_ms()).map_err(|_| ()),
+            Some(bytes) => {
+                #[cfg(not(feature = "utm-wrapped-vault-experiment"))]
+                let settings = bytes;
+                #[cfg(feature = "utm-wrapped-vault-experiment")]
+                let settings = { let (settings, envelope, _) = personal_os_rust_server::wrapped_vault_bootstrap::decode(&bytes).ok_or(())?; lock.wrapped = Some(envelope); settings };
+                LockSettings::decode(&settings).map_err(|_| ())?.into_controller(now_ms()).map_err(|_| ())
+            },
         }) {
             Ok(Some(controller)) => { lock.controller = Some(controller); lock.stage = 1; ui.set_device_lock_enabled(true); open_screen(ui, 1, "Enter your passphrase."); }
             Ok(None) => { ui.set_device_lock_enabled(false); close_screen(ui); }
@@ -210,12 +299,18 @@ pub fn initialize(ui: &NotesWindow, page: NonNull<BlobTransferPage>) -> Rc<RefCe
             let mut lock = shared.borrow_mut(); lock.clear();
             if action == 2 {
                 lock.pending = None;
+                #[cfg(feature = "utm-wrapped-vault-experiment")]
+                { lock.pending_wrapped = None; }
                 if lock.controller.is_some() { lock.stage = 1; open_screen(&ui, 1, "Enter your passphrase."); }
                 else { lock.stage = 0; close_screen(&ui); }
             } else if action == 1 {
-                if let Some(controller) = lock.controller.as_mut() { controller.lock(); lock.stage = 4; open_screen(&ui, 4, "Enter your passphrase to disable the lock."); }
+                if let Some(controller) = lock.controller.as_mut() { controller.lock();
+                    #[cfg(feature = "utm-wrapped-vault-experiment")] if lock.vault_lock().is_err() { lock.stage = 0; open_screen(&ui, 0, "Vault lock failed; restart required."); return; }
+                    lock.stage = 4; open_screen(&ui, 4, "Enter your passphrase to disable the lock."); }
             } else if let Some(controller) = lock.controller.as_mut() {
-                controller.lock(); lock.stage = 1; open_screen(&ui, 1, "Enter your passphrase.");
+                controller.lock();
+                #[cfg(feature = "utm-wrapped-vault-experiment")] if lock.vault_lock().is_err() { lock.stage = 0; open_screen(&ui, 0, "Vault lock failed; restart required."); return; }
+                lock.stage = 1; open_screen(&ui, 1, "Enter your passphrase.");
             } else { lock.stage = 2; open_screen(&ui, 2, "Choose a passphrase of at least 8 characters."); }
         }
     });

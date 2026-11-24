@@ -1905,6 +1905,11 @@ fn apply_hardware_key(ui: &NotesWindow, code: u64, shift: bool) -> bool {
     let Some(text) = hardware_character(code, shift) else {
         return false;
     };
+    #[cfg(feature = "utm-wrapped-vault-experiment")]
+    if ui.get_page() == 1 && ui.get_note_editing() && ui.get_edit_target() == 1 {
+        ui.invoke_key_tapped(text.into());
+        return true;
+    }
     if ui.get_page() == 6 && ui.get_edit_target() == 17 {
         ui.invoke_key_tapped(text.into());
         return true;
@@ -3414,10 +3419,12 @@ impl SlintService {
         let Some(slot) = Self::picture_slot(self.shown_view) else {
             return;
         };
+        #[cfg(feature = "utm-perf-trace")]
+        let trace_start = perf_time_us();
         unsafe {
-            core::ptr::copy_nonoverlapping(
-                self.rendered.as_ptr(),
+            personal_os_slint_notes_spike::frame_copy::copy_nonoverlapping_ram(
                 picture_bytes(slot),
+                self.rendered.as_ptr(),
                 FRAME_PIXEL_BYTES,
             );
             let meta = &mut *core::ptr::addr_of_mut!(PAGE_PICTURE_META)
@@ -3426,6 +3433,8 @@ impl SlintService {
             meta.ready = true;
             meta.stamp = self.shown_stamp;
         }
+        #[cfg(feature = "utm-perf-trace")]
+        debug_println!("PERF|CACHE_STORE|{}|{}|{}", self.shown_view, trace_start, perf_time_us());
         debug_println!("SLINT PAGE STORE {}", self.shown_view);
     }
 
@@ -3441,11 +3450,15 @@ impl SlintService {
             if !meta.ready || meta.stamp != stamp {
                 return false;
             }
-            core::ptr::copy_nonoverlapping(
-                picture_bytes(slot),
+            #[cfg(feature = "utm-perf-trace")]
+            let trace_start = perf_time_us();
+            personal_os_slint_notes_spike::frame_copy::copy_nonoverlapping_ram(
                 self.rendered.as_mut_ptr(),
+                picture_bytes(slot),
                 FRAME_PIXEL_BYTES,
             );
+            #[cfg(feature = "utm-perf-trace")]
+            debug_println!("PERF|CACHE_RESTORE|{}|{}|{}", view, trace_start, perf_time_us());
         }
         self.shown_stamp = stamp;
         skia_guest::invalidate_chrome();
@@ -3565,6 +3578,8 @@ impl SlintService {
     }
 
     fn publish_copied_frame(&mut self) {
+        #[cfg(feature = "utm-perf-trace")]
+        let trace_start = perf_time_us();
         let shared_pixels =
             unsafe { core::slice::from_raw_parts_mut(self.pixels.as_ptr(), FRAME_PIXEL_BYTES) };
         assert!(
@@ -3577,6 +3592,8 @@ impl SlintService {
             "publish stored page"
         );
         core::sync::atomic::fence(Ordering::SeqCst);
+        #[cfg(feature = "utm-perf-trace")]
+        debug_println!("PERF|CACHE_PUBLISH|{}|{}", trace_start, perf_time_us());
     }
 
     fn store_rendered_picture(&mut self, view: i32, stamp: u64) {
@@ -3584,9 +3601,9 @@ impl SlintService {
             return;
         };
         unsafe {
-            core::ptr::copy_nonoverlapping(
-                self.rendered.as_ptr(),
+            personal_os_slint_notes_spike::frame_copy::copy_nonoverlapping_ram(
                 picture_bytes(slot),
+                self.rendered.as_ptr(),
                 FRAME_PIXEL_BYTES,
             );
             let meta = &mut *core::ptr::addr_of_mut!(PAGE_PICTURE_META)
@@ -4063,6 +4080,7 @@ impl DamageBand {
 
 #[protection_domain]
 fn init() -> SlintService {
+    debug_println!("SLINT|FRAME_COPY_RAM_V1");
     let heap = memory_region_symbol!(slint_heap: *mut u8);
     HEAP.set_bounds(sel4_dlmalloc::StaticHeapBounds::new(heap.as_ptr(), HEAP_BYTES))
         .expect("slint heap initialized once");
@@ -5069,6 +5087,20 @@ fn init() -> SlintService {
     let weak_ui = ui.as_weak();
     ui.on_key_tapped(move |key| {
         if let Some(ui) = weak_ui.upgrade() {
+            #[cfg(feature = "utm-wrapped-vault-experiment")]
+            if ui.get_page() == 1 && ui.get_note_editing() && ui.get_edit_target() == 1 {
+                let mut text = ui.get_note().to_string();
+                match key.as_str() {
+                    "DELETE" | "\u{8}" => { text.pop(); },
+                    "SPACE" | " " if text.len() < 128 => text.push(' '),
+                    "ENTER" | "\n" if text.len() < 128 => text.push('\n'),
+                    k if k.len() == 1 && k.as_bytes()[0].is_ascii_alphanumeric() && text.len() < 128 => text.push(k.as_bytes()[0].to_ascii_uppercase() as char),
+                    _ => {},
+                }
+                ui.set_note(text.into());
+                SLINT_INPUT.notify();
+                return;
+            }
             if ui.get_page() == 6 && ui.get_edit_target() == 17 {
                 let mut name = ui.get_message_group_name().to_string();
                 match key.as_str() {
@@ -5478,6 +5510,7 @@ fn init() -> SlintService {
     // handler bounce, so WaitConnect never got notify pumps.
     if !service._ui.get_device_lock_screen() { service._ui.set_page(16); }
     let page_now = service._ui.get_page();
+    #[cfg(not(feature = "utm-wrapped-vault-experiment"))]
     service
         ._ui
         .set_note(alloc::format!("PAGEPROBE AFTER SET16 GET {page_now}").into());
@@ -7681,6 +7714,12 @@ impl Handler for SlintService {
             self.refresh_wall_clock();
         }
         self.handle_notification(channels)?;
+        #[cfg(feature = "utm-wrapped-vault-experiment")]
+        if device_lock_utm::take_vault_unlocked() {
+            self.load_vault_apps();
+            self.publish_frame();
+            SLINT_INPUT.notify();
+        }
         #[cfg(feature = "simplex-agent-ui")]
         if timer_fired && self.chat_refresh.take()
             && self._ui.get_page() == 6 && self._ui.get_edit_target() == 0
@@ -7798,6 +7837,12 @@ impl Handler for SlintService {
 
     fn protected(&mut self, channel: Channel, request: MessageInfo) -> Result<MessageInfo, Self::Error> {
         let reply = self.handle_input(channel, request)?;
+        #[cfg(feature = "utm-wrapped-vault-experiment")]
+        if device_lock_utm::take_vault_unlocked() {
+            self.load_vault_apps();
+            self.publish_frame();
+            SLINT_INPUT.notify();
+        }
         self.arm_frame_timer();
         Ok(reply)
     }

@@ -57,6 +57,24 @@ impl DevelopmentCryptoProvider {
     pub const fn with_key(key: [u8; KEY_SIZE]) -> Self {
         Self { key }
     }
+
+    #[cfg(feature = "utm-wrapped-vault-experiment")]
+    pub fn replace_key(&mut self, key: &[u8; KEY_SIZE]) {
+        use zeroize::Zeroize;
+        self.key.zeroize();
+        self.key.copy_from_slice(key);
+    }
+
+    #[cfg(feature = "utm-wrapped-vault-experiment")]
+    pub fn clear_key(&mut self) {
+        use zeroize::Zeroize;
+        self.key.zeroize();
+    }
+
+    /// No key bytes leave the provider; used by the disposable lifecycle's
+    /// synchronous eviction acknowledgement, including its failure control.
+    #[cfg(feature = "utm-dynamic-vault-lock")]
+    pub fn key_is_cleared(&self) -> bool { self.key.iter().all(|byte| *byte == 0) }
 }
 
 #[cfg(feature = "development-crypto")]

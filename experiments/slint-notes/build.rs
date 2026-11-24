@@ -20,7 +20,9 @@ fn main() {
         // SAFETY: No threads have been started in this build script yet.
         unsafe { std::env::set_var("SLINT_FONT_SIZES", "31,33,36,41,44,47,50,52,57,60,62,88") };
     }
-    let ui = if std::env::var_os("CARGO_FEATURE_FULL_SUITE_UI").is_some() {
+    let ui = if std::env::var_os("CARGO_FEATURE_DESKTOP_LOCK_UI").is_some() {
+        "ui/lifecycle_lock.slint"
+    } else if std::env::var_os("CARGO_FEATURE_FULL_SUITE_UI").is_some() {
         "ui/full_suite.slint"
     } else if std::env::var_os("CARGO_FEATURE_WORKSPACE_UI").is_some() {
         "ui/workspaces.slint"

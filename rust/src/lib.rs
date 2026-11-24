@@ -29,6 +29,10 @@ pub mod calculator;
 pub mod calendar;
 pub mod clock_display;
 pub mod device_lock;
+#[cfg(any(test, feature = "vault-key-prototype"))]
+pub mod vault_key_prototype;
+#[cfg(any(test, feature = "utm-wrapped-vault-experiment"))]
+pub mod wrapped_vault_bootstrap;
 #[cfg(test)]
 mod device_lock_tests;
 pub mod contacts;
@@ -247,6 +251,8 @@ pub mod vault_backup;
 pub mod vault_blob_record;
 pub mod vault_blob_transfer;
 pub mod vault_crypto;
+#[cfg(any(test, feature = "utm-dynamic-vault-lock"))]
+pub mod vault_lifecycle;
 pub mod vault_file;
 pub mod vault_history;
 pub mod history_batch;

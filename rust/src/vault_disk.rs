@@ -1,6 +1,9 @@
 #![no_std]
 #![no_main]
 
+#[cfg(all(feature = "utm-wrapped-vault-experiment", feature = "utm-installation-vault-key"))]
+compile_error!("the disposable wrapped-vault experiment must never use an installation vault key");
+
 mod vault_protocol;
 #[cfg(feature = "utm-photo-reader")]
 mod vault_photo_access;
@@ -292,8 +295,10 @@ fn init() -> Vault {
     let config = unsafe { ptr::read_volatile(ptr::addr_of!(BLOCK_CONFIG)) };
     #[cfg(feature = "utm-installation-vault-key")]
     let crypto = installation_crypto();
-    #[cfg(not(feature = "utm-installation-vault-key"))]
+    #[cfg(all(not(feature = "utm-installation-vault-key"), not(feature = "utm-wrapped-vault-experiment")))]
     let crypto = DevelopmentCryptoProvider::new();
+    #[cfg(feature = "utm-wrapped-vault-experiment")]
+    let crypto = DevelopmentCryptoProvider::with_key([0; 32]);
     let state = memory_region_symbol!(vault_private_start: *mut VaultState).as_ptr();
     let notes_transfer = memory_region_symbol!(notes_transfer: *mut BlobTransferPage).as_ptr();
     #[cfg(feature = "utm-device-lock")]
@@ -330,6 +335,10 @@ fn init() -> Vault {
         wallet_tx_staged: 0,
         block: BlockClient::new(config),
         crypto,
+        #[cfg(feature = "utm-wrapped-vault-experiment")]
+        wrapped_unlocked: false,
+        #[cfg(feature = "utm-dynamic-vault-lock")]
+        lifecycle: personal_os_rust_server::vault_lifecycle::VaultLifecycle::new(),
         blob_transfer: [
             {
                 #[cfg(feature = "utm-device-lock")]
@@ -358,6 +367,10 @@ struct Vault {
     state: *mut VaultState,
     block: BlockClient,
     crypto: DevelopmentCryptoProvider,
+    #[cfg(feature = "utm-wrapped-vault-experiment")]
+    wrapped_unlocked: bool,
+    #[cfg(feature = "utm-dynamic-vault-lock")]
+    lifecycle: personal_os_rust_server::vault_lifecycle::VaultLifecycle,
     blob_transfer: [*mut BlobTransferPage; NAMESPACE_COUNT],
     wallet_transfer: *mut BlobTransferPage,
     #[cfg(feature = "utm-photo-reader")]
@@ -368,6 +381,116 @@ struct Vault {
 }
 
 impl Vault {
+    /// The bootstrap journal is readable without the vault key. Its outer
+    /// development-key record provides framing/corruption detection only;
+    /// the passphrase-encrypted envelope is the actual key protection.
+    #[cfg(feature = "utm-wrapped-vault-experiment")]
+    fn wrapped_bootstrap(&mut self) -> Result<Option<(usize, u64, [u8; personal_os_rust_server::wrapped_vault_bootstrap::BOOTSTRAP_SIZE])>, MessageLabel> {
+        let public_framing = DevelopmentCryptoProvider::new();
+        let mut best = None;
+        let mut nonblank = false;
+        for index in 0..SLOT_COUNT {
+            let mut raw = self.read_disk_block(index)?;
+            if raw.iter().all(|b| *b == 0) { continue; }
+            nonblank = true;
+            let Some(decoded) = vault_blob_record::decode(&public_framing, SYSTEM_NAMESPACE, &mut raw)
+                .map_err(|_| REPLY_STORAGE)? else { continue; };
+            if decoded.payload_length != personal_os_rust_server::wrapped_vault_bootstrap::BOOTSTRAP_SIZE { return Err(REPLY_CORRUPT); }
+            let mut payload = [0; personal_os_rust_server::wrapped_vault_bootstrap::BOOTSTRAP_SIZE];
+            payload.copy_from_slice(&raw[vault_blob_record::CIPHERTEXT_OFFSET..vault_blob_record::CIPHERTEXT_OFFSET + decoded.payload_length]);
+            if personal_os_rust_server::wrapped_vault_bootstrap::decode(&payload).is_none() { return Err(REPLY_CORRUPT); }
+            if best.as_ref().is_none_or(|(_, generation, _)| decoded.generation > *generation) {
+                best = Some((index, decoded.generation, payload));
+            }
+        }
+        if best.is_none() && nonblank { return Err(REPLY_CORRUPT); }
+        Ok(best)
+    }
+
+    /// Reject every nonblank partition before first enrollment. This is a
+    /// disposable-disk test feature, not a migration or recovery mechanism.
+    #[cfg(feature = "utm-wrapped-vault-experiment")]
+    fn wrapped_require_blank_disk(&mut self) -> Result<(), MessageLabel> {
+        let capacity = self.block.capacity_blocks()?;
+        let mut first = 0;
+        while first < capacity {
+            let count = (capacity - first).min(STORAGE_BLOCK_COUNT as usize);
+            if let Err(label) = self.block.transfer_at(BLOCK_READ, first, 0, count as u16) {
+                debug_println!("WRAPPED_VAULT|BLANK_SCAN_FAIL|block={}|count={}|capacity={}|label={:x}", first, count, capacity, label);
+                return Err(label);
+            }
+            let bytes = unsafe { core::slice::from_raw_parts(self.block.data, count * BLOCK_SIZE) };
+            if bytes.iter().any(|byte| *byte != 0) { debug_println!("WRAPPED_VAULT|NONBLANK|block={}", first); return Err(REPLY_DENIED); }
+            first += count;
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "utm-wrapped-vault-experiment")]
+    fn wrapped_save_bootstrap(&mut self, expected: u64, payload: &[u8]) -> Result<u64, MessageLabel> {
+        if personal_os_rust_server::wrapped_vault_bootstrap::decode(payload).is_none() { return Err(REPLY_BAD_REQUEST); }
+        let previous = self.wrapped_bootstrap()?;
+        let (target, generation) = match previous {
+            None if expected == 0 => { self.wrapped_require_blank_disk()?; (0, 1) }
+            Some((index, generation, saved)) if generation == expected && saved == payload =>
+                (1 - index, generation.checked_add(1).ok_or(REPLY_CONFLICT)?),
+            _ => return Err(REPLY_CONFLICT),
+        };
+        let public_framing = DevelopmentCryptoProvider::new();
+        let mut block = vault_blob_record::encode(&public_framing, SYSTEM_NAMESPACE, generation, payload, false)
+            .map_err(|_| REPLY_STORAGE)?.ok_or(REPLY_BAD_REQUEST)?;
+        self.write_disk_block(target, &block)?;
+        self.block.flush()?;
+        if !vault_blob_record::set_committed(&mut block) { return Err(REPLY_CORRUPT); }
+        self.write_disk_block(target, &block)?;
+        self.block.flush()?;
+        Ok(generation)
+    }
+
+    #[cfg(feature = "utm-wrapped-vault-experiment")]
+    fn wrapped_lock(&mut self) {
+        self.wrapped_clear(true);
+    }
+
+    #[cfg(feature = "utm-wrapped-vault-experiment")]
+    fn wrapped_clear(&mut self, erase_key: bool) {
+        use zeroize::Zeroize;
+        let was_unlocked = self.wrapped_unlocked;
+        self.wrapped_unlocked = false;
+        if erase_key { self.crypto.clear_key(); }
+        self.wallet_tx_stage.zeroize();
+        self.wallet_tx_staged = 0;
+        self.photo_staged = 0;
+        unsafe {
+            core::slice::from_raw_parts_mut(ptr::addr_of_mut!(PHOTO_STAGE).cast::<u8>(), vault_protocol::PHOTO_MAX).zeroize();
+            ptr::write_volatile(self.state, VaultState {
+                slots: [[RecordSlot::INVALID; SLOT_COUNT]; NAMESPACE_COUNT],
+                files: [PersistentFileState::UNLOADED; vault_file::FILE_COUNT], loaded: 0,
+            });
+            #[cfg(feature = "utm-dynamic-vault-lock")]
+            {
+                for page in self.blob_transfer { if !page.is_null() { (*page).set_payload(&[]); } }
+                if !self.wallet_transfer.is_null() { (*self.wallet_transfer).set_payload(&[]); }
+                if !self.wallet_identity_transfer.is_null() { (*self.wallet_identity_transfer).set_payload(&[]); }
+                #[cfg(feature = "utm-photo-reader")]
+                if !self.photo_read_transfer.is_null() { (*self.photo_read_transfer).set_payload(&[]); }
+                #[cfg(feature = "simplex-agent-vault")]
+                if !self.simplex_agent_transfer.is_null() { (*self.simplex_agent_transfer).set_payload(&[]); }
+                // Block I/O may contain decrypted scratch bytes from a read.
+                core::slice::from_raw_parts_mut(self.block.data, STORAGE_BLOCK_COUNT as usize * BLOCK_SIZE).zeroize();
+            }
+        }
+        if was_unlocked { debug_println!("WRAPPED_VAULT|LOCKED"); }
+    }
+
+    #[cfg(feature = "utm-dynamic-vault-lock")]
+    fn lifecycle_status(&self) -> MessageInfo {
+        set_mr(0, self.lifecycle.epoch());
+        set_mr(1, self.lifecycle.phase() as u64);
+        set_mr(2, u64::from(self.crypto.key_is_cleared()));
+        MessageInfo::new(REPLY_OK, 3)
+    }
+
     fn loaded(&self) -> bool {
         unsafe { ptr::read_volatile(ptr::addr_of!((*self.state).loaded)) != 0 }
     }
@@ -393,6 +516,12 @@ impl Vault {
         let bytes = self.block.data;
         let mut valid_count = 0;
         for namespace in 0..NAMESPACE_COUNT {
+            #[cfg(feature = "utm-wrapped-vault-experiment")]
+            if namespace == SYSTEM_NAMESPACE {
+                self.set_slot(namespace, 0, RecordSlot::initial());
+                self.set_slot(namespace, 1, RecordSlot::INVALID);
+                continue;
+            }
             let mut namespace_all_zero = true;
             let mut namespace_valid = 0;
             for index in 0..SLOT_COUNT {
@@ -440,13 +569,15 @@ impl Vault {
 
         // Validate the lock-bearing namespace before any legacy migration can
         // overwrite a corrupt slot. An unreadable lock must not become absent.
-        #[cfg(feature = "utm-device-lock")]
+        #[cfg(all(feature = "utm-device-lock", not(feature = "utm-wrapped-vault-experiment")))]
         self.system_lock_state()?;
 
         // The previous prototype used a plain-value record with a simple
         // checksum. Preserve those demo records once, then leave only the
         // authenticated encrypted slot as the newest committed version.
         for namespace in 0..NAMESPACE_COUNT {
+            #[cfg(feature = "utm-wrapped-vault-experiment")]
+            if namespace == SYSTEM_NAMESPACE { continue; }
             if let Some((_index, active)) = self.active_slot(namespace) {
                 if !active.encrypted {
                     debug_println!("VAULT: migrating legacy plaintext namespace {}", namespace);
@@ -2259,7 +2390,138 @@ impl Handler for Vault {
         channel: Channel,
         request: MessageInfo,
     ) -> Result<MessageInfo, Self::Error> {
-        #[cfg(feature = "utm-device-lock")]
+        #[cfg(feature = "utm-dynamic-vault-lock")]
+        if channel == vault_protocol::VAULT_LIFECYCLE_CHANNEL {
+            if request.label() == vault_protocol::REQUEST_DEVICE_VAULT_STATUS && request.count() == 0 {
+                return Ok(self.lifecycle_status());
+            }
+            if request.count() != 1 { return Ok(MessageInfo::new(REPLY_DENIED, 0)); }
+            let epoch = get_mr(0);
+            if request.label() == vault_protocol::REQUEST_DEVICE_VAULT_LOCK && self.lifecycle.evict(epoch) {
+                let erase = !cfg!(feature = "utm-dynamic-vault-skip-evict");
+                self.wrapped_clear(erase);
+                debug_println!("DYNAMIC_VAULT|EVICT|epoch={}|cleared={}", epoch, self.crypto.key_is_cleared());
+                return Ok(self.lifecycle_status());
+            }
+            if request.label() == vault_protocol::REQUEST_VAULT_ARM && self.crypto.key_is_cleared() && self.lifecycle.arm(epoch) {
+                return Ok(self.lifecycle_status());
+            }
+            if request.label() == vault_protocol::REQUEST_VAULT_COMMIT && !self.crypto.key_is_cleared() && self.lifecycle.commit(epoch) {
+                self.wrapped_unlocked = true;
+                debug_println!("DYNAMIC_VAULT|COMMIT|epoch={}", epoch);
+                return Ok(self.lifecycle_status());
+            }
+            // A malformed/stale control cannot change the key or current epoch.
+            return Ok(MessageInfo::new(REPLY_DENIED, 0));
+        }
+        #[cfg(feature = "utm-dynamic-vault-lock")]
+        if channel != vault_protocol::DEVICE_LOCK_CHANNEL && (0x452..=0x456).contains(&request.label()) {
+            return Ok(MessageInfo::new(REPLY_DENIED, 0));
+        }
+        #[cfg(feature = "utm-wrapped-vault-experiment")]
+        if channel == vault_protocol::DEVICE_LOCK_CHANNEL {
+            let page = match self.transfer_page(SYSTEM_NAMESPACE) {
+                Ok(page) => page,
+                Err(label) => return Ok(MessageInfo::new(label, 0)),
+            };
+            if request.label() == vault_protocol::REQUEST_DEVICE_LOCK_READ && request.count() == 0 {
+                unsafe { &mut *page }.set_payload(&[]);
+                return match self.wrapped_bootstrap() {
+                    Ok(None) => { set_mr(0, 0); Ok(MessageInfo::new(REPLY_NO_BLOB, 1)) }
+                    Ok(Some((_, generation, payload))) if unsafe { &mut *page }.set_payload(&payload) => {
+                        set_mr(0, generation); Ok(MessageInfo::new(REPLY_OK, 1))
+                    }
+                    Ok(_) => Ok(MessageInfo::new(REPLY_CORRUPT, 0)),
+                    Err(label) => { debug_println!("WRAPPED_VAULT|READ_FAIL|{:x}", label); Ok(MessageInfo::new(label, 0)) },
+                };
+            }
+            if request.label() == vault_protocol::REQUEST_DEVICE_LOCK_WRITE && request.count() == 1 {
+                let expected = get_mr(0);
+                let mut payload = [0; personal_os_rust_server::wrapped_vault_bootstrap::BOOTSTRAP_SIZE];
+                if unsafe { &*page }.payload().is_none_or(|p| p.len() != payload.len()) {
+                    unsafe { &mut *page }.set_payload(&[]);
+                    return Ok(MessageInfo::new(REPLY_BAD_REQUEST, 0));
+                }
+                payload.copy_from_slice(unsafe { &*page }.payload().unwrap());
+                unsafe { &mut *page }.set_payload(&[]);
+                return match self.wrapped_save_bootstrap(expected, &payload) {
+                    Ok(generation) => { set_mr(0, generation); Ok(MessageInfo::new(REPLY_OK, 1)) }
+                    Err(label) => { debug_println!("WRAPPED_VAULT|ENROLL_FAIL|{:x}", label); Ok(MessageInfo::new(label, 0)) },
+                };
+            }
+            if request.label() == vault_protocol::REQUEST_DEVICE_VAULT_LOCK && request.count() == 0 {
+                #[cfg(feature = "utm-dynamic-vault-lock")]
+                return Ok(MessageInfo::new(REPLY_DENIED, 0));
+                #[cfg(not(feature = "utm-dynamic-vault-lock"))]
+                {
+                unsafe { &mut *page }.set_payload(&[]);
+                self.wrapped_lock();
+                return Ok(MessageInfo::new(REPLY_OK, 0));
+                }
+            }
+            if request.label() == vault_protocol::REQUEST_DEVICE_VAULT_UNLOCK && request.count() == usize::from(cfg!(feature = "utm-dynamic-vault-lock")) {
+                #[cfg(feature = "utm-dynamic-vault-lock")]
+                let epoch = get_mr(0);
+                #[cfg(feature = "utm-dynamic-vault-lock")]
+                if !self.lifecycle.may_prepare(epoch) {
+                    unsafe { &mut *page }.set_payload(&[]);
+                    debug_println!("DYNAMIC_VAULT|STALE_PREPARE_DENIED");
+                    return Ok(MessageInfo::new(REPLY_DENIED, 0));
+                }
+                use sha2::{Digest, Sha256};
+                use subtle::ConstantTimeEq;
+                use zeroize::Zeroizing;
+                let mut key = Zeroizing::new([0u8; 32]);
+                if unsafe { &*page }.payload().is_none_or(|p| p.len() != 32) {
+                    unsafe { &mut *page }.set_payload(&[]);
+                    return Ok(MessageInfo::new(REPLY_BAD_REQUEST, 0));
+                }
+                key.copy_from_slice(unsafe { &*page }.payload().unwrap());
+                unsafe { &mut *page }.set_payload(&[]);
+                let saved_hash = match self.wrapped_bootstrap() {
+                    Ok(Some((_, _, payload))) => personal_os_rust_server::wrapped_vault_bootstrap::decode(&payload).map(|(_, _, hash)| hash),
+                    _ => None,
+                };
+                let computed = Sha256::digest(key.as_slice());
+                if saved_hash.is_none_or(|hash| !bool::from(hash.as_slice().ct_eq(computed.as_slice()))) {
+                    self.wrapped_lock();
+                    return Ok(MessageInfo::new(REPLY_DENIED, 0));
+                }
+                self.wrapped_lock();
+                self.crypto.replace_key(&key);
+                #[cfg(not(feature = "utm-dynamic-vault-lock"))]
+                { self.wrapped_unlocked = true; }
+                if let Err(label) = self.load_from_disk() {
+                    self.wrapped_lock();
+                    return Ok(MessageInfo::new(label, 0));
+                }
+                #[cfg(feature = "utm-dynamic-vault-lock")]
+                {
+                    assert!(self.lifecycle.prepared(epoch));
+                    debug_println!("DYNAMIC_VAULT|PREPARED|epoch={}", epoch);
+                }
+                #[cfg(not(feature = "utm-dynamic-vault-lock"))]
+                debug_println!("WRAPPED_VAULT|UNLOCKED");
+                // The experimental system description connects this channel
+                // only to the SimpleX agent's startup gate. The agent rechecks
+                // vault state after waking, so a stale signal is harmless.
+                #[cfg(not(feature = "utm-dynamic-vault-lock"))]
+                Channel::new(11).notify();
+                return Ok(MessageInfo::new(REPLY_OK, 0));
+            }
+            return Ok(MessageInfo::new(REPLY_DENIED, 0));
+        }
+        #[cfg(feature = "utm-wrapped-vault-experiment")]
+        if channel == SIMPLEX_AGENT_CHANNEL
+            && request.label() == vault_protocol::REQUEST_DEVICE_VAULT_STATUS
+            && request.count() == 0 {
+            return Ok(MessageInfo::new(if self.wrapped_unlocked { REPLY_OK } else { REPLY_DENIED }, 0));
+        }
+        #[cfg(feature = "utm-wrapped-vault-experiment")]
+        if !self.wrapped_unlocked || channel == vault_protocol::OWNER_CHANNEL {
+            return Ok(MessageInfo::new(REPLY_DENIED, 0));
+        }
+        #[cfg(all(feature = "utm-device-lock", not(feature = "utm-wrapped-vault-experiment")))]
         if channel == vault_protocol::DEVICE_LOCK_CHANNEL {
             if let Err(label) = self.load_from_disk() { return Ok(MessageInfo::new(label, 0)); }
             let page = match self.transfer_page(SYSTEM_NAMESPACE) {

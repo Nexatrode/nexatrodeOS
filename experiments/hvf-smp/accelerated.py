@@ -41,7 +41,7 @@ def ui_source_required(pds):
     if not (ui.is_file() and worker.is_file() and reader.is_file() and transcript.is_file() and messages.is_file() and entropy.is_file()):
         return True
     binary = ui.read_bytes()
-    return (b"slint_clock_view" not in binary or b"device_lock_transfer" not in binary or b"ENTROPY|DEVICE_LOCK_V1" not in entropy.read_bytes()
+    return (b"SLINT|FRAME_COPY_RAM_V1" not in binary or b"slint_clock_view" not in binary or b"device_lock_transfer" not in binary or b"ENTROPY|DEVICE_LOCK_V1" not in entropy.read_bytes()
             or b"photo_mailbox_region" not in binary or b"photo_read_mailbox" not in binary
             or b"transcript_mailbox" not in binary or b"messages_worker_transfer" not in messages.read_bytes()
             or b"LIVE_RECEIVE_WORKER_ABI_V1" not in messages.read_bytes()
@@ -60,12 +60,15 @@ def build_ui_from_source(inputs, stage):
     # newly selected zoneinfo file happens to have the same modification time.
     env["NEXATRODE_HOST_TIMEZONE_SHA256"] = digest(Path("/etc/localtime"))
     env.setdefault("CARGO_BUILD_JOBS", "2")
+    features = "utm-pd,full-suite-ui,simplex-agent-ui,utm-photo-worker,utm-transcript-worker,utm-device-lock"
+    if env.get("NEXATRODE_UTM_PERF_TRACE") == "1":
+        features += ",utm-perf-trace"
     subprocess.run([
         "cargo", "+nightly-2026-09-25", "build", "--locked", "--offline", "--release",
         "-Zjson-target-spec", "--config", ROOT / "rust/.cargo/config.toml",
         "--manifest-path", ROOT / "experiments/slint-notes/Cargo.toml",
         "--target", ROOT / "rust/targets/aarch64-sel4-microkit.json",
-        "--features", "utm-pd,full-suite-ui,simplex-agent-ui,utm-photo-worker,utm-transcript-worker,utm-device-lock",
+        "--features", features,
         "--bin", "slint_notes_utm", "--bin", "slint_photo_worker", "--bin", "slint_photo_reader", "--bin", "slint_transcript_worker",
     ], cwd=ROOT, env=env, check=True)
     subprocess.run([
@@ -85,6 +88,27 @@ def build_ui_from_source(inputs, stage):
     shutil.copyfile(release / "rust_messages_agent_app.elf", output / "rust_messages_agent_app.elf")
     shutil.copyfile(release / "rust_entropy_rng.elf", output / "rust_entropy_rng.elf")
     return output
+
+
+def build_gpu_from_source(inputs, stage):
+    sddf = Path(os.environ.get("NEXATRODE_SDDF", str(ROOT / ".cache/sddf-personal-os"))).resolve()
+    if not (sddf / "examples/gpu/gpu.mk").is_file():
+        raise FileNotFoundError("sDDF source missing; set NEXATRODE_SDDF to the prepared sddf-personal-os checkout")
+    build_dir = stage / "gpu"
+    # sDDF recognizes the standard QEMU board name; use the accelerated
+    # kernel's matching headers and libraries through a private SDK alias.
+    sdk_alias = stage / "gpu-sdk"
+    (sdk_alias / "board").mkdir(parents=True)
+    (sdk_alias / "bin").symlink_to(inputs / "sdk/bin", target_is_directory=True)
+    (sdk_alias / "board/qemu_virt_aarch64").symlink_to(inputs / "sdk/board" / BOARD, target_is_directory=True)
+    cmd = ["python3", ROOT / "experiments/ghc-microkit/build_slint_gpu_client.py",
+           "--sdk", sdk_alias, "--sddf", sddf, "--build", build_dir,
+           "--board", "qemu_virt_aarch64", "--config", CONFIG]
+    if os.environ.get("NEXATRODE_UTM_PERF_TRACE") == "1":
+        cmd.append("--perf-trace")
+    subprocess.run(cmd, cwd=ROOT, check=True)
+    shutil.copyfile(build_dir / "client.elf", build_dir / "gpu_client.elf")
+    return build_dir
 
 
 def build_vault_from_source(inputs, stage):
@@ -159,6 +183,7 @@ def build(bundle, inputs, stage, rebuild_wallet, rebuild_ui=False):
         raise ValueError("scan worker affinities disagree with the UTM profile")
 
     search = []
+    search.extend(["--search-path", build_gpu_from_source(inputs, stage)])
     if rebuild_ui or ui_source_required(pds):
         search.extend(["--search-path", build_ui_from_source(inputs, stage)])
     if rebuild_ui or vault_source_required(pds):

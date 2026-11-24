@@ -15,6 +15,7 @@ def main():
     parser.add_argument('--build', type=Path, required=True)
     parser.add_argument('--board', default='qemu_virt_aarch64')
     parser.add_argument('--config', default='debug')
+    parser.add_argument('--perf-trace', action='store_true')
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[2]
     sdk, sddf, build = (p.resolve() for p in (args.sdk, args.sddf, args.build))
@@ -36,6 +37,8 @@ def main():
         f.write(bytes(1080 * 2340 * 3))
     compat = root / 'tools/sddf-gpu-compat'
     flags = f'-mstrict-align -I{compat} -I{include} -include {compat / "ialloc_compat.h"}'
+    if args.perf_trace:
+        flags += ' -DNEXATRODE_GPU_PERF_TRACE=1'
     env = os.environ.copy()
     env['PATH'] = '/opt/homebrew/opt/llvm/bin:/opt/homebrew/sbin:' + env.get('PATH', '')
     subprocess.run(['make', '-C', str(build), 'client.elf', f'MICROKIT_SDK={sdk}',

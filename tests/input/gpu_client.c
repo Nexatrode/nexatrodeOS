@@ -46,6 +46,16 @@ static inline int enqueue_gpu_request(gpu_queue_handle_t *handle, gpu_req_t requ
 #define TIMER_CH 1
 #define UI_FOCUS_CH 2
 
+#if defined(NEXATRODE_GPU_PERF_TRACE)
+static uint64_t gpu_perf_time_us(void)
+{
+    uint64_t ticks, frequency;
+    __asm__ volatile("isb; mrs %0, cntpct_el0; mrs %1, cntfrq_el0"
+                     : "=r"(ticks), "=r"(frequency));
+    return ticks / (frequency / 1000000u);
+}
+#endif
+
 #define DISPLAY_INFO_DATA_OFFSET 0x1000
 #define APP_VIEW_TEXT_CAPACITY 128
 #define NOTES_VISIBLE_COLUMNS 21
@@ -114,6 +124,7 @@ static uint32_t rendered_focus = UINT32_MAX;
 static uint32_t rendered_view_revision = UINT32_MAX;
 static uint32_t rendered_pointer_revision = UINT32_MAX;
 static uint32_t rendered_slint_frame_revision = UINT32_MAX;
+static bool slint_full_retry;
 
 static const uint8_t font_5x7[26][7] = {
     {0x0e, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11},
@@ -1042,9 +1053,10 @@ static void flush_band(int y, int height)
     if (err) {
         return;
     }
+    uint32_t flush_id = get_and_inc_req_id();
     err = gpu_enqueue_req(&gpu_queue_handle, (gpu_req_t) {
         .code = GPU_REQ_RESOURCE_FLUSH,
-        .id = get_and_inc_req_id(),
+        .id = flush_id,
         .resource_flush = {
             .resource_id = 1,
             .rect = rect,
@@ -1053,6 +1065,10 @@ static void flush_band(int y, int height)
     if (err) {
         return;
     }
+#if defined(NEXATRODE_GPU_PERF_TRACE)
+    sddf_printf("PERF|GPU_FLUSH|%u|%llu|%d|%d\n", flush_id,
+                (unsigned long long)gpu_perf_time_us(), y, height);
+#endif
 }
 
 static void restore_cursor_outside(uint8_t *frame, int band_y, int band_bottom)
@@ -1227,23 +1243,32 @@ static void do_draw_state(void)
             old_top = -1;
             content = true;
         } else if (!pointer_only) {
-            uint32_t y = atomic_load_explicit(&slint_surface->damage_y, memory_order_relaxed);
-            uint32_t height = atomic_load_explicit(&slint_surface->damage_height, memory_order_relaxed);
-            if (!have_slint || height == 0 || y >= SLINT_FRAME_HEIGHT ||
-                height > SLINT_FRAME_HEIGHT - y) {
-                y = 0;
-                height = SLINT_FRAME_HEIGHT;
-            }
-            sddf_printf("GPU|SLINT COPY rev=%u y=%u h=%u\n", slint_revision, y, height);
-            drew_slint_frame = slint_frame_copy_band_to_bgra(
+            uint32_t copied_revision, y, height;
+#if defined(NEXATRODE_GPU_PERF_TRACE)
+            uint64_t copy_start = gpu_perf_time_us();
+#endif
+            drew_slint_frame = slint_frame_copy_update_to_bgra(
                 slint_surface,
                 (const uint8_t *)slint_surface + sizeof(*slint_surface),
-                SLINT_FRAME_REGION_BYTES, frame, frame_size, y, height);
-            if (!drew_slint_frame && have_slint) {
+                SLINT_FRAME_REGION_BYTES, frame, frame_size,
+                slint_full_retry ? UINT32_MAX : rendered_slint_frame_revision,
+                &copied_revision, &y, &height);
+            if (!drew_slint_frame) {
+                /* A racing writer may have changed pixels during our copy.
+                 * The next attempt must reconstruct the entire GPU buffer. */
+                slint_full_retry = true;
                 sddf_printf("GPU|SLINT COPY FAIL\n");
                 return;
             }
             if (drew_slint_frame) {
+                slint_full_retry = false;
+                slint_revision = copied_revision;
+#if defined(NEXATRODE_GPU_PERF_TRACE)
+                sddf_printf("PERF|GPU_COPY|%u|%llu|%llu|%u\n", copied_revision,
+                            (unsigned long long)copy_start,
+                            (unsigned long long)gpu_perf_time_us(), height);
+#endif
+                sddf_printf("GPU|SLINT COPY rev=%u y=%u h=%u\n", slint_revision, y, height);
                 content = true;
                 band_y = y;
                 band_h = height;
@@ -1404,6 +1429,10 @@ void notified(microkit_channel ch)
             LOG_GPU_CLIENT_ERR("Failed request %d with status %d\n", resp.id, resp.status);
             continue;
         }
+#if defined(NEXATRODE_GPU_PERF_TRACE)
+        sddf_printf("PERF|GPU_RESPONSE|%u|%llu\n", resp.id,
+                    (unsigned long long)gpu_perf_time_us());
+#endif
         LOG_GPU_CLIENT("Response received for request %d\n", resp.id);
         if (resp.id == display_info_req_id) {
             handle_display_info_response();
