@@ -2440,7 +2440,9 @@ impl Handler for Vault {
             return Ok(MessageInfo::new(REPLY_DENIED, 0));
         }
         #[cfg(feature = "utm-dynamic-vault-lock")]
-        if channel != vault_protocol::DEVICE_LOCK_CHANNEL && (0x452..=0x456).contains(&request.label()) {
+        if channel != vault_protocol::DEVICE_LOCK_CHANNEL && (0x452..=0x456).contains(&request.label())
+            && !(cfg!(feature = "utm-simplex-session-test") && channel == SIMPLEX_AGENT_CHANNEL
+                && request.label() == vault_protocol::REQUEST_DEVICE_VAULT_STATUS && request.count() == 0) {
             return Ok(MessageInfo::new(REPLY_DENIED, 0));
         }
         #[cfg(feature = "utm-wrapped-vault-experiment")]

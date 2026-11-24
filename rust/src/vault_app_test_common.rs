@@ -363,6 +363,8 @@ pub struct NamespaceTest {
     #[cfg(feature = "simplex-agent")]
     simplex_agent_delete_chat: usize,
     agent_connection_count: Option<u16>,
+    #[cfg(feature = "utm-simplex-session-test")]
+    fixture_receive: Option<(u64, usize, [u8; 2048])>,
 }
 
 impl NamespaceTest {
@@ -542,6 +544,8 @@ impl NamespaceTest {
             #[cfg(feature = "simplex-agent")]
             simplex_agent_delete_chat: 0,
             agent_connection_count: None,
+            #[cfg(feature = "utm-simplex-session-test")]
+            fixture_receive: None,
         }
     }
 
@@ -2675,6 +2679,45 @@ impl NamespaceTest {
     /// Slint receives only Messages' current local peer/thread summary. The
     /// Messages PD remains the sole owner of its vault record and Agent state.
     fn handle_slint_messages(&mut self, request: MessageInfo) -> MessageInfo {
+        // Disposable-only input seam: synthesize a decoded relay event after
+        // the real GHC agent has opened its fresh encrypted AgentStore. The
+        // ordinary receive worker below still owns persistence and delivery.
+        #[cfg(feature = "utm-simplex-session-test")]
+        if request.label() == 0x7c0 && request.count() == 1 {
+            let Some(body) = (unsafe { self.blob_transfer.as_ref() }).payload() else {
+                return MessageInfo::new(REPLY_BAD_REQUEST, 0);
+            };
+            if body.is_empty() || body.len() > 2048 || core::str::from_utf8(body).is_err() {
+                return MessageInfo::new(REPLY_BAD_REQUEST, 0);
+            }
+            let length = body.len();
+            let mut saved = [0u8; 2048];
+            saved[..length].copy_from_slice(body);
+            let epoch = get_mr(0);
+            self.poll_agent_list_response();
+            if self.agent_connection_count.is_none() || self.agent_busy() {
+                self.request_agent_connection_snapshot();
+                return MessageInfo::new(1, 0);
+            }
+            if !self.ensure_messages_loaded() { return MessageInfo::new(REPLY_BAD_REQUEST, 0); }
+            self.fixture_receive = Some((epoch, length, saved));
+            return MessageInfo::new(0, 0);
+        }
+        #[cfg(feature = "utm-simplex-session-test")]
+        if request.label() == 0x7c1 && request.count() == 0 {
+            // A tiny generated JPEG uses the same owner-scoped encrypted
+            // attachment path as a downloaded photo. No external peer exists.
+            let Some(bytes) = (unsafe { self.blob_transfer.as_ref() }).payload() else {
+                return MessageInfo::new(REPLY_BAD_REQUEST, 0);
+            };
+            let length = bytes.len();
+            if length == 0 || length > 3072 { return MessageInfo::new(REPLY_BAD_REQUEST, 0); }
+            set_mr(0, 0);
+            let reply = VAULT.pp_call(MessageInfo::new(crate::vault_protocol::REQUEST_PHOTO_STAGE, 1));
+            if reply.label() != REPLY_OK { return reply; }
+            set_mr(0, 4242); set_mr(1, length as u64);
+            return VAULT.pp_call(MessageInfo::new(crate::vault_protocol::REQUEST_PHOTO_COMMIT, 2));
+        }
         #[cfg(feature = "utm-transcript-worker")]
         if request.label() == REQUEST_WORKER_SELECT_OWNER && request.count() == 1 {
             #[cfg(feature = "simplex-agent")]
@@ -2967,6 +3010,28 @@ impl NamespaceTest {
             (REQUEST_SLINT_MESSAGES_RECEIVE_STATUS | REQUEST_WORKER_RECEIVE_STATUS, 0) => {
                 #[cfg(feature = "simplex-agent")]
                 {
+                    // Inject after polling the real agent, immediately before
+                    // the normal persistence/handoff path. Its empty inbox
+                    // response must not overwrite the fixture event in flight.
+                    #[cfg(feature = "utm-simplex-session-test")]
+                    if let Some((epoch, length, body)) = self.fixture_receive.take() {
+                        self.simplex_agent_receive_body[..length].copy_from_slice(&body[..length]);
+                        self.simplex_agent_receive_length = length;
+                        self.simplex_agent_connection_handles[0] = 4242;
+                        self.simplex_agent_connection_handles_length = 1;
+                        self.simplex_agent_chat_names[0][..10].copy_from_slice(b"Disposable");
+                        self.simplex_agent_chat_name_lengths[0] = 10;
+                        self.simplex_agent_chat_count = 1;
+                        self.agent_connection_count = Some(1);
+                        self.simplex_agent_selected_handle = 4242;
+                        self.simplex_agent_receive_chat_handle = 4242;
+                        self.simplex_agent_receive_handle = 4242;
+                        self.simplex_agent_receive_message_id = epoch;
+                        self.simplex_agent_receive_part = 0;
+                        self.simplex_agent_receive_status = 2;
+                        self.direct_kind = 0;
+                        unsafe { RECEIVED_ATTACHMENT_ID = None; }
+                    }
                     let length = self.simplex_agent_receive_length;
                     let status = self.simplex_agent_receive_status;
                     let chat =

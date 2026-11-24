@@ -1,5 +1,8 @@
 # Passphrase-gated dynamic app experiment
 
+The [SimpleX service lifecycle fixture](simplex-dynamic-lock.md) extends the lock
+to the real agent, receive/transcript and photo workers using disposable data.
+
 The [private Notes storage milestone](dynamic-notes-storage.md) now connects the
 actual dynamic app to a scoped encrypted document and tests interrupted saves.
 

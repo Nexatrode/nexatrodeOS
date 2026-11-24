@@ -15,7 +15,7 @@ def replace(path, before, after):
     path.write_text(text.replace(before, after))
 
 
-def build(source, output, pool_bits=24):
+def build(source, output, pool_bits=24, simplex_session=False):
     if output.is_relative_to(source.resolve()):
         raise ValueError("composer output must be outside the shared source checkout")
     output.mkdir(parents=True, exist_ok=True)
@@ -80,6 +80,12 @@ def build(source, output, pool_bits=24):
     replace(sizes, "        Object::Endpoint => ObjectType::Endpoint.fixed_size_bits(sel4_config).unwrap(),",
             "        Object::Untyped(ut) => ut.size_bits as u64,\n"
             "        Object::Endpoint => ObjectType::Endpoint.fixed_size_bits(sel4_config).unwrap(),")
+    if simplex_session:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("session_composer", Path(__file__).parent.parent / "desktop-simplex/composer_patch.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module.patch(builder, replace)
     subprocess.run(["cargo", "+nightly-2026-09-25", "build", "--locked", "--release",
                     "--manifest-path", str(checkout / "Cargo.toml"), "-p", "microkit-tool",
                     "--target-dir", str(output / "target")], check=True)
@@ -88,6 +94,7 @@ def build(source, output, pool_bits=24):
     (output / "provenance.json").write_text(json.dumps({
         "microkit_revision": REVISION,
         "runtime_pool_bits": pool_bits,
+        "simplex_session": simplex_session,
         "patch_sha256": hashlib.sha256(patch).hexdigest(),
         "composer_sha256": hashlib.sha256((output / "target/release/microkit").read_bytes()).hexdigest(),
         "scope": "private disposable experiment; bounded resources for the trusted manager",
@@ -100,5 +107,6 @@ if __name__ == "__main__":
     parser.add_argument("--source", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--pool-bits", type=int, choices=(24, 26), default=24)
+    parser.add_argument("--simplex-session", action="store_true", help="enable the disposable, parent-managed SimpleX service group")
     arguments = parser.parse_args()
-    print(build(arguments.source, arguments.output.resolve(), arguments.pool_bits))
+    print(build(arguments.source, arguments.output.resolve(), arguments.pool_bits, arguments.simplex_session))
