@@ -241,6 +241,22 @@ void notified(sddf_channel ch)
 
 microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
 {
+#ifdef SIMPLEX_LOCK_LIFECYCLE
+    unsigned lifecycle_label = microkit_msginfo_get_label(msginfo);
+    if (ch == SIMPLEX_NET_MANAGER_CHANNEL) {
+        if (microkit_msginfo_get_count(msginfo) != 1 ||
+            (lifecycle_label != SIMPLEX_NET_LOCK && lifecycle_label != SIMPLEX_NET_UNLOCK) ||
+            !haskell_simplex_network_transition(lifecycle_label == SIMPLEX_NET_UNLOCK, microkit_mr_get(0)))
+            return microkit_msginfo_new(SIMPLEX_NET_DENIED, 0);
+        microkit_mr_set(0, haskell_simplex_network_epoch());
+        microkit_mr_set(1, haskell_simplex_network_active());
+        microkit_mr_set(2, haskell_simplex_network_cleared());
+        return microkit_msginfo_new(SIMPLEX_NET_OK, 3);
+    }
+    if (ch == HASKELL_TCP_CHANNEL && (!haskell_simplex_network_active() ||
+        ((volatile struct haskell_tcp_page *)haskell_tcp_page)[0].reserved >= 2))
+        return microkit_msginfo_new(HASKELL_TCP_NOT_READY, 0);
+#endif
     if ((ch == HASKELL_TCP_CHANNEL || ch == WALLET_TCP_CHANNEL ||
          ch == SHELL_TCP_CHANNEL || ch == WORKER_TCP_CHANNEL) &&
         haskell_tcp_page != 0) {

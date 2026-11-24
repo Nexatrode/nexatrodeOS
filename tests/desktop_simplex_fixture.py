@@ -1,7 +1,7 @@
-"""Compose the real SimpleX agent/receive/photo/transcript services offline.
+"""Compose the real SimpleX agent/receive/photo/transcript lock fixture.
 
-All artifacts are opt-in and use a fresh wrapped-key vault. There is no network
-device or installation key, and no regular VM bundle or disk is read.
+All artifacts are opt-in and use a fresh wrapped-key vault. Live mode adds a
+network gate; no installation key, regular VM bundle or existing disk is read.
 """
 import copy
 import hashlib
@@ -28,10 +28,10 @@ def programs(path):
     return struct.unpack_from('<Q', data, 24)[0], [struct.unpack_from('<IIQQQQQQ', data, offset + size*i) for i in range(count)]
 
 
-def prepare(out, agent, cargo, flags, run):
-    target = cargo('experiments/slint-notes/Cargo.toml', 'utm-pd,utm-photo-worker,utm-transcript-worker',
-        [name.removesuffix('.elf') for name in IMAGES[2:]], 'build/desktop-simplex-ui-cargo')
-    for name in IMAGES[2:]: shutil.copyfile(target/name, out/name)
+def prepare(out, agent, cargo, flags, run, live=False):
+    target = cargo('experiments/slint-notes/Cargo.toml', 'desktop-simplex-live-test' if live else 'utm-pd,utm-photo-worker,utm-transcript-worker',
+        [name.removesuffix('.elf') for name in IMAGES[2:-1]] + ['simplex_live_client' if live else 'simplex_session_client'], 'build/desktop-simplex-ui-cargo')
+    for name in IMAGES[2:]: shutil.copyfile(target/('simplex_live_client.elf' if live and name==IMAGES[-1] else name), out/name)
     shutil.copyfile(agent, out/IMAGES[0])
     # The old startup gate remains defense in depth. It rechecks vault status
     # after the parent has committed the new key before entering GHC.
@@ -42,13 +42,13 @@ def prepare(out, agent, cargo, flags, run):
         pages += 1 + STACKS[i]//4096  # IPC buffer then stack, as in pinned composer.
         assert pages*4096 < layout.STRIDE
         children.append((layout.BASE+i*layout.STRIDE,pages,entry))
-    run(*flags, '-c', ROOT/'experiments/desktop-simplex/environment.c', '-o',out/'environment.o')
+    run(*flags, *([f'-DSIMPLEX_LIVE_UNIX={__import__("time").time_ns()//1000000000}ULL'] if live else []), '-c', ROOT/'experiments/desktop-simplex/environment.c', '-o',out/'environment.o')
     board_include = Path(flags[flags.index('-I')+1]); board=board_include.parent
     run('ld.lld','-L',board/'lib',out/'environment.o','-lmicrokit','-T','microkit.ld','-o',out/'environment.elf')
     return children
 
 
-def compose(system, manager, out, children, mapping, channel, mr):
+def compose(system, manager, out, children, mapping, channel, mr, live=False):
     source=ET.parse(ROOT/'experiments/hvf-smp/accelerated.system').getroot()
     oldnames=('simplex_agent','messages_app','transcript_worker','photo_worker','photo_reader')
     remap=dict(zip(oldnames,layout.NAMES))
@@ -68,9 +68,10 @@ def compose(system, manager, out, children, mapping, channel, mr):
     client_maps=[('photo_mailbox',0x50000000,'photo_mailbox_region'),('photo_read_mailbox',0x50200000,'photo_read_mailbox'),
         ('transcript_mailbox',0x50400000,'transcript_mailbox'),('live_receive_mailbox',0x50600000,'live_receive_mailbox'),
         ('messages_ui_transfer',0x50800000,'messages_ui_transfer'),('session_client_heap',0x50a00000,'session_client_heap')]
-    for name,addr,symbol in client_maps: mapping(client,name,addr,'rw',symbol)
+    for name,addr,symbol in client_maps:
+        if not live or name not in ('photo_mailbox','photo_read_mailbox'): mapping(client,name,addr,'rw',symbol)
     mr('simplex_test_result',4096)
-    system.find("memory_region[@name='simplex_test_result']").set('phys_addr','0x5fd91000')
+    system.find("memory_region[@name='simplex_test_result']").set('phys_addr','0x5fbb1000' if live else '0x5fd91000')
     mapping(client,'simplex_test_result',0x51200000,'rw','session_result')
     # Rename the old frontend-only page, keeping Messages' vault transfer separate.
     messages=group[1]
@@ -100,8 +101,11 @@ def compose(system, manager, out, children, mapping, channel, mr):
     ET.SubElement(environment,'program_image',path='environment.elf')
     channel('session_agent',2,'session_environment',0,True)
     channel('session_messages',2,'session_environment',2,True)
-    channel('session_agent',1,'session_environment',1,True)
-    # No ethernet stack, no TCP sockets, no phone or wallet PD in this fixture.
+    if live:
+        import desktop_simplex_network
+        desktop_simplex_network.compose(ROOT, system, manager, channel)
+    else: channel('session_agent',1,'session_environment',1,True)
+    # Offline mode has no Ethernet. Neither mode includes a phone or wallet PD.
     names={m.get('mr') for pd in group for m in pd.findall('map')}
     sizes={m.get('name'):int(m.get('size').replace('_',''),0) for m in source.findall('memory_region')}
     sizes.update(messages_ui_transfer=4096,session_client_heap=0x200000,simplex_test_result=4096)
@@ -127,7 +131,7 @@ def compose(system, manager, out, children, mapping, channel, mr):
         ranges.append((alias,size));aliases[name]=(alias,size)
         alias+=size
     mr('simplex_session_state',4096)
-    system.find("memory_region[@name='simplex_session_state']").set('phys_addr','0x5fd90000')
+    system.find("memory_region[@name='simplex_session_state']").set('phys_addr','0x5fbb0000' if live else '0x5fd90000')
     mapping(manager,'simplex_session_state',0x71000000,'rw')
     mapping(client,'simplex_session_state',0x51000000,'r','session_state')
     header='''#pragma once
@@ -145,4 +149,4 @@ static const struct session_child session_children[] = {
     # Test evidence can map each scrubbed range to its component/queue.
     import json
     (out/'session-layout.json').write_text(json.dumps({'children':dict(zip(layout.NAMES,children)),
-        'shared':aliases,'network':'offline stub','saved_data_used':False},indent=2)+'\n')
+        'shared':aliases,'network':'live public SMP relay' if live else 'offline stub','saved_data_used':False},indent=2)+'\n')
