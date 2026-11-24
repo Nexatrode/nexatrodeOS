@@ -61,9 +61,12 @@ mod registry_tftp_identity;
 #[cfg(all(feature="sunfish-post-elf-startup-panel",not(feature="sunfish-post-elf-mcfg-trace")))]
 #[path="pixel_mpss_post_elf_startup.rs"]
 mod post_elf_startup;
-#[cfg(feature="sunfish-post-elf-mcfg-trace")]
+#[cfg(all(feature="sunfish-post-elf-mcfg-trace",not(feature="sunfish-elf-queued-handoff")))]
 #[path="pixel_mpss_post_elf_mcfg.rs"]
 mod post_elf_mcfg;
+#[cfg(feature="sunfish-elf-queued-handoff")]
+#[path="pixel_mpss_elf_queued_turn.rs"]
+mod elf_queued_turn;
 #[cfg(feature="sunfish-registry-defer-paint")]
 #[path="pixel_mpss_registry_paint.rs"]
 mod registry_paint;
@@ -651,6 +654,8 @@ impl RuntimeDomain {
         #[cfg(feature = "sunfish-tftp-oack-phase-observer")]
         self.oack_phases.mark(1, ended);
         registry_result.map_err(|_| 0x52u32)?;
+        #[cfg(feature="sunfish-elf-queued-handoff")]
+        {self.router.dispatch_queued_elf_reply(owner).map_err(|_|0x61u32)?;}
         let started = counter();
         #[cfg(feature = "sunfish-ipa-schedule-trace")]
         self.ipa_schedule.observe(started, 7, ipa_schedule_milestones(owner));

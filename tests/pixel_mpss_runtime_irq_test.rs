@@ -1,5 +1,8 @@
 //! Exact router plus actual serialized Owner, with a CPU FIFO/kernel model.
+#[cfg(not(mpss_glink_transport_tests))]
 include!("sunfish_modem_owner_test.rs");
+#[cfg(mpss_glink_transport_tests)]
+include!("sunfish_mpss_linux_transport_test.rs");
 extern crate self as personal_os_rust_server;
 #[path = "../rust/src/pixel_mpss_runtime_irq.rs"]
 mod pixel_mpss_runtime_irq;
@@ -337,4 +340,7 @@ mod native_irq {
         router.dispatch(&mut owner).unwrap();
         assert_eq!(&*kernel.calls.borrow(), &[4]);
     }
+    #[cfg(feature="sunfish-elf-queued-handoff")]
+    mod elf_queue_cases {include!("sunfish_elf_queued_turn_cases.rs");}
+
 }

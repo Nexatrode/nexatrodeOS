@@ -212,6 +212,14 @@ pub trait Interrupts {
     fn schedule(&mut self) -> Result<(), Error>;
 }
 
+/// Observations do not decide eligibility. Flags: armed1, consumed2, entered4,
+/// normal dispatch returned8, exact reply published/completed16, dispatch failed32.
+#[cfg(feature="sunfish-elf-queued-handoff")]
+#[derive(Clone,Copy,Debug,Default,Eq,PartialEq)]
+pub struct ElfQueuedTurnTrace {
+    pub flags:u32,pub armed_at:Option<u64>,pub entry:Option<u64>,pub end:Option<u64>,
+    pub received:u32,pub published:u32,pub acknowledged:u64,
+}
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Progress {
     #[cfg(feature = "sunfish-ipa-init-empty-rx")]
@@ -1026,6 +1034,10 @@ pub struct Owner<I> {
     first_service_registry_reply_qrtr_resume_handle: Option<RequestHandle>,
     #[cfg(feature = "sunfish-wlan-elf-timing")]
     elf_lookup_handle: Option<RequestHandle>,
+    #[cfg(feature="sunfish-elf-queued-handoff")]
+    queued_elf_turn:Option<RequestHandle>,
+    #[cfg(feature="sunfish-elf-queued-handoff")]
+    elf_queued_turn_trace:ElfQueuedTurnTrace,
     #[cfg(feature = "sunfish-wlan-registry-txn4-timing")]
     registry_txn4_handle: Option<RequestHandle>,
     tftp_trace: TftpObserverTrace,
@@ -1295,6 +1307,10 @@ impl<I: Io> Owner<I> {
             first_service_registry_reply_qrtr_resume_handle: None,
             #[cfg(feature = "sunfish-wlan-elf-timing")]
             elf_lookup_handle: None,
+            #[cfg(feature="sunfish-elf-queued-handoff")]
+            queued_elf_turn:None,
+            #[cfg(feature="sunfish-elf-queued-handoff")]
+            elf_queued_turn_trace:ElfQueuedTurnTrace::default(),
             #[cfg(feature = "sunfish-wlan-registry-txn4-timing")]
             registry_txn4_handle: None,
             tftp_trace: TftpObserverTrace::new(),
@@ -2833,6 +2849,32 @@ impl<I: Io> Owner<I> {
     /// Answer one manifest-backed SERVREG LOC request without requiring the
     /// privileged storage/heap backend to be active. Other services remain in
     /// the shared bounded request queue for their normal handler.
+    #[cfg(feature="sunfish-elf-queued-handoff")]
+    pub fn take_queued_elf_turn(&mut self)->Result<bool,Error>{
+        self.check()?;
+        if self.firmware_close_is_pending(){return Ok(false);}
+        #[cfg(feature="sunfish-tftp-close-handoff-prototype")]
+        if self.pending_tftp_close().is_some(){return Ok(false);}
+        let Some(h)=self.queued_elf_turn else{return Ok(false);};
+        // Consume even if another normal pass already published or retired it.
+        self.queued_elf_turn=None;
+        if !self.adapter.unpublished_registry_reply(&h){return Ok(false);}
+        self.elf_queued_turn_trace.flags|=2;
+        Ok(true)
+    }
+    #[cfg(feature="sunfish-elf-queued-handoff")]
+    pub fn elf_queued_turn_trace(&self)->ElfQueuedTurnTrace{self.elf_queued_turn_trace}
+    #[cfg(feature="sunfish-elf-queued-handoff")]
+    pub fn observe_queued_elf_turn(&mut self,end:Option<Result<Progress,()>>){
+        let now=self.rmtfs_event_clock.map(|c|c());let trace=&mut self.elf_queued_turn_trace;
+        if let Some(result)=end {
+            trace.end=now;
+            match result {Ok(p)=>{trace.flags|=8;trace.received=p.received;trace.published=p.published;trace.acknowledged=p.acknowledged;},Err(())=>trace.flags|=32}
+            if self.elf_lookup_handle.is_some_and(|h|self.adapter.reply_fully_published(&h))
+                || self.adapter.elf_exchange().is_some_and(|e|e.completed){trace.flags|=16;}
+        }else{trace.entry=now;trace.flags|=4;}
+    }
+
     pub fn dispatch_service_registry_step(
         &mut self,
         interrupts: &mut impl Interrupts,
@@ -2933,12 +2975,16 @@ impl<I: Io> Owner<I> {
                 }
                 #[cfg(feature = "sunfish-wlan-elf-timing")]
                 if self.elf_lookup_handle == Some(handle) {
+                    #[cfg(feature="sunfish-elf-queued-handoff")]
+                    {self.queued_elf_turn=Some(handle);self.elf_queued_turn_trace.flags|=1;}
                     #[cfg(feature = "sunfish-wlan-elf-exchange-trace")]
                     self.adapter.observe_elf_reply(&handle);
                     if let Some(elf) = self.service_registry_trace.elf.as_mut() {
                         elf.total_domains = Some(response.total_domains());
                         elf.returned_rows = Some(response.domain_list_tlv().and_then(|list| list.first().copied()).unwrap_or(0));
                         elf.queued = self.rmtfs_event_clock.map(|clock| clock());
+                        #[cfg(feature="sunfish-elf-queued-handoff")]
+                        {self.elf_queued_turn_trace.armed_at=elf.queued;}
                         #[cfg(feature = "sunfish-wlan-elf-phase-io")]
                         { elf.io.queued = self.adapter.elf_io_totals(); }
                     }

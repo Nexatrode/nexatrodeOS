@@ -3947,6 +3947,14 @@ impl Session {
     /// Read-only diagnostic: the exact reply associated with this request has
     /// been fully published to the GLINK transport. This is not peer receipt.
     #[cfg(feature = "sunfish-linux-rmtfs")]
+    /// Pure live ownership metadata. Normal publication still owns all gates.
+    #[cfg(feature="sunfish-elf-queued-handoff")]
+    pub(crate) fn unpublished_registry_reply(&self, handle:&RequestHandle)->bool {
+        if handle.owner!=self.owner || handle.generation!=self.generation {return false;}
+        let Some(index)=self.receive.iter().position(|rx|rx.id==handle.intent && rx.state==RxState::ReplyQueued)else{return false;};
+        self.transmit.iter().any(|tx|tx.len!=0 && tx.sent<tx.len && !tx.glink_done
+            && matches!(tx.kind,TxKind::Reply{receive,route,..} if receive==index && route.service==Service::ServiceRegistry))
+    }
     pub fn reply_fully_published(&self, handle: &RequestHandle) -> bool {
         if handle.owner != self.owner || handle.generation != self.generation {
             return false;

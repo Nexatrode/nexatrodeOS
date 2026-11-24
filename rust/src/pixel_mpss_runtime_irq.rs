@@ -302,6 +302,24 @@ impl<K: Kernel> Router<K> {
         self.dispatch(owner).map(|_| true)
     }
 
+    /// One normal checked dispatch immediately after the exact ELF reply queues.
+    /// The capability is consumed before any callback; blocked attempts fall back
+    /// to the existing continuation. Other owners and terminal faults keep priority.
+    #[cfg(feature="sunfish-elf-queued-handoff")]
+    pub fn dispatch_queued_elf_reply<I:Io>(&mut self,owner:&mut Owner<I>)->Result<bool,Error>{
+        if let Err(error)=self.live(){owner.fault();return Err(error);}
+        if !self.continuation || self.other!=0 {return Ok(false);}
+        // Check the same generation/owner binding before consuming its one shot.
+        if owner.generation()!=self.generation || self.identity.is_some_and(|id|id!=owner.identity()) {
+            owner.fault();return Err(self.fail(Error::Identity));
+        }
+        if !owner.take_queued_elf_turn().map_err(|e|self.fail(Error::Owner(e)))?{return Ok(false);}
+        owner.observe_queued_elf_turn(None);
+        let result=self.dispatch(owner);
+        owner.observe_queued_elf_turn(Some(result.map_err(|_|())));
+        result.map(|_|true)
+    }
+
     /// Consume before one ordinary writer turn; retry only the exact live pair.
     /// Other owners, grant/credit work and backpressure keep the normal path.
     #[cfg(feature = "sunfish-registry-handoff-turn")]

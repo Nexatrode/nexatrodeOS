@@ -3043,6 +3043,8 @@ impl<I: Io> Adapter<I> {
 
     /// Read-only publication evidence; does not poll the transport.
     #[cfg(feature = "sunfish-linux-rmtfs")]
+    #[cfg(feature="sunfish-elf-queued-handoff")]
+    pub(crate) fn unpublished_registry_reply(&self,h:&core::RequestHandle)->bool{self.session.unpublished_registry_reply(h)}
     pub fn reply_fully_published(&self, handle: &RequestHandle) -> bool {
         self.session.reply_fully_published(handle)
     }

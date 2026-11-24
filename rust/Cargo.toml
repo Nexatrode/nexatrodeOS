@@ -356,6 +356,7 @@ sunfish-glink-announcement-reuse = ["sunfish-wlan-first-wrq-reuse", "sunfish-gli
 sunfish-registry-tftp-wire = ["sunfish-glink-announcement-reuse", "sunfish-registry-tx3-wire-headers", "sunfish-ipa-grant-tftp-peer"]
 # Presentation only: reuse retained whole-startup outcomes after ELF.
 sunfish-post-elf-startup-panel = ["sunfish-registry-tftp-wire"]
+sunfish-elf-queued-handoff = ["sunfish-post-elf-mcfg-trace"]
 sunfish-post-elf-mcfg-trace = ["sunfish-post-elf-startup-panel", "sunfish-wrq-post-return-callers", "sunfish-ipa-registration-reply-headers"]
 
 [[bin]]

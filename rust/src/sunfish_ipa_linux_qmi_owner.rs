@@ -870,6 +870,10 @@ impl<I: Io> Owner<I> {
             first_service_registry_reply_qrtr_resume_handle: None,
             #[cfg(feature = "sunfish-wlan-elf-timing")]
             elf_lookup_handle: None,
+            #[cfg(feature="sunfish-elf-queued-handoff")]
+            queued_elf_turn:None,
+            #[cfg(feature="sunfish-elf-queued-handoff")]
+            elf_queued_turn_trace:ElfQueuedTurnTrace::default(),
             #[cfg(feature = "sunfish-wlan-registry-txn4-timing")]
             registry_txn4_handle: None,
             tftp_trace: TftpObserverTrace::new(),
