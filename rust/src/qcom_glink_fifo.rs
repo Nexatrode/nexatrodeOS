@@ -2341,6 +2341,12 @@ impl<I: Io> Adapter<I> {
     { self.session.registry_handoff_pair(older, waiting) }
     #[cfg(feature = "sunfish-registry-window-trace")]
     pub fn registry_window_trace(&self) -> core::RegistryWindowTrace { self.session.registry_window_trace() }
+    #[cfg(feature="sunfish-post-elf-mcfg-trace")]
+    pub fn post_elf_mcfg(&self)->Option<&core::PostElfMcfgTrace>{self.session.post_elf_mcfg()}
+    #[cfg(feature="sunfish-post-elf-mcfg-trace")]
+    pub(crate) fn post_mcfg_watches(&self,h:&core::TftpHandle)->bool{self.session.post_mcfg_watches(h)}
+    #[cfg(feature="sunfish-post-elf-mcfg-trace")]
+    pub(crate) fn observe_post_mcfg_dispatch(&mut self,h:&core::TftpHandle,before:Option<usize>,r:Result<crate::qcom_tftp_server_check::Reply,crate::qcom_tftp_server_check::Error>,b:&[u8]){self.session.observe_post_mcfg_dispatch(h,before,r,b)}
     #[cfg(feature="sunfish-registry-tx3-wire-headers")]
     pub fn registry_wire_headers(&self)->Option<RegistryWireTrace>{self.ring.registry_wire}
     #[cfg(feature = "sunfish-registry-post-reply-trace")]

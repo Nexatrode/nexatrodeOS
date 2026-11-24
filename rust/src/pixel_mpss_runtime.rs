@@ -58,9 +58,12 @@ mod registry_tx3_headers;
 #[cfg(all(feature="sunfish-registry-tftp-wire",not(feature="sunfish-post-elf-startup-panel")))]
 #[path="pixel_mpss_registry_tftp_identity.rs"]
 mod registry_tftp_identity;
-#[cfg(feature="sunfish-post-elf-startup-panel")]
+#[cfg(all(feature="sunfish-post-elf-startup-panel",not(feature="sunfish-post-elf-mcfg-trace")))]
 #[path="pixel_mpss_post_elf_startup.rs"]
 mod post_elf_startup;
+#[cfg(feature="sunfish-post-elf-mcfg-trace")]
+#[path="pixel_mpss_post_elf_mcfg.rs"]
+mod post_elf_mcfg;
 #[cfg(feature="sunfish-registry-defer-paint")]
 #[path="pixel_mpss_registry_paint.rs"]
 mod registry_paint;
@@ -933,6 +936,8 @@ impl RuntimeDomain {
         };
         #[cfg(feature = "sunfish-tftp-mcfg-ram")]
         let previous_mcfg = self.server_check.mcfg_progress();
+        #[cfg(feature="sunfish-post-elf-mcfg-trace")]
+        let previous_post_mcfg=match self.stage.as_ref(){Some(Stage::Services(owner))=>owner.post_elf_mcfg().map_or(0,|t|t.revision),_=>0};
         #[cfg(feature = "sunfish-native-tftp-server-check")]
         let previous_server_check = (self.server_check_queued, self.server_check_ignored, self.server_check.total_bytes(), self.server_check.completed_count(), self.server_check.active_count());
         #[cfg(feature = "sunfish-native-tftp-server-check")]
@@ -1040,6 +1045,8 @@ impl RuntimeDomain {
         };
         #[cfg(feature = "sunfish-tftp-mcfg-ram")]
         let report_changed = report_changed || previous_mcfg != self.server_check.mcfg_progress();
+        #[cfg(feature="sunfish-post-elf-mcfg-trace")]
+        let report_changed=report_changed || match self.stage.as_ref(){Some(Stage::Services(owner))=>owner.post_elf_mcfg().map_or(0,|t|t.revision)!=previous_post_mcfg,_=>false};
         #[cfg(feature = "sunfish-tftp-missing-temp-replies")]
         let report_changed = report_changed || previous_missing != (self.server_check.missing_requests(), match self.stage.as_ref() {
             Some(Stage::Services(owner)) => owner.tftp_missing_reply_trace(), _ => None,

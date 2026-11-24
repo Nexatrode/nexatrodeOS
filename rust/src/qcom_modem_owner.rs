@@ -2018,6 +2018,8 @@ impl<I: Io> Owner<I> {
     }
     #[cfg(feature = "sunfish-registry-window-trace")]
     pub fn registry_window_trace(&self) -> crate::qcom_glink_qmi::RegistryWindowTrace { self.adapter.registry_window_trace() }
+    #[cfg(feature="sunfish-post-elf-mcfg-trace")]
+    pub fn post_elf_mcfg(&self)->Option<&crate::qcom_glink_qmi::PostElfMcfgTrace>{self.adapter.post_elf_mcfg()}
     #[cfg(feature="sunfish-registry-tx3-wire-headers")]
     pub fn registry_wire_headers(&self)->Option<crate::qcom_glink_fifo::RegistryWireTrace>{self.adapter.registry_wire_headers()}
     #[cfg(feature = "sunfish-registry-post-reply-trace")]
@@ -2547,6 +2549,8 @@ impl<I: Io> Owner<I> {
         if let Err(error) = self.adapter.revalidate(self.generation) { return Err(self.stop(error.into())); }
         #[cfg(feature = "sunfish-wlan-elf-server-check-timing")]
         self.adapter.observe_elf_server_check_dispatch_start(&handle);
+        #[cfg(feature="sunfish-post-elf-mcfg-trace")]
+        let post_mcfg_file_before=self.adapter.post_mcfg_watches(&handle).then(||server.mcfg_progress().1);
         self.stopped = true;
         let (route, packet) = match self.adapter.tftp_datagram(self.generation, &handle) {
             Ok(value) => value,
@@ -2642,6 +2646,8 @@ impl<I: Io> Owner<I> {
         self.adapter.observe_registration_tftp_dispatch(
             handle, dispatch.err().map_or(0, |error| error.code() as u8), occupied,
         );
+        #[cfg(feature="sunfish-post-elf-mcfg-trace")]
+        if let Some(before)=post_mcfg_file_before {self.adapter.observe_post_mcfg_dispatch(&handle,before,dispatch,&self.tftp_output);}
         self.finish_tftp_request(&handle, interrupts)?;
         if dispatch.is_err() { return Ok(TftpServiceProgress::Ignored(crate::qcom_qrtr_tftp::IgnoreReason::InvalidTransferPacket)); }
         if dispatch.is_ok_and(|reply| reply.len == 0) { return Ok(TftpServiceProgress::Idle); }

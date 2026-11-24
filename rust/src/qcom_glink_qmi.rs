@@ -16,6 +16,12 @@
 //! supports a narrower profile than the complete Linux transports.
 #![forbid(unsafe_code)]
 
+#[cfg(feature="sunfish-post-elf-mcfg-trace")]
+#[path="qcom_post_elf_mcfg.rs"]
+mod post_elf_mcfg;
+#[cfg(feature="sunfish-post-elf-mcfg-trace")]
+pub use post_elf_mcfg::{PostElfMcfgTrace, PostMcfgRequest, McfgOptionIds, McfgWireRecord};
+
 #[cfg(feature = "sunfish-linux-ipa-qmi")]
 #[path = "sunfish_ipa_linux_qmi_link.rs"]
 mod linux_ipa_link;
@@ -943,6 +949,8 @@ pub struct Session {
     first_tftp_unheld: bool,
     #[cfg(feature = "sunfish-wlan-elf-exchange-trace")]
     elf_exchange: Option<ElfExchangeTrace>,
+    #[cfg(feature="sunfish-post-elf-mcfg-trace")]
+    post_elf_mcfg: Option<PostElfMcfgTrace>,
     #[cfg(feature = "sunfish-wlan-first-server-check-trace")]
     first_server_check: Option<ElfServerCheckTrace>,
     #[cfg(feature = "sunfish-ipa-announcement-timeline")]
@@ -1909,6 +1917,8 @@ impl Session {
             registry_window: RegistryWindowTrace::default(),
             #[cfg(feature = "sunfish-wlan-elf-exchange-trace")]
             elf_exchange: None,
+            #[cfg(feature="sunfish-post-elf-mcfg-trace")]
+            post_elf_mcfg: None,
             #[cfg(feature = "sunfish-wlan-first-server-check-trace")]
             first_server_check: None,
             #[cfg(feature = "sunfish-ipa-announcement-timeline")]
@@ -2848,6 +2858,8 @@ impl Session {
         { self.first_wrq_window = FirstWrqWindow::default(); }
         #[cfg(feature = "sunfish-wlan-elf-exchange-trace")]
         { self.elf_exchange = None; }
+        #[cfg(feature="sunfish-post-elf-mcfg-trace")]
+        { self.post_elf_mcfg = None; }
         #[cfg(feature = "sunfish-wlan-first-server-check-trace")]
         { self.first_server_check = None; }
         #[cfg(feature = "sunfish-ipa-announcement-timeline")]
@@ -3776,6 +3788,8 @@ impl Session {
             #[cfg(feature = "sunfish-tftp-oack-reserve")]
             reserve,
         );
+        #[cfg(feature="sunfish-post-elf-mcfg-trace")]
+        self.observe_post_mcfg_queue(handle,route,result);
         #[cfg(feature = "sunfish-tftp-oack-reserve")]
         if result == Ok(TX_SLOTS) {
             self.reserved_oack = Some(ReservedOack {
@@ -4728,6 +4742,8 @@ impl Session {
                 }
             }
         }
+        #[cfg(feature="sunfish-post-elf-mcfg-trace")]
+        self.observe_post_mcfg_wire(index);
         self.finish_receive(index)
     }
 
@@ -5017,11 +5033,10 @@ impl Session {
             if self.tftp_server {
                 self.receive[index].state = RxState::Tftp;
                 self.receive[index].done_pending = false;
-                return Ok(Event::TftpRequest(TftpHandle {
-                    owner: self.owner,
-                    generation: self.generation,
-                    intent: self.receive[index].tftp_datagram_id(),
-                }));
+                let handle=TftpHandle {owner:self.owner,generation:self.generation,intent:self.receive[index].tftp_datagram_id()};
+                #[cfg(feature="sunfish-post-elf-mcfg-trace")]
+                self.observe_post_mcfg_receive(index,handle);
+                return Ok(Event::TftpRequest(handle));
             }
             let observation =
                 crate::qcom_tftp::observe_request(&self.receive[index].bytes[32..len]);
@@ -5340,6 +5355,8 @@ impl Session {
                 before_reply: None,
             });
         }
+        #[cfg(feature="sunfish-post-elf-mcfg-trace")]
+        if first_elf { self.start_post_elf_mcfg(handle,index); }
         Ok(Event::Request(handle))
     }
 
@@ -5373,6 +5390,8 @@ impl Session {
 
     fn receive_control(&mut self, index: usize, len: usize) -> Result<Event, Error> {
         let command = self.control.decode(&self.receive[index].bytes[..len])?;
+        #[cfg(feature="sunfish-post-elf-mcfg-trace")]
+        if let control::Command::DelClient(port)=command {self.observe_post_mcfg_close(port);}
         #[cfg(feature = "sunfish-first-oack-after-ipa-publish")]
         if self.first_oack_after_ipa_publish && self.first_oack_eligibility.close_mask.is_none()
             && let control::Command::DelClient(port) = command
@@ -6398,6 +6417,8 @@ impl Session {
             if let Some(trace) = self.mcfg_oack.as_mut() { trace.flags |= 16; }
             self.mcfg_oack_slot = None;
         }
+        #[cfg(feature="sunfish-post-elf-mcfg-trace")]
+        self.observe_post_mcfg_done(index,id);
         self.transmit[index].remote_slot = None;
         self.transmit[index].glink_done = true;
         #[cfg(feature = "sunfish-tftp-oack-reserve")]
@@ -6463,6 +6484,8 @@ impl Session {
         {
             trace.completed = true;
         }
+        #[cfg(feature="sunfish-post-elf-mcfg-trace")]
+        self.observe_post_mcfg_elf_done(completion);
         Ok(completion)
     }
 
@@ -9145,6 +9168,8 @@ impl Session {
                 self.transmit[index].remote_slot = Some(remote);
                 self.transmit[index].sent += chunk;
                 if self.transmit[index].sent == self.transmit[index].len {
+                    #[cfg(feature="sunfish-post-elf-mcfg-trace")]
+                    self.observe_post_mcfg_publication(index,remote);
                     #[cfg(feature = "sunfish-registry-handoff-turn")]
                     if let Some(prior) = self.registry_window.predecessor.as_mut()
                         && let TxKind::Reply { receive, .. } = self.transmit[index].kind

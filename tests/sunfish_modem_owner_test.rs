@@ -1928,12 +1928,17 @@ fn owner_announces_servreg_and_returns_bounded_domain_map_through_fifo() {
                        (Some(100), Some(110), Some(120), Some(130)));
             #[cfg(feature = "sunfish-wlan-elf-dispatch-timing")]
             {
-                assert_eq!((trace.received, trace.queued, trace.published, trace.done),
-                           (Some(100), Some(140), Some(150), Some(160)));
+                // Optional observation clock calls advance this synthetic counter;
+                // neither clock values nor this trace participate in protocol policy.
+                let clocks = if cfg!(feature="sunfish-post-elf-mcfg-trace") {
+                    (Some(110), Some(150), Some(170), Some(200))
+                } else {(Some(100), Some(140), Some(150), Some(160))};
+                assert_eq!((trace.received, trace.queued, trace.published, trace.done), clocks);
+                let extra = u64::from(cfg!(feature="sunfish-post-elf-mcfg-trace"))*10;
                 assert_eq!(trace.dispatch, qcom_modem_owner::ElfDispatchTiming {
-                    receive_pass_end: Some(110),
-                    registry_entered: Some(120),
-                    selected: Some(130),
+                    receive_pass_end: Some(110+extra),
+                    registry_entered: Some(120+extra),
+                    selected: Some(130+extra),
                     #[cfg(feature = "sunfish-wlan-elf-registry-turns")]
                     turns: trace.dispatch.turns,
                 });
@@ -5831,3 +5836,6 @@ fn wrq_stage_history_freezes_only_after_exact_checked_return() {
 #[cfg(feature = "sunfish-tftp-peer-metadata-batch")]
 #[path = "sunfish_tftp_peer_metadata_test.rs"]
 mod peer_metadata_batch_tests;
+
+#[cfg(feature="sunfish-post-elf-startup-panel")]
+include!("sunfish_post_elf_mcfg_cases.rs");
