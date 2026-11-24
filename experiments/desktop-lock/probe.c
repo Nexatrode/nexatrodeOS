@@ -6,13 +6,20 @@ static volatile uint8_t *notes = (void *)0x50000000;
 static const char note[] = "disposable wrapped lifecycle note";
 static void clear_note_page(void) { for (unsigned i = 0; i < 4096; ++i) notes[i] = 0; }
 static void note_probe(void) {
+    unsigned retries = 0;
+retry:
+    if (retries++ == 2) { microkit_dbg_puts("LOCK_VAULT_PROBE|STATE_CHANGED\n"); return; }
     microkit_msginfo reply = microkit_ppcall(2, microkit_msginfo_new(0x301, 0));
     unsigned label = microkit_msginfo_get_label(reply);
     if (label == 0x304) { /* REPLY_DENIED */
         for (unsigned i = 0; i < 4096; ++i)
             if (notes[i]) { microkit_dbg_puts("LOCK|FAIL|locked note transfer retained data\n"); return; }
-        microkit_mr_set(0, 0); microkit_mr_set(1, 0);
+        /* The two RPCs are not an atomic snapshot: commit can occur between
+         * them. A never-valid generation makes this probe non-destructive
+         * even when the write arrives after the vault has unlocked. */
+        microkit_mr_set(0, UINT64_MAX); microkit_mr_set(1, 0);
         reply = microkit_ppcall(2, microkit_msginfo_new(0x30c, 2));
+        if (microkit_msginfo_get_label(reply) == 0x305) goto retry; /* Unlocked: generation conflict. */
         if (microkit_msginfo_get_label(reply) != 0x304) microkit_dbg_puts("LOCK|FAIL|locked note write allowed\n");
         else microkit_dbg_puts("LOCK_VAULT_PROBE|DENIED_AND_CLEAR\n");
         return;
@@ -28,6 +35,9 @@ static void note_probe(void) {
         if (microkit_msginfo_get_label(reply) != 0x300) { microkit_dbg_puts("LOCK|FAIL|note write\n"); return; }
     }
     reply = microkit_ppcall(2, microkit_msginfo_new(0x30b, 0));
+    if (microkit_msginfo_get_label(reply) == 0x304) {
+        microkit_dbg_puts("LOCK_VAULT_PROBE|STATE_CHANGED\n"); return; /* Re-locked between reads. */
+    }
     if (microkit_msginfo_get_label(reply) != 0x300 || microkit_msginfo_get_count(reply) != 2 ||
         *(volatile uint32_t *)notes != sizeof(note) - 1) { microkit_dbg_puts("LOCK|FAIL|note blob read\n"); return; }
     for (unsigned i = 0; i < sizeof(note) - 1; ++i)

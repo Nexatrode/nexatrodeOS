@@ -165,6 +165,13 @@ test and nine existing lock policy/storage tests passed. The unwrapped fixture
 and the earlier wrapped-vault server without the dynamic-lifecycle feature also
 rebuilt after the shared changes.
 
+Merge verification exposed a diagnostic-probe race: unlock could commit between
+its denied read and attempted write. The denial probe now uses a never-valid
+expected generation, so it cannot overwrite a note if the vault unlocks between
+the two RPCs. A bounded retry handles the phase change. A sanitized host fixture
+covers stable lock, unlock between RPCs, re-lock between reads and detection of
+an erroneously accepted write.
+
 ```sh
 python3 tests/desktop_lock_utm.py \
   --inputs /path/to/utm-accelerated \
@@ -177,6 +184,8 @@ python3 tests/desktop_lock_utm.py \
 
 Evidence, source/loader hashes, serial traces and framebuffer captures are in
 `build/desktop-lock/wrapped-utm` and `build/desktop-lock/wrapped-skip-evict`.
+The merged-main run with the corrected diagnostic probe is recorded in
+`build/desktop-lock/main-verified-utm`.
 The ordinary mode remains available without `--wrapped`. This does not make
 the debugger-enabled kernel, host memory/snapshots, authentication stack
 temporaries or GPU copies secure, and software retry delays still do not stop
