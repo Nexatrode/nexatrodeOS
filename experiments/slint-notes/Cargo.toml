@@ -82,6 +82,11 @@ path = "../desktop-lock/auth.rs"
 required-features = ["desktop-lock-ui"]
 
 [[bin]]
+name = "simplex_session_client"
+path = "../desktop-simplex/client.rs"
+required-features = ["utm-pd", "utm-photo-worker", "utm-transcript-worker"]
+
+[[bin]]
 name = "slint_surface_fixture"
 path = "../../experiments/desktop-surfaces/app.rs"
 required-features = ["utm-pd"]

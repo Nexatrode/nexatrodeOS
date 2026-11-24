@@ -20,6 +20,11 @@ static void track_private_frame(seL4_CPtr cap, size_t bytes);
 #undef notified
 #undef fault
 #include "image.h"
+#ifdef DYNAMIC_SIMPLEX_SESSION
+#include "session_layout.h"
+static void simplex_session_boot(void);
+static void simplex_session_fault(void);
+#endif
 #ifdef DYNAMIC_LOCK
 #include "../desktop-lock/protocol.h"
 static bool device_locked = true;
@@ -136,7 +141,13 @@ static void launch(void)
 #ifdef DYNAMIC_LOCK
     private_frame_count = 0;
 #endif
-    if (generation >= 61) { print("DYNAMIC|LIMIT|instance generation quota\n"); return; }
+    if (generation >=
+#ifdef DYNAMIC_SIMPLEX_SESSION
+        31
+#else
+        61
+#endif
+       ) { print("DYNAMIC|LIMIT|instance generation quota\n"); return; }
     size_t length = gui_elf_end - gui_elf_start;
     if (!graphical_image_valid(gui_elf_start, length)) fail("graphical executable policy", 0);
     gui = (struct process){.start_slot = app_start, .next_slot = app_start,
@@ -285,6 +296,9 @@ void init(void)
     input_a = 0x66001000;
     compositor_init();
 #ifdef DYNAMIC_LOCK
+#ifdef DYNAMIC_SIMPLEX_SESSION
+    simplex_session_boot();
+#endif
 #ifdef DYNAMIC_WRAPPED_LOCK
     evict_vault();
 #endif
@@ -322,6 +336,13 @@ microkit_msginfo protected(microkit_channel channel, microkit_msginfo message)
 seL4_Bool fault(microkit_child child, microkit_msginfo info, microkit_msginfo *reply)
 {
     (void)reply;
+#ifdef DYNAMIC_SIMPLEX_SESSION
+    if (child >= SESSION_FIRST_CHILD && child < SESSION_FIRST_CHILD + SESSION_CHILD_COUNT) {
+        line("SIMPLEX_SESSION|FAULT|child=", child);
+        simplex_session_fault();
+        return seL4_False;
+    }
+#endif
     if (!dynamic_active || child != generation) fail("graphical fault identity", 0);
     bool expected = fault_requested && microkit_msginfo_get_label(info) == seL4_Fault_VMFault &&
                     microkit_mr_get(seL4_VMFault_Addr) == 0x61000000 &&

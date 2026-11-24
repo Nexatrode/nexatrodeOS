@@ -37,10 +37,11 @@ def main():
     parser.add_argument("--desktop-lock-test", choices=("normal", "skip-scrub", "wrapped", "skip-evict"),
                         help="exercise passphrase-gated dynamic processes using a fresh disk")
     parser.add_argument("--desktop-notes-test", action="store_true", help="test dynamic private Notes and interrupted saves on a fresh disk")
+    parser.add_argument("--desktop-simplex-test", action="store_true", help="test parent-managed SimpleX lock recovery offline on a fresh disk")
     parser.add_argument("--desktop-lifecycle-test", choices=("normal", "skip-revoke", "keep-endpoint"),
                         help="exercise a dynamically created graphical process")
     args = parser.parse_args()
-    if (args.desktop_input_test or args.desktop_lifecycle_test or args.desktop_lock_test or args.desktop_notes_test) and not args.screenshot_output:
+    if (args.desktop_input_test or args.desktop_lifecycle_test or args.desktop_lock_test or args.desktop_notes_test or args.desktop_simplex_test) and not args.screenshot_output:
         parser.error("the desktop input test requires an evidence screenshot destination")
     if args.desktop_input_test and args.desktop_lifecycle_test:
         parser.error("choose one disposable interaction fixture")
@@ -48,6 +49,8 @@ def main():
         parser.error("the lock fixture requires its own fresh GPT disk and exclusive callback")
     if args.desktop_notes_test and (not args.blank_gpt or args.desktop_input_test or args.desktop_lifecycle_test or args.desktop_lock_test):
         parser.error("the Notes fixture requires a fresh GPT disk and exclusive callback")
+    if args.desktop_simplex_test and (not args.blank_gpt or args.desktop_input_test or args.desktop_lifecycle_test or args.desktop_lock_test or args.desktop_notes_test):
+        parser.error("the SimpleX fixture requires its own fresh GPT disk and exclusive callback")
     state = subprocess.run(["ioreg", "-n", "Root", "-d", "1", "-a"],
                            capture_output=True, check=True, timeout=10)
     console = plistlib.loads(state.stdout)
@@ -130,6 +133,9 @@ def main():
                 if any(marker in output for marker in rejected):
                     raise RuntimeError("guest reported failure: " + output[-3000:])
                 if all(marker in output for marker in expected):
+                    if args.desktop_simplex_test:
+                        from desktop_simplex_input import exercise
+                        exercise(monitor, trace, data, args.screenshot_output.parent)
                     if args.desktop_notes_test:
                         from desktop_notes_input import exercise
                         exercise(monitor, trace, data, args.screenshot_output.parent)

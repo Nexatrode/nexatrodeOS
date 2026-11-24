@@ -1,6 +1,9 @@
 /* Trusted lifecycle/lock boundary, confined to the disposable experiment. */
 static struct { seL4_CPtr cap; size_t bytes; } private_frames[MAX_OBJECTS];
 static uint64_t lock_epoch = 1, activity_ms;
+#ifdef DYNAMIC_SIMPLEX_SESSION
+#include "../desktop-simplex/session.h"
+#endif
 #ifdef DYNAMIC_WRAPPED_LOCK
 static uint64_t vault_lease_until;
 static bool vault_failed;
@@ -111,12 +114,19 @@ static void begin_device_lock(bool force)
     // Stop the producer and close vault access before the longer pixel/frame
     // erasure work. No app service remains open behind the cover frame.
     if (dynamic_active) check(seL4_TCB_Suspend(gui.tcb), "lock producer quiesce");
+#ifdef DYNAMIC_SIMPLEX_SESSION
+    simplex_session_suspend();
+#endif
     bool vault_evicted = evict_vault();
 #endif
     auth_revision = 0;
     for (size_t i = 0; i < sizeof(auth_pixels); ++i) auth_pixels[i] = 0;
     publish_lock_status();
     compose(); /* Replace displayed app before potentially expensive cleanup. */
+#ifdef DYNAMIC_SIMPLEX_SESSION
+    simplex_session_scrub();
+    if (session_failed) vault_failed = true;
+#endif
     close_window();
     reset_lock_input();
 #ifdef DYNAMIC_WRAPPED_LOCK
@@ -238,6 +248,9 @@ microkit_msginfo lock_request(microkit_channel channel, microkit_msginfo message
         if (vault_failed || !vault_lease_until || lock_now() >= vault_lease_until) return microkit_msginfo_new(1, 0);
         if (!vault_transition(0x455, 3, false)) { begin_device_lock(true); return microkit_msginfo_new(2, 0); }
         vault_lease_until = 0;
+#ifdef DYNAMIC_SIMPLEX_SESSION
+        if (!simplex_session_start()) { begin_device_lock(true); return microkit_msginfo_new(2, 0); }
+#endif
 #endif
         device_locked = false;
         activity_ms = lock_now();
@@ -252,3 +265,11 @@ microkit_msginfo lock_request(microkit_channel channel, microkit_msginfo message
     }
     return microkit_msginfo_new(1, 0);
 }
+#ifdef DYNAMIC_SIMPLEX_SESSION
+static void simplex_session_fault(void)
+{
+    begin_device_lock(true);
+    session_failed = vault_failed = true;
+    publish_lock_status();
+}
+#endif
