@@ -71,6 +71,11 @@ static inline uint8_t *rx_buffer(struct tcp_session *session)
 }
 static bool network_ready;
 static struct dns_slot_table dns_slots;
+#ifdef SIMPLEX_LOCK_LIFECYCLE
+static bool simplex_network_active;
+static uint64_t simplex_network_epoch;
+static uintptr_t dns_generations[DNS_SLOT_COUNT];
+#endif
 
 /* Wallet/worker use per-slot wire pages; agent/shell share page 0 + reserved. */
 static uint32_t active_slot;
@@ -115,8 +120,15 @@ static void dns_found(const char *name, const ip_addr_t *addr, void *arg)
 {
     (void)name;
     uintptr_t encoded = (uintptr_t)arg;
+#ifdef SIMPLEX_LOCK_LIFECYCLE
+    uint32_t encoded_slot = encoded & 7u;
+    if (!simplex_network_active || !encoded_slot || encoded_slot > DNS_SLOT_COUNT) return;
+    uint32_t slot = encoded_slot - 1;
+    if ((encoded >> 3) != dns_generations[slot]) return;
+#else
     if (encoded == 0 || encoded > DNS_SLOT_COUNT) return;
     uint32_t slot = (uint32_t)(encoded - 1);
+#endif
     if (addr == NULL || !IP_IS_V4(addr)) {
         dns_slot_complete(&dns_slots, slot, NULL);
         return;
@@ -164,6 +176,10 @@ unsigned haskell_dns_start(void)
     if (!dns_slot_begin(&dns_slots, active_slot)) return HASKELL_TCP_BUSY;
     ip_addr_t address;
     void *callback_arg = (void *)(uintptr_t)(active_slot + 1);
+#ifdef SIMPLEX_LOCK_LIFECYCLE
+    if (dns_generations[active_slot] == (UINTPTR_MAX >> 3)) return HASKELL_TCP_ERROR;
+    callback_arg = (void *)((++dns_generations[active_slot] << 3) | (active_slot + 1));
+#endif
     sddf_printf("HASKELL_DNS|query %s via %s\n", lookup->name, ipaddr_ntoa(dns_getserver(0)));
     err_t result = dns_gethostbyname(lookup->name, &address, dns_found, callback_arg);
     /* A missing resolver calls the callback with NULL and still returns ERR_OK. */
@@ -533,3 +549,50 @@ unsigned haskell_tcp_cancel(void)
     session->rx_length = 0;
     return HASKELL_TCP_CLOSED;
 }
+
+#ifdef SIMPLEX_LOCK_LIFECYCLE
+bool haskell_simplex_network_active(void) { return simplex_network_active; }
+uint64_t haskell_simplex_network_epoch(void) { return simplex_network_epoch; }
+static void simplex_wipe(volatile uint8_t *bytes, size_t size)
+{
+    for (size_t i = 0; i < size; ++i) bytes[i] = 0;
+}
+bool haskell_simplex_network_cleared(void)
+{
+    for (unsigned slot = 0; slot < 2; ++slot) {
+        if (sessions[slot].pcb || sessions[slot].state != IDLE || sessions[slot].rx_length ||
+            dns_slots.slots[slot].state != DNS_SLOT_IDLE) return false;
+        const volatile uint8_t *bytes = rx_buffer(&sessions[slot]);
+        for (size_t n = 0; n < RX_CAPACITY; ++n) if (bytes[n]) return false;
+        bytes = (void *)&dns_slots.slots[slot];
+        for (size_t n = 0; n < sizeof(dns_slots.slots[slot]); ++n) if (bytes[n]) return false;
+    }
+    return true;
+}
+bool haskell_simplex_network_transition(bool unlock, uint64_t epoch)
+{
+    if (!epoch || epoch < simplex_network_epoch || (unlock &&
+        (epoch != simplex_network_epoch || simplex_network_active))) return false;
+    simplex_network_active = false;
+    for (unsigned slot = 0; slot < 2; ++slot) {
+        haskell_tcp_select(slot, false);
+        haskell_tcp_cancel();
+        simplex_wipe(rx_buffer(&sessions[slot]), RX_CAPACITY);
+        simplex_wipe((void *)&dns_slots.slots[slot], sizeof(dns_slots.slots[slot]));
+        /* A late DNS completion from the old session cannot satisfy a new lookup. */
+        if (dns_generations[slot] == (UINTPTR_MAX >> 3)) return false;
+        ++dns_generations[slot];
+    }
+    simplex_wipe((void *)pages_base(), 4096);
+    simplex_network_epoch = epoch;
+    if (!haskell_simplex_network_cleared()) return false;
+    if (unlock) {
+        for (unsigned slot = 0; slot < HASKELL_TCP_SESSIONS; ++slot) {
+            pages_base()[slot].magic = HASKELL_TCP_MAGIC;
+            pages_base()[slot].reserved = slot;
+        }
+        simplex_network_active = true;
+    }
+    return true;
+}
+#endif

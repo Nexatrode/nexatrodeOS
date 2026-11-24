@@ -82,10 +82,11 @@ build/desktop-simplex/session-test
 The runner reads only a sanitized configuration template, creates a new GPT disk
 and a new UTM UUID, disables sharing, and deletes its own VM/disk afterward. No
 existing wallet, chat database, regular VM drive or installation vault key is
-used. The fixture has no ethernet stack or external SMP/XFTP connection; its
-environment endpoint denies network requests. This tests local lock recovery,
-not iPhone delivery or reconnection to a live relay. A regular frontend/network
-rollout needs a separate disposable online test, including socket teardown.
+used. The default offline fixture has no ethernet stack or external SMP/XFTP
+connection; its environment endpoint denies network requests. It tests local
+lock recovery. The opt-in live relay variant below separately tests socket
+teardown and delivery through a real relay, without using an iPhone or a saved
+conversation.
 
 ## Verification on 2026-11-23
 
@@ -105,6 +106,65 @@ log-based UTM callback did not start because its setup marker interleaved with
 another PD's output. The new SimpleX run uses actual screen/state checks for
 startup and worker progress.
 
+## Live relay test
+
+Add `--simplex-live` to the wrapped SimpleX fixture to enable the real UTM
+Ethernet/lwIP stack and a native upstream SimpleX Chat test peer. This uses the
+same real GHC agent, Messages service and receive/transcript workers, with a
+separate native driver. It does **not** compile the offline decoded-event
+injection feature. The clock-only environment supplies build-time UTC plus
+monotonic elapsed seconds for this disposable test.
+
+Only the fresh-disk runner's explicit `--desktop-simplex-live-test` mode enables
+unrestricted QEMU user networking. Other probe modes retain restricted
+networking. The peer creates a new private temporary database, uses the
+loopback-only upstream WebSocket API, and connects through the pinned
+`smp4.simplex.im:5223` public relay. `SIMPLEX_LIVE_CLI` may select an alternative
+native upstream CLI binary. Neither endpoint uses the user's saved chats.
+
+The lock manager has a private network-control channel. After stopping all
+SimpleX producers, it aborts their two TCP slots, clears their receive and DNS
+state and shared protocol page, and closes their network request gate. Late DNS
+callbacks carry a generation and cannot complete a lookup from a later unlock.
+After the wrapped vault key is committed, the manager restores the public boot
+template, reopens the empty network slots and restarts the services. The DHCP
+stack and unrelated drivers remain alive. This is opt-in fixture wiring, not a
+rollout to the regular VM or Pixel.
+
+The live test checks actual, independently observed messages:
+
+1. A fresh peer joins the guest's invitation. `host-before-lock` reaches the
+   guest through the real receive worker and encrypted transcript, and
+   `guest-before-lock` reaches the peer.
+2. Manual lock closes the guest connections and erases the managed group. A
+   wrong passphrase starts nothing. The peer sends `host-while-locked`; the
+   guest's result/queue page remains zero while locked.
+3. Unlocking the same running VM reopens AgentStore and restores subscriptions.
+   The queued message arrives, the transcript contains both incoming messages,
+   and `guest-after-unlock` reaches the peer. No UTM restart is used.
+4. A final lock repeats teardown/erasure. The known message plaintext is absent
+   from the fresh encrypted disk (a smoke check, not a cryptographic proof).
+
+The runner deletes its VM and scratch disk and stops the temporary peer in its
+cleanup path. It also attempts to delete the peer's disposable contact. Private
+local evidence includes the peer's independent structured receive events;
+invitation URLs, peer databases and disk images must not be added to Git.
+
+The TCP receive tests include a new ASan/UBSan case for socket abort, receive
+buffer erasure, epoch rejection, duplicate unlock denial and late DNS completion.
+The existing parent lifecycle test still covers eight restart/scrub cycles and
+failure latching. Final live-run evidence is under
+`build/desktop-simplex/live-complete`: `build.json`, `serial.log`,
+`simplex-live-result.json` and `peer-events.json`.
+
+On 2026-11-23, two fresh live UTM runs passed all four checks. Each run
+completed without a VM restart between the two messaging rounds. The final
+source-built loader's 58 recorded source files and 28 artifacts matched their
+manifest hashes. Three service-group erasures each verified 185,303,040 bytes;
+the independent native peer recorded both guest replies. All disposable UTM
+registrations were removed, and the regular VM was left stopped. The detailed
+cross-check is `build/desktop-simplex/live-complete/verification.json`.
+
 ## Limits
 
 This retains the existing development-kernel, software-passphrase and wrapped-key
@@ -113,4 +173,6 @@ counters or protection from a hostile host. It does not prove erasure of FPU/SIM
 registers, kernel/reply-object internals, other trusted services' stacks, GPU
 memory, physical RAM remnants or host snapshots. A lock discards unsaved drafts
 and uncommitted/in-flight work; committed data is recovered from encrypted disk.
-No at-most-once remote delivery claim follows from this offline test.
+The live test covers text-message reconnection and delivery across this lock
+boundary. It does not establish at-most-once delivery during an interrupted
+send, live XFTP/photo-transfer recovery, or the regular full frontend rollout.

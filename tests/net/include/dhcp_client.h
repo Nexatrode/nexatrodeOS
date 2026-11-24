@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include <os/sddf.h>
 #include "haskell_tcp_protocol.h"
+#include "simplex_lock_protocol.h"
 
 #define UDP_ECHO_PORT 1235
 #define UDP_SEAL_PORT 1236

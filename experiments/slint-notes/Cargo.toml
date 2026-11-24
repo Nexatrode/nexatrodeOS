@@ -25,6 +25,7 @@ utm-pd = []
 desktop-dynamic-ui = ["utm-pd"]
 desktop-lock-app = ["desktop-dynamic-ui"]
 desktop-private-notes = ["desktop-lock-app"]
+desktop-simplex-live-test = ["utm-pd", "utm-photo-worker", "utm-transcript-worker"]
 desktop-lock-ui = ["utm-pd", "utm-device-lock"]
 desktop-wrapped-lock-ui = ["desktop-lock-ui", "personal-os-rust-server/utm-dynamic-vault-lock"]
 utm-device-lock = ["personal-os-rust-server/utm-device-lock"]
@@ -85,6 +86,11 @@ required-features = ["desktop-lock-ui"]
 name = "simplex_session_client"
 path = "../desktop-simplex/client.rs"
 required-features = ["utm-pd", "utm-photo-worker", "utm-transcript-worker"]
+
+[[bin]]
+name = "simplex_live_client"
+path = "../desktop-simplex/live_client.rs"
+required-features = ["desktop-simplex-live-test"]
 
 [[bin]]
 name = "slint_surface_fixture"

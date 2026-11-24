@@ -26,11 +26,13 @@ def main():
     p.add_argument('--wrapped', action='store_true', help='integrate the disposable passphrase-wrapped vault key')
     p.add_argument('--private-notes', action='store_true', help='give the dynamic Notes app private encrypted storage and test interrupted saves')
     p.add_argument('--simplex-session', type=Path, metavar='GATED_AGENT', help='restart the trusted SimpleX service group with the dynamic lock (disposable offline fixture)')
+    p.add_argument('--simplex-live', action='store_true', help='enable real relay traffic only in the disposable SimpleX fixture')
     p.add_argument('--control-skip-evict', action='store_true', help='deliberately retain the provider key; requires --wrapped')
     a = p.parse_args()
     if a.control_skip_evict and (not a.wrapped or a.control_skip_scrub): p.error('skip-evict requires --wrapped and its own test')
     if a.private_notes and (not a.wrapped or a.control_skip_evict or a.control_skip_scrub): p.error('private-notes requires --wrapped and its own fresh-disk test')
     if a.simplex_session and (not a.wrapped or a.private_notes or a.control_skip_evict or a.control_skip_scrub): p.error('simplex-session requires --wrapped and its own fresh-disk test')
+    if a.simplex_live and not a.simplex_session: p.error('--simplex-live requires --simplex-session')
     idle_ms = 30000 if a.private_notes or a.simplex_session else 10000
     out = a.output.resolve()
     if out.exists() or any(q.suffix == '.utm' for q in (out, *out.parents)) or out.is_relative_to(a.inputs.resolve()):
@@ -54,7 +56,7 @@ def main():
     (out / 'identity.bin').write_bytes(__import__('struct').pack('<QQ', 1, 1))
     run('/opt/homebrew/opt/llvm/bin/llvm-objcopy', '--update-section', f".app_identity={out / 'identity.bin'}", out / 'gui.elf')
     patch_channels(out / 'gui.elf')
-    services = 'utm-simplex-session-test' if a.simplex_session else 'utm-notes-interruption-test' if a.private_notes else 'utm-dynamic-vault-skip-evict' if a.control_skip_evict else 'utm-dynamic-vault-lock' if a.wrapped else 'development-crypto,utm-device-lock'
+    services = 'utm-simplex-live-test' if a.simplex_live else 'utm-simplex-session-test' if a.simplex_session else 'utm-notes-interruption-test' if a.private_notes else 'utm-dynamic-vault-skip-evict' if a.control_skip_evict else 'utm-dynamic-vault-lock' if a.wrapped else 'development-crypto,utm-device-lock'
     target = cargo('rust/Cargo.toml', services, ['rust_vault_disk', 'rust_entropy_rng'] + (['rust_messages_agent_app'] if a.simplex_session else []), 'build/desktop-lock-cargo')
     sections = subprocess.check_output(['/opt/homebrew/opt/llvm/bin/llvm-readelf', '-S', target / 'rust_vault_disk.elf'], text=True)
     assert '.utm_vault_key' not in sections, 'installation-key vault forbidden in disposable test'
@@ -71,7 +73,10 @@ def main():
     run(*flags, '-c', out / 'payload.S', '-o', out / 'payload.o')
     if a.simplex_session:
         import desktop_simplex_fixture
-        session_children = desktop_simplex_fixture.prepare(out, a.simplex_session.resolve(), cargo, flags, run)
+        session_children = desktop_simplex_fixture.prepare(out, a.simplex_session.resolve(), cargo, flags, run, live=a.simplex_live)
+        if a.simplex_live:
+            import desktop_simplex_network
+            desktop_simplex_network.prepare(ROOT, out, inputs, run)
     run(*flags, *(['-DDYNAMIC_PRIVATE_NOTES'] if a.private_notes else []), *(['-DDYNAMIC_WRAPPED_LOCK'] if a.wrapped else []), '-c', ROOT / 'experiments/desktop-lock/probe.c', '-o', out / 'probe.o')
     for name in ('probe',):
         run('ld.lld', '-L', board / 'lib', out / (name + '.o'),
@@ -131,14 +136,15 @@ def main():
         channel('runtime_manager',14,'vault',3,True)
         mapping(manager,'notes_transfer',0x6c000000,'rw')
     if a.simplex_session:
-        desktop_simplex_fixture.compose(system, manager, out, session_children, mapping, channel, mr)
+        desktop_simplex_fixture.compose(system, manager, out, session_children, mapping, channel, mr, live=a.simplex_live)
     used = {m.get('mr') for m in system.iter('map')}
     for m in list(system.findall('memory_region')):
         if m.get('name') not in used: system.remove(m)
     ET.ElementTree(system).write(out / 'lock.system',encoding='utf-8',xml_declaration=True)
-    run(*flags, '-I', out, '-DDYNAMIC_LOCK', f'-DLOCK_IDLE_MS={idle_ms}', *(['-DDYNAMIC_PRIVATE_NOTES'] if a.private_notes else []), *(['-DDYNAMIC_WRAPPED_LOCK'] if a.wrapped else []), *(['-DDYNAMIC_SIMPLEX_SESSION'] if a.simplex_session else []), *(['-DCONTROL_SKIP_SCRUB'] if a.control_skip_scrub else []),
+    run(*flags, '-I', out, '-DDYNAMIC_LOCK', f'-DLOCK_IDLE_MS={idle_ms}', *(['-DDYNAMIC_PRIVATE_NOTES'] if a.private_notes else []), *(['-DDYNAMIC_WRAPPED_LOCK'] if a.wrapped else []), *(['-DDYNAMIC_SIMPLEX_SESSION'] if a.simplex_session else []), *(['-DDYNAMIC_SIMPLEX_LIVE'] if a.simplex_live else []), *(['-DCONTROL_SKIP_SCRUB'] if a.control_skip_scrub else []),
         '-c', ROOT / 'experiments/desktop-graphical/manager.c', '-o', out / 'manager.o')
     run('ld.lld', '-L', board / 'lib', out / 'manager.o', out / 'payload.o', '-lmicrokit', '-T', 'microkit.ld', '-o', out / 'manager.elf')
+    if a.simplex_live: run(sys.executable, ROOT/'tools/check-hvf-network-layout.py', out/'lock.system', out)
     run(a.composer.resolve(), out/'lock.system','--board',BOARD,'--config',CONFIG,
         '--search-path',out,'--search-path',a.surfaces.resolve(),'--search-path',a.surfaces.resolve()/'gpu',
         '--search-path',storage,'--search-path',inputs/'pds', '-o',out/'loader.img','-r',out/'report.txt',env=dict(os.environ,MICROKIT_SDK=str(sdk)))
@@ -146,17 +152,19 @@ def main():
     sources=[ROOT/'experiments/desktop-graphical/manager.c',ROOT/'experiments/desktop-runtime/root.c',ROOT/'experiments/desktop-surfaces/compositor.c',ROOT/'experiments/desktop-surfaces/app.rs',*sorted((ROOT/'experiments/desktop-lock').glob('*')),ROOT/'experiments/slint-notes/ui/lifecycle_lock.slint',ROOT/'experiments/slint-notes/build.rs',ROOT/'experiments/slint-notes/Cargo.toml',ROOT/'rust/Cargo.toml',ROOT/'rust/src/lib.rs',ROOT/'rust/src/device_lock.rs',ROOT/'rust/src/vault_disk.rs',ROOT/'rust/src/entropy_rng.rs',ROOT/'rust/src/vault_crypto.rs',ROOT/'rust/src/vault_lifecycle.rs',ROOT/'rust/src/vault_key_prototype.rs',ROOT/'rust/src/vault_protocol.rs',ROOT/'rust/src/wrapped_vault_bootstrap.rs',ROOT/'tests/desktop_lock_input.py',ROOT/'tests/utm_vault_key_probe.py',Path(__file__).resolve()]
     if a.private_notes: sources += [*sorted((ROOT/'experiments/desktop-notes').glob('*')), ROOT/'tests/desktop_notes_input.py', ROOT/'tests/desktop_notes_broker_test.c', ROOT/'tests/desktop_lock_stub/microkit.h', ROOT/'experiments/slint-notes/ui/notes.slint']
     if a.simplex_session: sources += [*sorted((ROOT/'experiments/desktop-simplex').glob('*')), ROOT/'tests/desktop_simplex_fixture.py', ROOT/'tests/desktop_simplex_input.py', ROOT/'rust/src/vault_app_test_common.rs', ROOT/'rust/src/messages_app.rs', ROOT/'experiments/slint-notes/src/photo_reader.rs', ROOT/'experiments/slint-notes/src/photo_worker.rs', ROOT/'experiments/slint-notes/src/transcript_worker.rs']
+    if a.simplex_live: sources += [ROOT/'tests/desktop_simplex_network.py', ROOT/'tests/desktop_simplex_live_input.py', ROOT/'tests/simplex_live_peer.py', *sorted((ROOT/'tests/net').glob('*.c')), *sorted((ROOT/'tests/net/include').glob('*.h'))]
     sources = [s for s in sources if s.is_file()]
     artifacts=[out/name for name in ('loader.img','manager.elf','auth.elf','gui.elf','rust_vault_disk.elf','rust_entropy_rng.elf','lock.system')]
     artifacts += [base/name for name in ('app.elf','placeholder.elf','graphical.system')]
     artifacts += [storage/name for name in ('blk_driver.elf','blk_virt.elf','blk_client_vault.data')]
+    if a.simplex_live: artifacts += [out/name for name in (*desktop_simplex_network.IMAGES,'dhcp_client.elf')]
     artifacts += [a.composer.resolve(),board/'elf/sel4.elf']
     if a.simplex_session: artifacts += [out/name for name in (*desktop_simplex_fixture.IMAGES,'session_layout.h','session-layout.json')]
-    (out/'build.json').write_text(json.dumps({'loader_sha256':digest(out/'loader.img'),'test_idle_ms':idle_ms,'private_notes':a.private_notes,'saved_data_used':False,'development_storage_key':not a.wrapped,'wrapped_random_storage_key':a.wrapped,'control_skip_evict':a.control_skip_evict,'control_skip_scrub':a.control_skip_scrub,'sources':{str(s.relative_to(ROOT)):digest(s) for s in sources},'artifacts':{str(s):digest(s) for s in artifacts}},indent=2)+'\n')
+    (out/'build.json').write_text(json.dumps({'loader_sha256':digest(out/'loader.img'),'live_relay':a.simplex_live,'test_idle_ms':idle_ms,'private_notes':a.private_notes,'saved_data_used':False,'development_storage_key':not a.wrapped,'wrapped_random_storage_key':a.wrapped,'control_skip_evict':a.control_skip_evict,'control_skip_scrub':a.control_skip_scrub,'sources':{str(s.relative_to(ROOT)):digest(s) for s in sources},'artifacts':{str(s):digest(s) for s in artifacts}},indent=2)+'\n')
     if not a.build_only:
         run(sys.executable,ROOT/'tests/utm_vault_key_probe.py','--template',inputs/'template.plist','--loader',out/'loader.img',
             '--blank-gpt','--serial-output',out/'serial.log','--screenshot-output',out/'screen.ppm',
             '--expect','SIMPLEX_SESSION|BOOT_LOCKED' if a.simplex_session else 'LOCK_AUTH|SETUP','--reject','LOCK|FAIL|','--reject','RUNTIME|FAIL|','--reject','MON|ERROR','--reject','panicked at',
-            *(['--desktop-simplex-test'] if a.simplex_session else ['--desktop-notes-test'] if a.private_notes else ['--desktop-lock-test','skip-evict' if a.control_skip_evict else 'wrapped' if a.wrapped else 'skip-scrub' if a.control_skip_scrub else 'normal']))
+            *(['--desktop-simplex-live-test'] if a.simplex_live else ['--desktop-simplex-test'] if a.simplex_session else ['--desktop-notes-test'] if a.private_notes else ['--desktop-lock-test','skip-evict' if a.control_skip_evict else 'wrapped' if a.wrapped else 'skip-scrub' if a.control_skip_scrub else 'normal']))
 
 if __name__ == '__main__': main()

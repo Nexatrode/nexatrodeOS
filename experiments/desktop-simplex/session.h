@@ -12,6 +12,19 @@ static bool session_failed;
 static bool session_notifications_bound = true;
 struct session_state { uint64_t epoch, active; };
 static volatile struct session_state *const session_state = (void *)SESSION_STATE_ADDRESS;
+#ifdef DYNAMIC_SIMPLEX_LIVE
+#include "../../tests/net/include/simplex_lock_protocol.h"
+static bool simplex_net_transition(bool unlock)
+{
+    microkit_mr_set(0, lock_epoch);
+    microkit_msginfo reply = microkit_ppcall(17, microkit_msginfo_new(unlock ? SIMPLEX_NET_UNLOCK : SIMPLEX_NET_LOCK, 1));
+    bool ok = microkit_msginfo_get_label(reply) == SIMPLEX_NET_OK && microkit_msginfo_get_count(reply) == 3 &&
+        microkit_mr_get(0) == lock_epoch && microkit_mr_get(1) == unlock && microkit_mr_get(2) == 1;
+    if (!ok) session_failed = true;
+    else line(unlock ? "SIMPLEX_SESSION|NET_OPEN|epoch=" : "SIMPLEX_SESSION|NET_CLOSED|epoch=", lock_epoch);
+    return ok;
+}
+#endif
 
 static bool session_page_nonzero(const volatile uint8_t *p)
 {
@@ -40,6 +53,9 @@ static void simplex_session_suspend(void)
             check(seL4_TCB_UnbindNotification(BASE_TCB_CAP + SESSION_FIRST_CHILD + i), "SimpleX unbind wake");
         session_notifications_bound = false;
     }
+#ifdef DYNAMIC_SIMPLEX_LIVE
+    (void)simplex_net_transition(false);
+#endif
 }
 static void simplex_session_scrub(void)
 {
@@ -110,6 +126,9 @@ static bool simplex_session_start(void)
               (8UL + i) << 58), "SimpleX bind wake");
     }
     session_notifications_bound = true;
+#ifdef DYNAMIC_SIMPLEX_LIVE
+    if (!simplex_net_transition(true)) return false;
+#endif
     /* Reconstruct service state only after the vault commit; fresh initialization
      * reopens AgentStore and rebuilds transcript indexes from encrypted storage. */
     for (unsigned i = 0; i < SESSION_CHILD_COUNT; ++i)
