@@ -7218,6 +7218,8 @@ impl Session {
             trace.calls = trace.calls.saturating_add(1);
             trace.mask |= outcome | u32::from(!suitable) | (u32::from(waiting) << 1);
         }
+        #[cfg(feature="sunfish-elf-writer-trace")]
+        self.end_elf_writer_pass(choice,blocked);
     }
 
     #[cfg(feature = "sunfish-wlan-registry-turn-gates")]
@@ -7769,6 +7771,8 @@ impl Session {
         F: FnOnce(&[u8]) -> Result<(), WriteError>,
     {
         self.check(generation)?;
+        #[cfg(feature="sunfish-elf-writer-trace")]
+        self.begin_elf_writer_pass();
         #[cfg(feature = "sunfish-tftp-oack-followup")]
         let ordinary = followup.is_none();
         #[cfg(not(feature = "sunfish-tftp-oack-followup"))]
@@ -8131,6 +8135,8 @@ impl Session {
                 #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
                 self.observe_conversion_callback(conversion_choice);
                 let result = writer(&record[..8]);
+                #[cfg(feature="sunfish-elf-writer-trace")]
+                self.elf_writer_header(&record[..8],result);
                 #[cfg(feature = "sunfish-registry-prearm-io-trace")]
                 self.observe_prearm_result(prearm_choice, match result { Ok(()) => 1, Err(WriteError::WouldBlock) => 2, Err(WriteError::Uncertain) => 3 });
                 #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
@@ -8621,6 +8627,8 @@ impl Session {
                     };
                     self.observe_reserved_writer(elf_oack_started, None, choice, None);
                 }
+                #[cfg(feature="sunfish-elf-writer-trace")]
+                self.end_elf_writer_yield();
                 return Ok(None);
             }
         }
@@ -8724,6 +8732,8 @@ impl Session {
         #[cfg(feature = "sunfish-registry-prearm-io-trace")]
         self.observe_prearm_result(prearm_choice, 4);
         let result = writer(&record[..size]);
+        #[cfg(feature="sunfish-elf-writer-trace")]
+        self.elf_writer_header(&record[..size],result);
         #[cfg(feature = "sunfish-registry-prearm-io-trace")]
         self.observe_prearm_result(prearm_choice, match result { Ok(()) => 1, Err(WriteError::WouldBlock) => 2, Err(WriteError::Uncertain) => 3 });
         #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
@@ -9211,6 +9221,8 @@ impl Session {
                 self.transmit[index].remote_slot = Some(remote);
                 self.transmit[index].sent += chunk;
                 if self.transmit[index].sent == self.transmit[index].len {
+                    #[cfg(feature="sunfish-elf-writer-trace")]
+                    self.freeze_elf_writer(index);
                     #[cfg(feature="sunfish-post-elf-mcfg-trace")]
                     self.observe_post_mcfg_publication(index,remote);
                     #[cfg(feature = "sunfish-registry-handoff-turn")]

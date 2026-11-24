@@ -112,3 +112,37 @@ fn elf_slot_normal_queue_still_enforces_reference_credit_and_writer_fallback(){
  let id=offer(&mut s);let elf=request(&mut s,id,11,b"kernel/elf_loader");let(h,i)=last.unwrap();done(&mut s,h,i);assert!(s.take_elf_slot_turn(&h,&elf));assert_eq!(queue(&mut s,&elf,b"kernel/elf_loader"),Err(Error::FlowBusy));assert_eq!(s.elf_window_trace().unwrap().last_failure.unwrap().reason,4);
  let(mut s,h3,_,elf,i3,_)=setup(false,true);done(&mut s,h3,i3);assert!(s.take_elf_slot_turn(&h3,&elf));queue(&mut s,&elf,b"kernel/elf_loader").unwrap();assert_eq!(s.publish_next(1,|_|Err(WriteError::WouldBlock)),Err(Error::WouldBlock));assert!(!s.reply_fully_published(&elf));let _=tx(&mut s);assert!(s.reply_fully_published(&elf));
 }
+
+#[cfg(feature="sunfish-elf-writer-trace")]
+#[test]
+fn elf_writer_keeps_exact_target_opening_tail_and_frozen_publication(){
+ use core::sync::atomic::{AtomicU64,Ordering::Relaxed};static CLOCK:AtomicU64=AtomicU64::new(10);
+ let(mut s,h3,h4,elf,i3,i4)=setup(false,true);assert_eq!(s.elf_window_trace().unwrap().writer.passes,0);assert_eq!(queue(&mut s,&elf,b"kernel/elf_loader"),Err(Error::FlowBusy));done(&mut s,h3,i3);queue(&mut s,&elf,b"kernel/elf_loader").unwrap();s.set_registry_ack_clock(||CLOCK.fetch_add(1,Relaxed));
+ for _ in 0..12{assert_eq!(s.publish_next(1,|_|Err(WriteError::WouldBlock)),Err(Error::WouldBlock));}
+ let w=s.elf_window_trace().unwrap().writer;assert_eq!((w.passes,w.timed,w.omitted,w.active),(12,12,4,false));assert!(w.records.iter().all(|r|r.unwrap().result==2));assert!(w.records[4].unwrap().start>w.records[3].unwrap().end);assert!(!w.finished);
+ let ie=tx(&mut s);let frozen=s.elf_window_trace().unwrap().writer;assert!(frozen.finished);assert_eq!(frozen.publication.unwrap().transaction,5);assert!(frozen.records.iter().flatten().any(|r|r.transaction==5&&r.flags&2!=0&&r.command==9&&r.result==1));assert!(frozen.publication.unwrap().mask&32!=0);
+ done(&mut s,h4,i4.unwrap());done(&mut s,elf,ie);let id=offer(&mut s);let other=request(&mut s,id,6,b"tms/servreg");queue(&mut s,&other,b"tms/servreg").unwrap();let _=tx(&mut s);assert_eq!(s.elf_window_trace().unwrap().writer.passes,frozen.passes);assert_eq!(s.elf_window_trace().unwrap().writer.last,frozen.last);s.reset_after_transport_reset(2).unwrap();assert!(s.elf_window_trace().is_none());
+}
+#[cfg(feature="sunfish-elf-writer-trace")]
+#[test]
+fn elf_writer_clockless_and_regressed_clocks_do_not_change_publication(){
+ use core::sync::atomic::{AtomicU64,Ordering::Relaxed};static CLOCK:AtomicU64=AtomicU64::new(1000);
+ for regressed in [false,true]{let(mut s,h3,_,elf,i3,_)=setup(false,true);done(&mut s,h3,i3);queue(&mut s,&elf,b"kernel/elf_loader").unwrap();if regressed{s.set_registry_ack_clock(||CLOCK.fetch_sub(1,Relaxed));}
+ assert_eq!(s.publish_next(1,|_|Err(WriteError::WouldBlock)),Err(Error::WouldBlock));let w=s.elf_window_trace().unwrap().writer;assert_eq!(w.timed,0);assert_eq!(w.total,None);assert_eq!(w.regressed,regressed);assert!(!w.active);let _=tx(&mut s);assert!(s.reply_fully_published(&elf));assert!(s.elf_window_trace().unwrap().writer.finished);}
+}
+#[cfg(feature="sunfish-elf-writer-trace")]
+#[test]
+fn elf_writer_uncertain_callback_remains_unfinished_and_cannot_invent_commit(){
+ // A legitimate nonmatching follow-up returns without invoking its callback.
+ let(mut s,h3,_,elf,i3,_)=setup(false,true);done(&mut s,h3,i3);queue(&mut s,&elf,b"kernel/elf_loader").unwrap();
+ assert_eq!(s.publish_oack_followup(1,qcom_glink_qmi::OackFollowup::Reply,|_|panic!("guarded follow-up cannot write")),Ok(None));
+ let w=s.elf_window_trace().unwrap().writer;assert_eq!(w.passes,1);assert!(!w.active);let r=w.records[0].unwrap();assert_eq!((r.command,r.parameter,r.result),(0,0,0));let _=tx(&mut s);assert!(s.elf_window_trace().unwrap().writer.finished);
+
+ // The existing outbound-request counter passes blocked=false; the trace must
+ // preserve the actual callback result rather than mislabel a blocked request.
+ let mut s=session();s.register(1,Service::ServiceRegistry,qcom_servreg::LOCAL_PORT).unwrap();s.prepare_service_available(1,Service::ServiceRegistry).unwrap();let id=offer(&mut s);let h=request(&mut s,id,5,b"kernel/elf_loader");queue(&mut s,&h,b"kernel/elf_loader").unwrap();let mut saw=false;
+ for _ in 0..16{let r=s.publish_next(1,|b|if u16::from_le_bytes([b[0],b[1]])==7{saw=true;Err(WriteError::WouldBlock)}else{Ok(())});if saw{assert_eq!(r,Err(Error::WouldBlock));break;}r.unwrap();}
+ assert!(saw);let rec=s.elf_window_trace().unwrap().writer.records.iter().flatten().find(|r|r.command==7).copied().unwrap();assert_eq!(rec.result,2);assert_ne!(rec.flags&4,0);
+
+ let(mut s,h3,_,elf,i3,_)=setup(false,true);done(&mut s,h3,i3);queue(&mut s,&elf,b"kernel/elf_loader").unwrap();assert_eq!(s.publish_next(1,|_|Err(WriteError::Uncertain)),Err(Error::PublicationUncertain));assert!(!s.elf_window_trace().unwrap().writer.finished);assert!(!s.reply_fully_published(&elf));
+}

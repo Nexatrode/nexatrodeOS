@@ -67,9 +67,12 @@ mod post_elf_mcfg;
 #[cfg(all(feature="sunfish-elf-queued-handoff",not(feature="sunfish-elf-window-trace")))]
 #[path="pixel_mpss_elf_queued_turn.rs"]
 mod elf_queued_turn;
-#[cfg(feature="sunfish-elf-window-trace")]
+#[cfg(all(feature="sunfish-elf-window-trace",not(feature="sunfish-elf-writer-trace")))]
 #[path="pixel_mpss_elf_window.rs"]
 mod elf_window;
+#[cfg(feature="sunfish-elf-writer-trace")]
+#[path="pixel_mpss_elf_publication.rs"]
+mod elf_publication;
 #[cfg(feature="sunfish-registry-defer-paint")]
 #[path="pixel_mpss_registry_paint.rs"]
 mod registry_paint;
