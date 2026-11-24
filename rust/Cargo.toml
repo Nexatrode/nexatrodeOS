@@ -353,6 +353,8 @@ sunfish-registry-tx3-wire-headers = ["sunfish-registry-tx3-receipt-panel", "sunf
 sunfish-glink-announcement-reuse = ["sunfish-wlan-first-wrq-reuse", "sunfish-glink-retry-full-intent"]
 # Scalar TFTP opcode/path category and existing ELF milestones in the wire panel.
 sunfish-registry-tftp-wire = ["sunfish-glink-announcement-reuse", "sunfish-registry-tx3-wire-headers", "sunfish-ipa-grant-tftp-peer"]
+# Presentation only: reuse retained whole-startup outcomes after ELF.
+sunfish-post-elf-startup-panel = ["sunfish-registry-tftp-wire"]
 
 [[bin]]
 name = "rust_sunfish_native_startup_preflight"

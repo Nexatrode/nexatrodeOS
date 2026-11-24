@@ -55,9 +55,12 @@ mod registry_tx3_receipt;
 #[cfg(all(feature="sunfish-registry-tx3-wire-headers",not(feature="sunfish-registry-tftp-wire")))]
 #[path="pixel_mpss_registry_tx3_headers.rs"]
 mod registry_tx3_headers;
-#[cfg(feature="sunfish-registry-tftp-wire")]
+#[cfg(all(feature="sunfish-registry-tftp-wire",not(feature="sunfish-post-elf-startup-panel")))]
 #[path="pixel_mpss_registry_tftp_identity.rs"]
 mod registry_tftp_identity;
+#[cfg(feature="sunfish-post-elf-startup-panel")]
+#[path="pixel_mpss_post_elf_startup.rs"]
+mod post_elf_startup;
 #[cfg(feature="sunfish-registry-defer-paint")]
 #[path="pixel_mpss_registry_paint.rs"]
 mod registry_paint;
