@@ -84,4 +84,6 @@ include!("sunfish_mcfg_missing_close_cases.rs");
 
 #[cfg(feature="sunfish-mcfg-record-identity")]
 include!("sunfish_mcfg_record_identity_cases.rs");
+#[cfg(feature="sunfish-mcfg-writer-trace")]
+include!("sunfish_mcfg_writer_cases.rs");
 }

@@ -1,0 +1,31 @@
+# Exact MCFG queue and writer admission trace
+
+IMG_9763 established that peer `0x4a`'s original ERROR 1 was queued and canceled without any publication. It spent 676.789 ms from host acceptance to queue admission, followed by 64.180 ms to observed close. Three queue FlowBusy results do not identify the postqueue delay. The existing head/tail journal omits 27 middle records and cannot recover those writer choices or the close's first FIFO visibility.
+
+An actual Core replay produces three busy admissions while a preceding same-peer response is fully sent but awaiting real completion. The queue check is same-destination exclusion, rather than lack of transmit slots. Its flags and reservation sequence distinguish it from the later queued response. This is a concrete possible explanation of the count, not a reconstruction of the omitted phone packets. A successful real completion then admits the original traced response through the normal checks.
+
+The opt-in `sunfish-mcfg-writer-trace` feature adds observations to the existing identity-bound trace and ELF observer entry points. It changes no Core/FIFO/Owner protocol source, queue policy, writer priority, receive return, grant advertisement/ACK ordering, QRTR credits, native validation, firmware source or close lifecycle. No observation grants authority to transmit. Optional clocks and fixed scans can affect execution cost.
+
+The queue observer retains first/last attempt times and total attempts. Its most recent failed attempt retains the existing queue-check discriminator, blocking packet kind/opcode/publication flags, aligned datagram length, bytes sent and original reservation sequence when there is a same-peer record. A successful attempt does not erase the last failure. Check 1 is a same-destination record; check 2 is no transmit slot; checks 3/4 are flow-map errors, and 5/6 are reference-reservation errors. Flags are sent-nonzero, fully-sent, GLINK-done and QRTR-done in bits 0..3. A reference-flow error can have no same-peer blocking packet; zero length and absent identity do not imply queue capacity exhaustion.
+
+Once the exact original token is queued and remains unpublished, the trace records writer entries. It keeps the first four and latest four after eight entries, with explicit omitted count. Entry and callback/exit gates, actual GLINK command/parameter, QRTR kind/source/destination when present and writer result are retained. There are no added native status, cursor, FIFO-validation or hardware accesses. Existing observer call sites supply the writer boundaries. A record with no observed callback/exit remains incomplete; it must not be interpreted as a successful idle pass.
+
+Panel **MCFG QUEUE WRITER** retains error/close stage, exact MCFG token, dispatch/admission/publication/cancellation, ELF clocks, original final ACK, independent ELF credit, IPA pending/failure/completion, close counts, file progress, read inventory, WLAN and WLFW. Eight writer records replace the packet journal display. The journal is still collected; this image does not reconstruct its omitted middle or add a new close-visibility sample.
+
+Each writer record has two lines: `start end gates command`, then `parameter QRTR-kind source destination result`. Gates bits 0..8 are fitting remote intent, arbiter-ready intent, outbound intent wait, unsent same-flow predecessor, positive grant ACK pending, negative grant ACK pending, backing advertisement pending, receive return pending, and close already observed. Low 16 bits are entry state; high 16 bits are callback/exit state. Bit 25 (high-half bit 9) additionally identifies actual selection of the exact original record, when the normal choice observer ran. The gate snapshots are observations, not a bypass of those conditions. Result 0 means no observed callback/exit, 1 writer committed, 2 WouldBlock, 3 uncertain/terminal, 4 no callback at idle/no-eligible exit, 5 bounded follow-up yielded before callback. Successful control writes are distinct from successful DATA writes.
+
+Cancellation freezes the original token's writer history. Foreign packets reusing the slot cannot add to it. Published and partial transport owners continue to require real completion. Tests exercise a fully sent predecessor, blocked then successful exact reply, cancellation followed by foreign reuse, optional clocks, uncertain writes and bounded history. Source checks compare all protocol sources with `2672a283`, and remove only four cfg-gated void observation calls from the existing ELF observer before comparison. Current/prior suites and actual native stack/capability/payload checks accompany the build. An on/off cancellation replay checks committed-byte equality; it cannot predict handset timing.
+
+Verification: current/prior Owner suites passed 620/616 cases, current/prior IRQ 655/651, and Core 294/294. Each Owner/IRQ suite retains one existing ignored test. All four new writer cases, six identity cases and two new source-boundary checks passed. The actual selected nested native stack budget leaves 822,656 bytes of 5 MiB; this excludes TLS, indirect calls and other descendants and is not whole-program worst-case analysis. Packed-image capability and SDK-payload reproduction results are retained with the image.
+
+The saved Linux and Android GLINK implementations handle receive completions and intent traffic asynchronously; their sources do not reveal the proprietary modem's WLAN startup decision. Pinned tqftpserv sends ERROR 1 on failed open. The successful Linux journal requests WLAN before its MCFG/digest probes. Thus the canceled MCFG error remains an exchange to explain, not an established initial-WLAN prerequisite. Exact native digest negative-response behavior remains unchanged in this diagnostic image.
+
+Cold temporary boot manually after preparation reports verified:
+
+```sh
+cd /Volumes/untitled/sel4-personal-os &&
+"$HOME/Library/Android/sdk/platform-tools/fastboot" -s 02281FQC200058 boot \
+  .cache/sunfish-native-wifi/private/native-mcfg-queue-writer-v1/fastboot.img
+```
+
+Wait at least one minute and photograph the full settled **MCFG QUEUE WRITER** panel. Preparation performs no device commands.

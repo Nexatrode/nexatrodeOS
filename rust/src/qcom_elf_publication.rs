@@ -19,6 +19,8 @@ impl Session {
             if c.request==RequestHandle{owner:self.owner,generation:self.generation,intent:self.receive[receive].id}))
     }
     pub(crate) fn begin_elf_writer_pass(&mut self){
+        #[cfg(feature="sunfish-mcfg-writer-trace")]
+        self.begin_mcfg_writer_pass();
         if self.elf_writer_slot().is_none(){return;}
         let at=self.intent_ack_clock.map(|f|f());let c=&mut self.elf_window.as_mut().unwrap().writer;
         c.passes=c.passes.saturating_add(1);c.active=true;c.current=ElfWriterRecord{start:at,transaction:u16::MAX,parameter:u32::MAX,..ElfWriterRecord::default()};
@@ -26,11 +28,15 @@ impl Session {
         if let(Some(a),Some(b))=(at,c.last){if let Some(gap)=a.checked_sub(b){c.max_gap=Some(c.max_gap.map_or(gap,|g|g.max(gap)));}else{c.regressed=true;}}
     }
     pub(crate) fn elf_writer_header(&mut self,b:&[u8],result:Result<(),WriteError>){
+        #[cfg(feature="sunfish-mcfg-writer-trace")]
+        self.mcfg_writer_header(b,result);
         if let Some(c)=self.elf_window.as_mut().map(|c|&mut c.writer).filter(|c|c.active) && b.len()>=8 {
             c.current.command=u16::from_le_bytes([b[0],b[1]]);c.current.parameter=word(b,4);c.current.result=match result{Ok(())=>1,Err(WriteError::WouldBlock)=>2,Err(WriteError::Uncertain)=>3};
         }
     }
     pub(crate) fn end_elf_writer_pass(&mut self,choice:PublishChoice,blocked:bool){
+        #[cfg(feature="sunfish-mcfg-writer-trace")]
+        self.end_mcfg_writer_pass(choice);
         let Some(slot)=self.elf_writer_slot()else{return;};
         if !self.elf_window.as_ref().unwrap().writer.active{return;}
         let t=&self.transmit[slot];let fitting=t.remote_slot.is_some()||self.remote.iter().flatten().any(|r|!r.busy&&r.capacity as usize>=t.len);
@@ -44,6 +50,8 @@ impl Session {
         c.last=at;c.publication=Some(publication);c.active=false;
     }
     pub(crate) fn end_elf_writer_yield(&mut self){
+        #[cfg(feature="sunfish-mcfg-writer-trace")]
+        self.yield_mcfg_writer_pass();
         // Synthetic no-callback marker, not an on-wire GLINK header.
         if let Some(c)=self.elf_window.as_mut().map(|c|&mut c.writer).filter(|c|c.active){c.current.parameter=0;}
         self.end_elf_writer_pass(PublishChoice::Idle,false);

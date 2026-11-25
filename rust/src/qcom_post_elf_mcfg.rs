@@ -79,6 +79,19 @@ fn packet(bytes:&[u8],tx:bool,at:Option<u64>)->Option<McfgWireRecord>{
     Some(h)
 }
 
+#[cfg(feature="sunfish-mcfg-writer-trace")]
+#[derive(Clone,Copy,Debug,Default)]
+pub struct McfgWriterRecord {
+    pub start:Option<u64>,pub end:Option<u64>,pub gates:u32,
+    pub command:u32,pub parameter:u32,pub kind:u32,pub source:u32,pub destination:u32,pub result:u32,
+}
+#[cfg(feature="sunfish-mcfg-writer-trace")]
+#[derive(Clone,Copy,Debug,Default)]
+pub struct McfgAdmissionTrace {
+    pub first_attempt:Option<u64>,pub last_attempt:Option<u64>,pub attempts:u32,
+    pub block_at:Option<u64>,pub block:[u32;4],pub block_len:u32,pub block_sent:u32,pub block_sequence:Option<u64>,
+    pub passes:u32,pub omitted:u32,pub records:[Option<McfgWriterRecord>;8],active:Option<usize>,
+}
 #[derive(Clone, Copy, Debug)]
 pub struct PostMcfgRequest {
     handle:TftpHandle, slot:Option<usize>, pub peer:Address, pub bytes:u32, pub flags:u32,
@@ -88,6 +101,8 @@ pub struct PostMcfgRequest {
     pub received:Option<u64>,pub dispatched:Option<u64>,pub queued:Option<u64>,pub published:Option<u64>,pub done:Option<u64>,
     #[cfg(feature="sunfish-mcfg-record-identity")]
     record:Option<crate::qcom_qrtr_flow::Reservation>,
+    #[cfg(feature="sunfish-mcfg-writer-trace")]
+    pub admission:McfgAdmissionTrace,
     #[cfg(feature="sunfish-mcfg-record-identity")]
     pub canceled_at:Option<u64>,
     pub first_client:Option<u32>,pub last_client:Option<u32>,pub first_client_at:Option<u64>,pub last_client_at:Option<u64>,
@@ -128,7 +143,49 @@ impl PostElfMcfgTrace {
         if relevant {self.push(h);}
     }
 }
-const _:()={assert!(::core::mem::size_of::<PostElfMcfgTrace>()<=2048);};
+#[cfg(feature="sunfish-mcfg-writer-trace")]
+impl Session {
+    fn mcfg_writer_slot(&self)->Option<usize>{
+        let m=self.post_elf_mcfg.as_ref()?.mcfg.as_ref()?;let i=m.slot?;let t=&self.transmit[i];
+        (m.flags&0x130==0 && t.sent<t.len && mcfg_record_matches(m,t,self.config.local_node)).then_some(i)
+    }
+    fn mcfg_writer_gates(&self,i:usize)->u32{
+        let t=&self.transmit[i];
+        u32::from(self.remote_for_transmit(t).is_some())
+        |(u32::from(self.ready_remote_for_transmit(t).is_some())<<1)
+        |(u32::from(matches!(self.outbound_intent_request,OutboundIntentRequest::Waiting{..}))<<2)
+        |(u32::from(self.unsent_flow_predecessor(t))<<3)
+        |(u32::from(self.intent_request_ack==Some(true))<<4)
+        |(u32::from(self.intent_request_ack==Some(false))<<5)
+        |(u32::from(self.intent_ack_backing.is_some())<<6)
+        |(u32::from(self.receive.iter().any(|r|r.done_pending))<<7)
+        |(u32::from(self.post_elf_mcfg.as_ref().and_then(|c|c.mcfg.as_ref()).is_some_and(|m|m.close_at.is_some()))<<8)
+    }
+    pub(crate) fn begin_mcfg_writer_pass(&mut self){
+        let Some(i)=self.mcfg_writer_slot()else{return;};let gates=self.mcfg_writer_gates(i);let at=self.intent_ack_clock.map(|c|c());
+        let c=self.post_elf_mcfg.as_mut().unwrap();let a=&mut c.mcfg.as_mut().unwrap().admission;
+        let n=a.passes;a.passes=a.passes.saturating_add(1);let index=if n<8{n as usize}else{a.records.copy_within(5..8,4);a.omitted=a.omitted.saturating_add(1);7};
+        a.records[index]=Some(McfgWriterRecord{start:at,gates,parameter:u32::MAX,source:u32::MAX,destination:u32::MAX,..McfgWriterRecord::default()});a.active=Some(index);c.revision=c.revision.saturating_add(1);
+    }
+    pub(crate) fn mcfg_writer_header(&mut self,b:&[u8],result:Result<(),WriteError>){
+        let Some(slot)=self.mcfg_writer_slot()else{return;};let gates=self.mcfg_writer_gates(slot);let at=self.intent_ack_clock.map(|c|c());
+        let c=self.post_elf_mcfg.as_mut().unwrap();let a=&mut c.mcfg.as_mut().unwrap().admission;let Some(i)=a.active else{return;};let r=a.records[i].as_mut().unwrap();
+        r.end=at;r.gates|=gates<<16;r.result=match result{Ok(())=>1,Err(WriteError::WouldBlock)=>2,Err(WriteError::Uncertain)=>3};
+        if b.len()>=8{r.command=u32::from(u16::from_le_bytes([b[0],b[1]]));r.parameter=word(b,4);}
+        if matches!(r.command,9|12)&&b.len()>=48{r.kind=word(b,20);r.source=word(b,28);r.destination=word(b,44);}
+        c.revision=c.revision.saturating_add(1);
+    }
+    pub(crate) fn end_mcfg_writer_pass(&mut self,choice:PublishChoice){
+        let Some(slot)=self.mcfg_writer_slot()else{return;};let gates=self.mcfg_writer_gates(slot);let at=self.intent_ack_clock.map(|c|c());
+        let c=self.post_elf_mcfg.as_mut().unwrap();let a=&mut c.mcfg.as_mut().unwrap().admission;let Some(i)=a.active.take()else{return;};let r=a.records[i].as_mut().unwrap();
+        if r.end.is_none(){r.end=at;r.gates|=gates<<16;if r.result==0{r.result=4;}}
+        if matches!(choice,PublishChoice::Data(i)if i==slot){r.gates|=1<<25;}c.revision=c.revision.saturating_add(1);
+    }
+    pub(crate) fn yield_mcfg_writer_pass(&mut self){
+        if let Some(a)=self.post_elf_mcfg.as_mut().and_then(|c|c.mcfg.as_mut()).map(|m|&mut m.admission) && let Some(i)=a.active {a.records[i].as_mut().unwrap().result=5;}
+    }
+}
+const _:()={assert!(::core::mem::size_of::<PostElfMcfgTrace>()<=3072);};
 
 impl Session {
     pub fn post_elf_mcfg(&self)->Option<&PostElfMcfgTrace>{self.post_elf_mcfg.as_ref()}
@@ -155,6 +212,8 @@ impl Session {
                 received:self.intent_ack_clock.map(|c|c()),dispatched:None,queued:None,published:None,done:None,first_client:None,last_client:None,first_client_at:None,last_client_at:None,
                 #[cfg(feature="sunfish-mcfg-record-identity")]
                 record:None,
+                #[cfg(feature="sunfish-mcfg-writer-trace")]
+                admission:McfgAdmissionTrace::default(),
                 #[cfg(feature="sunfish-mcfg-record-identity")]
                 canceled_at:None,
                 client_counts:[0;3],close_at:None,close_port:u32::MAX,queue_waits:[0;2]});cap.revision=cap.revision.saturating_add(1);return;
@@ -182,6 +241,15 @@ impl Session {
     pub(super) fn observe_post_mcfg_queue(&mut self,h:&TftpHandle,route:TftpReplyRoute,result:Result<usize,Error>){
         let Some(cap)=self.post_elf_mcfg.as_mut()else{return;};
         let Some(m)=cap.mcfg.as_mut().filter(|m|m.handle==*h && m.flags&4!=0 && m.flags&8==0 && m.peer==route.destination && m.transfer_port==route.source.port)else{return;};
+        #[cfg(feature="sunfish-mcfg-writer-trace")]
+        {
+            let a=&mut m.admission;let at=self.intent_ack_clock.map(|c|c());
+            if a.attempts==0{a.first_attempt=at;}a.last_attempt=at;a.attempts=a.attempts.saturating_add(1);
+            if result.is_err(){let b=self.tftp_queue_block;a.block_at=at;a.block=[u32::from(b.check),u32::from(b.kind),u32::from(b.opcode),u32::from(b.flags)];
+                let tx=self.transmit.iter().find(|tx|tx.len!=0&&tx.kind.qrtr_addresses().is_some_and(|(_,p)|p==m.peer));
+                a.block_len=tx.map_or(0,|t|t.len as u32);a.block_sent=tx.map_or(0,|t|t.sent as u32);a.block_sequence=tx.and_then(|t|t.reference_flow.map(|r|r.sequence()));
+            }
+        }
         match result {Ok(slot)=>{m.slot=Some(slot);m.flags|=8;m.queued=self.intent_ack_clock.map(|c|c());
             #[cfg(feature="sunfish-mcfg-record-identity")]
             {m.record=self.transmit[slot].reference_flow;if m.record.is_none(){m.slot=None;m.flags|=512;}}
@@ -263,7 +331,7 @@ mod tests {
     #[test]
     fn post_mcfg_identity_unique_token_rejects_same_route_and_body_reuse(){
         let peer=Address{node:0,port:0x4a};let mut table=crate::qcom_qrtr_flow::Table::<8>::new(1).unwrap();let destination=crate::qcom_qrtr_flow::Destination{node:0,port:0x4a};let first=table.reserve(destination).unwrap();let second=table.reserve(destination).unwrap();assert_ne!(first,second);
-        let mut m=PostMcfgRequest{handle:TftpHandle{owner:1,generation:1,intent:1},slot:Some(0),peer,bytes:73,flags:15,options:Default::default(),file_before:None,server_result:Some(0),reply_opcode:5,reply_number:1,reply_bytes:19,reply_options:Default::default(),transfer_port:0x5001,remote_intent:u32::MAX,received:None,dispatched:None,queued:None,published:None,done:None,first_client:None,last_client:None,first_client_at:None,last_client_at:None,client_counts:[0;3],close_at:None,close_port:u32::MAX,queue_waits:[0;2],record:Some(first),canceled_at:None};
+        let mut m=PostMcfgRequest{handle:TftpHandle{owner:1,generation:1,intent:1},slot:Some(0),peer,bytes:73,flags:15,options:Default::default(),file_before:None,server_result:Some(0),reply_opcode:5,reply_number:1,reply_bytes:19,reply_options:Default::default(),transfer_port:0x5001,remote_intent:u32::MAX,received:None,dispatched:None,queued:None,published:None,done:None,first_client:None,last_client:None,first_client_at:None,last_client_at:None,client_counts:[0;3],close_at:None,close_port:u32::MAX,queue_waits:[0;2],record:Some(first),#[cfg(feature="sunfish-mcfg-writer-trace")] admission:McfgAdmissionTrace::default(),canceled_at:None};
         let mut tx=Transmit::empty();tx.kind=TxKind::TftpReply{source:Address{node:1,port:0x5001},destination:peer};tx.len=51;tx.bytes[4..8].copy_from_slice(&1u32.to_le_bytes());tx.bytes[20..24].copy_from_slice(&19u32.to_le_bytes());tx.reference_flow=Some(second);assert!(!mcfg_record_matches(&m,&tx,1));
         tx.reference_flow=Some(first);assert!(mcfg_record_matches(&m,&tx,1));m.flags|=256;assert!(!mcfg_record_matches(&m,&tx,1));m.flags&=!256;m.record=None;assert!(!mcfg_record_matches(&m,&tx,1));m.record=Some(first);tx.kind=TxKind::Resume;assert!(!mcfg_record_matches(&m,&tx,1));
     }
