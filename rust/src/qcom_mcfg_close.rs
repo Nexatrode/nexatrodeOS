@@ -69,6 +69,8 @@ impl Session {
             for i in 0..self.transmit.len(){if tx_mask&(1<<i)!=0{
                 let t=&self.transmit[i];let (from,to)=t.kind.qrtr_addresses().ok_or(Error::InvalidHandle)?;
                 self.rmtfs_reference_flows.fail_unpublished(t.reference_flow.as_ref().ok_or(Error::InvalidHandle)?).map_err(|_|Error::FlowBusy)?;
+                #[cfg(feature="sunfish-mcfg-record-identity")]
+                self.observe_post_mcfg_cancel(i);
                 self.transmit[i]=Transmit::empty();self.observe_elf_tx_freed(i,5);self.forget_qrtr_flow_if_idle(from,to);
             }}
             let key=crate::qcom_qrtr_flow::Destination{node:peer.node,port:peer.port};

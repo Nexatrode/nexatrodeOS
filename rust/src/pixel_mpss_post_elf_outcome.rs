@@ -3,7 +3,7 @@ use super::*;
 impl RuntimeDomain {
     pub(super) fn show_tftp_completion(&self, d: &Display, owner: &ModemOwner) {
         for n in 2..=28 { d.replace_line(n, ""); }
-        d.replace_line(1, if cfg!(feature="sunfish-mcfg-missing-close"){ "MCFG MISSING CLOSE" }else if cfg!(feature="sunfish-mcfg-close-handoff"){ "MCFG CLOSE HANDOFF" }else if cfg!(feature="sunfish-mcfg-close-cleanup"){ "MCFG CLOSE CLEANUP" }else{ "POST ELF OUTCOME" });
+        d.replace_line(1, if cfg!(feature="sunfish-mcfg-record-identity"){ "MCFG RECORD IDENTITY" }else if cfg!(feature="sunfish-mcfg-missing-close"){ "MCFG MISSING CLOSE" }else if cfg!(feature="sunfish-mcfg-close-handoff"){ "MCFG CLOSE HANDOFF" }else if cfg!(feature="sunfish-mcfg-close-cleanup"){ "MCFG CLOSE CLEANUP" }else{ "POST ELF OUTCOME" });
         #[cfg(not(feature="sunfish-mcfg-close-handoff"))]
         d.hex(2, "RUNTIME ERROR", self.error);
         let trace = owner.service_registry_trace();
@@ -55,7 +55,10 @@ impl RuntimeDomain {
         row(11, "MCFG PEER FLAGS FILE RESULT", &[m.map_or(u32::MAX, |m| m.peer.port), m.map_or(0, |m| m.flags), m.and_then(|m| m.file_before).unwrap_or(u32::MAX), m.and_then(|m| m.server_result).unwrap_or(u32::MAX)]);
         row(12, "MCFG OP NUM LEN PORT", &[m.map_or(u32::MAX, |m| m.reply_opcode), m.map_or(u32::MAX, |m| m.reply_number), m.map_or(0, |m| m.reply_bytes), m.map_or(u32::MAX, |m| m.transfer_port)]);
         row(13, "MCFG RX QUEUE PUB DONE", &[age(m.and_then(|m| m.received)), age(m.and_then(|m| m.queued)), age(m.and_then(|m| m.published)), age(m.and_then(|m| m.done))]);
+        #[cfg(not(feature="sunfish-mcfg-record-identity"))]
         row(14, "CLIENT FIRST LAST CLOSE REPEAT", &[m.and_then(|m| m.first_client).unwrap_or(u32::MAX), m.and_then(|m| m.last_client).unwrap_or(u32::MAX), age(m.and_then(|m| m.close_at)), m.map_or(0, |m| m.client_counts[2])]);
+        #[cfg(feature="sunfish-mcfg-record-identity")]
+        {let key=m.and_then(|m|m.record_sequence());row(14,"MCFG CLOSE CANCEL RECORD LO HI",&[age(m.and_then(|m|m.close_at)),age(m.and_then(|m|m.canceled_at)),key.map_or(u32::MAX,|n|n as u32),key.map_or(u32::MAX,|n|(n>>32)as u32)]);}
         #[cfg(not(feature="sunfish-mcfg-close-cleanup"))]
         row(15, "OFFER MASK BLK TIME WIN", &[m.map_or(0, |m| m.options.present), m.map_or(u32::MAX, |m| m.options.values[0]), m.map_or(u32::MAX, |m| m.options.values[1]), m.map_or(u32::MAX, |m| m.options.values[2])]);
         #[cfg(not(feature="sunfish-mcfg-close-cleanup"))]

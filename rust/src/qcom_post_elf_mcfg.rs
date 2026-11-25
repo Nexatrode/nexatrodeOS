@@ -86,9 +86,26 @@ pub struct PostMcfgRequest {
     pub reply_opcode:u32,pub reply_number:u32,pub reply_bytes:u32,pub reply_options:McfgOptionIds,
     pub transfer_port:u32,pub remote_intent:u32,
     pub received:Option<u64>,pub dispatched:Option<u64>,pub queued:Option<u64>,pub published:Option<u64>,pub done:Option<u64>,
+    #[cfg(feature="sunfish-mcfg-record-identity")]
+    record:Option<crate::qcom_qrtr_flow::Reservation>,
+    #[cfg(feature="sunfish-mcfg-record-identity")]
+    pub canceled_at:Option<u64>,
     pub first_client:Option<u32>,pub last_client:Option<u32>,pub first_client_at:Option<u64>,pub last_client_at:Option<u64>,
     pub client_counts:[u32;3],pub close_at:Option<u64>,pub close_port:u32,pub queue_waits:[u32;2],
 }
+#[cfg(feature="sunfish-mcfg-record-identity")]
+impl PostMcfgRequest {
+    /// Existing host-only reservation sequence, for diagnostics only.
+    pub fn record_sequence(&self)->Option<u64>{self.record.map(|r|r.sequence())}
+}
+#[cfg(feature="sunfish-mcfg-record-identity")]
+fn mcfg_record_matches(m:&PostMcfgRequest,tx:&Transmit,local:u32)->bool{
+    m.flags&256==0 && m.record.is_some() && m.record==tx.reference_flow
+        && matches!(tx.kind,TxKind::TftpReply{source,destination}
+            if source==Address{node:local,port:m.transfer_port}&&destination==m.peer)
+        && tx.len>=32 && word(&tx.bytes,4)==1 && word(&tx.bytes,20)==m.reply_bytes
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct PostElfMcfgTrace {
     elf:RequestHandle,local:u32,peer:u32, pub revision:u64,
@@ -136,6 +153,10 @@ impl Session {
             cap.mcfg=Some(PostMcfgRequest{handle:h,slot:None,peer:source,bytes:body.len()as u32,flags:1,options:McfgOptionIds::read(body,true),file_before:None,server_result:None,
                 reply_opcode:u32::MAX,reply_number:u32::MAX,reply_bytes:0,reply_options:McfgOptionIds::default(),transfer_port:u32::MAX,remote_intent:u32::MAX,
                 received:self.intent_ack_clock.map(|c|c()),dispatched:None,queued:None,published:None,done:None,first_client:None,last_client:None,first_client_at:None,last_client_at:None,
+                #[cfg(feature="sunfish-mcfg-record-identity")]
+                record:None,
+                #[cfg(feature="sunfish-mcfg-record-identity")]
+                canceled_at:None,
                 client_counts:[0;3],close_at:None,close_port:u32::MAX,queue_waits:[0;2]});cap.revision=cap.revision.saturating_add(1);return;
         }
         let Some(m)=cap.mcfg.as_mut().filter(|m|m.peer==source && m.flags&128==0)else{return;};
@@ -161,18 +182,42 @@ impl Session {
     pub(super) fn observe_post_mcfg_queue(&mut self,h:&TftpHandle,route:TftpReplyRoute,result:Result<usize,Error>){
         let Some(cap)=self.post_elf_mcfg.as_mut()else{return;};
         let Some(m)=cap.mcfg.as_mut().filter(|m|m.handle==*h && m.flags&4!=0 && m.flags&8==0 && m.peer==route.destination && m.transfer_port==route.source.port)else{return;};
-        match result {Ok(slot)=>{m.slot=Some(slot);m.flags|=8;m.queued=self.intent_ack_clock.map(|c|c());},Err(Error::FlowBusy)=>m.queue_waits[0]=m.queue_waits[0].saturating_add(1),Err(Error::NoCapacity)=>m.queue_waits[1]=m.queue_waits[1].saturating_add(1),_=>{}}
+        match result {Ok(slot)=>{m.slot=Some(slot);m.flags|=8;m.queued=self.intent_ack_clock.map(|c|c());
+            #[cfg(feature="sunfish-mcfg-record-identity")]
+            {m.record=self.transmit[slot].reference_flow;if m.record.is_none(){m.slot=None;m.flags|=512;}}
+        },Err(Error::FlowBusy)=>m.queue_waits[0]=m.queue_waits[0].saturating_add(1),Err(Error::NoCapacity)=>m.queue_waits[1]=m.queue_waits[1].saturating_add(1),_=>{}}
         cap.revision=cap.revision.saturating_add(1);
     }
     pub(super) fn observe_post_mcfg_publication(&mut self,index:usize,remote:usize){
         let Some(cap)=self.post_elf_mcfg.as_mut()else{return;};let tx=&self.transmit[index];let at=self.intent_ack_clock.map(|c|c());
         cap.wire(&tx.bytes[..tx.len],true,at);
-        if let Some(m)=cap.mcfg.as_mut().filter(|m|m.slot==Some(index) && m.flags&16==0){m.flags|=16;m.published=at;m.remote_intent=self.remote[remote].as_ref().map_or(u32::MAX,|i|i.id);cap.revision=cap.revision.saturating_add(1);}
+        if let Some(m)=cap.mcfg.as_mut().filter(|m|m.slot==Some(index) && m.flags&16==0
+            && {
+                #[cfg(feature="sunfish-mcfg-record-identity")]
+                {mcfg_record_matches(m,tx,self.config.local_node)}
+                #[cfg(not(feature="sunfish-mcfg-record-identity"))]
+                {true}
+            }){m.flags|=16;m.published=at;m.remote_intent=self.remote[remote].as_ref().map_or(u32::MAX,|i|i.id);cap.revision=cap.revision.saturating_add(1);}
     }
     pub(super) fn observe_post_mcfg_done(&mut self,index:usize,id:u32){
         let Some(cap)=self.post_elf_mcfg.as_mut()else{return;};let at=self.intent_ack_clock.map(|c|c());
-        if let Some(m)=cap.mcfg.as_mut().filter(|m|m.slot==Some(index) && m.flags&16!=0 && m.flags&32==0 && m.remote_intent==id){m.flags|=32;m.done=at;m.slot=None;
+        if let Some(m)=cap.mcfg.as_mut().filter(|m|m.slot==Some(index) && m.flags&16!=0 && m.flags&32==0 && m.remote_intent==id
+            && {
+                #[cfg(feature="sunfish-mcfg-record-identity")]
+                {mcfg_record_matches(m,&self.transmit[index],self.config.local_node)}
+                #[cfg(not(feature="sunfish-mcfg-record-identity"))]
+                {true}
+            }){m.flags|=32;m.done=at;m.slot=None;
             let record=McfgWireRecord{at,tx:false,kind:254,source:m.peer.port,destination:m.transfer_port,tag:14,a:id,b:1};cap.push(record);}
+    }
+    #[cfg(feature="sunfish-mcfg-record-identity")]
+    pub(super) fn observe_post_mcfg_cancel(&mut self,index:usize){
+        let Some(cap)=self.post_elf_mcfg.as_mut()else{return;};
+        let Some(m)=cap.mcfg.as_mut().filter(|m|m.slot==Some(index)&&m.flags&16==0
+            && mcfg_record_matches(m,&self.transmit[index],self.config.local_node))else{return;};
+        m.slot=None;m.flags|=256;m.canceled_at=self.intent_ack_clock.map(|clock|clock());
+        let record=McfgWireRecord{at:m.canceled_at,tx:false,kind:253,source:m.peer.port,
+            destination:m.transfer_port,tag:14,a:1,b:m.reply_bytes};cap.push(record);
     }
     pub(super) fn observe_post_mcfg_close(&mut self,port:u32){
         if let Some(cap)=self.post_elf_mcfg.as_mut() && let Some(m)=cap.mcfg.as_mut().filter(|m|m.peer.port==port && m.flags&128==0){m.flags|=128;m.close_port=port;m.close_at=self.intent_ack_clock.map(|c|c());cap.revision=cap.revision.saturating_add(1);}
@@ -212,5 +257,14 @@ mod tests {
         let h=packet(&qrtr(6,u32::MAX-1,u32::MAX-1,&b),false,None).unwrap();assert_eq!((h.tag,h.a,h.b),(13,0,0x4a));
         let before=t.total;let b:[u8;20]=[4u32,999,1,0,0x21].into_iter().flat_map(u32::to_le_bytes).collect::<Vec<_>>().try_into().unwrap();t.wire(&qrtr(4,0xfffffffe,0xfffffffe,&b),false,None);assert_eq!(t.total,before);
         let mut broken=qrtr(1,9,0x4003,&[]);broken[20..24].copy_from_slice(&u32::MAX.to_le_bytes());assert!(packet(&broken,false,None).is_none());
+    }
+
+    #[cfg(feature="sunfish-mcfg-record-identity")]
+    #[test]
+    fn post_mcfg_identity_unique_token_rejects_same_route_and_body_reuse(){
+        let peer=Address{node:0,port:0x4a};let mut table=crate::qcom_qrtr_flow::Table::<8>::new(1).unwrap();let destination=crate::qcom_qrtr_flow::Destination{node:0,port:0x4a};let first=table.reserve(destination).unwrap();let second=table.reserve(destination).unwrap();assert_ne!(first,second);
+        let mut m=PostMcfgRequest{handle:TftpHandle{owner:1,generation:1,intent:1},slot:Some(0),peer,bytes:73,flags:15,options:Default::default(),file_before:None,server_result:Some(0),reply_opcode:5,reply_number:1,reply_bytes:19,reply_options:Default::default(),transfer_port:0x5001,remote_intent:u32::MAX,received:None,dispatched:None,queued:None,published:None,done:None,first_client:None,last_client:None,first_client_at:None,last_client_at:None,client_counts:[0;3],close_at:None,close_port:u32::MAX,queue_waits:[0;2],record:Some(first),canceled_at:None};
+        let mut tx=Transmit::empty();tx.kind=TxKind::TftpReply{source:Address{node:1,port:0x5001},destination:peer};tx.len=51;tx.bytes[4..8].copy_from_slice(&1u32.to_le_bytes());tx.bytes[20..24].copy_from_slice(&19u32.to_le_bytes());tx.reference_flow=Some(second);assert!(!mcfg_record_matches(&m,&tx,1));
+        tx.reference_flow=Some(first);assert!(mcfg_record_matches(&m,&tx,1));m.flags|=256;assert!(!mcfg_record_matches(&m,&tx,1));m.flags&=!256;m.record=None;assert!(!mcfg_record_matches(&m,&tx,1));m.record=Some(first);tx.kind=TxKind::Resume;assert!(!mcfg_record_matches(&m,&tx,1));
     }
 }

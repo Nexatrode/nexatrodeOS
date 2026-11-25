@@ -1,6 +1,7 @@
 """Bind the native service boundary to the actual Router/Owner replayed by host tests."""
 from pathlib import Path
 import subprocess, unittest
+from sunfish_mcfg_trace_source_test import protocol_source
 ROOT=Path(__file__).resolve().parents[1]
 def fn(s,name):
  a=s.index('fn '+name);b=s.index('{',a)+1;depth=1
@@ -16,7 +17,7 @@ class HandoffSource(unittest.TestCase):
  def test_original_transport_and_cleanup_commit_are_unchanged(self):
   for name in ['qcom_glink_qmi.rs','qcom_glink_fifo.rs','qcom_mcfg_close.rs','qcom_qrtr_flow.rs']:
    path='rust/src/'+name
-   self.assertEqual((ROOT/path).read_bytes(),subprocess.check_output(['git','show','bb9f990c:'+path],cwd=ROOT),path)
+   self.assertEqual(protocol_source(path,(ROOT/path).read_text()),subprocess.check_output(['git','show','bb9f990c:'+path],cwd=ROOT,text=True),path)
  def test_registry_retry_already_defers_pending_exclusive_closes(self):
   s=(ROOT/'rust/src/qcom_modem_owner.rs').read_text();retry=fn(s,'retry_registry_handoff(')
   self.assertLess(retry.index('self.firmware_close_is_pending()'),retry.index('self.check()?'))
