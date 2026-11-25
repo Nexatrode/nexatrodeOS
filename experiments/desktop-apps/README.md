@@ -1,8 +1,9 @@
-# SimpleX and NexaWal desktop experiment
+# SimpleX, NexaWal and NetSurf desktop experiment
 
-This opt-in Microkit image runs the existing phone app services in two 560×520
-logical-pixel desktop windows, rendered at 1120×1040 physical pixels each. The
-trusted landscape shell and compositor own the wallpaper, dock, titlebars,
+This opt-in Microkit image runs SimpleX and NexaWal, plus windowed NetSurf with
+`--browser`. Each app has a 560×520 logical-pixel desktop window, rendered at
+1120×1040 physical pixels. The trusted landscape shell and compositor own
+the wallpaper, dock, titlebars,
 stacking order, focus and coordinate translation. The display remains
 1280×800 logical / 2560×1600 physical.
 
@@ -28,7 +29,7 @@ with small pages exhausts the stock initializer's capability slots. The composer
 is an experimental build dependency, not a new kernel or hardware change.
 
 ```sh
-python3 tests/desktop_apps_utm.py \
+python3 tests/desktop_apps_utm.py --browser \
   --inputs /path/to/public/utm-accelerated \
   --storage build/utm-vault-key-storage \
   --shell-base build/desktop-shell/retina-ready-2x \
@@ -170,3 +171,102 @@ The host suite passed 100 wallet-core/range/pool tests and 20 vendored wallet
 library tests. The UTM image uses the same tested source hashes recorded in
 `build.json`. This does not enable legacy spending or add index vectors to
 the compact single-block fallback; that fallback continues to fail closed.
+
+## Three-app desktop
+
+Add `--browser` to `tests/desktop_apps_utm.py` to include NetSurf as a third dock
+item and 560×520 logical / 1120×1040 physical window. Prepare the pinned
+JavaScript-enabled NetSurf dependencies first using the native browser's build
+instructions; the combined builder reuses those public engine libraries,
+source-built frontend and exported license inventory. It builds a separate
+HTTPS broker with `desktop-tcp` and excludes test hooks and the fixture CA.
+The existing two-app and Notes/Calculator demo images retain their original
+48-byte shell ABI. The three-app shell uses a 64-byte state with an explicit
+stacking order. Titlebars, dragging, focus and all three dock launch actions
+remain owned by the trusted shell/manager.
+
+In the three-app image the manager commits dock, minimize and close actions in
+input order. Keyboard focus no longer waits for a Slint paint callback. The
+shell still draws the chrome and handles dragging; the original two-app demo
+keeps its existing command path. A canceled click or input-ring reset does not
+launch a window. The live test observes committed shell state before typing,
+rather than assuming that a fixed delay is sufficient under host load.
+
+The browser maps only its own heap, frame, input queue and HTTP request/result
+pages. It has no raw driver input, global screen, wallet or messages endpoint.
+Its HTTPS broker uses a private TCP wire page and fixed session 4; the wallet
+and scan worker retain sessions 2 and 3. The UTM-only network option
+`DESKTOP_BROWSER_NETWORK` adds this endpoint without changing the default
+four-session build. The broker does not map the legacy wallet/agent TCP page.
+The shared network service, timer and entropy drivers remain trusted services.
+
+Use the usual public SDK, storage-fixture, display and large-page composer
+arguments, choosing a new output directory:
+
+```sh
+caffeinate -di python3 tests/desktop_apps_utm.py --browser \
+  --inputs /path/to/public/utm-accelerated \
+  --storage build/utm-vault-key-storage \
+  --shell-base build/desktop-shell/retina-ready-2x \
+  --composer build/desktop-simplex/composer-large/target/release/microkit \
+  --output build/desktop-apps/three-apps
+caffeinate -di python3 tests/desktop_apps_run.py \
+  --guest build/desktop-apps/three-apps \
+  --template /path/to/public/utm-accelerated/template.plist --leave-running
+```
+
+The runner opens and restores the browser through the dock, types an HTTPS
+address after switching keyboard ownership, checks actual window scanout, and
+loads a real page while a fresh wallet scans and SimpleX receives a message
+and photo. The separate `browser-validation.json` records these checks. A
+three-app C fixture checks stacking, titlebar protection, invalid-frame
+rejection and suppression of held-key repeats after focus changes.
+
+This is still a disposable static integration. Minimizing/closing retains app
+services and does not implement session locking, key eviction or destruction.
+Do not substitute a saved wallet/chat disk into this development-key fixture.
+The standalone browser and the phone launcher remain separate build profiles.
+
+### Fresh three-app result (2026-11-24)
+
+The clean `build/desktop-apps/current` build passed all nine live checks in
+four-vCPU accelerated UTM. SimpleX exchanged messages through a real relay and
+presented two incoming photos, including one received while the wallet scanned.
+NetSurf opened its packaged JavaScript page, loaded the real NetSurf About page
+over certificate-checked HTTPS using private TCP slot 4 during scanning, and
+retained the page across close/restore. Typing into NexaWal while the browser
+was minimized did not contaminate the browser address.
+
+The fresh unfunded wallet scanned height 3,809,410 through node height 3,813,918:
+4,508 blocks in 31,763 ms of verified scanning (about 142 blocks/s). Cold startup
+DNS retried first; this is a combined workload, not the fixed 222-block speed
+benchmark. The 12 sampled wallet tab changes had a 247 ms median and 350 ms
+maximum, including QMP input, polling and presented-pixel observation overhead.
+The standalone JavaScript/HTTPS browser build, three-app compositor test,
+two-app surface test, shell composition at 1×/2× and geometry checks also passed.
+Local evidence is in `build.json`, `validation.json`, `browser-validation.json`,
+`serial.log` and `three-apps-restored.png` in that build directory.
+
+Only the current disposable desktop VM was retained from this chat's desktop
+and browser trials. Ten retired disposable VM registrations/bundles and two
+clean temporary integration worktrees were removed. Older data-bearing VMs,
+the regular saved-data VM, backup branches and the Pixel Wi-Fi worktrees were
+retained. Reuse one staging directory with the builder's `--resume` option for
+incremental builds; retire its stopped disposable VM before running the launcher
+again, since each test intentionally creates a new UUID and blank disk.
+
+### Display and storage boundaries
+
+The guest display remains fixed at 2560×1600 physical / 1280×800 logical pixels.
+Changing the UTM host window or entering fullscreen does not negotiate a new
+guest mode or relayout the desktop. App windows can move, minimize and close;
+resizing app windows is not implemented. Dynamic mode negotiation, surface
+resizing and responsive app layouts remain separate work.
+
+The fixture uses a raw 64 MiB disk image with a GPT partition. Inside it is the
+custom vault block/record format, not ext4, FAT or APFS. App namespaces and fixed
+file extents hold authenticated encrypted records, the SimpleX SQLite database
+and rollback journal, wallet state and photos. The vault's AES-256-GCM-SIV
+records and commit/recovery protocols are not a general directory filesystem.
+This disposable build uses the public development key; the separate wrapped-key
+and installation-key fixtures are not enabled here.

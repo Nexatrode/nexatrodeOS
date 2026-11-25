@@ -5,20 +5,26 @@
 #include <microkit.h>
 struct surface_header { _Atomic uint32_t revision; uint32_t width, height, stride; };
 uintptr_t surface_a, surface_b, output_frame, focus_page, input_handoff, input_a, input_b;
+#if DESKTOP_APP_COUNT == 3
+uintptr_t surface_c, input_c;
+#endif
 uintptr_t shell_surface, shell_state, shell_input, ui_pointer;
 static bool dynamic_active, focus_dirty;
 static void dynamic_input_notify(void);
 static bool dynamic_control(struct input_event_record);
 static struct shell_state desktop = {.top = 2, .windows = {{68, 126, 0, 0}, {650, 110, 0, 0}}};
-static uint32_t sent[3], driver_tail, driver_dropped;
-static bool reset_pending[3], input_ready;
+static uint32_t sent[DESKTOP_SHELL_OWNER], driver_tail, driver_dropped;
+static bool reset_pending[DESKTOP_SHELL_OWNER], input_ready;
 static unsigned pointer_owner;
+#if DESKTOP_APP_COUNT == 3
+static unsigned chrome_pending;
+#endif
 static int32_t pointer_x, pointer_y;
 static uint8_t key_owners[DESKTOP_KEY_MAX + 1];
 #define APP_BYTES (APP_PIXEL_WIDTH * APP_PIXEL_HEIGHT * 3u)
 static uint8_t shell_pixels[SLINT_FRAME_PIXEL_BYTES], candidate[SLINT_FRAME_PIXEL_BYTES];
-static uint8_t app_pixels[2][APP_BYTES];
-static uint32_t shell_revision, app_revision[2];
+static uint8_t app_pixels[DESKTOP_APP_COUNT][APP_BYTES];
+static uint32_t shell_revision, app_revision[DESKTOP_APP_COUNT];
 static bool composition_dirty;
 
 static void publish_state(void)
@@ -28,7 +34,8 @@ static void publish_state(void)
     __atomic_store_n(&out->revision, revision + 1, __ATOMIC_RELEASE);
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
     out->top = desktop.top; out->focused = desktop.focused;
-    out->windows[0] = desktop.windows[0]; out->windows[1] = desktop.windows[1];
+    out->reserved=desktop.reserved;
+    for(unsigned i=0;i<DESKTOP_APP_COUNT;++i)out->windows[i]=desktop.windows[i];
     __atomic_store_n(&out->revision, revision + 2, __ATOMIC_RELEASE);
     microkit_notify(21);
     composition_dirty = true;
@@ -36,20 +43,26 @@ static void publish_state(void)
 static void input_notify(unsigned owner)
 {
 #ifdef DESKTOP_REAL_APPS
-    if (owner <= 2) { microkit_notify(owner == 1 ? 24 : 25); return; }
+    if (owner >= 1 && owner <= DESKTOP_APP_COUNT) { microkit_notify(23 + owner); return; }
 #endif
     if (owner == 1) { if (dynamic_active) dynamic_input_notify(); }
     else microkit_notify(owner == 2 ? 8 : 22);
 }
-static struct desktop_queue *queue_for(unsigned owner) { return (void *)(owner == 1 ? input_a : owner == 2 ? input_b : shell_input); }
+static uintptr_t app_input(unsigned owner) {
+#if DESKTOP_APP_COUNT == 3
+    if(owner==3)return input_c;
+#endif
+    return owner==1?input_a:input_b;
+}
+static struct desktop_queue *queue_for(unsigned owner) { return (void *)(owner<=DESKTOP_APP_COUNT?app_input(owner):shell_input); }
 #ifdef DESKTOP_REAL_APPS
 static void app_emit(unsigned, struct desktop_event);
 #endif
 static void emit(unsigned owner, struct desktop_event event)
 {
-    if (owner < 1 || owner > 3 || (owner == 1 && !dynamic_active)) return;
+    if (owner < 1 || owner > DESKTOP_SHELL_OWNER || (owner == 1 && !dynamic_active)) return;
 #ifdef DESKTOP_REAL_APPS
-    if (owner <= 2) { app_emit(owner, event); return; }
+    if (owner <= DESKTOP_APP_COUNT) { app_emit(owner, event); return; }
 #endif
     unsigned i = owner - 1; struct desktop_queue *q = queue_for(owner);
     uint32_t tail = __atomic_load_n(&q->tail, __ATOMIC_ACQUIRE);
@@ -69,7 +82,7 @@ static void focus(unsigned owner)
         desktop.focused = owner;
         if (owner) emit(owner, (struct desktop_event){.kind = DESKTOP_FOCUS, .value = 1});
     }
-    if (owner) desktop.top = owner;
+    if (owner) shell_raise(&desktop,owner);
     publish_state();
 }
 static void release_owner(unsigned owner)
@@ -81,20 +94,64 @@ static void release_owner(unsigned owner)
 static void reset_input(void)
 {
     memset(key_owners, 0, sizeof(key_owners)); pointer_owner = 0;
-    for (unsigned owner = 1; owner <= 3; ++owner) emit(owner, (struct desktop_event){.kind = DESKTOP_RESET});
+#if DESKTOP_APP_COUNT == 3
+    chrome_pending = 0;
+#endif
+    for (unsigned owner = 1; owner <= DESKTOP_SHELL_OWNER; ++owner) emit(owner, (struct desktop_event){.kind = DESKTOP_RESET});
 }
+#if DESKTOP_APP_COUNT == 3
+/* Dock and button hit boxes match desktop_shell.slint in logical pixels.
+ * Commit focus in input order, before routing the next keyboard event. A
+ * delayed shell paint/callback must not send typing to the previous app. */
+static unsigned chrome_at(int32_t x, int32_t y)
+{
+    for (unsigned i = 0; i < DESKTOP_APP_COUNT; ++i) {
+        int32_t left = (SHELL_WIDTH - 276) / 2 + 16 + 84 * i;
+        if (x >= left && x < left + 76 && y >= (int)SHELL_HEIGHT - 106 && y < (int)SHELL_HEIGHT - 24)
+            return ((i + 1) << 8) | SHELL_APP_LAUNCH;
+    }
+    unsigned id = shell_window_at(&desktop, x, y);
+    if (!id) return 0;
+    const struct shell_window *w = &desktop.windows[id - 1];
+    if (y < w->y - 36 || y >= w->y - 8) return 0;
+    if (x >= w->x + 473 && x < w->x + 507) return (id << 8) | SHELL_APP_MINIMIZE;
+    if (x >= w->x + 513 && x < w->x + 547) return (id << 8) | SHELL_APP_CLOSE;
+    return 0;
+}
+static void chrome_activate(unsigned action)
+{
+    unsigned id = action >> 8, command = action & 255;
+    struct shell_window *w = &desktop.windows[id - 1];
+    if (command == SHELL_APP_LAUNCH) { w->open = w->visible = 1; focus(id); }
+    else {
+        w->visible = 0;
+        if (command == SHELL_APP_CLOSE) w->open = 0;
+        release_owner(id);
+        if (desktop.focused == id) focus(0); else publish_state();
+    }
+}
+#endif
 static void pointer_event(unsigned value)
 {
     unsigned owner = pointer_owner ? pointer_owner : shell_hit(&desktop, pointer_x, pointer_y);
     if (value == 1 && !pointer_owner) {
+#if DESKTOP_APP_COUNT == 3
+        chrome_pending = chrome_at(pointer_x, pointer_y);
+#endif
         pointer_owner = owner;
         unsigned window = shell_window_at(&desktop, pointer_x, pointer_y);
         if (window) focus(window);
     }
     int32_t x = pointer_x, y = pointer_y;
-    if (owner <= 2) { x -= desktop.windows[owner - 1].x; y -= desktop.windows[owner - 1].y; }
+    if (owner <= DESKTOP_APP_COUNT) { x -= desktop.windows[owner - 1].x; y -= desktop.windows[owner - 1].y; }
     emit(owner, (struct desktop_event){.kind = DESKTOP_POINTER, .value = value, .x = x, .y = y});
-    if (value == 0) pointer_owner = 0;
+    if (value == 0) {
+        pointer_owner = 0;
+#if DESKTOP_APP_COUNT == 3
+        if (chrome_pending && chrome_pending == chrome_at(pointer_x, pointer_y)) chrome_activate(chrome_pending);
+        chrome_pending = 0;
+#endif
+    }
 }
 #ifdef DESKTOP_REAL_APPS
 static void app_scroll(unsigned, int32_t);
@@ -121,14 +178,16 @@ static void input(void)
 #ifdef DESKTOP_REAL_APPS
             else if (e.type == 2 && e.code == 8 && desktop.focused) {
                 unsigned owner = shell_hit(&desktop, pointer_x, pointer_y);
-                if (owner <= 2) app_scroll(owner, (int32_t)e.value);
+                if (owner <= DESKTOP_APP_COUNT) app_scroll(owner, (int32_t)e.value);
             }
 #endif
         } else if (e.device == INPUT_DEVICE_KEYBOARD && e.type == 1 && e.code <= DESKTOP_KEY_MAX && e.value <= 2) {
             if (dynamic_control(e)) continue;
             unsigned owner = key_owners[e.code];
             if (e.value == 1 && !owner) owner = key_owners[e.code] = desktop.focused;
-            if (owner) emit(owner, (struct desktop_event){.kind = DESKTOP_KEY, .code = e.code, .value = e.value});
+            // Releases retire the original lease; held-key repeats must not
+            // continue typing into a window after focus has moved elsewhere.
+            if (owner && (!e.value || owner==desktop.focused)) emit(owner, (struct desktop_event){.kind = DESKTOP_KEY, .code = e.code, .value = e.value});
             if (!e.value) key_owners[e.code] = 0;
         }
     }
@@ -160,6 +219,9 @@ static bool compose(void)
 #ifdef DESKTOP_REAL_APPS
     composition_dirty |= snapshot_app(surface_a, app_pixels[0], &app_revision[0]);
     composition_dirty |= snapshot_app(surface_b, app_pixels[1], &app_revision[1]);
+#if DESKTOP_APP_COUNT == 3
+    composition_dirty |= snapshot_app(surface_c, app_pixels[2], &app_revision[2]);
+#endif
 #else
     if (dynamic_active) composition_dirty |= snapshot(surface_a, APP_PIXEL_WIDTH, APP_PIXEL_HEIGHT, app_pixels[0], &app_revision[0]);
     composition_dirty |= snapshot(surface_b, APP_PIXEL_WIDTH, APP_PIXEL_HEIGHT, app_pixels[1], &app_revision[1]);
@@ -170,8 +232,8 @@ static bool compose(void)
     uint32_t before = atomic_load_explicit(&out->revision, memory_order_relaxed);
     atomic_store_explicit(&out->revision, before + 1, memory_order_release); atomic_thread_fence(memory_order_seq_cst);
     uint8_t *dest = (void *)(out + 1); memcpy(dest, shell_pixels, sizeof(shell_pixels));
-    unsigned order[2] = {desktop.top == 1 ? 2 : 1, desktop.top};
-    for (unsigned i = 0; i < 2; ++i) {
+    unsigned order[DESKTOP_APP_COUNT]; shell_order(&desktop,order);
+    for (unsigned i = 0; i < DESKTOP_APP_COUNT; ++i) {
         unsigned id = order[i]; const struct shell_window *w = &desktop.windows[id - 1];
         if (!w->visible || !app_revision[id - 1] || (id == 1 && !dynamic_active)) continue;
         /* Restore the shell-owned border/title above lower windows before

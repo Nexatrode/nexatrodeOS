@@ -3,7 +3,7 @@ from pathlib import Path
 import struct, subprocess, sys
 import xml.etree.ElementTree as ET
 
-def validate(path, directory):
+def validate(path, directory, browser=False):
     system=ET.parse(path).getroot();directory=Path(directory)
     domains={p.get('name'):p for p in system.findall('protection_domain')}
     edges={}
@@ -36,6 +36,17 @@ def validate(path, directory):
     symbols=subprocess.check_output(['/opt/homebrew/opt/llvm/bin/llvm-nm',directory/'dhcp_client.elf'],text=True)
     assert 'haskell_simplex_network_active' not in symbols,'unlocked fixture accidentally contains the initially-locked network gate'
     assert 'haskell_simplex_network_transition' not in symbols
+    if browser:
+        assert maps('native_browser') == {'browser_frame','browser_heap','browser_input','browser_request','browser_response'}
+        assert maps('browser_https') & maps('wallet_app') == set()
+        assert maps('browser_https') & maps('simplex_agent') == set()
+        assert edges['browser_https',1]==('dhcp_client',8)
+        assert edges['native_browser',0]==('desktop_manager',27)
+        assert edges['native_browser',1]==('desktop_manager',26)
+        assert edges['browser_https',2]==('entropy_rng',0)
+        assert 'browser_tcp_io' in maps('dhcp_client') and 'haskell_tcp_io' not in maps('browser_https')
+        assert 'browser_tcp_page' in symbols
+        assert 'native_reflow_test_arm' not in subprocess.check_output(['/opt/homebrew/opt/llvm/bin/llvm-nm',directory/'browser.elf'],text=True)
     print('PASS desktop frontend authority separation, private mappings, scan affinity, block relocation and unlocked networking')
 
 if __name__=='__main__':validate(sys.argv[1],sys.argv[2])

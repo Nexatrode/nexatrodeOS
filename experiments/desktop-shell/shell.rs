@@ -7,6 +7,7 @@ use core::{ptr, sync::atomic::{AtomicU32, Ordering, fence}};
 use personal_os_slint_notes_spike::{DesktopShell, DesktopWindow, guest_platform, wall_clock};
 use sel4_microkit::{Channel, ChannelSet, Handler, Infallible, MessageInfo, memory_region_symbol, protection_domain, set_mr, debug_println};
 use slint::{ComponentHandle, LogicalPosition, PhysicalSize, Model, ModelRc, VecModel, platform::{PointerEventButton, WindowEvent, software_renderer::{MinimalSoftwareWindow, RepaintBufferType}}};
+const APP_COUNT: usize = if cfg!(feature = "desktop-browser-shell") { 3 } else { 2 };
 const SCALE: usize = if cfg!(feature = "desktop-shell-2x") { 2 } else { 1 };
 const WIDTH: usize = 1280 * SCALE;
 const HEIGHT: usize = 800 * SCALE;
@@ -15,11 +16,11 @@ type HeapMutex = sel4_microkit::_private::heap::RawOneShotMutex;
 static HEAP: sel4_dlmalloc::DeferredStaticDlmalloc<HeapMutex> = sel4_dlmalloc::DeferredStaticDlmalloc::new();
 #[repr(C)] struct Header { revision: AtomicU32, width: u32, height: u32, stride: u32 }
 #[repr(C)] #[derive(Clone, Copy, Default)] struct Window { x: i32, y: i32, open: u32, visible: u32 }
-#[repr(C)] struct State { revision: AtomicU32, top: u32, focused: u32, reserved: u32, windows: [Window; 2] }
+#[repr(C)] struct State { revision: AtomicU32, top: u32, focused: u32, reserved: u32, windows: [Window; APP_COUNT] }
 #[repr(C)] #[derive(Clone, Copy)] struct Event { kind: u32, code: u32, value: u32, x: i32, y: i32 }
 #[repr(C)] struct Queue { head: AtomicU32, tail: AtomicU32, reserved: [u32; 2], events: [Event; 64] }
 #[repr(C)] struct Clock { revision: AtomicU32, length: u32, text: [u8; 128] }
-const _: () = assert!(core::mem::size_of::<State>() == 48);
+const _: () = assert!(core::mem::size_of::<State>() == 16 + 16 * APP_COUNT);
 struct Shell { window: Rc<MinimalSoftwareWindow>, ui: DesktopShell, revision: u32, pointer: Option<LogicalPosition>, model: Rc<VecModel<DesktopWindow>> }
 impl Shell {
     fn refresh(&mut self) {
@@ -29,15 +30,21 @@ impl Shell {
             let top = unsafe { ptr::read_volatile(&state.top) };
             let focused = unsafe { ptr::read_volatile(&state.focused) };
             let wins = unsafe { ptr::read_volatile(&state.windows) };
+            let packed = unsafe { ptr::read_volatile(&state.reserved) };
             fence(Ordering::Acquire);
-            if first == state.revision.load(Ordering::Acquire) && (1..=2).contains(&top) {
-                let order = if top == 1 { [1, 0] } else { [0, 1] };
+            if first == state.revision.load(Ordering::Acquire) && (1..=APP_COUNT as u32).contains(&top) {
+                let order: [usize; APP_COUNT] = core::array::from_fn(|i| {
+                    if APP_COUNT==3 { (((packed >> (4*i)) & 15) as usize).wrapping_sub(1) }
+                    else if i==0 { if top==1 {1} else {0} } else {top as usize-1}
+                });
+                if order.iter().any(|i|*i>=APP_COUNT) || order.iter().enumerate().any(|(i,v)|order[..i].contains(v)) { return; }
                 let windows: Vec<_> = order.into_iter().map(|i| DesktopWindow { id: (i + 1) as i32, left: wins[i].x, top: wins[i].y, shown: wins[i].visible != 0, active: focused == (i + 1) as u32 }).collect();
                 for (i, data) in windows.into_iter().enumerate() {
                     if i < self.model.row_count() { self.model.set_row_data(i, data); } else { self.model.push(data); }
                 }
                 self.ui.set_notes_running(wins[0].open != 0);
                 self.ui.set_calculator_running(wins[1].open != 0);
+                self.ui.set_browser_running(wins.get(2).is_some_and(|w|w.open!=0));
                 self.revision = first;
             }
         }
@@ -97,8 +104,12 @@ fn init() -> Shell {
     let window = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer); guest_platform::install(&window);
     window.dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor: SCALE as f32 });
     let ui = DesktopShell::new().unwrap();
+    ui.set_browser_enabled(APP_COUNT==3);
     ui.set_real_apps(cfg!(feature = "desktop-apps-shell"));
     ui.on_command(|command, id, x, y| {
+        // Three-app input focus and buttons are committed by the trusted
+        // manager in event order, independently of shell repaint latency.
+        if APP_COUNT == 3 && command != 4 { return; }
         for (i, value) in [command, id, x, y].into_iter().enumerate() { set_mr(i, value as u64); }
         let reply = Channel::new(0).pp_call(MessageInfo::new(0x7b0, 4));
         if reply.label() != 0 { debug_println!("DESKTOP_SHELL|COMMAND_REJECTED|{}", command); }

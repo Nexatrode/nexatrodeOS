@@ -3,8 +3,9 @@ import base64, hashlib, json, math, re, shutil, statistics, struct, subprocess, 
 from pathlib import Path
 from simplex_live_peer import Peer
 
-def exercise(monitor,trace,temporary,evidence):
-    checks=[];peer=None;samples=[]
+def exercise(monitor,trace,temporary,evidence,browser=False):
+    checks=[];peer=None;samples=[];browser_case=None
+    chat_dock=556 if browser else 596
     def output():
         text=trace.read_text(errors='replace')
         for bad in ('MON|ERROR','panicked at','VMFault','Data Abort','Prefetch Abort','GUEST_AGENT_RESTORE_FAIL','HASKELL_EXIT|'):
@@ -50,6 +51,10 @@ def exercise(monitor,trace,temporary,evidence):
     try:
         until(lambda:(v:=ui()) and v[0][0][0]==0x4e584445534b3031 and v[1][0][0]==0x4e584445534b3031)
         until(lambda:ui()[0][0][4]==1)
+        if browser:
+            from desktop_browser_input import BrowserCase
+            browser_case=BrowserCase(monitor,trace,temporary,evidence,click,until,ui)
+            browser_case.initial()
         frame('desktop-ready');checks.append('both real 2x frontends publish independent surfaces in the landscape shell')
         peer=Peer(temporary/'peer')
         click(68+50,126+142);uri=until(lambda:ui()[0][1][0]);assert uri.startswith(('simplex:','https://simplex.chat/'))
@@ -100,10 +105,11 @@ def exercise(monitor,trace,temporary,evidence):
         peer.command(f'/_send @{cid} text walletbackground')
         concurrent=[{'msgContent':{'type':'image','text':'concurrentphoto','image':'data:image/jpg;base64,'+data}}]
         peer.command(f'/_send @{cid} json '+json.dumps(concurrent))
+        if browser_case:browser_case.concurrent()
         # Minimize and restore SimpleX through trusted chrome while the wallet advances.
         click(558,104);click(850,90);word('unowned')
         assert ui()[0][0][5]==0,'hidden chat received wallet-owned keyboard input'
-        time.sleep(.2);click(596,728)
+        time.sleep(.2);click(chat_dock,728)
         until(lambda:'walletbackground' in ui()[0][1][1]);send('backgroundreply')
         until(lambda:ui()[1][1][3]!=before,timeout=60)
         after=ui()[1][1][3]
@@ -123,7 +129,7 @@ def exercise(monitor,trace,temporary,evidence):
                 samples.append((time.monotonic()-begin)*1000)
         frame('desktop-final')
         # Exit and restore retain the live service; close is not a lock/scrub claim.
-        click(600,104);click(596,728);send('restoredsend')
+        click(600,104);click(chat_dock,728);send('restoredsend')
         checks.append('repeated wallet tabs, window focus/minimize/restore and retained SimpleX connection work together')
         until(lambda:'concurrentphoto' in ui()[0][1][1] and ui()[0][0][6]>=2,timeout=120)
         frame('desktop-photos-complete')
@@ -134,6 +140,9 @@ def exercise(monitor,trace,temporary,evidence):
         fully_synced=any(marker in terminal for marker in ('SYNCED','SCAN COMPLETE','SCAN OK')) and 'FAIL' not in terminal
         checks.append('both distinct incoming photos finish decoding and displaying, including the photo received during scanning')
         frame('desktop-terminal')
+        if browser_case:
+            browser_case.finish()
+            checks.extend(browser_case.checks)
         report={'checks':checks,'saved_data_used':False,'fresh_peer':True,'photo_presented_pixels':blue,'wallet_node':'rpc.nexawal.com:443','wallet_tip_at_start':tip,'wallet_restore_height':restore_height,'legacy_regression_range':3812148,'wallet_detail_before':before,'wallet_detail_after':after,'tab_observed_ms':samples,'tab_median_ms':statistics.median(samples),'tab_p95_ms':sorted(samples)[math.ceil(len(samples)*.95)-1],'timing_scope':'host QMP mouse press to changed presented wallet-content pixels plus matching tab state; sampled polling, excludes physical host display latency','static_service_lifecycle':True,'lock_integrated':False,'wallet_full_sync_completed':fully_synced,'wallet_terminal_status':terminal,'photo_ready_after_run':ui()[0][0][6]}
         (evidence/'validation.json').write_text(json.dumps(report,indent=2)+'\n')
         for c in checks:print('CHECK '+c,flush=True)

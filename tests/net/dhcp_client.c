@@ -258,7 +258,11 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
         return microkit_msginfo_new(HASKELL_TCP_NOT_READY, 0);
 #endif
     if ((ch == HASKELL_TCP_CHANNEL || ch == WALLET_TCP_CHANNEL ||
-         ch == SHELL_TCP_CHANNEL || ch == WORKER_TCP_CHANNEL) &&
+         ch == SHELL_TCP_CHANNEL || ch == WORKER_TCP_CHANNEL
+#ifdef DESKTOP_BROWSER_NETWORK
+         || ch == BROWSER_TCP_CHANNEL
+#endif
+         ) &&
         haskell_tcp_page != 0) {
         unsigned label = (unsigned)microkit_msginfo_get_label(msginfo);
         unsigned result = HASKELL_TCP_ERROR;
@@ -268,6 +272,11 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
                              microkit_mr_get(0) == WALLET_RX_WAKE_ONCE;
 #endif
         /* Wallet/worker get dedicated wire pages; agent/shell share page 0. */
+#ifdef DESKTOP_BROWSER_NETWORK
+        if (ch == BROWSER_TCP_CHANNEL) {
+            haskell_tcp_select(HASKELL_TCP_BROWSER_SLOT, true);
+        } else
+#endif
         if (ch == WALLET_TCP_CHANNEL) {
             haskell_tcp_select(HASKELL_TCP_WALLET_SLOT, true);
         } else if (ch == WORKER_TCP_CHANNEL) {
@@ -308,6 +317,12 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
                           : (ch == WORKER_TCP_CHANNEL) ? HASKELL_TCP_WORKER_SLOT
                           : pages[0].reserved;
             if (slot >= HASKELL_TCP_SESSIONS) slot = 0;
+#ifdef DESKTOP_BROWSER_NETWORK
+            if (ch == BROWSER_TCP_CHANNEL) {
+                volatile struct haskell_tcp_page *browser=(void*)browser_tcp_page;
+                browser->response_len=1;browser->response[0]=(uint8_t)(result & 0xff);
+            } else
+#endif
             if (ch == WALLET_TCP_CHANNEL || ch == WORKER_TCP_CHANNEL) {
                 pages[slot].response_len = 1;
                 pages[slot].response[0] = (uint8_t)(result & 0xff);

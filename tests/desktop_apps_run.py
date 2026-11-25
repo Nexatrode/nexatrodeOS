@@ -18,7 +18,7 @@ def main():
     os.umask(0o077);tag=str(uuid.uuid4()).upper();bundle=guest/('Desktop-Apps-'+tag[:8]+'.utm');data=bundle/'Data';data.mkdir(parents=True)
     cfg=plistlib.loads(a.template.read_bytes());assert cfg['System']['CPUCount']==4 and cfg['QEMU']['Hypervisor'] is True
     assert cfg['Network']==[] and len(cfg['Drive'])==1
-    cfg['Information'].update(UUID=tag,Name='NexatrodeOS Apps — Disposable '+tag[:8]);cfg['Serial']=[];cfg['Sharing'].update(ClipboardSharing=False,DirectoryShareMode='None');cfg['QEMU']['DebugLog']=False
+    cfg['Information'].update(UUID=tag,Name=('NexatrodeOS Desktop Trio — Disposable ' if m.get('browser') else 'NexatrodeOS Apps — Disposable ')+tag[:8]);cfg['Serial']=[];cfg['Sharing'].update(ClipboardSharing=False,DirectoryShareMode='None');cfg['QEMU']['DebugLog']=False
     old=cfg['Drive'][0]['Identifier'];drive=str(uuid.uuid4()).upper();cfg['Drive'][0].update(Identifier=drive,ImageName='blank.img')
     opts=cfg['QEMU']['AdditionalArguments'];assert all(x.startswith(('-global virtio-','-device loader,','-device virtio-','-netdev user,id=net0')) for x in opts)
     assert sum(x.startswith('-device loader,') for x in opts)==1
@@ -53,7 +53,7 @@ def main():
         time.sleep(1);monitor.send('screendump',{'filename':str(data/'initial.ppm')});shutil.copyfile(data/'initial.ppm',guest/'initial.ppm');subprocess.run(['magick',str(guest/'initial.ppm'),str(guest/'initial.png')],check=True)
         if not a.boot_only:
             from desktop_apps_input import exercise
-            exercise(monitor,trace,data,guest)
+            exercise(monitor,trace,data,guest,browser=m.get('browser',False))
         if (guest/'validation.json').is_file() and not a.boot_only:
             validation=json.loads((guest/'validation.json').read_text())
             session['wallet_full_sync_completed']=validation.get('wallet_full_sync_completed',False)

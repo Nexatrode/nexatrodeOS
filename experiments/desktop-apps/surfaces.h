@@ -1,12 +1,12 @@
 /* Desktop adapter for the existing phone frame and queued-input contracts.
  * The manager owns focus, coordinates, titlebars and publication to the GPU. */
-static uint32_t app_sent[2];
-static bool app_reset[2];
+static uint32_t app_sent[DESKTOP_APP_COUNT];
+static bool app_reset[DESKTOP_APP_COUNT];
 static void app_record(unsigned owner, uint32_t device, uint32_t kind,
                        uint32_t code, uint32_t value, int32_t x, int32_t y)
 {
-    if (owner < 1 || owner > 2) return;
-    uint32_t *q = (void *)(owner == 1 ? input_a : input_b);
+    if (owner < 1 || owner > DESKTOP_APP_COUNT) return;
+    uint32_t *q = (void *)app_input(owner);
     unsigned i = owner - 1;
     uint32_t tail = __atomic_load_n(&q[3], __ATOMIC_ACQUIRE);
     if (app_sent[i] - tail >= 224) { app_reset[i] = true; input_notify(owner); return; }

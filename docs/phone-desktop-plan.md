@@ -202,11 +202,19 @@ See [the app architecture and experiments](desktop-app-direction.md),
 The [dynamic app lock experiment](dynamic-app-lock.md) records the separate
 passphrase/lifecycle test and its security limits.
 
-The [two-app desktop experiment](../experiments/desktop-apps/README.md) now runs
-SimpleX and NexaWal together in 2× landscape UTM with fresh data. Live messages,
+The [desktop apps experiment](../experiments/desktop-apps/README.md) now runs
+SimpleX and NexaWal together in 2× landscape UTM with fresh data, with `--browser`
+adding NetSurf as a third window and dock item. Live messages,
 photos, native typing, background receipt and window restoration passed. Tab
 changes remain measurable under load. After adding indexed legacy-output
 scanning, a disposable wallet completed 4,459 blocks through node height
 3,813,869. Legacy spending and the compact single-block fallback remain
 separate limitations. This static integration still needs the separate desktop
 session-lock/service lifecycle before any personal-data rollout.
+
+The fresh three-app image passed real browser HTTPS loading while the wallet
+scanned and SimpleX received a message and photo. Dock focus commits in input
+order independently of shell painting. The display and app-window dimensions
+are still fixed; UTM host-window resizing does not trigger guest relayout.
+Storage remains the custom encrypted vault with bounded app file extents,
+rather than a general directory filesystem.

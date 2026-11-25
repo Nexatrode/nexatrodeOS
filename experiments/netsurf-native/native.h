@@ -10,9 +10,31 @@
 #ifndef NATIVE_SCALE
 #define NATIVE_SCALE 2
 #endif
+#ifdef NATIVE_DESKTOP
+#define WIDTH 560
+#define HEIGHT 520
+#define BAR 80
+#define ADDRESS_LEFT 128
+#define ADDRESS_RIGHT (WIDTH-152)
+#define RELOAD_LEFT (WIDTH-142)
+#define RELOAD_RIGHT (WIDTH-82)
+#define STOP_LEFT (WIDTH-76)
+#define STOP_RIGHT (WIDTH-12)
+#define HOME_RIGHT 60
+#define BACK_RIGHT 120
+#else
 #define WIDTH 1280
 #define HEIGHT 800
 #define BAR 60
+#define ADDRESS_LEFT 193
+#define ADDRESS_RIGHT (WIDTH-500)
+#define RELOAD_LEFT (WIDTH-490)
+#define RELOAD_RIGHT (WIDTH-400)
+#define STOP_LEFT (WIDTH-395)
+#define STOP_RIGHT (WIDTH-320)
+#define HOME_RIGHT 95
+#define BACK_RIGHT 185
+#endif
 #define PIXEL_WIDTH (WIDTH * NATIVE_SCALE)
 #define PIXEL_HEIGHT (HEIGHT * NATIVE_SCALE)
 struct asset { const char *name; const unsigned char *data; size_t size; };

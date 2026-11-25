@@ -20,6 +20,7 @@ def main():
     p.add_argument('--composer',type=Path,required=True,help='large-page composer for the combined app ELF footprint')
     p.add_argument('--output',type=Path,required=True)
     p.add_argument('--resume',action='store_true')
+    p.add_argument('--browser',action='store_true',help='add windowed NetSurf with its own HTTPS session')
     a=p.parse_args(); inputs=a.inputs.resolve(); out=a.output.resolve(); storage=a.storage.resolve(); shellbase=a.shell_base.resolve()
     if (out.exists() and not (a.resume and (out/'.disposable-build').is_file())) or not out.is_relative_to(ROOT/'build') or out.is_relative_to(inputs): p.error('use a fresh worktree build directory')
     out.mkdir(parents=True,exist_ok=a.resume)
@@ -42,7 +43,7 @@ def main():
     for b in ('slint_photo_reader','slint_photo_worker','slint_transcript_worker'):shutil.copyfile(target/(b+'.elf'),out/(b+'.elf'))
     target=cargo('experiments/slint-notes/Cargo.toml','desktop-wallet-window,desktop-apps-observe',['slint_notes_utm'])
     shutil.copyfile(target/'slint_notes_utm.elf',out/'wallet_ui.elf')
-    target=cargo('experiments/slint-notes/Cargo.toml','desktop-apps-shell',['desktop_shell'])
+    target=cargo('experiments/slint-notes/Cargo.toml','desktop-browser-shell' if a.browser else 'desktop-apps-shell',['desktop_shell'])
     shutil.copyfile(target/'desktop_shell.elf',out/'desktop_shell.elf')
     bins=['rust_vault_disk','rust_messages_agent_app','rust_entropy_rng','rust_clock']
     target=cargo('rust/Cargo.toml','storage-test,simplex-agent-vault,utm-slint-input,utm-photo-reader,utm-transcript-worker',bins,'build/desktop-apps-backends')
@@ -51,6 +52,10 @@ def main():
     shutil.copyfile(target/'rust_scan_worker.elf',out/'rust_scan_worker.elf')
     subprocess.run([str(ROOT/'experiments/ghc-microkit/build_wallet_scan_workers.sh'),str(inputs/'sel4-install'),str(out),'--handoff-prime-m1-100'],cwd=ROOT,env=dict(env,CARGO_TARGET_DIR=str(ROOT/'build/desktop-apps-wallet')),check=True)
     subprocess.run(['cargo','+nightly-2026-09-25','build','--offline','--locked','--manifest-path',str(ROOT/'rust/walletcore-core/Cargo.toml'),'--example','disposable_wallet'],cwd=ROOT,env=dict(env,CARGO_TARGET_DIR=str(ROOT/'build/desktop-apps-host')),check=True)
+    if a.browser:
+        sys.path.insert(0,str(ROOT/'experiments/desktop-apps'))
+        import browser as desktop_browser
+        desktop_browser.build(ROOT,out,inputs,ROOT/'build/netsurf-native')
     # Only the public agent code/config is imported. Never the vault ELF.
     shutil.copyfile(inputs/'pds/agentstore_probe.elf',out/'agentstore_probe.elf')
     for b in ('blk_driver.elf','blk_virt.elf'):shutil.copyfile(storage/b,out/b)
@@ -62,7 +67,7 @@ def main():
         data.write_bytes(config)
         run('llvm-objcopy','--update-section',f'.{section}={data}',out/'rust_vault_disk.elf')
     import desktop_simplex_network
-    if not a.resume:
+    if not (a.resume and (out/'network/sdk/board/qemu_virt_aarch64').exists()):
         desktop_simplex_network.prepare(ROOT,out,inputs,run)
     else:
         assert (out/'network/sdk/board/qemu_virt_aarch64').resolve()==(inputs/'sdk/board/qemu_virt_aarch64_el1').resolve()
@@ -72,12 +77,12 @@ def main():
     # lock fixture's initially-closed network gate. Transport recovery remains.
     for name in ('dhcp_client.o','haskell_tcp_service.o','dhcp_client.elf'):(out/'network'/name).unlink(missing_ok=True)
     # Upgrade the network's wallet receive path.
-    run('make','-C',out/'network','-j4','dhcp_client.elf',f'NET_SRC={ROOT}/tests/net',f'NET_INCLUDE={ROOT}/tests/net/include',f'MICROKIT_SDK={out}/network/sdk','MICROKIT_BOARD=qemu_virt_aarch64',f'MICROKIT_CONFIG={CONFIG}',f'SDDF={inputs.parent}/sddf-personal-os',f'MBEDTLS_DIR={inputs.parent}/mbedtls-3.6.2','EXTRA_CFLAGS=-DDNS_SERVER_PORT=53','NEXAWAL_UTM_WIDE_RX=1','NEXAWAL_UTM_RX_NOTIFY=1','NEXAWAL_UTM_RX_AHEAD=1')
+    run('make','-C',out/'network','-j4','dhcp_client.elf',f'NET_SRC={ROOT}/tests/net',f'NET_INCLUDE={ROOT}/tests/net/include',f'MICROKIT_SDK={out}/network/sdk','MICROKIT_BOARD=qemu_virt_aarch64',f'MICROKIT_CONFIG={CONFIG}',f'SDDF={inputs.parent}/sddf-personal-os',f'MBEDTLS_DIR={inputs.parent}/mbedtls-3.6.2','EXTRA_CFLAGS=-DDNS_SERVER_PORT=53'+(' -DDESKTOP_BROWSER_NETWORK=1' if a.browser else ''),'NEXAWAL_UTM_WIDE_RX=1','NEXAWAL_UTM_RX_NOTIFY=1','NEXAWAL_UTM_RX_AHEAD=1')
     for section in ('timer_client_config','net_client_config','lib_sddf_lwip_config'):
         run('llvm-objcopy','--update-section',f'.{section}={out}/network/{section}.data',out/'network/dhcp_client.elf')
     shutil.copyfile(out/'network/dhcp_client.elf',out/'dhcp_client.elf')
     flags=['clang','--target=aarch64-none-elf','-mcpu=cortex-a53','-mgeneral-regs-only','-std=gnu11','-O2','-ffreestanding','-fno-stack-protector','-nostdlib','-Wall','-Wextra','-Werror','-I',board/'include']
-    run(*flags,'-DDESKTOP_SCALE=2u','-DSLINT_FRAME_WIDTH=2560u','-DSLINT_FRAME_HEIGHT=1600u','-DSLINT_FRAME_REGION_BYTES=0x1000000u','-c',ROOT/'experiments/desktop-apps/manager.c','-o',out/'manager.o')
+    run(*flags,*(['-DDESKTOP_APP_COUNT=3'] if a.browser else []),'-DDESKTOP_SCALE=2u','-DSLINT_FRAME_WIDTH=2560u','-DSLINT_FRAME_HEIGHT=1600u','-DSLINT_FRAME_REGION_BYTES=0x1000000u','-c',ROOT/'experiments/desktop-apps/manager.c','-o',out/'manager.o')
     run('ld.lld','-L',board/'lib',out/'manager.o','-lmicrokit','-T','microkit.ld','-o',out/'manager.elf')
     run(*flags,'-c',ROOT/'experiments/desktop-simplex/environment.c','-o',out/'environment.o')
     run('ld.lld','-L',board/'lib',out/'environment.o','-lmicrokit','-T','microkit.ld','-o',out/'environment.elf')
@@ -111,7 +116,6 @@ def main():
         if pp:ea.set('pp','true')
         if not notify:ea.set('notify','false');eb.set('notify','false')
         return ea,eb
-    graphics={'gpu_driver','gpu_virt','gpu_client','input_driver'}
     for c in source.findall('channel'):
         ends={e.get('pd') for e in c}
         if ends<=names and not ('gpu_client'in ends and 'input_service'in ends):system.append(copy.deepcopy(c))
@@ -119,6 +123,7 @@ def main():
     ET.SubElement(manager,'program_image',path='manager.elf')
     for name,addr,perms,symbol in [('slint_frame',0x62000000,'rw','output_frame'),('ui_focus',0x63000000,'rw','focus_page'),('chat_frame',0x60000000,'r','surface_a'),('wallet_frame',0x61000000,'r','surface_b'),('chat_focus',0x66000000,'rw','input_a'),('wallet_focus',0x66002000,'rw','input_b'),('input_handoff',0x67000000,'rw','input_handoff'),('shell_surface',0x69000000,'r','shell_surface'),('shell_state',0x6a000000,'rw','shell_state'),('shell_input',0x6a001000,'rw','shell_input'),('ui_pointer',0x6a002000,'rw','ui_pointer')]:mapping(manager,name,addr,perms,symbol)
     ds=copy.deepcopy(shell.find("protection_domain[@name='desktop_shell']"));system.append(ds)
+    if a.browser:ds.set('priority','124')
     for a1,x,b1,y,pp in [('desktop_shell',0,'desktop_manager',61,True),('desktop_shell',1,'desktop_manager',20,False),('desktop_manager',21,'desktop_shell',3,False),('desktop_manager',22,'desktop_shell',2,False),('desktop_manager',2,'gpu_client',2,False),('input_driver',2,'desktop_manager',6,False),('clock',1,'desktop_shell',4,False)]:channel(a1,x,b1,y,pp)
     ui_source=source.find("protection_domain[@name='slint_ui']")
     for prefix,binary in [('chat','chat_ui.elf'),('wallet','wallet_ui.elf')]:
@@ -141,7 +146,7 @@ def main():
     for c in source.findall('channel'):
         ends=list(c);uiend=next((e for e in ends if e.get('pd')=='slint_ui'),None)
         if uiend is None:continue
-        peer=next(e for e in ends if e is not uiend);local=int(uiend.get('id'))
+        local=int(uiend.get('id'))
         if local in {5,9,10,11,12,13,14}:
             d=copy.deepcopy(c);next(e for e in d if e.get('pd')=='slint_ui').set('pd','chat_ui');system.append(d)
         if local==6:
@@ -161,6 +166,7 @@ def main():
         elif name in {'chat_focus','wallet_focus'}:mr(name,4096)
         elif name in originals:
             m=copy.deepcopy(originals[name]);
+            if a.browser and name=='shell_state':m.set('phys_addr','0x5fbb4000')
             if name=='slint_frame':m.set('size','0x1000000')
             system.append(m)
         else:
@@ -168,15 +174,20 @@ def main():
             old=originals.get(base)
             if old is None:raise ValueError('unknown region '+name)
             m=copy.deepcopy(old);m.set('name',name);m.attrib.pop('phys_addr',None);system.append(m)
+    if a.browser:desktop_browser.attach(system,manager,inputs,channel,mapping,mr)
     # Retain the original 4-core wallet worker affinities; normal service PDs on CPU0.
     ET.indent(system);ET.ElementTree(system).write(out/'desktop-apps.system',encoding='utf-8',xml_declaration=True)
     from desktop_apps_manifest import validate
-    validate(out/'desktop-apps.system',out)
+    validate(out/'desktop-apps.system',out,browser=a.browser)
     subprocess.run([str(a.composer.resolve()),str(out/'desktop-apps.system'),'--board',BOARD,'--config',CONFIG,'--search-path',str(out),'-o',str(out/'loader.img'),'-r',str(out/'report.txt')],cwd=ROOT,env=dict(env,MICROKIT_SDK=str(sdk)),check=True)
     sha=lambda x:hashlib.sha256(x.read_bytes()).hexdigest()
-    sources=[Path(__file__),*[x for x in (ROOT/'experiments/desktop-apps').glob('*') if x.suffix in {'.c','.h','.rs'}],ROOT/'experiments/slint-notes/ui/desktop_chat.slint',ROOT/'experiments/slint-notes/ui/full_suite.slint',ROOT/'experiments/desktop-shell/compositor.c',ROOT/'experiments/desktop-shell/shell.rs']
+    sources=[Path(__file__),*[x for x in (ROOT/'experiments/desktop-apps').glob('*') if x.suffix in {'.c','.h','.rs','.py'}],ROOT/'experiments/slint-notes/ui/desktop_chat.slint',ROOT/'experiments/slint-notes/ui/full_suite.slint',ROOT/'experiments/desktop-shell/compositor.c',ROOT/'experiments/desktop-shell/shell.rs']
     sources += [ROOT/'experiments/slint-notes/Cargo.toml',ROOT/'experiments/slint-notes/build.rs',ROOT/'experiments/slint-notes/ui/desktop_shell.slint',ROOT/'experiments/hvf-smp/accelerated.system',*list((ROOT/'experiments/slint-notes/src').glob('*.rs')),ROOT/'tests/desktop_apps_manifest.py',ROOT/'rust/walletcore-core/examples/disposable_wallet.rs']
     sources += [*list((ROOT/'rust/walletcore-core/src').glob('*.rs')),ROOT/'rust/src/wallet_scan_pool.rs',ROOT/'rust/src/wallet_app.rs',ROOT/'rust/vendor/monero-oxide/wallet/src/scan.rs',ROOT/'rust/vendor/monero-oxide/wallet/src/output.rs',ROOT/'rust/vendor/monero-oxide/wallet/src/decoys.rs']
-    (out/'build.json').write_text(json.dumps({'scale':2,'resolution':[2560,1600],'vcpus':4,'saved_data_used':False,'development_storage_key':True,'static_services':True,'sources':{str(x.relative_to(ROOT)):sha(x) for x in sources if x.is_file()},'artifacts':{x.name:sha(x) for x in out.glob('*.elf')},'loader_sha256':sha(out/'loader.img')},indent=2)+'\n')
+    sources += [ROOT/'experiments/desktop-shell/protocol.h',ROOT/'experiments/slint-notes/assets/icons/browser.svg',ROOT/'tests/desktop_browser_input.py',ROOT/'tests/desktop_apps_input.py',ROOT/'tests/desktop_apps_run.py']
+    if a.browser:
+        sources += [p for p in (ROOT/'experiments/netsurf-native').rglob('*') if p.is_file() and '__pycache__' not in str(p)]
+        sources += [ROOT/'tests/net/dhcp_client.c',ROOT/'tests/net/haskell_tcp_service.c',ROOT/'tests/net/include/haskell_tcp_protocol.h',ROOT/'experiments/guest-https/src/lib.rs',ROOT/'experiments/guest-https/Cargo.toml']
+    (out/'build.json').write_text(json.dumps({'browser':a.browser,'apps':['SimpleX','NexaWal']+(['NetSurf'] if a.browser else []),'scale':2,'resolution':[2560,1600],'vcpus':4,'saved_data_used':False,'development_storage_key':True,'static_services':True,'sources':{str(x.relative_to(ROOT)):sha(x) for x in sources if x.is_file()},'artifacts':{x.name:sha(x) for x in out.glob('*.elf')},'loader_sha256':sha(out/'loader.img')},indent=2)+'\n')
 
 if __name__=='__main__':main()

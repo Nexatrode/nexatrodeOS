@@ -8,7 +8,7 @@ import subprocess
 import xml.etree.ElementTree as ET
 
 
-def attach(root, base, out, inputs, run, test_hooks=False):
+def build_worker(base, out, inputs, run, test_hooks=False, desktop=False):
     here = Path(__file__).resolve().parent
     repo = here.parents[1]
     board = inputs / 'sdk/board/qemu_virt_aarch64_el1/smp-debug'
@@ -19,12 +19,15 @@ def attach(root, base, out, inputs, run, test_hooks=False):
                CC_aarch64_sel4_microkit='/opt/homebrew/opt/llvm/bin/clang',
                AR_aarch64_sel4_microkit='/opt/homebrew/opt/llvm/bin/llvm-ar',
                CFLAGS_aarch64_sel4_microkit='--target=aarch64-none-elf -ffreestanding -I' + str(repo/'experiments/ghc-microkit/freestanding-headers'))
+    names=[]
+    if desktop: names.append('desktop-tcp')
     features=[]
     if test_hooks:
         from fixtures import prepare_tls
         ca=prepare_tls(base,run);env['NETSURF_TEST_CA_DER']=str(ca)
-        features=['--features','test-fixtures']
+        names.append('test-fixtures')
         shutil.copyfile(ca,out/'test-ca.der')
+    if names:features=['--features',','.join(names)]
     run(['cargo', '+nightly-2026-09-25', 'build', *features, '--locked', '--offline', '--release', '-Zjson-target-spec',
          '--config', repo / 'rust/.cargo/config.toml', '--manifest-path', here / 'https-worker/Cargo.toml',
          '--target', repo / 'rust/targets/aarch64-sel4-microkit.json'], out / 'https-worker.log', env=env, cwd=repo)
@@ -43,6 +46,11 @@ def attach(root, base, out, inputs, run, test_hooks=False):
         inventory.append(item)
     (notices/'https-crates.json').write_text(json.dumps(inventory,indent=2)+'\n')
     shutil.copyfile(target/'aarch64-sel4-microkit/release/netsurf-https-worker.elf',out/'https-worker.elf')
+
+
+def attach(root, base, out, inputs, run, test_hooks=False):
+    repo=Path(__file__).resolve().parents[2]
+    build_worker(base,out,inputs,run,test_hooks)
     donor = ET.parse(repo/'experiments/hvf-smp/accelerated.system').getroot()
     names = {'ethernet_driver','net_virt_tx','net_virt_rx','net_copier','dhcp_client','entropy_rng'}
     for pd in donor.findall('protection_domain'):

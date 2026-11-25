@@ -8,7 +8,6 @@ import re
 from pathlib import Path
 import shutil
 import subprocess
-import struct
 import tarfile
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -292,12 +291,7 @@ netsurf-native.a: $$(OBJECTS)
     print('Built native ARM64 NetSurf engine archive', flush=True)
 
 
-def guest(base, inputs, surfaces, display, scale, https=False, javascript=False, test_hooks=False):
-    display_build = json.loads((display / 'build.json').read_text())
-    if display_build.get('scale') != scale or display_build.get('resolution') != [1280*scale,800*scale]:
-        raise ValueError('prepared display dimensions/density must match the browser')
-    out = base / ('guest-' + ('https-' if https else '') + ('js-' if javascript else '') + ('test-' if test_hooks else '') + str(scale) + 'x')
-    out.mkdir(exist_ok=True)
+def frontend(base, out, inputs, scale, https=False, javascript=False, test_hooks=False, desktop=False):
     sdk = inputs / 'sdk'
     board = sdk / 'board/qemu_virt_aarch64_el1/smp-debug'
     compiler = base / 'cc.py'
@@ -330,8 +324,9 @@ def guest(base, inputs, surfaces, display, scale, https=False, javascript=False,
     flags = ['-std=gnu11', '-O2', '-DNS_NEXATRODE', '-D_POSIX_C_SOURCE=200809L', '-DNDEBUG',
              '-include', 'native_compat.h', '-I' + str(board / 'include'), '-I' + str(HERE),
              '-I' + str(source), '-I' + str(source / 'include'), '-I' + str(base / 'deps/stb'),
-             f'-DNATIVE_SCALE={scale}', f'-DSLINT_FRAME_WIDTH={1280*scale}u', f'-DSLINT_FRAME_HEIGHT={800*scale}u',
-             '-DSLINT_FRAME_REGION_BYTES=0x1000000u']
+             f'-DNATIVE_SCALE={scale}', f'-DSLINT_FRAME_WIDTH={(560 if desktop else 1280)*scale}u', f'-DSLINT_FRAME_HEIGHT={(520 if desktop else 800)*scale}u',
+             ('-DSLINT_FRAME_REGION_BYTES=0x400000u' if desktop else '-DSLINT_FRAME_REGION_BYTES=0x1000000u')]
+    if desktop: flags += ['-DNATIVE_DESKTOP=1']
     if https: flags += ['-DNATIVE_HTTPS=1']
     if javascript: flags += ['-DNATIVE_JAVASCRIPT=1']
     if test_hooks: flags += ['-DNATIVE_BROWSER_TESTS=1']
@@ -350,6 +345,19 @@ def guest(base, inputs, surfaces, display, scale, https=False, javascript=False,
          *libraries, '-lmicrokit', '-lc', '-lm', '--end-group', '-o', out / 'browser.elf'], out / 'link.log')
     symbols = subprocess.check_output([LLVM/'llvm-nm',out/'browser.elf'],text=True)
     assert ' nspng_init' in symbols and ' nsjpeg_init' in symbols, 'image handlers must be registered and retained'
+    return flags
+
+
+def guest(base, inputs, surfaces, display, scale, https=False, javascript=False, test_hooks=False):
+    display_build = json.loads((display / 'build.json').read_text())
+    if display_build.get('scale') != scale or display_build.get('resolution') != [1280*scale,800*scale]:
+        raise ValueError('prepared display dimensions/density must match the browser')
+    out = base / ('guest-' + ('https-' if https else '') + ('js-' if javascript else '') + ('test-' if test_hooks else '') + str(scale) + 'x')
+    out.mkdir(exist_ok=True)
+    sdk=inputs/'sdk';board=sdk/'board/qemu_virt_aarch64_el1/smp-debug'
+    compiler=base/'cc.py'
+    flags=frontend(base,out,inputs,scale,https,javascript,test_hooks)
+    symbols = subprocess.check_output([LLVM/'llvm-nm',out/'browser.elf'],text=True)
     run([compiler, *flags, '-c', HERE / 'poller.c', '-o', out / 'poller.o'], out / 'poller.log')
     run([LLD, '-L', board / 'lib', '-T', board / 'lib/microkit.ld', out / 'poller.o',
          '-lmicrokit', '-o', out / 'poller.elf'], out / 'poller-link.log')
@@ -405,19 +413,7 @@ def guest(base, inputs, surfaces, display, scale, https=False, javascript=False,
         source_inputs += list((ROOT/'experiments/guest-https/src').glob('*.rs'))
         source_inputs += [ROOT/'experiments/guest-https/Cargo.toml',ROOT/'rust/src/freestanding.rs',ROOT/'rust/.cargo/config.toml',ROOT/'rust/targets/aarch64-sel4-microkit.json',ROOT/'experiments/hvf-smp/accelerated.system']
     digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
-    notices = out / 'licenses'
-    notices.mkdir(exist_ok=True)
-    for entry in json.loads((HERE / 'sources.json').read_text()):
-        for path in (base / 'deps' / entry['name']).iterdir():
-            if path.is_file() and path.name.lower().startswith(('copying','license','notice')):
-                shutil.copyfile(path,notices/(entry['name']+'-'+path.name))
-    shutil.copyfile(ROOT/'experiments/slint-notes/assets/fonts/Roboto-OFL.txt',notices/'Roboto-OFL.txt')
-    if javascript:
-        bundled = (source/'content/handlers/javascript/duktape/duktape.c').read_text()
-        notice = bundled.split('/* LICENSE.txt */',1)[1].split('/* AUTHORS.rst */',1)[0]
-        (notices/'Duktape-LICENSE.txt').write_text(notice.strip()+'\n')
-        authors = bundled.split('/* AUTHORS.rst */',1)[1].split('*/',1)[0]+'*/'
-        (notices/'Duktape-AUTHORS.txt').write_text(authors.strip()+'\n')
+    export_licenses(base, out, javascript)
     shutil.copyfile(HERE/'sources.json',out/'sources.json')
     (out / 'build.json').write_text(json.dumps({'resolution':[1280*scale,800*scale], 'logical_resolution':[1280,800],
         'image_formats':['bmp','ico','png','jpeg'],'image_max_side':4096,'image_max_pixels':4194304,
@@ -438,6 +434,21 @@ def guest(base, inputs, surfaces, display, scale, https=False, javascript=False,
         assert (test_ca in (out/'https-worker.elf').read_bytes()) is test_hooks, 'fixture trust must be confined to test images'
     print('Built disposable browser guest: ' + str(out / 'loader.img'), flush=True)
 
+
+def export_licenses(base, out, javascript):
+    notices = out / 'licenses'
+    notices.mkdir(exist_ok=True)
+    for entry in json.loads((HERE / 'sources.json').read_text()):
+        for path in (base / 'deps' / entry['name']).iterdir():
+            if path.is_file() and path.name.lower().startswith(('copying','license','notice')):
+                shutil.copyfile(path,notices/(entry['name']+'-'+path.name))
+    shutil.copyfile(ROOT/'experiments/slint-notes/assets/fonts/Roboto-OFL.txt',notices/'Roboto-OFL.txt')
+    if javascript:
+        bundled = (base/'deps/netsurf/content/handlers/javascript/duktape/duktape.c').read_text()
+        notice = bundled.split('/* LICENSE.txt */',1)[1].split('/* AUTHORS.rst */',1)[0]
+        (notices/'Duktape-LICENSE.txt').write_text(notice.strip()+'\n')
+        authors = bundled.split('/* AUTHORS.rst */',1)[1].split('*/',1)[0]+'*/'
+        (notices/'Duktape-AUTHORS.txt').write_text(authors.strip()+'\n')
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
