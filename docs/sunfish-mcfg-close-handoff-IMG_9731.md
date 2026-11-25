@@ -1,0 +1,15 @@
+# IMG_9731: missing-file state reproduces the stage-1 cleanup failure
+
+Settled **MCFG CLOSE HANDOFF**, source `54168993bb84df95136f4269adadd8e54e40e164`, image `d6cd3fa1f02891e25406cf623feb92a30d2d4a724081af7a9f6a212ab2364f2e`. Raw photo and scalar/journal decode are saved separately under the delivered profile's `device-result`; the image manifest is unchanged.
+
+`RUNTIME DETAIL CLOSE STAGE = 73/64/49/1` (hex). One close was observed; zero cleanups committed. The explicit runtime MCFG resolver returned an error. Stage 1 means resolver entry was reached, but successful server preflight was not recorded. The display does not distinguish the entry-stopped guard from the server's exact rejection.
+
+ELF was received at `0148DF1F`, but queue, publication and completion are absent. Consequently this physical boot did not reach the repaired queued-ELF dispatch. It neither validates nor disproves that particular handoff fix. The original write's final ACK completed at `00D9AFC9`; IPA remains pending on `0x35`, with failed 1 and timeout 0 after the terminal runtime failure. WLAN requests and WLFW services are both zero. PD query state is unavailable (`FFFFFFFF`), not a new valid UNINIT response.
+
+The journal has six records, none omitted or malformed: ELF transaction 5 request, ruleset RRQ from port `0x23` and its close, two 73-byte MCFG RRQs from port `0x49`, then DEL_CLIENT for `0x49`. No TFTP reply is recorded in this filtered window. RAM MCFG writes 0 and file absent. The post-completed-ELF scalar capture remains empty because ELF never completed. Zero KEPT with committed 0 does not prove anything about retirement of published buffers.
+
+Offline actual Owner/FIFO/server replay now reproduces a matching failure: an absent MCFG RRQ creates a missing-file ERROR1 transfer (`missing_kind=1`), then a retained retry and DEL_CLIENT reach the MCFG close handler. `preflight_mcfg_close` rejects that transfer because it has neither a RAM read nor a RAM write state. Resolver stage remains 1, committed remains 0, and the session stops without inventing a published reply completion. The isolated test passed, asserting that failure. All production Rust files stayed unchanged.
+
+Private reproduction: `.cache/sunfish-native-wifi/private/mcfg-absent-close-IMG_9731/replay.log`, case `img9731_absent_mcfg_error_reply_then_retry_close_reproduces_stage_one`. The fixture publishes its ERROR1 before close to verify buffer ownership; no such publication appears in the phone's filtered journal. This is a matching software-state counterexample, not proof of the phone's exact retained reply or server slot identity.
+
+Next: extend the bounded close handling to distinguish the exact absent-MCFG error-response transfer from foreign temporary paths and RAM reads/writes. Preserve published ownership, normal completions, generation fences and all FIFO/grant/credit checks. Add unsent, retained and published missing-file cases before another physical test. Do not request a repeat of this unchanged image.
