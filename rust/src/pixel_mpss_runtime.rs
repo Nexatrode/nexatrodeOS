@@ -71,7 +71,8 @@ mod elf_queued_turn;
 #[path="pixel_mpss_elf_window.rs"]
 mod elf_window;
 #[cfg(feature="sunfish-elf-writer-trace")]
-#[cfg_attr(feature="sunfish-elf-tx-slots",path="pixel_mpss_elf_tx_slots.rs")]
+#[cfg_attr(feature="sunfish-post-elf-outcome",path="pixel_mpss_post_elf_outcome.rs")]
+#[cfg_attr(all(feature="sunfish-elf-tx-slots",not(feature="sunfish-post-elf-outcome")),path="pixel_mpss_elf_tx_slots.rs")]
 #[cfg_attr(all(feature="sunfish-elf-third-phases",not(feature="sunfish-elf-tx-slots")),path="pixel_mpss_elf_third_phases.rs")]
 #[cfg_attr(not(feature="sunfish-elf-third-phases"),path="pixel_mpss_elf_publication.rs")]
 mod elf_publication;

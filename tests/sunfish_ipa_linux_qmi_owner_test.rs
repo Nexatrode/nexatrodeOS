@@ -514,6 +514,70 @@ fn linuxowner_cold_handshake_crosses_real_fifo_and_both_completion_orders() {
     }
 }
 
+#[test]
+fn linuxowner_first_driver_reply_needs_real_receipt_before_ready_indication() {
+    let mut r = LoRig::new();
+    let init = r.next();
+    r.ack(&init, true);
+    r.init_response(0, 0, 0).unwrap();
+    r.request(0x20, 1);
+    let registration = r.next();
+    r.ack(&registration, true);
+    r.request(0x35, 2);
+    let driver = r.next();
+    assert_eq!(lo_word(&driver.1, 20), 14);
+    assert_eq!(&driver.1[32..37], &[2, 2, 0, 0x35, 0]);
+    let before = r.owner.linux_ipa_report().unwrap();
+    assert_eq!(before.driver_requests, 1);
+    assert!(!before.protocol.unwrap().qmi_uc_ready);
+    assert!(!before.protocol_complete);
+    // QRTR credit alone cannot commit the driver's server response.
+    r.ack_one(&driver, false).unwrap();
+    let credited = r.owner.linux_ipa_report().unwrap();
+    assert_eq!(credited.publications_committed, before.publications_committed);
+    assert!(!credited.protocol.unwrap().qmi_uc_ready);
+    assert!(!credited.protocol_complete);
+    r.ack_one(&driver, true).unwrap();
+    let returned = r.owner.linux_ipa_report().unwrap();
+    assert!(returned.protocol.unwrap().qmi_uc_ready);
+    assert!(!returned.protocol_complete);
+    let indication = r.next();
+    assert_eq!(&indication.1[32..37], &[4, 0, 0, 0x22, 0]);
+    r.ack_one(&indication, false).unwrap();
+    assert!(!r.owner.linux_ipa_report().unwrap().protocol_complete);
+    r.ack_one(&indication, true).unwrap();
+    assert!(r.owner.linux_ipa_report().unwrap().protocol_complete);
+}
+
+#[test]
+fn linuxowner_completed_handshake_does_not_certify_a_later_driver_reply() {
+    let mut r = LoRig::new();
+    let init = r.next();
+    r.ack(&init, true);
+    r.init_response(0, 0, 0).unwrap();
+    for (message, transaction) in [(0x20, 1), (0x35, 2)] {
+        r.request(message, transaction);
+        let reply = r.next();
+        r.ack(&reply, true);
+    }
+    let indication = r.next();
+    r.ack(&indication, true);
+    let complete = r.owner.linux_ipa_report().unwrap();
+    assert!(complete.protocol_complete);
+    r.request(0x35, 3);
+    let duplicate = r.next();
+    assert_eq!(&duplicate.1[32..37], &[2, 3, 0, 0x35, 0]);
+    let pending = r.owner.linux_ipa_report().unwrap();
+    assert_eq!(pending.driver_requests, 2);
+    assert_eq!(pending.publications_committed, complete.publications_committed);
+    assert!(pending.pending_record && pending.record_queued);
+    assert!(pending.protocol_complete);
+    r.ack(&duplicate, true);
+    let retired = r.owner.linux_ipa_report().unwrap();
+    assert_eq!(retired.publications_committed, complete.publications_committed + 1);
+    assert!(retired.protocol_complete);
+}
+
 #[cfg(feature = "sunfish-ipa-ignore-init-response-reference")]
 fn lo_published_init_indication() -> (LoRig, (u32, Vec<u8>)) {
     let mut r = LoRig::new();
