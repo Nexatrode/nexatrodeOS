@@ -70,3 +70,6 @@ fn elf_queued_turn_full_fifo_consumes_once_then_ordinary_write_retries(){
  let(p,mut o,mut r)=queued_elf_pressure_setup(16,false,true,true);assert!(r.dispatch_queued_elf_reply(&mut o).unwrap());assert_eq!(o.elf_queued_turn_trace().flags,15);assert!(o.service_registry_trace().elf.unwrap().published.is_none());assert!(!r.dispatch_queued_elf_reply(&mut o).unwrap());
  let bytes=p.take_tx();assert!(bytes.len()>16000);r.dispatch(&mut o).unwrap();assert!(o.service_registry_trace().elf.unwrap().published.is_some());assert_eq!(o.elf_queued_turn_trace().flags,15);assert!(r.report().error.is_none());
 }
+
+#[cfg(feature="sunfish-mcfg-close-handoff")]
+mod mcfg_handoff_cases {include!("sunfish_mcfg_handoff_cases.rs");}

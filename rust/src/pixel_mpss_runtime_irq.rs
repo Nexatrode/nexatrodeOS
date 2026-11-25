@@ -332,6 +332,23 @@ impl<K: Kernel> Router<K> {
         result.map(|_|true)
     }
 
+    /// Complete the MCFG close boundary before returning to ordinary services.
+    #[cfg(feature="sunfish-mcfg-close-handoff")]
+    pub fn dispatch_queued_elf_mcfg_handoff<I:Io>(&mut self,owner:&mut Owner<I>,
+        server:&mut crate::qcom_tftp_server_check::ServerCheck)->Result<bool,Error>{
+        if let Err(error)=self.live(){owner.fault();return Err(error);}
+        if self.other!=0{return Ok(false);}
+        if owner.generation()!=self.generation || self.identity.is_some_and(|id|id!=owner.identity()){
+            owner.fault();return Err(self.fail(Error::Identity));
+        }
+        // A pending exclusive close may not re-enter the ordinary Owner path.
+        let dispatched=if owner.pending_mcfg_close().is_some(){false}else{self.dispatch_queued_elf_reply(owner)?};
+        if owner.pending_mcfg_close().is_some(){
+            owner.resolve_mcfg_close(server).map_err(|error|self.fail(Error::Owner(error)))?;
+        }
+        Ok(dispatched)
+    }
+
     /// Consume before one ordinary writer turn; retry only the exact live pair.
     /// Other owners, grant/credit work and backpressure keep the normal path.
     #[cfg(feature = "sunfish-registry-handoff-turn")]

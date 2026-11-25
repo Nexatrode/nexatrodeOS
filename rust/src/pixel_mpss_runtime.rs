@@ -679,7 +679,9 @@ impl RuntimeDomain {
         #[cfg(feature = "sunfish-tftp-oack-phase-observer")]
         self.oack_phases.mark(1, ended);
         registry_result.map_err(|_| 0x52u32)?;
-        #[cfg(feature="sunfish-elf-queued-handoff")]
+        #[cfg(feature="sunfish-mcfg-close-handoff")]
+        {self.router.dispatch_queued_elf_mcfg_handoff(owner,&mut self.server_check).map_err(|_|0x61u32)?;}
+        #[cfg(all(feature="sunfish-elf-queued-handoff",not(feature="sunfish-mcfg-close-handoff")))]
         {self.router.dispatch_queued_elf_reply(owner).map_err(|_|0x61u32)?;}
         let started = counter();
         #[cfg(feature = "sunfish-ipa-schedule-trace")]

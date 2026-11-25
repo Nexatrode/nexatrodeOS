@@ -1,9 +1,10 @@
-//! Existing retained startup outcomes; no event capture or scheduling changes.
+//! Retained startup outcomes and bounded MCFG cleanup diagnostics.
 use super::*;
 impl RuntimeDomain {
     pub(super) fn show_tftp_completion(&self, d: &Display, owner: &ModemOwner) {
         for n in 2..=28 { d.replace_line(n, ""); }
-        d.replace_line(1, if cfg!(feature="sunfish-mcfg-close-cleanup"){ "MCFG CLOSE CLEANUP" }else{ "POST ELF OUTCOME" });
+        d.replace_line(1, if cfg!(feature="sunfish-mcfg-close-handoff"){ "MCFG CLOSE HANDOFF" }else if cfg!(feature="sunfish-mcfg-close-cleanup"){ "MCFG CLOSE CLEANUP" }else{ "POST ELF OUTCOME" });
+        #[cfg(not(feature="sunfish-mcfg-close-handoff"))]
         d.hex(2, "RUNTIME ERROR", self.error);
         let trace = owner.service_registry_trace();
         let elf = trace.elf;
@@ -18,6 +19,8 @@ impl RuntimeDomain {
             for (i, value) in values.iter().enumerate() { fields[i] = (*value, 8); }
             d.header_row(n, true, &fields[..values.len()]);
         };
+        #[cfg(feature="sunfish-mcfg-close-handoff")]
+        row(2,"RUNTIME DETAIL CLOSE STAGE",&[self.error,self.detail,owner.pending_mcfg_close().map_or(u32::MAX,|p|p.port),owner.mcfg_close_trace().stage]);
         row(3, "ELF RX QUEUE PUB DONE", &[age(elf.and_then(|e| e.received)), age(elf.and_then(|e| e.queued)), age(elf.and_then(|e| e.published)), age(elf.and_then(|e| e.done))]);
         row(4, "ELF BODY DONE HOST BEFORE CONF", &[
             exchange.map_or(u32::MAX, |e| u32::from(e.qmi_matches_reference)),
