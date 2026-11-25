@@ -302,6 +302,18 @@ impl<K: Kernel> Router<K> {
         self.dispatch(owner).map(|_| true)
     }
 
+    /// One normal registry service attempt before TFTP may refill a released slot.
+    #[cfg(feature="sunfish-elf-capacity-retry")]
+    pub fn service_elf_capacity_retry<I:Io>(&mut self,owner:&mut Owner<I>)
+        ->Result<Option<modem::ServiceProgress>,Error>{
+        if let Err(error)=self.live(){owner.fault();return Err(error);}
+        if !self.continuation || self.other!=0{return Ok(None);}
+        if owner.generation()!=self.generation || self.identity.is_some_and(|id|id!=owner.identity()){
+            owner.fault();return Err(self.fail(Error::Identity));
+        }
+        owner.dispatch_elf_capacity_retry(self).map_err(|e|self.fail(Error::Owner(e)))
+    }
+
     /// One normal checked dispatch immediately after the exact ELF reply queues.
     /// The capability is consumed before any callback; blocked attempts fall back
     /// to the existing continuation. Other owners and terminal faults keep priority.
@@ -318,6 +330,23 @@ impl<K: Kernel> Router<K> {
         let result=self.dispatch(owner);
         owner.observe_queued_elf_turn(Some(result.map_err(|_|())));
         result.map(|_|true)
+    }
+
+    /// Complete the MCFG close boundary before returning to ordinary services.
+    #[cfg(feature="sunfish-mcfg-close-handoff")]
+    pub fn dispatch_queued_elf_mcfg_handoff<I:Io>(&mut self,owner:&mut Owner<I>,
+        server:&mut crate::qcom_tftp_server_check::ServerCheck)->Result<bool,Error>{
+        if let Err(error)=self.live(){owner.fault();return Err(error);}
+        if self.other!=0{return Ok(false);}
+        if owner.generation()!=self.generation || self.identity.is_some_and(|id|id!=owner.identity()){
+            owner.fault();return Err(self.fail(Error::Identity));
+        }
+        // A pending exclusive close may not re-enter the ordinary Owner path.
+        let dispatched=if owner.pending_mcfg_close().is_some(){false}else{self.dispatch_queued_elf_reply(owner)?};
+        if owner.pending_mcfg_close().is_some(){
+            owner.resolve_mcfg_close(server).map_err(|error|self.fail(Error::Owner(error)))?;
+        }
+        Ok(dispatched)
     }
 
     /// Consume before one ordinary writer turn; retry only the exact live pair.

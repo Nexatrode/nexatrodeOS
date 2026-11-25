@@ -1,6 +1,11 @@
 //! Serialized modem transport owner: bounded work, retained fault state, IRQs.
 //! Native attachment must consume the actual authenticated channel handoff.
 #![forbid(unsafe_code)]
+#[cfg(feature="sunfish-mcfg-close-cleanup")]
+#[path="qcom_owner_mcfg_close.rs"]
+mod mcfg_close;
+#[cfg(feature="sunfish-mcfg-close-cleanup")]
+pub use mcfg_close::McfgCloseTrace;
 #[cfg(feature = "sunfish-linux-ipa-qmi")]
 #[path = "sunfish_ipa_linux_qmi_owner.rs"]
 mod linux_ipa_owner;
@@ -214,6 +219,11 @@ pub trait Interrupts {
 
 /// Observations do not decide eligibility. Flags: armed1, consumed2, entered4,
 /// normal dispatch returned8, exact reply published/completed16, dispatch failed32.
+#[cfg(feature="sunfish-elf-capacity-retry")]
+#[path="qcom_elf_capacity_turn.rs"]
+mod elf_capacity_turn;
+#[cfg(feature="sunfish-elf-capacity-retry")]
+pub use elf_capacity_turn::ElfCapacityTurnTrace;
 #[cfg(feature="sunfish-elf-queued-handoff")]
 #[derive(Clone,Copy,Debug,Default,Eq,PartialEq)]
 pub struct ElfQueuedTurnTrace {
@@ -994,6 +1004,12 @@ pub struct Owner<I> {
     firmware_peers: [Option<crate::qcom_qmi_router::Address>; crate::qcom_qrtr_tftp::MAX_ACTIVE_TRANSFERS],
     #[cfg(feature = "sunfish-tftp-wlan-close-handoff")]
     pending_firmware_close: Option<crate::qcom_qmi_router::Address>,
+    #[cfg(feature="sunfish-mcfg-close-cleanup")]
+    pending_mcfg_close: Option<crate::qcom_qmi_router::Address>,
+    #[cfg(feature="sunfish-mcfg-close-cleanup")]
+    mcfg_close_transfers: [Option<(crate::qcom_qmi_router::Address,u32)>;crate::qcom_tftp_server_check::TRANSFER_COUNT],
+    #[cfg(feature="sunfish-mcfg-close-cleanup")]
+    mcfg_close_trace: McfgCloseTrace,
     #[cfg(feature = "sunfish-native-tftp-server-check")]
     queue_full_kind: u32,
     #[cfg(feature = "sunfish-native-tftp-server-check")]
@@ -1040,6 +1056,12 @@ pub struct Owner<I> {
     queued_elf_turn:Option<RequestHandle>,
     #[cfg(feature="sunfish-elf-queued-handoff")]
     elf_queued_turn_trace:ElfQueuedTurnTrace,
+    #[cfg(feature="sunfish-elf-capacity-retry")]
+    elf_capacity_waiting:Option<RequestHandle>,
+    #[cfg(feature="sunfish-elf-capacity-retry")]
+    elf_capacity_taken:bool,
+    #[cfg(feature="sunfish-elf-capacity-retry")]
+    elf_capacity_trace:ElfCapacityTurnTrace,
     #[cfg(feature = "sunfish-wlan-registry-txn4-timing")]
     registry_txn4_handle: Option<RequestHandle>,
     tftp_trace: TftpObserverTrace,
@@ -1269,6 +1291,12 @@ impl<I: Io> Owner<I> {
             firmware_peers: [None; crate::qcom_qrtr_tftp::MAX_ACTIVE_TRANSFERS],
             #[cfg(feature = "sunfish-tftp-wlan-close-handoff")]
             pending_firmware_close: None,
+            #[cfg(feature="sunfish-mcfg-close-cleanup")]
+            pending_mcfg_close: None,
+            #[cfg(feature="sunfish-mcfg-close-cleanup")]
+            mcfg_close_transfers: [None;crate::qcom_tftp_server_check::TRANSFER_COUNT],
+            #[cfg(feature="sunfish-mcfg-close-cleanup")]
+            mcfg_close_trace: crate::qcom_modem_owner::McfgCloseTrace::default(),
             #[cfg(feature = "sunfish-native-tftp-server-check")]
             queue_full_kind: 0,
             #[cfg(feature = "sunfish-native-tftp-server-check")]
@@ -1315,6 +1343,12 @@ impl<I: Io> Owner<I> {
             queued_elf_turn:None,
             #[cfg(feature="sunfish-elf-queued-handoff")]
             elf_queued_turn_trace:ElfQueuedTurnTrace::default(),
+            #[cfg(feature="sunfish-elf-capacity-retry")]
+            elf_capacity_waiting:None,
+            #[cfg(feature="sunfish-elf-capacity-retry")]
+            elf_capacity_taken:false,
+            #[cfg(feature="sunfish-elf-capacity-retry")]
+            elf_capacity_trace:ElfCapacityTurnTrace::default(),
             #[cfg(feature = "sunfish-wlan-registry-txn4-timing")]
             registry_txn4_handle: None,
             tftp_trace: TftpObserverTrace::new(),
@@ -1331,7 +1365,12 @@ impl<I: Io> Owner<I> {
     }
     fn firmware_close_is_pending(&self) -> bool {
         #[cfg(feature = "sunfish-tftp-wlan-close-handoff")]
-        { self.pending_firmware_close.is_some() }
+        {
+            #[cfg(feature="sunfish-mcfg-close-cleanup")]
+            {self.pending_firmware_close.is_some() || self.pending_mcfg_close.is_some()}
+            #[cfg(not(feature="sunfish-mcfg-close-cleanup"))]
+            {self.pending_firmware_close.is_some()}
+        }
         #[cfg(not(feature = "sunfish-tftp-wlan-close-handoff"))]
         { false }
     }
@@ -2042,6 +2081,8 @@ impl<I: Io> Owner<I> {
     pub fn elf_completion_turn_taken(&self)->bool {self.elf_slot_turn_taken}
     #[cfg(feature="sunfish-elf-window-trace")]
     pub fn elf_window_trace(&self)->Option<&crate::qcom_glink_qmi::ElfWindowTrace>{self.adapter.elf_window_trace()}
+    #[cfg(feature="sunfish-elf-tx-slots")]
+    pub fn elf_tx_slots(&self)->Option<&crate::qcom_glink_qmi::ElfTxSlots>{self.adapter.elf_tx_slots()}
     #[cfg(feature="sunfish-post-elf-mcfg-trace")]
     pub fn post_elf_mcfg(&self)->Option<&crate::qcom_glink_qmi::PostElfMcfgTrace>{self.adapter.post_elf_mcfg()}
     #[cfg(feature="sunfish-registry-tx3-wire-headers")]
@@ -2548,6 +2589,8 @@ impl<I: Io> Owner<I> {
     fn service_tftp_server_check_per_peer(&mut self, server: &mut crate::qcom_tftp_server_check::ServerCheck,
         #[cfg(feature = "sunfish-tftp-wlan-mux")] firmware: Option<&mut crate::qcom_qrtr_tftp::Server<'_>>,
         interrupts: &mut impl Interrupts) -> Result<TftpServiceProgress, Error> {
+        #[cfg(feature="sunfish-mcfg-close-cleanup")]
+        {if self.pending_mcfg_close.is_some(){self.resolve_mcfg_close(server)?;}self.refresh_mcfg_transfers(server);}
         self.check()?;
         for offset in 0..MAX_REQUESTS {
             let slot = (self.peer_tftp_cursor + offset) % MAX_REQUESTS;
@@ -2672,6 +2715,8 @@ impl<I: Io> Owner<I> {
         );
         #[cfg(feature="sunfish-post-elf-mcfg-trace")]
         if let Some(before)=post_mcfg_file_before {self.adapter.observe_post_mcfg_dispatch(&handle,before,dispatch,&self.tftp_output);}
+        #[cfg(feature="sunfish-mcfg-close-cleanup")]
+        self.refresh_mcfg_transfers(server);
         self.finish_tftp_request(&handle, interrupts)?;
         if dispatch.is_err() { return Ok(TftpServiceProgress::Ignored(crate::qcom_qrtr_tftp::IgnoreReason::InvalidTransferPacket)); }
         if dispatch.is_ok_and(|reply| reply.len == 0) { return Ok(TftpServiceProgress::Idle); }
@@ -2682,6 +2727,8 @@ impl<I: Io> Owner<I> {
     pub fn service_combined_tftp_step(&mut self, server: &mut crate::qcom_tftp_server_check::ServerCheck,
         firmware: &mut crate::qcom_qrtr_tftp::Server<'_>, interrupts: &mut impl Interrupts)
         -> Result<TftpServiceProgress, Error> {
+        #[cfg(feature="sunfish-mcfg-close-cleanup")]
+        if self.pending_mcfg_close.is_some(){self.resolve_mcfg_close(server)?;}
         self.snapshot_tftp_firmware_peers(firmware)?;
         self.service_tftp_server_check_per_peer(server, Some(firmware), interrupts)
     }
@@ -2952,6 +2999,10 @@ impl<I: Io> Owner<I> {
             },
             interrupts,
         );
+        #[cfg(feature="sunfish-elf-capacity-retry")]
+        if matches!(&queue_result,Err(Error::Transport(fifo::Error::Session(crate::qcom_glink_qmi::Error::NoCapacity)))) {
+            self.arm_elf_capacity_turn(handle);
+        }
         #[cfg(feature = "sunfish-wlan-elf-registry-turns")]
         if let Some(elf) = self.service_registry_trace.elf.as_mut()
             && self.elf_lookup_handle != Some(handle) && elf.dispatch.selected.is_none()
@@ -3210,7 +3261,13 @@ impl<I: Io> Owner<I> {
         if let Err(error) = self.adapter.revalidate(self.generation) {
             return Err(self.stop(error.into()));
         }
-        match self.adapter.queue_reply(self.generation, handle, reply) {
+        #[cfg(feature="sunfish-elf-third-reply")]
+        let result=if self.elf_lookup_handle==Some(*handle){
+            self.adapter.queue_elf_third_reply(self.generation,handle,reply)
+        }else{self.adapter.queue_reply(self.generation,handle,reply)};
+        #[cfg(not(feature="sunfish-elf-third-reply"))]
+        let result=self.adapter.queue_reply(self.generation, handle, reply);
+        match result {
             Ok(()) => {}
             Err(
                 error @ fifo::Error::Session(
@@ -3381,7 +3438,14 @@ impl<I: Io> Owner<I> {
                 self.tftp_owner_snapshot = self.adapter.refresh_tftp_peer_snapshot(
                     self.generation, &self.tftp_requests, &retained)?;
             }
+            #[cfg(feature="sunfish-mcfg-close-cleanup")]
+            self.adapter.set_mcfg_close_transfers(self.generation,self.mcfg_close_transfers)?;
             let rx = self.adapter.poll_receive(self.generation)?;
+            #[cfg(feature="sunfish-mcfg-close-cleanup")]
+            if let Receive::Session(Event::McfgClosePending{peer})=rx {
+                self.pending_mcfg_close=Some(peer);self.mcfg_close_trace.observed=self.mcfg_close_trace.observed.saturating_add(1);
+                progress.received+=1;break;
+            }
             #[cfg(feature = "sunfish-tftp-wlan-close-handoff")]
             if let Receive::Session(Event::FirmwareClosePending { peer }) = rx {
                 self.pending_firmware_close = Some(peer);

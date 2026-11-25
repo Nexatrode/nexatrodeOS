@@ -2347,6 +2347,10 @@ impl<I: Io> Adapter<I> {
     }
     #[cfg(feature="sunfish-elf-window-trace")]
     pub fn elf_window_trace(&self)->Option<&core::ElfWindowTrace>{self.session.elf_window_trace()}
+    #[cfg(feature="sunfish-elf-tx-slots")]
+    pub fn elf_tx_slots(&self)->Option<&core::ElfTxSlots>{self.session.elf_tx_slots()}
+    #[cfg(feature="sunfish-elf-capacity-retry")]
+    pub(crate) fn normal_tx_free(&self)->Option<usize>{self.session.normal_tx_free()}
     #[cfg(feature="sunfish-post-elf-mcfg-trace")]
     pub fn post_elf_mcfg(&self)->Option<&core::PostElfMcfgTrace>{self.session.post_elf_mcfg()}
     #[cfg(feature="sunfish-post-elf-mcfg-trace")]
@@ -2915,6 +2919,19 @@ impl<I: Io> Adapter<I> {
         self.quarantined = false;
         Ok(())
     }
+    #[cfg(feature="sunfish-mcfg-close-cleanup")]
+    pub(crate) fn set_mcfg_close_transfers(&mut self,g:u64,transfers:[Option<(crate::qcom_qmi_router::Address,u32)>;crate::qcom_tftp_server_check::TRANSFER_COUNT])->Result<(),Error>{
+        self.session.set_mcfg_close_transfers(g,transfers).map_err(Into::into)
+    }
+    #[cfg(feature="sunfish-mcfg-close-cleanup")]
+    pub(crate) fn commit_mcfg_close(&mut self,g:u64,peer:crate::qcom_qmi_router::Address,port:Option<u32>,handles:&[Option<TftpHandle>;core::MAX_REQUESTS])->Result<core::McfgCloseOutcome,Error>{
+        if g!=self.ring.generation{return Err(Error::StaleGeneration);}
+        if self.quarantined{return Err(Error::Quarantined);}
+        self.quarantined=true;
+        self.ring.sample()?;
+        let result=self.session.commit_mcfg_close(g,peer,port,handles)?;
+        self.quarantined=false;Ok(result)
+    }
     pub fn retired_rmtfs_peer_count(&self) -> usize {
         self.session.retired_rmtfs_peer_count()
     }
@@ -2973,6 +2990,23 @@ impl<I: Io> Adapter<I> {
     ) -> Result<(), Error> {
         self.gate(generation)?;
         self.session.queue_reply(handle, reply)?;
+        #[cfg(feature = "sunfish-registry-prearm-io-trace")]
+        if self.ring.prearm_io.is_none() && self.session.registry_prearm_queue_matches(handle) {
+            self.ring.io.registry_prearm_timing(true);
+            self.ring.prearm_io = Some(RegistryPrearmIo { queued: self.ring.io.registry_prearm_totals(),
+                queued_at: self.ring.first_server_check_clock.map(|now|now()), ..RegistryPrearmIo::default() });
+        }
+        Ok(())
+    }
+    #[cfg(feature="sunfish-elf-third-reply")]
+    pub(crate) fn queue_elf_third_reply(
+        &mut self,
+        generation: u64,
+        handle: &RequestHandle,
+        reply: Reply<'_>,
+    ) -> Result<(), Error> {
+        self.gate(generation)?;
+        self.session.queue_elf_third_reply(handle, reply)?;
         #[cfg(feature = "sunfish-registry-prearm-io-trace")]
         if self.ring.prearm_io.is_none() && self.session.registry_prearm_queue_matches(handle) {
             self.ring.io.registry_prearm_timing(true);

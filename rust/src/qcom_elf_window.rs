@@ -1,5 +1,10 @@
 //! Observation only: exact first ELF admission and both earlier same-peer owners.
 use super::*;
+#[cfg(feature="sunfish-elf-writer-trace")]
+#[path="qcom_elf_publication.rs"]
+mod publication;
+#[cfg(feature="sunfish-elf-writer-trace")]
+pub use publication::{ElfWriterTrace,ElfWriterRecord};
 #[derive(Clone,Copy,Debug,Eq,PartialEq)]
 pub struct ElfWindowEntry {
     request:Option<RequestHandle>,pub transaction:u16,pub flags:u8,pub kind:u8,pub remote_intent:u32,
@@ -22,15 +27,21 @@ pub struct ElfWindowTrace {
     pub receipt_count:u32,pub receipt_omitted:u32,pub last_before_admission:Option<u16>,
     /// Started1, failed admission2, admitted4, a last-snapshot member completed8, exact ELF completed16.
     pub flags:u32,pub finished:bool,
+    #[cfg(feature="sunfish-elf-writer-trace")]
+    pub writer:ElfWriterTrace,
 }
-const _:()={assert!(::core::mem::size_of::<ElfWindowTrace>()<=1536);};
+const _:()={assert!(::core::mem::size_of::<ElfWindowTrace>()<=3072);};
 impl Session {
+    #[cfg(feature="sunfish-elf-tx-slots")]
+    pub(super) fn elf_window_request_matches(&self,h:RequestHandle)->bool{self.elf_window.as_ref().is_some_and(|w|w.request==h)}
     pub fn elf_window_trace(&self)->Option<&ElfWindowTrace>{self.elf_window.as_ref()}
     pub(super) fn start_elf_window(&mut self,h:RequestHandle,index:usize){
         if self.elf_window.is_some(){return;}
         let b=&self.receive[index].bytes;
         self.elf_window=Some(ElfWindowTrace{request:h,local:Address{node:word(b,24),port:word(b,28)},peer:Address{node:word(b,8),port:word(b,12)},sequence:0,
-            attempts:0,first_failure:None,last_failure:None,admitted:None,receipts:[None;4],receipt_count:0,receipt_omitted:0,last_before_admission:None,flags:1,finished:false});
+            attempts:0,first_failure:None,last_failure:None,admitted:None,receipts:[None;4],receipt_count:0,receipt_omitted:0,last_before_admission:None,flags:1,finished:false,
+            #[cfg(feature="sunfish-elf-writer-trace")]
+            writer:ElfWriterTrace::default()});
     }
     fn elf_window_snapshot(&self,c:&ElfWindowTrace,reason:u8)->ElfWindowSnapshot{
         let mut s=ElfWindowSnapshot{at:None,sequence:0,reason,count:0,gates:0,entries:[None;2]};

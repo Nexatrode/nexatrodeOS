@@ -16,12 +16,26 @@
 //! supports a narrower profile than the complete Linux transports.
 #![forbid(unsafe_code)]
 
+#[cfg(feature="sunfish-mcfg-close-cleanup")]
+#[path="qcom_mcfg_close.rs"]
+mod mcfg_close;
+#[cfg(feature="sunfish-mcfg-close-cleanup")]
+pub(crate) use mcfg_close::McfgCloseOutcome;
+
 #[cfg(feature="sunfish-elf-window-trace")]
 #[path="qcom_elf_window.rs"]
 mod elf_window;
 #[cfg(feature="sunfish-elf-first-slot-turn")]
 #[path="qcom_elf_slot_turn.rs"]
 mod elf_slot_turn;
+#[cfg(feature="sunfish-elf-tx-slots")]
+#[path="qcom_elf_tx_slots.rs"]
+mod elf_tx_slots;
+#[cfg(feature="sunfish-elf-tx-slots")]
+pub use elf_tx_slots::{ElfTxSlot,ElfTxFull,ElfTxFree,ElfTxSlots};
+#[cfg(feature="sunfish-elf-third-reply")]
+#[path="qcom_elf_third_reply.rs"]
+mod elf_third_reply;
 #[cfg(feature="sunfish-elf-window-trace")]
 pub use elf_window::{ElfWindowTrace,ElfWindowSnapshot,ElfWindowEntry,ElfWindowReceipt};
 
@@ -361,6 +375,8 @@ impl TftpHandle {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Event {
+    #[cfg(feature="sunfish-mcfg-close-cleanup")]
+    McfgClosePending { peer: Address },
     #[cfg(feature = "sunfish-tftp-wlan-close-handoff")]
     FirmwareClosePending { peer: Address },
     /// An observed close is held pending an owner decision; no cleanup or
@@ -962,6 +978,8 @@ pub struct Session {
     post_elf_mcfg: Option<PostElfMcfgTrace>,
     #[cfg(feature="sunfish-elf-window-trace")]
     elf_window:Option<ElfWindowTrace>,
+    #[cfg(feature="sunfish-elf-tx-slots")]
+    elf_tx_slots:Option<ElfTxSlots>,
     #[cfg(feature="sunfish-elf-first-slot-turn")]
     elf_slot_receipt:Option<(RequestHandle,ReplyRoute)>,
     #[cfg(feature = "sunfish-wlan-first-server-check-trace")]
@@ -1106,6 +1124,10 @@ pub struct Session {
     tftp_firmware_peers: [Option<Address>; TFTP_OWNER_PEER_SLOTS],
     #[cfg(feature = "sunfish-tftp-wlan-close-handoff")]
     pending_firmware_close: Option<(Address, usize)>,
+    #[cfg(feature="sunfish-mcfg-close-cleanup")]
+    pending_mcfg_close: Option<(Address, usize)>,
+    #[cfg(feature="sunfish-mcfg-close-cleanup")]
+    mcfg_close_transfers: [Option<(Address,u32)>; crate::qcom_tftp_server_check::TRANSFER_COUNT],
     capacity_diagnostic: Option<CapacityDiagnostic>,
     #[cfg(feature = "sunfish-qrtr-deferred-requests")]
     next_deferred_sequence: u64,
@@ -1934,6 +1956,8 @@ impl Session {
             post_elf_mcfg: None,
             #[cfg(feature="sunfish-elf-window-trace")]
             elf_window:None,
+            #[cfg(feature="sunfish-elf-tx-slots")]
+            elf_tx_slots:None,
             #[cfg(feature="sunfish-elf-first-slot-turn")]
             elf_slot_receipt:None,
             #[cfg(feature = "sunfish-wlan-first-server-check-trace")]
@@ -2045,6 +2069,10 @@ impl Session {
             tftp_firmware_peers: [None; TFTP_OWNER_PEER_SLOTS],
             #[cfg(feature = "sunfish-tftp-wlan-close-handoff")]
             pending_firmware_close: None,
+            #[cfg(feature="sunfish-mcfg-close-cleanup")]
+            pending_mcfg_close: None,
+            #[cfg(feature="sunfish-mcfg-close-cleanup")]
+            mcfg_close_transfers: [None; crate::qcom_tftp_server_check::TRANSFER_COUNT],
             capacity_diagnostic: None,
             #[cfg(feature = "sunfish-qrtr-deferred-requests")]
             next_deferred_sequence: 1,
@@ -2148,6 +2176,8 @@ impl Session {
         if self.pending_tftp_close.is_some() { return Err(Error::FlowBusy); }
         #[cfg(feature = "sunfish-tftp-wlan-close-handoff")]
         if self.pending_firmware_close.is_some() { return Err(Error::FlowBusy); }
+        #[cfg(feature="sunfish-mcfg-close-cleanup")]
+        if self.pending_mcfg_close.is_some() { return Err(Error::FlowBusy); }
         Ok(())
     }
 
@@ -2879,6 +2909,8 @@ impl Session {
         { self.post_elf_mcfg = None; }
         #[cfg(feature="sunfish-elf-window-trace")]
         {self.elf_window=None;}
+        #[cfg(feature="sunfish-elf-tx-slots")]
+        {self.elf_tx_slots=None;}
         #[cfg(feature="sunfish-elf-first-slot-turn")]
         {self.elf_slot_receipt=None;}
         #[cfg(feature = "sunfish-wlan-first-server-check-trace")]
@@ -2980,6 +3012,8 @@ impl Session {
         { self.tftp_firmware_peers = [None; TFTP_OWNER_PEER_SLOTS]; }
         #[cfg(feature = "sunfish-tftp-wlan-close-handoff")]
         { self.pending_firmware_close = None; }
+        #[cfg(feature="sunfish-mcfg-close-cleanup")]
+        {self.pending_mcfg_close=None;self.mcfg_close_transfers.fill(None);}
         self.capacity_diagnostic = None;
         #[cfg(feature = "sunfish-qrtr-deferred-requests")]
         { self.next_deferred_sequence = 1; }
@@ -4133,6 +4167,8 @@ impl Session {
                 let token = tx.reference_flow.as_ref().ok_or(Error::InvalidHandle)?;
                 self.rmtfs_reference_flows.fail_unpublished(token).map_err(|_| Error::FlowBusy)?;
                 self.transmit[index] = Transmit::empty();
+                #[cfg(feature="sunfish-elf-tx-slots")]
+                self.observe_elf_tx_freed(index,3);
                 self.forget_qrtr_flow_if_idle(source, destination);
             }
             if !published && self.rmtfs_reference_flows.contains(key) { self.rmtfs_reference_flows.close(key).map_err(|_| Error::FlowBusy)?; }
@@ -4175,6 +4211,9 @@ impl Session {
             false,
         ).map(|_| ())
     }
+
+    #[cfg(feature="sunfish-elf-capacity-retry")]
+    pub(crate) fn normal_tx_free(&self)->Option<usize>{self.free_tx_slot()}
 
     fn free_tx_slot(&self) -> Option<usize> {
         self.transmit[..TX_SLOTS].iter().position(|tx| tx.len == 0)
@@ -5471,6 +5510,10 @@ impl Session {
             _ => None,
         };
         if let Some(port) = closed {
+            #[cfg(feature="sunfish-mcfg-close-cleanup")]
+            if matches!(command, control::Command::DelClient(_)) && self.hold_mcfg_close(Address{node:self.config.peer_node,port},index) {
+                return Ok(Event::McfgClosePending{peer:Address{node:self.config.peer_node,port}});
+            }
             #[cfg(feature = "sunfish-qrtr-deferred-requests")]
             if let Some(first) = self.receive.iter().position(|rx| rx.state == RxState::Deferred && rx.used >= 32 &&
                 word(&rx.bytes, 8) == self.config.peer_node && word(&rx.bytes, 12) == port) {
@@ -5613,6 +5656,8 @@ impl Session {
                         let flow = self.transmit[tx_index].kind.qrtr_addresses();
                         self.receive[rx_index] = Receive::empty();
                         self.transmit[tx_index] = Transmit::empty();
+                        #[cfg(feature="sunfish-elf-tx-slots")]
+                        self.observe_elf_tx_freed(tx_index,4);
                         if let Some((source, destination)) = flow {
                             self.forget_qrtr_flow_if_idle(source, destination);
                         }
@@ -5744,6 +5789,8 @@ impl Session {
         self.transmit[slot] = Transmit::empty();
         repeat.oack.slot = None;
         repeat.cancelled = true;
+        #[cfg(feature="sunfish-elf-tx-slots")]
+        self.observe_elf_tx_freed(slot,5);
         self.forget_qrtr_flow_if_idle(source, destination);
         Ok(())
     }
@@ -6276,7 +6323,7 @@ impl Session {
                 _ => Event::CreditReceived,
             };
             self.transmit[index].qrtr_done = true;
-            self.retire_transmit(index)?;
+            self.retire_transmit(index, #[cfg(feature="sunfish-elf-tx-slots")] 2)?;
             self.receive[receive].state = RxState::Control;
             self.receive[receive].done_pending = true;
             return Ok(completion);
@@ -6472,7 +6519,7 @@ impl Session {
         } else {
             self.remote[remote] = None;
         }
-        self.retire_transmit(index)?;
+        self.retire_transmit(index, #[cfg(feature="sunfish-elf-tx-slots")] 1)?;
         #[cfg(feature="sunfish-elf-window-trace")]
         if let Some(route)=elf_window_route {self.observe_elf_window_receipt(completion,id,route);}
         #[cfg(feature="sunfish-elf-first-slot-turn")]
@@ -6559,7 +6606,7 @@ impl Session {
             && tx.remote_slot == Some(remote) && !tx.glink_done)?.traced_oack_request
     }
 
-    fn retire_transmit(&mut self, index: usize) -> Result<(), Error> {
+    fn retire_transmit(&mut self, index: usize, #[cfg(feature="sunfish-elf-tx-slots")] elf_cause:u8) -> Result<(), Error> {
         let tx = &self.transmit[index];
         if !tx.glink_done || !tx.qrtr_done {
             return Ok(());
@@ -6610,6 +6657,8 @@ impl Session {
             self.completed_ipa_indication = Some(token);
         }
         self.transmit[index] = Transmit::empty();
+        #[cfg(feature="sunfish-elf-tx-slots")]
+        self.observe_elf_tx_freed(index,elf_cause);
         if let Some((source, destination)) = retired_flow {
             self.forget_qrtr_flow_if_idle(source, destination);
         }
@@ -6701,7 +6750,8 @@ impl Session {
     /// router ticket until BOTH peer GLINK completion and QRTR RESUME_TX arrive.
     /// One reply per destination flow is allowed; every reply requests a credit.
     pub fn queue_reply(&mut self, handle: &RequestHandle, reply: Reply<'_>) -> Result<(), Error> {
-        self.queue_reply_with_ipa_token(handle, reply, None)
+        self.queue_reply_with_ipa_token(handle, reply, None,
+            #[cfg(feature="sunfish-elf-third-reply")] false)
     }
 
     /// Queue the exact success response prepared by the bounded AP IPA
@@ -6760,6 +6810,7 @@ impl Session {
             handle,
             Reply::Success { optional_tlvs: &[] },
             Some(response.token()),
+            #[cfg(feature="sunfish-elf-third-reply")] false,
         )
     }
 
@@ -6813,6 +6864,8 @@ impl Session {
                     | (u8::from(tx.glink_done) << 2) | (u8::from(tx.qrtr_done) << 3);
             }
         }
+        #[cfg(feature="sunfish-elf-tx-slots")]
+        if reason==2 {self.observe_elf_tx_full(*handle);}
         self.registry_pressure = Some((*handle, pressure));
         #[cfg(feature="sunfish-elf-window-trace")]
         self.observe_elf_window_admission(*handle,route,reason);
@@ -6984,6 +7037,7 @@ impl Session {
         handle: &RequestHandle,
         reply: Reply<'_>,
         ipa_token: Option<u64>,
+        #[cfg(feature="sunfish-elf-third-reply")] elf_third:bool,
     ) -> Result<(), Error> {
         #[cfg(feature = "sunfish-wlan-elf-queue-trace")]
         { self.registry_pressure = None; }
@@ -7012,7 +7066,7 @@ impl Session {
                     .is_some_and(|(_, destination)| destination == route.destination)
         });
         if let Some((_previous_index, _previous)) = same_peer.next() {
-            #[cfg(feature = "sunfish-wlan-registry-second-reply")]
+            #[cfg(all(feature = "sunfish-wlan-registry-second-reply",not(feature="sunfish-elf-third-reply")))]
             let allow_second = route.service == Service::ServiceRegistry
                 && matches!(_previous.kind, TxKind::Reply { route: older, .. }
                     if older.service == Service::ServiceRegistry && older.source == route.source)
@@ -7022,6 +7076,19 @@ impl Session {
                 && _previous.qrtr_done
                 && _previous.reference_flow.is_some()
                 && same_peer.next().is_none();
+            #[cfg(feature="sunfish-elf-third-reply")]
+            let allow_second={
+                let eligible=|tx:&Transmit| route.service==Service::ServiceRegistry
+                    && matches!(tx.kind,TxKind::Reply{route:old,..}if old.service==Service::ServiceRegistry && old.source==route.source)
+                    && tx.sent==tx.len && tx.remote_slot.is_some() && !tx.glink_done
+                    && tx.qrtr_done && tx.reference_flow.is_some();
+                eligible(_previous) && match same_peer.next(){
+                    None=>true,
+                    Some((_,second))=>elf_third && eligible(second)
+                        && _previous.remote_slot!=second.remote_slot
+                        && _previous.reference_flow!=second.reference_flow && same_peer.next().is_none(),
+                }
+            };
             #[cfg(not(feature = "sunfish-wlan-registry-second-reply"))]
             let allow_second = false;
             if !allow_second {
@@ -7189,6 +7256,8 @@ impl Session {
         }
         #[cfg(feature="sunfish-elf-window-trace")]
         self.observe_elf_window_admission(*handle,route,0);
+        #[cfg(feature="sunfish-elf-tx-slots")]
+        self.observe_elf_tx_admitted(*handle,index);
         Ok(())
     }
 
@@ -7218,6 +7287,8 @@ impl Session {
             trace.calls = trace.calls.saturating_add(1);
             trace.mask |= outcome | u32::from(!suitable) | (u32::from(waiting) << 1);
         }
+        #[cfg(feature="sunfish-elf-writer-trace")]
+        self.end_elf_writer_pass(choice,blocked);
     }
 
     #[cfg(feature = "sunfish-wlan-registry-turn-gates")]
@@ -7769,6 +7840,8 @@ impl Session {
         F: FnOnce(&[u8]) -> Result<(), WriteError>,
     {
         self.check(generation)?;
+        #[cfg(feature="sunfish-elf-writer-trace")]
+        self.begin_elf_writer_pass();
         #[cfg(feature = "sunfish-tftp-oack-followup")]
         let ordinary = followup.is_none();
         #[cfg(not(feature = "sunfish-tftp-oack-followup"))]
@@ -8131,6 +8204,8 @@ impl Session {
                 #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
                 self.observe_conversion_callback(conversion_choice);
                 let result = writer(&record[..8]);
+                #[cfg(feature="sunfish-elf-writer-trace")]
+                self.elf_writer_header(&record[..8],result);
                 #[cfg(feature = "sunfish-registry-prearm-io-trace")]
                 self.observe_prearm_result(prearm_choice, match result { Ok(()) => 1, Err(WriteError::WouldBlock) => 2, Err(WriteError::Uncertain) => 3 });
                 #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
@@ -8621,6 +8696,8 @@ impl Session {
                     };
                     self.observe_reserved_writer(elf_oack_started, None, choice, None);
                 }
+                #[cfg(feature="sunfish-elf-writer-trace")]
+                self.end_elf_writer_yield();
                 return Ok(None);
             }
         }
@@ -8724,6 +8801,8 @@ impl Session {
         #[cfg(feature = "sunfish-registry-prearm-io-trace")]
         self.observe_prearm_result(prearm_choice, 4);
         let result = writer(&record[..size]);
+        #[cfg(feature="sunfish-elf-writer-trace")]
+        self.elf_writer_header(&record[..size],result);
         #[cfg(feature = "sunfish-registry-prearm-io-trace")]
         self.observe_prearm_result(prearm_choice, match result { Ok(()) => 1, Err(WriteError::WouldBlock) => 2, Err(WriteError::Uncertain) => 3 });
         #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
@@ -9211,6 +9290,8 @@ impl Session {
                 self.transmit[index].remote_slot = Some(remote);
                 self.transmit[index].sent += chunk;
                 if self.transmit[index].sent == self.transmit[index].len {
+                    #[cfg(feature="sunfish-elf-writer-trace")]
+                    self.freeze_elf_writer(index);
                     #[cfg(feature="sunfish-post-elf-mcfg-trace")]
                     self.observe_post_mcfg_publication(index,remote);
                     #[cfg(feature = "sunfish-registry-handoff-turn")]
@@ -9487,6 +9568,8 @@ impl Session {
             write.oack.slot = None;
         }
         self.transmit[index] = Transmit::empty();
+        #[cfg(feature="sunfish-elf-tx-slots")]
+        self.observe_elf_tx_freed(index,6);
         if self.first_tftp_slot == Some(index) {
             self.first_tftp_slot = None;
         }

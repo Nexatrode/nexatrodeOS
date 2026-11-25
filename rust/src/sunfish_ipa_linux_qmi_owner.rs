@@ -830,6 +830,12 @@ impl<I: Io> Owner<I> {
             firmware_peers: [None; crate::qcom_qrtr_tftp::MAX_ACTIVE_TRANSFERS],
             #[cfg(feature = "sunfish-tftp-wlan-close-handoff")]
             pending_firmware_close: None,
+            #[cfg(feature="sunfish-mcfg-close-cleanup")]
+            pending_mcfg_close: None,
+            #[cfg(feature="sunfish-mcfg-close-cleanup")]
+            mcfg_close_transfers: [None;crate::qcom_tftp_server_check::TRANSFER_COUNT],
+            #[cfg(feature="sunfish-mcfg-close-cleanup")]
+            mcfg_close_trace: crate::qcom_modem_owner::McfgCloseTrace::default(),
             #[cfg(feature = "sunfish-native-tftp-server-check")]
             queue_full_kind: 0,
             #[cfg(feature = "sunfish-native-tftp-server-check")]
@@ -876,6 +882,12 @@ impl<I: Io> Owner<I> {
             queued_elf_turn:None,
             #[cfg(feature="sunfish-elf-queued-handoff")]
             elf_queued_turn_trace:ElfQueuedTurnTrace::default(),
+            #[cfg(feature="sunfish-elf-capacity-retry")]
+            elf_capacity_waiting:None,
+            #[cfg(feature="sunfish-elf-capacity-retry")]
+            elf_capacity_taken:false,
+            #[cfg(feature="sunfish-elf-capacity-retry")]
+            elf_capacity_trace:ElfCapacityTurnTrace::default(),
             #[cfg(feature = "sunfish-wlan-registry-txn4-timing")]
             registry_txn4_handle: None,
             tftp_trace: TftpObserverTrace::new(),

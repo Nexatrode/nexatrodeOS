@@ -98,6 +98,10 @@ impl McfgRam {
         self.staging_len = 0;
         Ok(())
     }
+    #[cfg(feature="sunfish-mcfg-close-cleanup")]
+    pub(crate) fn can_abort(&self,peer:u32)->Result<(),Error>{
+        if self.writer==Some(peer){Ok(())}else{Err(Error::NoWriter)}
+    }
     pub fn len(&self) -> Option<usize> {
         self.present.then_some(self.committed_len)
     }
