@@ -1,0 +1,14 @@
+<!doctype html><html><head><title>Native image tests</title><style>
+body { background: #ffffff; color: #172b39; font: 18px sans-serif; margin: 24px; }
+h1 { font-size: 30px; } td { padding: 12px; vertical-align: top; }
+img { background: #ffffff; border: 1px solid #a0a0a0; }
+</style></head><body><h1>Native image tests</h1><p>PNG and JPEG decode on this machine. These patterns are synthetic.</p>
+<table><tr><td>RGBA PNG<br><img src="resource:alpha.png" width="192" height="128" alt="RGBA failed"></td>
+<td>Interlaced PNG<br><img src="resource:interlaced.png" width="192" height="128" alt="Interlaced failed"></td>
+<td>Baseline JPEG<br><img src="resource:baseline.jpg" width="192" height="128" alt="Baseline failed"></td></tr>
+<tr><td>Progressive JPEG<br><img src="resource:progressive.jpg" width="192" height="128" alt="Progressive failed"></td>
+<td>CMYK JPEG<br><img src="resource:cmyk.jpg" width="192" height="128" alt="CMYK failed"></td></tr></table>
+<p>Invalid inputs below must leave this page usable.</p>
+<p><img src="resource:corrupt.png" width="100" height="24" alt="Bad PNG"> <img src="resource:corrupt.jpg" width="100" height="24" alt="Bad JPEG">
+<img src="resource:oversize.png" width="100" height="24" alt="Large PNG"> <img src="resource:oversize.jpg" width="100" height="24" alt="Large JPEG"></p>
+<p>END OF IMAGE TESTS</p></body></html>

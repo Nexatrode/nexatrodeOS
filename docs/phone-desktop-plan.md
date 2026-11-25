@@ -24,6 +24,14 @@ passed; see [the SimpleX lifecycle evidence](simplex-dynamic-lock.md).
 Regular installation-key migration, NexaWal lifecycle integration and general
 file services remain separate boundaries.
 
+A separate [native NetSurf guest](../experiments/netsurf-native/README.md)
+now runs packaged HTML/CSS/BMP/PNG/JPEG documents and real forms, links/history and
+scrolling at 2x in disposable UTM. Its opt-in HTTPS worker also fetches and
+renders real NetSurf/IANA/kernel.org pages using guest DNS/TCP and validated
+TLS. It remains a standalone full-screen process without storage or integration
+into the desktop dock, lock, wallet or chat installation. This experiment
+supplies no Linux binary ABI.
+
 ## Landscape desktop shell
 
 The opt-in `DESKTOP_SHELL` image adds a 1280×800 logical workspace to the

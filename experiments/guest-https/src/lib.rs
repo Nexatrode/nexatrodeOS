@@ -1,7 +1,7 @@
 //! Certificate-validated, bounded HTTPS transport for a guest TCP adapter.
 //!
-//! This standalone adapter is not yet connected to the wallet. A bare-metal
-//! binary must install a getrandom custom backend backed by the entropy PD.
+//! Used by native guest clients, including the wallet and optional browser.
+//! Each bare-metal binary installs a getrandom backend backed by its entropy PD.
 #![no_std]
 extern crate alloc;
 
@@ -69,6 +69,7 @@ pub struct Session {
     sent: bool,
     finished: bool,
     wire_progress: u64,
+    peer_closed_cleanly: bool,
 }
 
 impl Session {
@@ -78,6 +79,26 @@ impl Session {
         request: &[u8],
         max_response: usize,
     ) -> Result<Self, InitError> {
+        Self::with_roots(server_name, unix_seconds, request, max_response,
+            RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.into() })
+    }
+
+    /// Disposable browser tests only: add their ephemeral CA for the QEMU
+    /// host-loopback address. All public names retain the ordinary root store.
+    #[cfg(feature = "browser-test-ca")]
+    pub fn new_browser_fixture(server_name: &str, unix_seconds: u64, request: &[u8],
+        max_response: usize, certificate: &[u8]) -> Result<Self, InitError> {
+        if server_name != "10.0.2.2" {
+            return Self::new(server_name, unix_seconds, request, max_response);
+        }
+        let mut roots = RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.into() };
+        roots.add(rustls::pki_types::CertificateDer::from(certificate.to_vec()))
+            .map_err(|_| InitError::Configuration)?;
+        Self::with_roots(server_name, unix_seconds, request, max_response, roots)
+    }
+
+    fn with_roots(server_name: &str, unix_seconds: u64, request: &[u8],
+        max_response: usize, roots: RootCertStore) -> Result<Self, InitError> {
         if unix_seconds == 0 {
             return Err(InitError::InvalidClock);
         }
@@ -86,9 +107,6 @@ impl Session {
         }
         let name =
             ServerName::try_from(server_name.to_string()).map_err(|_| InitError::InvalidName)?;
-        let roots = RootCertStore {
-            roots: webpki_roots::TLS_SERVER_ROOTS.into(),
-        };
         let config = ClientConfig::builder_with_details(
             Arc::new(rustls::crypto::ring::default_provider()),
             Arc::new(ValidationTime(unix_seconds)),
@@ -112,11 +130,16 @@ impl Session {
             sent: false,
             finished: false,
             wire_progress: 0,
+            peer_closed_cleanly: false,
         })
     }
 
     /// Total ciphertext bytes transferred on this connection.
     pub fn wire_progress(&self) -> u64 { self.wire_progress }
+
+    /// True only after rustls authenticated the peer's TLS close_notify.
+    /// A transport EOF alone must not terminate close-delimited HTTP bodies.
+    pub fn peer_closed_cleanly(&self) -> bool { self.peer_closed_cleanly }
 
     /// Whether the transport has accepted the entire encrypted application request.
     pub fn request_flushed(&self) -> bool {
@@ -134,6 +157,7 @@ impl Session {
         self.request.extend_from_slice(request);
         self.sent = false;
         self.finished = false;
+        self.peer_closed_cleanly = false;
         true
     }
 
@@ -245,6 +269,7 @@ impl Session {
                     complete_response = sink.as_ref().map_or_else(|| complete(&self.response), |receiver| receiver.complete());
                 }
                 ConnectionState::PeerClosed | ConnectionState::Closed => {
+                    self.peer_closed_cleanly = true;
                     return Err(Error::PrematureClose)
                 }
                 _ => return Err(Error::UnexpectedState),
@@ -523,6 +548,7 @@ mod tests {
             assert!(session.wire_progress() > 0);
             assert_eq!(err.kind(), expected);
             assert!(err.kind().transient());
+            assert!(!session.peer_closed_cleanly(), "transport EOF is not authenticated TLS close_notify");
         }
     }
 
@@ -607,5 +633,14 @@ mod tests {
             request(&mut NoIo, "bad/name", 1, b"", 0, |_| false),
             Err(Error::InvalidName)
         ));
+    }
+
+    #[cfg(feature = "browser-test-ca")]
+    #[test]
+    fn browser_fixture_root_is_limited_to_the_loopback_test_name() {
+        // An invalid fixture root must not affect ordinary public-name sessions.
+        assert!(Session::new_browser_fixture("example.org", 1_700_000_000, b"", 0, b"invalid").is_ok());
+        assert!(matches!(Session::new_browser_fixture("10.0.2.2", 1_700_000_000, b"", 0, b"invalid"),
+            Err(InitError::Configuration)));
     }
 }

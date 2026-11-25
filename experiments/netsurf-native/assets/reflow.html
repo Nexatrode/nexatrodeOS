@@ -1,0 +1,63 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Dynamic layout lab</title>
+<style>body {margin:24px;background:white;color:#142c3c;font:20px sans-serif}
+h1{font-size:32px;margin:0 0 16px} button{font-size:20px;margin-right:16px;padding:8px}
+p{margin:12px 0} input{font:20px sans-serif;width:500px} .panel{width:900px;background:#eef3f9;padding:8px}
+.narrow{width:260px} .sheet-probe{width:520px;color:white;background:#34785c;height:24px}
+</style><style id="live-style"></style></head><body>
+<h1>Dynamic layout lab</h1><button id="mutate">Change layout</button><button id="timer">Start typing timer</button><button id="grow">Grow page</button><button id="rapid">Rapid updates</button>
+<form action="resource:result.html"><p>Edit below</p><input id="entry" name="note" value="KEEP"></form>
+<p id="status">STATUS ZERO</p><p><span id="character">CHARACTER ZERO</span> <span id="fragment">FRAGMENT ZERO</span> <span id="visibility">HIDE ME</span></p><div id="panel" class="panel">Wrapping words demonstrate that layout must change when a script narrows this panel. The following marker must move down with the newly wrapped lines of text.</div>
+<div class="sheet-probe">STYLE PROBE</div><p>AFTERFLOW</p><div id="items"><p id="removed">REMOVE ME</p></div>
+<img id="picture" src="resource:baseline.jpg" width="48" height="32"><p id="result">READY</p>
+<script>
+var revision=0;
+console.log('REFLOW SCRIPT START');
+var removed=document.getElementById('removed');
+var liveStyle=document.getElementById('live-style');
+document.getElementById('mutate').addEventListener('click',function(){
+    revision++;
+    document.getElementById('status').textContent='STATUS '+revision;
+    document.getElementById('character').firstChild.data='CHARACTER '+revision;
+    document.getElementById('fragment').innerHTML='<em>FRAGMENT '+revision+'</em>';
+    document.getElementById('visibility').setAttribute('style',revision%2 ? 'display:none' : 'display:inline');
+    document.getElementById('panel').className=revision%2 ? 'panel narrow' : 'panel';
+    document.getElementById('panel').setAttribute('style',revision%2 ? 'color:#173f79' : 'color:#142c3c');
+    var items=document.getElementById('items');
+    var previous=document.getElementById('inserted');
+    if(previous)items.removeChild(previous);
+    var added=document.createElement('p');added.id='inserted';added.textContent='INSERTED '+revision;items.appendChild(added);
+    if(removed.parentNode)removed.parentNode.removeChild(removed);
+    else items.appendChild(removed);
+    removed.textContent='REMOVE ME'; // A retained detached node must remain safe.
+    liveStyle.textContent=revision%2 ? '.sheet-probe{height:56px;background:#2a70d5}' : '.sheet-probe{height:24px;background:#34785c}';
+    if(revision%4==3 && liveStyle.parentNode)liveStyle.parentNode.removeChild(liveStyle);
+    if(revision%4==0 && !liveStyle.parentNode)document.getElementsByTagName('head')[0].appendChild(liveStyle);
+    document.getElementById('picture').setAttribute('src',revision%2 ? 'resource:alpha.png' : 'resource:baseline.jpg');
+    console.log('REFLOW BATCH '+revision);
+});
+document.getElementById('timer').addEventListener('click',function(){
+    setTimeout(function(){
+        document.getElementById('status').textContent='TIMER REFLOWED';
+        document.getElementById('panel').className='panel narrow';
+        console.log('REFLOW TYPING TIMER');
+    },1500);
+});
+document.getElementById('grow').addEventListener('click',function(){
+    var area=document.createElement('div');area.setAttribute('style','height:1200px');document.body.appendChild(area);
+    var end=document.createElement('p');end.textContent='BOTTOM GROWTH';document.body.appendChild(end);
+    setTimeout(function(){
+        document.body.removeChild(area);document.body.removeChild(end);
+        console.log('REFLOW SHRUNK');
+    },5000);
+});
+document.getElementById('rapid').addEventListener('click',function(){
+    console.log('REFLOW RAPID START');
+    var count=0;
+    function tick(){
+        count++;document.getElementById('status').textContent='RAPID '+count;
+        if(count<60)setTimeout(tick,5);
+        else {document.getElementById('status').textContent='RAPID COMPLETE';console.log('REFLOW RAPID END');}
+    }
+    tick();
+});
+</script></body></html>

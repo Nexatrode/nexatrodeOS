@@ -1,0 +1,23 @@
+[package]
+name = "netsurf-https-worker"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "BSD-2-Clause"
+
+[features]
+test-fixtures = ["nexatrode-guest-https/browser-test-ca"]
+
+[dependencies]
+nexatrode-guest-https = { path = "../../guest-https" }
+getrandom = { version = "=0.2.17", features = ["custom"] }
+sel4 = { git = "https://github.com/seL4/rust-sel4", rev = "891b59622306e94ad428193838f0d6214bb5c7aa" }
+sel4-microkit = { git = "https://github.com/seL4/rust-sel4", rev = "891b59622306e94ad428193838f0d6214bb5c7aa" }
+sel4-dlmalloc = { git = "https://github.com/seL4/rust-sel4", rev = "891b59622306e94ad428193838f0d6214bb5c7aa" }
+
+[patch.crates-io]
+ring = { path = "../../../rust/vendor/ring-0.17.14" }
+
+[profile.release]
+panic = "abort"
+opt-level = 2
