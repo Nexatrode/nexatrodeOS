@@ -31,16 +31,16 @@ ELF eventually queues in **slot0**, not the first-free slot1. The admission empt
 
 ## ELF and startup result
 
-Receive/queue/publication/Owner completion are `014A0909 / 016D9899 / 0179EA28 / 01802A79`.
+Receive/queue/publication/Owner completion are `014A09D9 / 016D9899 / 0179EA28 / 01802A79`.
 
 | Interval | Current boot |
 | --- | ---: |
-| Receive → queue | 2,330.512 ms |
+| Receive → queue | 2,330.304 ms |
 | Queue → publication | 807.311 ms |
 | Publication → Owner completion | 409.681 ms |
-| Receive → Owner completion | 3,547.504 ms |
+| Receive → Owner completion | 3,547.296 ms |
 
-Compared with IMG_9724, prequeue is 540.312 ms shorter but queue-to-publication is 714.414 ms longer; total is 171.652 ms shorter. These are different boots with additional observation work, not a controlled overall speedup. Current phase ages partition acceptance→queue into 727.056 / 48.819 / 12.213 / 1,542.424 ms; direct fields differ by at most1us through conversion.
+Compared with IMG_9724, prequeue is 540.520 ms shorter but queue-to-publication is 714.414 ms longer; total is 171.860 ms shorter. These are different boots with additional observation work, not a controlled overall speedup. Current phase ages partition acceptance→queue into 726.848 / 48.819 / 12.213 / 1,542.424 ms; direct fields differ by at most1us through conversion.
 
 IPA complete1, PD7FFFFFFF, **WLAN RRQ0 / WLFW0**. Original final ACK `00D8FB81`; one MCFG write/one byte/zero full reads. No new WLAN firmware or WLFW milestone is observed.
 
