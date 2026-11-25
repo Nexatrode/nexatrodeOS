@@ -89,7 +89,7 @@ impl RuntimeDomain {
 #[cfg(feature="sunfish-mcfg-writer-trace")]
 impl RuntimeDomain {
     fn show_mcfg_writer(&self,d:&Display,owner:&ModemOwner){
-        for n in 2..=28{d.replace_line(n,"");}d.replace_line(1,"MCFG QUEUE WRITER");
+        for n in 2..=28{d.replace_line(n,"");}d.replace_line(1,if cfg!(feature="sunfish-mcfg-predecessor-trace"){"MCFG PREDECESSOR TURN"}else{"MCFG QUEUE WRITER"});
         let age=|t|self.time_from_us(Some(self.runtime_started),t);
         let row=|n,label,values:&[u32]|{d.header_label(n,label);let mut fields=[(0,8);4];for(i,v)in values.iter().enumerate(){fields[i]=(*v,8);}d.header_row(n,true,&fields[..values.len()]);};
         let cap=owner.post_elf_mcfg();let m=cap.and_then(|c|c.mcfg.as_ref());let a=m.map(|m|&m.admission);let seq=m.and_then(|m|m.record_sequence());
@@ -100,18 +100,31 @@ impl RuntimeDomain {
         row(6,"FIRST LAST BUSY CAPACITY",&[age(a.and_then(|a|a.first_attempt)),age(a.and_then(|a|a.last_attempt)),m.map_or(0,|m|m.queue_waits[0]),m.map_or(0,|m|m.queue_waits[1])]);
         row(7,"LAST BLOCK CHECK KIND OP FLAGS",&a.map_or([0;4],|a|a.block));
         let bs=a.and_then(|a|a.block_sequence);row(8,"BLOCK LEN SENT RECORD LO HI",&[a.map_or(0,|a|a.block_len),a.map_or(0,|a|a.block_sent),bs.map_or(u32::MAX,|n|n as u32),bs.map_or(u32::MAX,|n|(n>>32)as u32)]);
+        #[cfg(not(feature="sunfish-mcfg-predecessor-trace"))]
         row(9,"BLOCK US PASSES OMIT FILE",&[age(a.and_then(|a|a.block_at)),a.map_or(0,|a|a.passes),a.map_or(0,|a|a.omitted),m.and_then(|m|m.file_before).unwrap_or(u32::MAX)]);
+        #[cfg(feature="sunfish-mcfg-predecessor-trace")]
+        row(9,"BLOCK PUB DONE PASSES",&[age(a.and_then(|a|a.block_at)),age(a.and_then(|a|a.block_published)),age(a.and_then(|a|a.block_completed)),a.map_or(0,|a|a.passes)]);
         let trace=owner.service_registry_trace();let elf=trace.elf;row(10,"ELF RX QUEUE PUB DONE",&[age(elf.and_then(|e|e.received)),age(elf.and_then(|e|e.queued)),age(elf.and_then(|e|e.published)),age(elf.and_then(|e|e.done))]);
         let ipa=owner.linux_ipa_report();row(11,"IPA REG DRIVER COMMITS COMPLETE",&[ipa.map_or(u32::MAX,|r|r.registration_requests),ipa.map_or(u32::MAX,|r|r.driver_requests),ipa.map_or(u32::MAX,|r|r.publications_committed),u32::from(self.ipa_complete_seen)]);
         row(12,"PENDING RESP FAILED TIMEOUT",&[ipa.and_then(|r|r.pending_message_id).map_or(u32::MAX,u32::from),ipa.map_or(u32::MAX,|r|r.responses_accepted),ipa.map_or(u32::MAX,|r|u32::from(r.failed)),ipa.map_or(u32::MAX,|r|r.timeout_causes)]);
+        #[cfg(not(feature="sunfish-mcfg-predecessor-trace"))]
         row(13,"ORIG ACK HOST REQ PUB DONE",&[age(owner.original_tftp_write_trace().and_then(|w|w.ack.done_at)),trace.elf_exchange.and_then(|e|e.host_credit).map_or(u32::MAX,|c|u32::from(c.requested)),trace.elf_exchange.and_then(|e|e.host_credit).map_or(u32::MAX,|c|u32::from(c.remote_intent.is_some())),trace.elf_exchange.and_then(|e|e.host_credit).map_or(u32::MAX,|c|u32::from(c.completed))]);
+        #[cfg(feature="sunfish-mcfg-predecessor-trace")]
+        {let c=trace.elf_exchange.and_then(|e|e.host_credit);row(13,"ORIG ACK HOST FILE RESULT",&[age(owner.original_tftp_write_trace().and_then(|w|w.ack.done_at)),c.map_or(u32::MAX,|c|u32::from(c.requested)|(u32::from(c.remote_intent.is_some())<<1)|(u32::from(c.completed)<<2)),m.and_then(|m|m.file_before).unwrap_or(u32::MAX),m.and_then(|m|m.server_result).unwrap_or(u32::MAX)]);}
         d.header_label(14,"START END GATES CMD; ARG Q S D R");
-        if let Some(a)=a{for(i,r)in a.records.iter().enumerate(){if let Some(r)=r{d.header_row(15+i,false,&[(age(r.start),8),(age(r.end),8),(r.gates,8),(r.command,2)]);d.header_row(15+i,true,&[(r.parameter,8),(r.kind,2),(r.source,8),(r.destination,8),(r.result,1)]);}}}
+        if let Some(a)=a{for(i,r)in a.records.iter().enumerate(){if let Some(r)=r{d.header_row(15+i,false,&[(age(r.start),8),(age(r.end),8),(r.gates,8),(r.command,2)]);#[cfg(not(feature="sunfish-mcfg-predecessor-trace"))]
+        d.header_row(15+i,true,&[(r.parameter,8),(r.kind,2),(r.source,8),(r.destination,8),(r.result,1)]);
+        #[cfg(feature="sunfish-mcfg-predecessor-trace")]
+        d.header_row(15+i,true,&[(r.parameter,8),(r.kind,2),(r.source,8),(r.destination,8),(r.result,1),(r.grant_size,8),(r.record_sequence.map_or(u32::MAX,|n|n as u32),8),(r.record_sequence.map_or(u32::MAX,|n|(n>>32)as u32),8)]);}}}
         row(23,"CLOSE OBS COMMIT UNSENT KEPT",&[ct.observed,ct.committed,ct.unsent,ct.published.saturating_add(ct.credits)]);
         let(w,bytes,done)=self.server_check.mcfg_progress();row(24,"MCFG WRITES FILE READS STAGE",&[w,bytes.map_or(u32::MAX,|n|n as u32),done,ct.stage]);
         row(25,"OTHER KIND PEER BYTES OP",&cap.and_then(|c|c.other).unwrap_or([u32::MAX;4]));
         row(26,"REPLY OP CODE BYTES PORT",&[m.map_or(u32::MAX,|m|m.reply_opcode),m.map_or(u32::MAX,|m|m.reply_number),m.map_or(0,|m|m.reply_bytes),m.map_or(u32::MAX,|m|m.transfer_port)]);
-        let reads=owner.read_sequence();row(27,"READ TOTAL MASK JOURNAL OMIT",&[reads.total,reads.kinds,cap.map_or(0,|c|c.total),cap.map_or(0,|c|c.omitted)]);
+        let reads=owner.read_sequence();
+        #[cfg(not(feature="sunfish-mcfg-predecessor-trace"))]
+        row(27,"READ TOTAL MASK JOURNAL OMIT",&[reads.total,reads.kinds,cap.map_or(0,|c|c.total),cap.map_or(0,|c|c.omitted)]);
+        #[cfg(feature="sunfish-mcfg-predecessor-trace")]
+        row(27,"READ TOTAL MASK PASSES OMIT",&[reads.total,reads.kinds,a.map_or(0,|a|a.passes),a.map_or(0,|a|a.omitted)]);
         let q=self.wlan_query.snapshot(owner);row(28,"IPA PD STATE WLAN WLFW",&[u32::from(self.ipa_complete_seen),q[1],owner.tftp_wire_counts()[2],q[7]]);
     }
 }

@@ -84,12 +84,22 @@ fn packet(bytes:&[u8],tx:bool,at:Option<u64>)->Option<McfgWireRecord>{
 pub struct McfgWriterRecord {
     pub start:Option<u64>,pub end:Option<u64>,pub gates:u32,
     pub command:u32,pub parameter:u32,pub kind:u32,pub source:u32,pub destination:u32,pub result:u32,
+    #[cfg(feature="sunfish-mcfg-predecessor-trace")]
+    pub grant_size:u32,
+    #[cfg(feature="sunfish-mcfg-predecessor-trace")]
+    pub record_sequence:Option<u64>,
 }
 #[cfg(feature="sunfish-mcfg-writer-trace")]
 #[derive(Clone,Copy,Debug,Default)]
 pub struct McfgAdmissionTrace {
     pub first_attempt:Option<u64>,pub last_attempt:Option<u64>,pub attempts:u32,
     pub block_at:Option<u64>,pub block:[u32;4],pub block_len:u32,pub block_sent:u32,pub block_sequence:Option<u64>,
+    #[cfg(feature="sunfish-mcfg-predecessor-trace")]
+    block_record:Option<crate::qcom_qrtr_flow::Reservation>,
+    #[cfg(feature="sunfish-mcfg-predecessor-trace")]
+    pub block_published:Option<u64>,
+    #[cfg(feature="sunfish-mcfg-predecessor-trace")]
+    pub block_completed:Option<u64>,
     pub passes:u32,pub omitted:u32,pub records:[Option<McfgWriterRecord>;8],active:Option<usize>,
 }
 #[derive(Clone, Copy, Debug)]
@@ -146,12 +156,22 @@ impl PostElfMcfgTrace {
 #[cfg(feature="sunfish-mcfg-writer-trace")]
 impl Session {
     fn mcfg_writer_slot(&self)->Option<usize>{
-        let m=self.post_elf_mcfg.as_ref()?.mcfg.as_ref()?;let i=m.slot?;let t=&self.transmit[i];
-        (m.flags&0x130==0 && t.sent<t.len && mcfg_record_matches(m,t,self.config.local_node)).then_some(i)
+        let m=self.post_elf_mcfg.as_ref()?.mcfg.as_ref()?;if m.flags&0x130!=0{return None;}
+        if let Some(i)=m.slot {let t=&self.transmit[i];return(t.sent<t.len&&mcfg_record_matches(m,t,self.config.local_node)).then_some(i);}
+        #[cfg(feature="sunfish-mcfg-predecessor-trace")]
+        {let key=m.admission.block_record?;return self.transmit.iter().position(|t|t.len!=0&&t.sent<t.len
+            && t.reference_flow==Some(key)&&t.kind.qrtr_addresses().is_some_and(|(_,to)|to==m.peer));}
+        #[cfg(not(feature="sunfish-mcfg-predecessor-trace"))]
+        None
     }
     fn mcfg_writer_gates(&self,i:usize)->u32{
         let t=&self.transmit[i];
-        u32::from(self.remote_for_transmit(t).is_some())
+        #[cfg(feature="sunfish-mcfg-predecessor-trace")]
+        let context=(u32::from(self.retry_full_intent)<<10)|(u32::from(self.intent_ack_yield)<<11)
+            |(u32::from(self.post_elf_mcfg.as_ref().and_then(|c|c.mcfg.as_ref()).is_some_and(|m|m.slot!=Some(i)))<<12);
+        #[cfg(not(feature="sunfish-mcfg-predecessor-trace"))]
+        let context=0;
+        context|u32::from(self.remote_for_transmit(t).is_some())
         |(u32::from(self.ready_remote_for_transmit(t).is_some())<<1)
         |(u32::from(matches!(self.outbound_intent_request,OutboundIntentRequest::Waiting{..}))<<2)
         |(u32::from(self.unsent_flow_predecessor(t))<<3)
@@ -163,13 +183,19 @@ impl Session {
     }
     pub(crate) fn begin_mcfg_writer_pass(&mut self){
         let Some(i)=self.mcfg_writer_slot()else{return;};let gates=self.mcfg_writer_gates(i);let at=self.intent_ack_clock.map(|c|c());
+        #[cfg(feature="sunfish-mcfg-predecessor-trace")]
+        let key=self.transmit[i].reference_flow.map(|r|r.sequence());
         let c=self.post_elf_mcfg.as_mut().unwrap();let a=&mut c.mcfg.as_mut().unwrap().admission;
         let n=a.passes;a.passes=a.passes.saturating_add(1);let index=if n<8{n as usize}else{a.records.copy_within(5..8,4);a.omitted=a.omitted.saturating_add(1);7};
-        a.records[index]=Some(McfgWriterRecord{start:at,gates,parameter:u32::MAX,source:u32::MAX,destination:u32::MAX,..McfgWriterRecord::default()});a.active=Some(index);c.revision=c.revision.saturating_add(1);
+        a.records[index]=Some(McfgWriterRecord{
+            #[cfg(feature="sunfish-mcfg-predecessor-trace")] record_sequence:key,
+            start:at,gates,parameter:u32::MAX,source:u32::MAX,destination:u32::MAX,..McfgWriterRecord::default()});a.active=Some(index);c.revision=c.revision.saturating_add(1);
     }
     pub(crate) fn mcfg_writer_header(&mut self,b:&[u8],result:Result<(),WriteError>){
         let Some(slot)=self.mcfg_writer_slot()else{return;};let gates=self.mcfg_writer_gates(slot);let at=self.intent_ack_clock.map(|c|c());
         let c=self.post_elf_mcfg.as_mut().unwrap();let a=&mut c.mcfg.as_mut().unwrap().admission;let Some(i)=a.active else{return;};let r=a.records[i].as_mut().unwrap();
+        #[cfg(feature="sunfish-mcfg-predecessor-trace")]
+        {r.grant_size=self.grant_backing.requested;}
         r.end=at;r.gates|=gates<<16;r.result=match result{Ok(())=>1,Err(WriteError::WouldBlock)=>2,Err(WriteError::Uncertain)=>3};
         if b.len()>=8{r.command=u32::from(u16::from_le_bytes([b[0],b[1]]));r.parameter=word(b,4);}
         if matches!(r.command,9|12)&&b.len()>=48{r.kind=word(b,20);r.source=word(b,28);r.destination=word(b,44);}
@@ -247,6 +273,8 @@ impl Session {
             if a.attempts==0{a.first_attempt=at;}a.last_attempt=at;a.attempts=a.attempts.saturating_add(1);
             if result.is_err(){let b=self.tftp_queue_block;a.block_at=at;a.block=[u32::from(b.check),u32::from(b.kind),u32::from(b.opcode),u32::from(b.flags)];
                 let tx=self.transmit.iter().find(|tx|tx.len!=0&&tx.kind.qrtr_addresses().is_some_and(|(_,p)|p==m.peer));
+                #[cfg(feature="sunfish-mcfg-predecessor-trace")]
+                {let key=tx.and_then(|t|t.reference_flow);if a.block_record!=key{a.block_published=None;a.block_completed=None;}a.block_record=key;}
                 a.block_len=tx.map_or(0,|t|t.len as u32);a.block_sent=tx.map_or(0,|t|t.sent as u32);a.block_sequence=tx.and_then(|t|t.reference_flow.map(|r|r.sequence()));
             }
         }
@@ -259,6 +287,10 @@ impl Session {
     pub(super) fn observe_post_mcfg_publication(&mut self,index:usize,remote:usize){
         let Some(cap)=self.post_elf_mcfg.as_mut()else{return;};let tx=&self.transmit[index];let at=self.intent_ack_clock.map(|c|c());
         cap.wire(&tx.bytes[..tx.len],true,at);
+        #[cfg(feature="sunfish-mcfg-predecessor-trace")]
+        if let Some(m)=cap.mcfg.as_mut().filter(|m|m.flags&256==0&&m.admission.block_record.is_some()
+            &&m.admission.block_record==tx.reference_flow){if m.admission.block_published.is_none(){m.admission.block_published=at;cap.revision=cap.revision.saturating_add(1);}}
+
         if let Some(m)=cap.mcfg.as_mut().filter(|m|m.slot==Some(index) && m.flags&16==0
             && {
                 #[cfg(feature="sunfish-mcfg-record-identity")]
@@ -269,6 +301,9 @@ impl Session {
     }
     pub(super) fn observe_post_mcfg_done(&mut self,index:usize,id:u32){
         let Some(cap)=self.post_elf_mcfg.as_mut()else{return;};let at=self.intent_ack_clock.map(|c|c());
+        #[cfg(feature="sunfish-mcfg-predecessor-trace")]
+        if let Some(m)=cap.mcfg.as_mut().filter(|m|m.flags&256==0&&m.admission.block_record.is_some()
+            &&m.admission.block_record==self.transmit[index].reference_flow){if m.admission.block_completed.is_none(){m.admission.block_completed=at;cap.revision=cap.revision.saturating_add(1);}}
         if let Some(m)=cap.mcfg.as_mut().filter(|m|m.slot==Some(index) && m.flags&16!=0 && m.flags&32==0 && m.remote_intent==id
             && {
                 #[cfg(feature="sunfish-mcfg-record-identity")]

@@ -1,14 +1,18 @@
 // Actual Core lifecycle; clocks are optional and never used as record identity.
 use qcom_glink_qmi::TftpReplyRoute;
 fn identity_setup(clock:bool)->(Session,Vec<u8>,TftpReplyRoute,u32){identity_setup_with_blocker(clock,false)}
-fn identity_setup_with_blocker(clock:bool,blocker:bool)->(Session,Vec<u8>,TftpReplyRoute,u32){
+fn identity_setup_with_blocker(clock:bool,blocker:bool)->(Session,Vec<u8>,TftpReplyRoute,u32){identity_setup_with_order(clock,blocker,true)}
+fn identity_setup_with_order(clock:bool,blocker:bool,publish_first:bool)->(Session,Vec<u8>,TftpReplyRoute,u32){
  let mut s=session();if clock{s.set_registry_ack_clock(||1234);}let mut wire=Vec::new();s.register(1,Service::ServiceRegistry,qcom_servreg::LOCAL_PORT).unwrap();s.prepare_service_available(1,Service::ServiceRegistry).unwrap();s.prepare_tftp_server(1,0x5000).unwrap();s.start_control(1).unwrap();
  let mut adv=control(5,2,16);for id in 7u32..23{adv.extend(4096u32.to_le_bytes());adv.extend(id.to_le_bytes());}s.ingest(1,&adv).unwrap();drain(&mut s,&mut wire);let id=offer(&mut s,&mut wire);s.ingest(1,&data(id,&owner_control_frame(2,[0;4]))).unwrap();drain(&mut s,&mut wire);
  let id=offer(&mut s,&mut wire);let Event::Request(elf)=s.ingest(1,&data(id,&servreg_query_datagram_with_transaction(b"kernel/elf_loader",5))).unwrap()else{panic!("ELF");};let response=qcom_servreg::respond(qcom_servreg::Query{service_name:b"kernel/elf_loader",domain_offset:0});s.queue_reply(&elf,Reply::Success{optional_tlvs:response.optional_tlvs()}).unwrap();s.observe_elf_reply(&elf);let rid=full_data(&mut s,&mut wire);s.ingest(1,&control(14,2,rid)).unwrap();drain(&mut s,&mut wire);
  let h=receive(&mut s,&mut wire,0x4a,0x5000,STAT);s.finish_tftp_request(&h).unwrap();drain(&mut s,&mut wire);let close=offer(&mut s,&mut wire);
  let mut server=qcom_tftp_server_check::ServerCheck::new();let mut out=[0;128];let reply=server.receive(qcom_tftp_server_check::Route{source:qcom_tftp_server_check::Address{node:0,port:0x4a},destination:qcom_tftp_server_check::Address{node:1,port:0x5000}},STAT,&mut out).unwrap();assert_eq!(&out[..reply.len],qcom_tftp_server_check::MISSING_REPLY);
  let peer=qcom_qmi_router::Address{node:0,port:0x4a};let mut cache=[None;qcom_tftp_server_check::TRANSFER_COUNT];cache[0]=Some((peer,reply.route.source.port));s.set_mcfg_close_transfers(1,cache).unwrap();s.observe_post_mcfg_dispatch(&h,None,Ok(reply),&out);
- if blocker{let route=TftpReplyRoute{source:qcom_qmi_router::Address{node:1,port:reply.route.source.port},destination:peer};s.queue_tftp_response(1,route,&out[..reply.len]).unwrap();let id=full_data(&mut s,&mut wire);for _ in 0..3{assert_eq!(s.queue_traced_tftp_response(1,&h,route,&out[..reply.len],false),Err(qcom_glink_qmi::Error::FlowBusy));}s.ingest(1,&control(14,2,id)).unwrap();}
+ if blocker{let route=TftpReplyRoute{source:qcom_qmi_router::Address{node:1,port:reply.route.source.port},destination:peer};s.queue_tftp_response(1,route,&out[..reply.len]).unwrap();
+ let id=if publish_first{Some(full_data(&mut s,&mut wire))}else{None};for _ in 0..3{assert_eq!(s.queue_traced_tftp_response(1,&h,route,&out[..reply.len],false),Err(qcom_glink_qmi::Error::FlowBusy));}
+ let id=id.unwrap_or_else(||full_data(&mut s,&mut wire));s.ingest(1,&control(14,2,id)).unwrap();}
+
  s.queue_traced_tftp_response(1,&h,TftpReplyRoute{source:qcom_qmi_router::Address{node:1,port:reply.route.source.port},destination:peer},&out[..reply.len],false).unwrap();
  (s,wire,TftpReplyRoute{source:qcom_qmi_router::Address{node:1,port:reply.route.source.port},destination:peer},close)
 }
