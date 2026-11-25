@@ -123,11 +123,16 @@ impl InternalScanner {
     output_index_for_first_ringct_output: u64,
     tx_hash: [u8; 32],
     tx: &Transaction<Pruned>,
+    output_indices: Option<&[u64]>,
   ) -> Result<Timelocked, ScanError> {
     // Only scan TXs creating RingCT outputs
     // For the full details on why this check is equivalent, please see the documentation in `scan`
-    if tx.version() != 2 {
+    if tx.version() != 2 && output_indices.is_none() {
       return Ok(Timelocked(vec![]));
+    }
+    if output_indices.is_some_and(|indices| indices.len() != tx.prefix().outputs.len())
+      || (tx.version() == 1 && tx.prefix().outputs.iter().any(|o| o.amount.is_none())) {
+      return Err(ScanError::InvalidScannableBlock("missing transparent output indices or amounts"));
     }
 
     // Hoist invariants out of the inner loops:
@@ -251,15 +256,18 @@ impl InternalScanner {
         res.push(WalletOutput {
           absolute_id: AbsoluteId { transaction: tx_hash, index_in_transaction: o },
           relative_id: RelativeId {
-            index_on_blockchain: output_index_for_first_ringct_output.checked_add(o).ok_or(
+            index_on_blockchain: if let Some(indices) = output_indices {
+              indices[usize::try_from(o).expect("output index previously fit usize")]
+            } else { output_index_for_first_ringct_output.checked_add(o).ok_or(
               ScanError::InvalidScannableBlock(
                 "transaction's output's index isn't representable as a u64",
               ),
-            )?,
+            )? },
           },
           data: OutputData { key: output_key, key_offset: Scalar::from(key_offset), commitment },
           metadata: Metadata {
             additional_timelock: tx.prefix().additional_timelock,
+            legacy_amount: if tx.version() == 1 { output.amount } else { None },
             subaddress,
             payment_id,
             arbitrary_data: extra.arbitrary_data(),
@@ -276,6 +284,10 @@ impl InternalScanner {
   }
 
   fn scan(&mut self, block: ScannableBlock) -> Result<Timelocked, ScanError> {
+    self.scan_indexed(block, None)
+  }
+
+  fn scan_indexed(&mut self, block: ScannableBlock, indices: Option<&[Vec<u64>]>) -> Result<Timelocked, ScanError> {
     // This is the output index for the first RingCT output within the block
     // We mutate it to be the output index for the first RingCT for each transaction
     let ScannableBlock { block, transactions, output_index_for_first_ringct_output } = block;
@@ -284,10 +296,13 @@ impl InternalScanner {
         "scanning a ScannableBlock with more/less transactions than it should have",
       ))?;
     }
-    let Some(mut output_index_for_first_ringct_output) = output_index_for_first_ringct_output
-    else {
+    if output_index_for_first_ringct_output.is_none() && indices.is_none() {
       return Ok(Timelocked(vec![]));
-    };
+    }
+    let mut output_index_for_first_ringct_output = output_index_for_first_ringct_output.unwrap_or(0);
+    if indices.is_some_and(|rows| rows.len() != transactions.len() + 1) {
+      return Err(ScanError::InvalidScannableBlock("missing transaction output indices"));
+    }
 
     if block.header.hardfork_version > 16 {
       Err(ScanError::UnsupportedProtocol(block.header.hardfork_version))?;
@@ -303,12 +318,12 @@ impl InternalScanner {
     }
 
     let mut res = Timelocked(vec![]);
-    for (hash, tx) in txs_with_hashes {
+    for (n, (hash, tx)) in txs_with_hashes.into_iter().enumerate() {
       // Push all outputs into our result
       {
         let mut this_txs_outputs = vec![];
         core::mem::swap(
-          &mut self.scan_transaction(output_index_for_first_ringct_output, hash, &tx)?.0,
+          &mut self.scan_transaction(output_index_for_first_ringct_output, hash, &tx, indices.map(|rows| rows[n].as_slice()))?.0,
           &mut this_txs_outputs,
         );
         res.0.extend(this_txs_outputs);
@@ -376,6 +391,13 @@ impl Scanner {
   /// to outputs present within the block (such as if it can successfully scan outputs present).
   pub fn scan(&mut self, block: ScannableBlock) -> Result<Timelocked, ScanError> {
     self.0.scan(block)
+  }
+
+  /// Scan transparent and RingCT outputs using daemon indices already checked
+  /// against each transaction and its amount buckets by the caller. Rows are
+  /// miner first, then transactions in block order; no outputs may be omitted.
+  pub fn scan_with_output_indices(&mut self, block: ScannableBlock, indices: &[Vec<u64>]) -> Result<Timelocked, ScanError> {
+    self.0.scan_indexed(block, Some(indices))
   }
 }
 

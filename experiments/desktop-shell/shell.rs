@@ -97,6 +97,7 @@ fn init() -> Shell {
     let window = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer); guest_platform::install(&window);
     window.dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor: SCALE as f32 });
     let ui = DesktopShell::new().unwrap();
+    ui.set_real_apps(cfg!(feature = "desktop-apps-shell"));
     ui.on_command(|command, id, x, y| {
         for (i, value) in [command, id, x, y].into_iter().enumerate() { set_mr(i, value as u64); }
         let reply = Channel::new(0).pp_call(MessageInfo::new(0x7b0, 4));

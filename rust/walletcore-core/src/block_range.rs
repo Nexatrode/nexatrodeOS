@@ -62,6 +62,9 @@ pub struct RangeBlock {
     pub first_rct: Option<u64>,
     /// Exclusive end of this block's RingCT outputs (None when the block has none).
     pub next_rct: Option<u64>,
+    /// Exact amount-bucket indices, miner first. Retained only for blocks with
+    /// transparent (V1) outputs; modern-only blocks use the compact RingCT span.
+    pub output_indices: Vec<Vec<u64>>,
 }
 
 /// Encode a positive, bounded range. Invalid ranges yield an empty body so they
@@ -426,6 +429,7 @@ fn range_block(entry: Entry<'_, '_>, budget: &mut Budget) -> R<RangeBlock> {
         txs,
         first_rct: None,
         next_rct: None,
+        output_indices: Vec::new(),
     })
 }
 
@@ -433,8 +437,16 @@ fn indices(
     entry: Entry<'_, '_>,
     block: &mut RangeBlock,
     buckets: &mut BTreeMap<u64, u64>,
+    budget: &mut Budget,
 ) -> R<()> {
     let expected = block.txs.len() + 1;
+    let retain = (block.block.miner_transaction().version() == 1
+        && !block.block.miner_transaction().prefix().outputs.is_empty())
+        || block.txs.iter().any(|tx| tx.version() == 1 && !tx.prefix().outputs.is_empty());
+    if retain {
+        budget.charge(expected * size_of::<Vec<u64>>())?;
+        block.output_indices.try_reserve_exact(expected).map_err(|_| RangeError::Limit)?;
+    }
     let mut seen = None;
     fields(entry, |key, field| {
         if key != b"indices" {
@@ -452,6 +464,11 @@ fn indices(
                 (tx.version() == 2, &tx.prefix().outputs)
             };
             let mut indexed = false;
+            let mut retained = Vec::new();
+            if retain {
+                budget.charge(outputs.len() * size_of::<u64>())?;
+                retained.try_reserve_exact(outputs.len()).map_err(|_| RangeError::Limit)?;
+            }
             fields(item, |key, field| {
                 if key != b"indices" {
                     return Ok(());
@@ -477,7 +494,8 @@ fn indices(
                     if buckets.len() > MAX_AMOUNT_BUCKETS {
                         return Err(RangeError::Limit);
                     }
-                    if rct {
+                    if retain { retained.push(i); }
+                    if amount == 0 {
                         block.first_rct.get_or_insert(i);
                         block.next_rct = Some(next);
                     }
@@ -488,6 +506,7 @@ fn indices(
             if !indexed && !outputs.is_empty() {
                 return Err(RangeError::Indices);
             }
+            if retain { block.output_indices.push(retained); }
             Ok(())
         })?);
         Ok(())
@@ -635,7 +654,7 @@ fn finish_range(
                 return Err(RangeError::Indices);
             }
             field.objects(result.len(), |i, item| {
-                indices(item, &mut result[i], &mut buckets)
+                indices(item, &mut result[i], &mut buckets, &mut decoded.budget)
             })?;
             checked = true;
         }

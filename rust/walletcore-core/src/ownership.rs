@@ -1,7 +1,7 @@
 //! Pure ownership work on blocks already authenticated by the range decoder.
 //! The wallet retains chain authority, transaction evidence, balances and persistence.
 //! Mailbox generations and release/acquire publication belong to the caller.
-use alloc::vec::Vec;
+use alloc::{collections::BTreeMap, vec::Vec};
 use monero_wallet::{
     ed25519::{CompressedPoint, Scalar},
     primitives::keccak256,
@@ -26,7 +26,6 @@ type R<T> = Result<T, OwnershipError>;
 pub enum OwnershipError {
     Limit,
     Encoding,
-    LegacyOutputs,
     InvalidBlock,
     Scan,
 }
@@ -51,30 +50,69 @@ pub struct ScannedBlock {
 }
 
 fn validate(b: &RangeBlock) -> R<()> {
-    if matches!(b.block.miner_transaction(), Transaction::V1 { .. })
-        && !b.block.miner_transaction().prefix().outputs.is_empty()
-        || b.txs
-            .iter()
-            .any(|tx| matches!(tx, Transaction::V1 { .. }) && !tx.prefix().outputs.is_empty())
-    {
-        return Err(OwnershipError::LegacyOutputs);
-    }
-    if b.txs.len() != b.block.transactions.len() {
+    if b.txs.len() != b.block.transactions.len() { return Err(OwnershipError::InvalidBlock); }
+    let miner = Transaction::<crate::Pruned>::from(b.block.miner_transaction().clone());
+    let txs = core::iter::once(&miner).chain(&b.txs);
+    let legacy = txs.clone().any(|tx| tx.version() == 1 && !tx.prefix().outputs.is_empty());
+    if legacy != !b.output_indices.is_empty()
+        || (legacy && b.output_indices.len() != b.txs.len() + 1) {
         return Err(OwnershipError::InvalidBlock);
     }
-    let n = b
-        .txs
-        .iter()
-        .try_fold(
-            b.block.miner_transaction().prefix().outputs.len() as u64,
-            |total, tx| total.checked_add(tx.prefix().outputs.len() as u64),
-        )
-        .ok_or(OwnershipError::InvalidBlock)?;
+    let mut buckets = BTreeMap::new();
+    let mut n = 0u64;
+    let mut first_zero = None;
+    let mut next_zero = None;
+    for (t, tx) in txs.enumerate() {
+        let row = b.output_indices.get(t);
+        if row.is_some_and(|r| r.len() != tx.prefix().outputs.len()) { return Err(OwnershipError::InvalidBlock); }
+        for (o, output) in tx.prefix().outputs.iter().enumerate() {
+            let amount = if tx.version() == 2 { 0 } else { output.amount.ok_or(OwnershipError::InvalidBlock)? };
+            if amount == 0 { n = n.checked_add(1).ok_or(OwnershipError::InvalidBlock)?; }
+            if let Some(row) = row {
+                let index = row[o];
+                let next = index.checked_add(1).ok_or(OwnershipError::InvalidBlock)?;
+                if buckets.insert(amount, next).is_some_and(|expected| expected != index) { return Err(OwnershipError::InvalidBlock); }
+                if buckets.len() > 4096 { return Err(OwnershipError::Limit); }
+                if amount == 0 { first_zero.get_or_insert(index); next_zero = Some(next); }
+            }
+        }
+    }
+    if legacy && (first_zero != b.first_rct || next_zero != b.next_rct) { return Err(OwnershipError::InvalidBlock); }
     match (b.first_rct, b.next_rct, n) {
         (None, None, 0) => Ok(()),
         (Some(first), Some(next), n) if n > 0 && first.checked_add(n) == Some(next) => Ok(()),
         _ => Err(OwnershipError::InvalidBlock),
     }
+}
+
+/// Check worker receipts against the authenticated source shapes and indices.
+/// Ownership derivations remain the worker's job; it has no commit authority.
+pub fn validate_scanned_block(result: &ScannedBlock, b: &RangeBlock) -> bool {
+    if result.height != b.block.number() as u64 || result.hash != b.block.hash()
+        || result.previous != b.block.header.previous || result.miner_hash != b.block.miner_transaction().hash()
+        || result.transactions != b.block.transactions { return false; }
+    let miner = Transaction::<crate::Pruned>::from(b.block.miner_transaction().clone());
+    let mut txs = core::iter::once(&miner).chain(&b.txs).enumerate();
+    let mut current = txs.next();
+    let mut base = b.first_rct.unwrap_or(0);
+    for output in &result.outputs {
+        loop {
+            let Some((t, tx)) = current else { return false; };
+            let hash = if t == 0 { result.miner_hash } else { result.transactions[t - 1] };
+            if hash == output.transaction() { break; }
+            if tx.version() == 2 { base = match base.checked_add(tx.prefix().outputs.len() as u64) { Some(i) => i, None => return false }; }
+            current = txs.next();
+        }
+        let (t, tx) = current.unwrap();
+        let Ok(local) = usize::try_from(output.index_in_transaction()) else { return false; };
+        let Some(source) = tx.prefix().outputs.get(local) else { return false; };
+        let index = if let Some(row) = b.output_indices.get(t) { row.get(local).copied() } else { base.checked_add(local as u64) };
+        if source.key != output.key().compress() || index != Some(output.index_on_blockchain())
+            || output.is_legacy() != (tx.version() == 1)
+            || output.amount_bucket() != if tx.version() == 1 { source.amount.unwrap_or(u64::MAX) } else { 0 }
+            || source.amount.is_some_and(|amount| amount != output.commitment().amount) { return false; }
+    }
+    true
 }
 
 pub fn scan_verified_block(view: &ViewPair, item: RangeBlock) -> R<ScannedBlock> {
@@ -84,8 +122,16 @@ pub fn scan_verified_block(view: &ViewPair, item: RangeBlock) -> R<ScannedBlock>
     let previous = item.block.header.previous;
     let miner_hash = item.block.miner_transaction().hash();
     let transactions = item.block.transactions.clone();
-    let outputs = scan_assembled_strict(view, item.block, item.txs, item.first_rct)
-        .map_err(|_| OwnershipError::Scan)?;
+    let outputs = if item.output_indices.is_empty() {
+        scan_assembled_strict(view, item.block, item.txs, item.first_rct)
+    } else {
+        let block = monero_wallet::interface::ScannableBlock {
+            block: item.block, transactions: item.txs,
+            output_index_for_first_ringct_output: item.first_rct,
+        };
+        crate::Scanner::new(view.clone()).scan_with_output_indices(block, &item.output_indices)
+            .map(|outputs| outputs.ignore_additional_timelock()).map_err(|_| ())
+    }.map_err(|_| OwnershipError::Scan)?;
     Ok(ScannedBlock {
         height,
         hash,
@@ -216,7 +262,7 @@ pub fn encode_scan_job(view: &ViewPair, item: &RangeBlock, dest: &mut [u8]) -> R
     let header = HEADER.min(dest.len());
     dest[..header].zeroize();
     validate(item)?;
-    pack(dest, b"NXJ1", MAX_SCAN_JOB, |w| {
+    pack(dest, b"NXJ2", MAX_SCAN_JOB, |w| {
         w.put(&view.spend().compress().to_bytes())?;
         w.put(view.private_view_key_bytes().as_ref())?;
         w.index(item.first_rct)?;
@@ -226,12 +272,17 @@ pub fn encode_scan_job(view: &ViewPair, item: &RangeBlock, dest: &mut [u8]) -> R
         for tx in &item.txs {
             w.record(&tx.serialize(), MAX_BLOB)?;
         }
+        w.count(item.output_indices.len())?;
+        for row in &item.output_indices {
+            w.count(row.len())?;
+            for index in row { w.put(&index.to_le_bytes())?; }
+        }
         Ok(())
     })
 }
 
 fn decode_job(job: &[u8]) -> R<(ViewPair, RangeBlock)> {
-    let mut r = Reader::open(job, b"NXJ1", MAX_SCAN_JOB)?;
+    let mut r = Reader::open(job, b"NXJ2", MAX_SCAN_JOB)?;
     let spend = CompressedPoint::from(r.fixed::<32>()?)
         .decompress()
         .ok_or(OwnershipError::Encoding)?;
@@ -257,6 +308,21 @@ fn decode_job(job: &[u8]) -> R<(ViewPair, RangeBlock)> {
         }
         txs.push(tx);
     }
+    let rows = r.count()?;
+    if rows != 0 && rows != count + 1 { return Err(OwnershipError::InvalidBlock); }
+    budget.charge(rows * core::mem::size_of::<Vec<u64>>())?;
+    let mut output_indices = Vec::new();
+    output_indices.try_reserve_exact(rows).map_err(|_| OwnershipError::Limit)?;
+    for t in 0..rows {
+        let n = r.count()?;
+        let expected = if t == 0 { block.miner_transaction().prefix().outputs.len() } else { txs[t - 1].prefix().outputs.len() };
+        if n != expected { return Err(OwnershipError::InvalidBlock); }
+        budget.charge(n * core::mem::size_of::<u64>())?;
+        let mut row = Vec::new();
+        row.try_reserve_exact(n).map_err(|_| OwnershipError::Limit)?;
+        for _ in 0..n { row.push(u64::from_le_bytes(r.fixed()?)); }
+        output_indices.push(row);
+    }
     r.finish()?;
     Ok((
         view,
@@ -265,6 +331,7 @@ fn decode_job(job: &[u8]) -> R<(ViewPair, RangeBlock)> {
             txs,
             first_rct,
             next_rct,
+            output_indices,
         },
     ))
 }
@@ -351,7 +418,7 @@ pub fn decode_scan_result(src: &[u8]) -> R<ScannedBlock> {
         .map_err(|_| OwnershipError::Limit)?;
     let mut expected_txs = core::iter::once(&miner_hash).chain(&transactions);
     let mut current = expected_txs.next();
-    let mut previous_index = None;
+    let mut previous_indices = BTreeMap::new();
     let mut previous_local = None;
     for _ in 0..n {
         let bytes = r.blob(MAX_SCAN_RESULT)?;
@@ -376,10 +443,10 @@ pub fn decode_scan_result(src: &[u8]) -> R<ScannedBlock> {
             current = expected_txs.next();
         }
         let index = output.index_on_blockchain();
-        if current.is_none() || previous_index.is_some_and(|i| i >= index) {
+        if current.is_none() || previous_indices.get(&output.amount_bucket()).is_some_and(|i| *i >= index) {
             return Err(OwnershipError::InvalidBlock);
         }
-        previous_index = Some(index);
+        previous_indices.insert(output.amount_bucket(), index);
         outputs.push(output);
     }
     r.finish()?;

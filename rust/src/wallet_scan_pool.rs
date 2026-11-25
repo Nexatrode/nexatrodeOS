@@ -12,12 +12,8 @@ use zeroize::Zeroizing;
 type Slot = Mailbox<MAX_SCAN_JOB, MAX_SCAN_RESULT>;
 type Error = &'static [u8];
 fn scan_error(error: walletcore_core::OwnershipError) -> Error {
-    match error {
-        walletcore_core::OwnershipError::LegacyOutputs => {
-            b"NEXAWAL | SCAN FAIL | LEGACY OUTPUTS UNSUPPORTED"
-        }
-        _ => b"NEXAWAL | SCAN FAIL",
-    }
+    let _ = error;
+    b"NEXAWAL | SCAN FAIL"
 }
 const _: () = assert!(core::mem::size_of::<Slot>() <= 0x400000);
 
@@ -339,11 +335,7 @@ impl ScanPool {
         let next_rct = original.next_rct;
         let block = match reply {
             Some(block)
-                if block.height == original.block.number() as u64
-                    && block.hash == original.block.hash()
-                    && block.previous == original.block.header.previous
-                    && block.miner_hash == original.block.miner_transaction().hash()
-                    && block.transactions == original.block.transactions =>
+                if walletcore_core::validate_scanned_block(&block, &original) =>
             {
                 #[cfg(feature = "wallet-range-profile")]
                 {

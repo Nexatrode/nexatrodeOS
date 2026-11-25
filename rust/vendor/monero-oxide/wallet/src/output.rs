@@ -179,6 +179,8 @@ impl OutputData {
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub(crate) struct Metadata {
   pub(crate) additional_timelock: Timelock,
+  // V1 indices belong to this clear-amount bucket, not the RingCT pool.
+  pub(crate) legacy_amount: Option<u64>,
   pub(crate) subaddress: Option<SubaddressIndex>,
   pub(crate) payment_id: Option<PaymentId>,
   pub(crate) arbitrary_data: Vec<Vec<u8>>,
@@ -189,6 +191,7 @@ impl core::fmt::Debug for Metadata {
     fmt
       .debug_struct("Metadata")
       .field("additional_timelock", &self.additional_timelock)
+      .field("legacy_amount", &self.legacy_amount)
       .field("subaddress", &self.subaddress)
       .field("payment_id", &self.payment_id)
       .field("arbitrary_data", &self.arbitrary_data.iter().map(hex::encode).collect::<Vec<_>>())
@@ -199,6 +202,7 @@ impl core::fmt::Debug for Metadata {
 impl Metadata {
   fn eq(&self, other: &Self) -> bool {
     (self.additional_timelock == other.additional_timelock) &&
+      (self.legacy_amount == other.legacy_amount) &&
       (self.subaddress == other.subaddress) &&
       (self.payment_id == other.payment_id) &&
       (self.arbitrary_data == other.arbitrary_data)
@@ -211,13 +215,15 @@ impl Metadata {
   fn write<W: Write>(&self, w: &mut W) -> io::Result<()> {
     self.additional_timelock.write(w)?;
 
+    // Keep existing RingCT records byte-for-byte compatible. Flags 2/3 extend
+    // the format for legacy records; older readers reject them, rather than
+    // silently treating an amount-bucket index as a RingCT index.
+    w.write_all(&[u8::from(self.subaddress.is_some()) + 2 * u8::from(self.legacy_amount.is_some())])?;
     if let Some(subaddress) = self.subaddress {
-      w.write_all(&[1])?;
       w.write_all(&subaddress.account().to_le_bytes())?;
       w.write_all(&subaddress.address().to_le_bytes())?;
-    } else {
-      w.write_all(&[0])?;
     }
+    if let Some(amount) = self.legacy_amount { w.write_all(&amount.to_le_bytes())?; }
 
     if let Some(payment_id) = self.payment_id {
       w.write_all(&[1])?;
@@ -246,9 +252,10 @@ impl Metadata {
   fn read<R: Read>(r: &mut R) -> io::Result<Metadata> {
     let additional_timelock = Timelock::read(r)?;
 
-    let subaddress = match read_byte(r)? {
-      0 => None,
-      1 => Some(
+    let flags = read_byte(r)?;
+    let subaddress = match flags {
+      0 | 2 => None,
+      1 | 3 => Some(
         SubaddressIndex::new(read_u32(r)?, read_u32(r)?)
           .ok_or_else(|| io::Error::other("invalid subaddress in metadata"))?,
       ),
@@ -257,6 +264,7 @@ impl Metadata {
 
     Ok(Metadata {
       additional_timelock,
+      legacy_amount: if flags >= 2 { Some(read_u64(r)?) } else { None },
       subaddress,
       payment_id: if read_byte(r)? == 1 { PaymentId::read(r).ok() } else { None },
       /*
@@ -368,6 +376,13 @@ impl WalletOutput {
     self.metadata.subaddress
   }
 
+  /// Whether this is a transparent V1 output. Current RingCT spending APIs
+  /// cannot spend these outputs and must reject them explicitly.
+  pub fn is_legacy(&self) -> bool { self.metadata.legacy_amount.is_some() }
+
+  /// Daemon output-index amount bucket (zero for RingCT).
+  pub fn amount_bucket(&self) -> u64 { self.metadata.legacy_amount.unwrap_or(0) }
+
   /// The payment ID included with this output.
   ///
   /// This field may be `Some` even if wallet2 would not return a payment ID. wallet2 will only
@@ -427,11 +442,15 @@ impl WalletOutput {
   /// This is not a Monero protocol defined struct, and this is accordingly not a Monero protocol
   /// defined serialization. This may run in time variable to its value.
   pub fn read<R: Read>(r: &mut R) -> io::Result<WalletOutput> {
-    Ok(WalletOutput {
+    let output = WalletOutput {
       absolute_id: AbsoluteId::read(r)?,
       relative_id: RelativeId::read(r)?,
       data: OutputData::read(r)?,
       metadata: Metadata::read(r)?,
-    })
+    };
+    if output.metadata.legacy_amount.is_some_and(|amount| amount != output.data.commitment.amount) {
+      return Err(io::Error::other("legacy amount bucket disagrees with output amount"));
+    }
+    Ok(output)
   }
 }

@@ -11,7 +11,7 @@ mod block_range;
 mod ownership;
 #[cfg(feature = "worker-profile")]
 pub use ownership::execute_profiled_scan_job;
-pub use ownership::{decode_scan_result, encode_scan_job, execute_scan_job, scan_verified_block, OwnershipError, ScannedBlock, MAX_SCAN_JOB, MAX_SCAN_RESULT};
+pub use ownership::{validate_scanned_block, decode_scan_result, encode_scan_job, execute_scan_job, scan_verified_block, OwnershipError, ScannedBlock, MAX_SCAN_JOB, MAX_SCAN_RESULT};
 pub use block_range::{decode_block_range, encode_blocks_request, RangeBlock, RangeBody, RangeError, MAX_RANGE_BLOCKS, MAX_RANGE_BODY};
 mod output_distribution;
 mod decoy_collector;
@@ -1371,7 +1371,7 @@ pub fn build_decoys_for_output(
     use monero_wallet::ed25519::CompressedPoint;
     use monero_wallet::ringct::clsag::Decoys;
 
-    if members.len() != usize::from(RING_LEN) {
+    if output.is_legacy() || members.len() != usize::from(RING_LEN) {
         return None;
     }
     let real = output.index_on_blockchain();
@@ -1619,7 +1619,7 @@ fn build_restored_transaction(
             || !restored_output_unlocked(meta, chain_height) { return Err(PrepareError::NeedScan); }
         sum = sum.checked_add(meta.amount).ok_or(PrepareError::Insufficient)?;
         let decoys = build_decoys_for_output(output, ring).ok_or(PrepareError::NeedDecoys)?;
-        selected.push(OutputWithDecoys::from_wallet_output(output, decoys));
+        selected.push(OutputWithDecoys::from_wallet_output(output, decoys).ok_or(PrepareError::NeedDecoys)?);
     }
     if send_max && metadata.iter().enumerate().any(|(index, meta)|
         meta.spent_status == Some(0) && restored_output_unlocked(meta, chain_height)
@@ -1706,7 +1706,7 @@ pub fn prepare_and_sign(
         let output = primary_spend_output(state).ok_or(PrepareError::Insufficient)?;
         let decoys =
             build_decoys_for_output(output, ring_members).ok_or(PrepareError::NeedDecoys)?;
-        let input = OutputWithDecoys::from_wallet_output(output, decoys);
+        let input = OutputWithDecoys::from_wallet_output(output, decoys).ok_or(PrepareError::NeedDecoys)?;
         let addr = MoneroAddress::from_str(state.network, dest)
             .map_err(|_| PrepareError::BadAddress)?;
         let outgoing = Zeroizing::new(*seed);

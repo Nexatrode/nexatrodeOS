@@ -1,0 +1,117 @@
+import { ListView, LineEdit, ScrollView } from "std-widgets.slint";
+component ChatAction inherits Rectangle {
+    in property <string> label;
+    callback activate();
+    background: hit.pressed ? #315d70 : hit.has-hover ? #244758 : #173746;
+    border-radius: 7px;
+    Text { text: root.label; color: #c6f4f1; font-size: 12px; width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
+    hit := TouchArea { clicked => { root.activate(); } }
+}
+export component DesktopChat inherits Rectangle {
+    in property <[string]> chats;
+    in property <[int]> chat-indices;
+    in property <string> selected;
+    in property <bool> opened;
+    in property <bool> ready;
+    in property <string> service-status;
+    in property <string> receive-status;
+    in property <string> send-status;
+    in property <[string]> bubbles;
+    in property <[string]> times;
+    in property <[int]> sides;
+    in property <[image]> photos;
+    in property <[bool]> photo-ready;
+    in property <[string]> photo-ids;
+    in-out property <string> body;
+    in-out property <string> search;
+    in property <bool> invitation-open;
+    in property <bool> invitation-qr-visible;
+    in property <image> invitation-qr;
+    in property <string> invitation-uri;
+    in property <string> invitation-status;
+    in-out property <bool> join-open;
+    in-out property <string> join-uri;
+    in property <string> join-status;
+    callback select(int, string);
+    callback send(string);
+    callback search-changed();
+    callback focused(int);
+    callback make-link();
+    callback close-link();
+    callback join(string);
+    callback photo-visible(int, bool);
+    background: #081522;
+    Rectangle {
+        x: 0px; y: 0px; width: 180px; height: 100%; background: #0c1e2b;
+        Text { x: 16px; y: 18px; text: "SimpleX"; color: #e7f7fa; font-size: 22px; font-weight: 700; }
+        Text { x: 17px; y: 49px; text: root.ready ? "Private conversations" : root.service-status; color: #89aebb; font-size: 11px; width: 150px; overflow: elide; }
+        LineEdit { x: 12px; y: 78px; width: parent.width - 24px; height: 34px; placeholder-text: "Search chats"; text <=> root.search; edited => { root.search-changed(); } }
+        ChatAction { x: 12px; y: 126px; width: 76px; height: 32px; label: "New link"; activate => { root.make-link(); } }
+        ChatAction { x: 94px; y: 126px; width: 74px; height: 32px; label: "Join"; activate => { root.join-open = true; } }
+        ListView {
+            x: 8px; y: 176px; width: parent.width - 16px; height: parent.height - 222px;
+            for name[i] in root.chats: Rectangle {
+                height: 56px; background: root.opened && name == root.selected ? #1b3d4e : row.has-hover ? #16303f : transparent;
+                border-radius: 8px;
+                Text { x: 10px; y: 10px; width: parent.width - 20px; text: name; color: #e0f1f6; font-size: 15px; font-weight: 600; overflow: elide; }
+                Text { x: 10px; y: 32px; text: "Encrypted"; color: #89a5b5; font-size: 10px; }
+                row := TouchArea { clicked => { root.select(i < root.chat-indices.length ? root.chat-indices[i] : i, name); } }
+            }
+        }
+        Text { x: 12px; y: parent.height - 34px; width: parent.width - 24px; text: "SimpleXMQ · AGPL-3.0"; color: #7694a6; font-size: 10px; }
+    }
+    Rectangle {
+        x: 180px; width: parent.width - 180px; height: 100%; background: #081522;
+        Text { x: 20px; y: 21px; width: parent.width - 40px; text: root.opened ? root.selected : "Your conversations"; color: #e7f7fa; font-size: 19px; font-weight: 600; overflow: elide; }
+        Text { x: 20px; y: 51px; width: parent.width - 40px; text: root.opened ? "End-to-end encrypted" : "Choose a chat or create a private connection."; color: #8cacbd; font-size: 11px; overflow: elide; }
+        if root.opened: ListView {
+            x: 12px; y: 86px; width: parent.width - 24px; height: parent.height - 182px;
+            property <bool> follow: true;
+            init => { self.content-y = self.height - self.content-height; }
+            changed content-height => { if self.follow { self.content-y = self.height - self.content-height; } }
+            for body-text[i] in root.bubbles: message-row := Rectangle {
+                property <bool> image-ready: i < root.photo-ready.length && root.photo-ready[i] && i < root.photos.length;
+                property <bool> has-photo: i < root.photo-ids.length && root.photo-ids[i] != "";
+                init => { if self.has-photo { root.photo-visible(i, true); } }
+                changed has-photo => { if self.has-photo { root.photo-visible(i, true); } }
+                height: bubble.height + 10px;
+                bubble := Rectangle {
+                    x: i < root.sides.length && root.sides[i] == 1 ? parent.width - self.width : 0px;
+                    width: parent.has-photo ? min(260px, parent.width - 18px) : min(parent.width * 0.85, max(64px, message.preferred-width + 24px));
+                    height: parent.has-photo ? 188px : message.preferred-height + 38px;
+                    background: i < root.sides.length && root.sides[i] == 1 ? #123647 : #152736;
+                    border-radius: 12px;
+                    if parent.image-ready: Image { x: 6px; y: 6px; width: parent.width - 12px; height: 148px; source: root.photos[i]; image-fit: contain; }
+                    if parent.has-photo && !parent.image-ready: Text { x: 12px; y: 30px; text: "Loading photo…"; color: #a5bfcd; font-size: 13px; }
+                    message := Text { x: 12px; y: 10px; width: parent.width - 24px; text: message-row.has-photo ? "" : body-text; color: #e7f3f8; font-size: 15px; wrap: word-wrap; }
+                    Text { x: 12px; y: parent.height - 22px; width: parent.width - 24px; text: i < root.times.length ? root.times[i] : ""; color: #7db9c5; font-size: 10px; horizontal-alignment: right; }
+                }
+            }
+        }
+        if root.opened: Rectangle {
+            x: 14px; y: parent.height - 80px; width: parent.width - 28px; height: 52px;
+            background: #102b3b; border-radius: 10px; border-color: #285264; border-width: 1px;
+            entry := TextInput { x: 12px; y: 10px; width: parent.width - 78px; height: 32px; text <=> root.body; color: #e6f3f8; font-size: 15px; single-line: true;
+                accepted => { if root.body != "" { root.send(root.body); } }
+                changed has-focus => { root.focused(self.has-focus ? 6 : 0); }
+            }
+            if root.body == "": Text { x: 12px; y: 16px; text: "Message"; color: #789bad; font-size: 15px; }
+            ChatAction { x: parent.width - 58px; y: 8px; width: 48px; height: 36px; label: "Send"; activate => { if root.body != "" { root.send(root.body); } } }
+        }
+        Text { x: 18px; y: parent.height - 22px; width: parent.width - 36px; text: root.opened ? root.send-status : root.receive-status; color: #789bad; font-size: 10px; overflow: elide; }
+    }
+    if root.invitation-open || root.join-open: Rectangle {
+        width: 100%; height: 100%; background: #021019b8;
+        Rectangle {
+            x: 24px; y: 28px; width: parent.width - 48px; height: parent.height - 56px;
+            background: #102635; border-radius: 16px; border-color: #376275; border-width: 1px;
+            Text { x: 22px; y: 20px; text: root.join-open ? "Join a conversation" : "Private connection"; color: #e6f6fa; font-size: 21px; font-weight: 600; }
+            if root.invitation-open && root.invitation-qr-visible: Image { x: (parent.width - 180px) / 2; y: 65px; width: 180px; height: 180px; source: root.invitation-qr; }
+            if root.invitation-open: Text { x: 20px; y: 255px; width: parent.width - 40px; text: root.invitation-uri; color: #94cbd6; font-size: 11px; wrap: word-wrap; }
+            if root.join-open: LineEdit { x: 20px; y: 80px; width: parent.width - 40px; height: 38px; placeholder-text: "Paste or type an invitation"; text <=> root.join-uri; }
+            if root.join-open: ChatAction { x: 20px; y: 136px; width: parent.width - 40px; height: 40px; label: "Connect"; activate => { root.join(root.join-uri); } }
+            Text { x: 20px; y: parent.height - 96px; width: parent.width - 40px; text: root.join-open ? root.join-status : root.invitation-status; color: #8eb0c0; font-size: 12px; wrap: word-wrap; }
+            ChatAction { x: 20px; y: parent.height - 56px; width: parent.width - 40px; height: 36px; label: "Close"; activate => { root.join-open = false; root.close-link(); } }
+        }
+    }
+}

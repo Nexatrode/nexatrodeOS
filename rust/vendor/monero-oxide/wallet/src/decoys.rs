@@ -227,6 +227,9 @@ async fn select_decoys<R: RngCore + CryptoRng>(
   input: &WalletOutput,
   fingerprintable_deterministic: bool,
 ) -> Result<Decoys, TransactionsError> {
+  if input.is_legacy() {
+    Err(InterfaceError::InternalError("legacy outputs need amount-specific spending support".to_owned()))?;
+  }
   if ring_len == 0 {
     Err(InterfaceError::InternalError("requesting a ring of length 0".to_owned()))?;
   }
@@ -294,8 +297,9 @@ impl OutputWithDecoys {
   ///
   /// Used by Microkit `wallet_app`, which collects decoys via sync `/get_outs`
   /// rather than the async `ProvidesDecoys` path.
-  pub fn from_wallet_output(output: &WalletOutput, decoys: Decoys) -> Self {
-    Self { output: output.data.clone(), decoys }
+  pub fn from_wallet_output(output: &WalletOutput, decoys: Decoys) -> Option<Self> {
+    if output.is_legacy() { return None; }
+    Some(Self { output: output.data.clone(), decoys })
   }
 
   /// Select decoys for this output.

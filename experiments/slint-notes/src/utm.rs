@@ -11,7 +11,13 @@ use core::{
     sync::atomic::{AtomicBool, AtomicPtr, AtomicU16, AtomicU64, AtomicUsize, Ordering},
 };
 mod skia_guest;
-#[cfg(feature = "desktop-simplex-frontend")]
+#[cfg(feature = "desktop-real-app")]
+#[path = "../../desktop-apps/input.rs"]
+mod desktop_window;
+#[cfg(feature = "desktop-apps-observe")]
+#[path = "../../desktop-apps/observe.rs"]
+mod desktop_observation;
+#[cfg(all(feature = "desktop-simplex-frontend", not(feature = "desktop-real-app")))]
 #[path = "../../desktop-simplex/frontend_probe.rs"]
 mod frontend_probe;
 
@@ -39,7 +45,7 @@ const WIDTH: usize = FRAME_WIDTH as usize;
 const HEIGHT: usize = FRAME_HEIGHT as usize;
 const HEAP_BYTES: usize = 0x2000000;
 // Match the Pixel 4a panel: 1080x2340 at the same scale as the Pixel guest.
-const SCALE: f32 = 2.6086957;
+const SCALE: f32 = if cfg!(feature = "desktop-real-app") { 2.0 } else { 2.6086957 };
 
 fn clock_view_address() -> usize {
     *sel4_microkit::var!(slint_clock_view: usize = 0)
@@ -375,6 +381,10 @@ struct SlintService {
     nav_gesture: NavGesture,
     /// Last non-home app page for a simple recents jump.
     nav_last_app_page: i32,
+    #[cfg(feature = "desktop-real-app")]
+    desktop_held: [Option<slint::SharedString>; 256],
+    #[cfg(feature = "desktop-real-app")]
+    desktop_pointer: Option<slint::LogicalPosition>,
 }
 
 /// NexaWal shell client: opcodes only; payload lives on wallet_transfer.
@@ -3489,7 +3499,7 @@ impl SlintService {
     }
 
     fn load_vault_apps(&mut self) {
-        #[cfg(not(feature = "desktop-simplex-frontend"))]
+        #[cfg(not(any(feature = "desktop-simplex-frontend", feature = "desktop-real-app")))]
         {
         match self.notes_service.borrow().load() {
             Ok(note) => {
@@ -3557,6 +3567,7 @@ impl SlintService {
     }
 
     fn overlay_chat_names(&mut self) {
+        if cfg!(feature = "desktop-real-app") { return; }
         if self._ui.get_page() != 6
             || !self._ui.get_message_service_ready()
             || self._ui.get_message_view()
@@ -3704,6 +3715,10 @@ impl SlintService {
         });
         #[cfg(feature = "utm-perf-trace")]
         let trace_after_draw = perf_time_us();
+        if cfg!(feature = "desktop-real-app") {
+            if full { band.cover(0, FRAME_HEIGHT); }
+            return band;
+        }
         let chat_rows = self.sync_chat_rows();
         let dirty_chats = skia_guest::chat_dirty_mask();
         skia_guest::flush_chat_sprites();
@@ -3928,6 +3943,8 @@ impl SlintService {
     }
 
     fn publish_frame(&mut self) {
+        #[cfg(feature = "desktop-apps-observe")]
+        desktop_observation::publish(&self._ui);
         if self.defer_frame {
             self.frame_dirty = true;
             return;
@@ -4144,6 +4161,7 @@ fn init() -> SlintService {
         });
     window.set_size(PhysicalSize::new(WIDTH as u32, HEIGHT as u32));
     let ui = NotesWindow::new().expect("create Slint workspace suite");
+    ui.set_desktop_mode(cfg!(feature = "desktop-real-app"));
     #[cfg(feature = "utm-device-lock")]
     let device_lock = device_lock_utm::initialize(&ui, memory_region_symbol!(device_lock_transfer: *mut BlobTransferPage));
     ui.set_wallet_node("".into());
@@ -5521,6 +5539,10 @@ fn init() -> SlintService {
             from_home: false,
         },
         nav_last_app_page: 10,
+        #[cfg(feature = "desktop-real-app")]
+        desktop_held: core::array::from_fn(|_| None),
+        #[cfg(feature = "desktop-real-app")]
+        desktop_pointer: None,
     };
     // Paint ARMED only. Open+queue runs on the first GPU→input→SLINT pulse
     // after scanout — init-time OPEN/REFRESH Calls left the shell with no
@@ -5552,6 +5574,7 @@ fn init() -> SlintService {
         service.load_vault_apps();
         service.chat_refresh.request(true);
         service.publish_frame();
+        #[cfg(not(feature = "desktop-real-app"))]
         frontend_probe::publish(&service._ui);
         debug_println!("SIMPLEX_FRONTEND|STARTED");
     }
@@ -6068,6 +6091,24 @@ impl SlintService {
                 return;
             }
         }
+        #[cfg(feature = "desktop-real-app")]
+        {
+            // The phone has a manual Check action. Desktop dialogs complete
+            // asynchronously while native text input retains keyboard focus.
+            if self._ui.get_message_invitation_view() && self._ui.get_message_invitation_uri().is_empty() {
+                let invitation = self.messages_service.borrow().invitation();
+                if let Ok(uri) = invitation {
+                    if !uri.is_empty() {
+                        present_invitation_qr(&self._ui, uri.as_str());
+                        self._ui.set_message_invitation_uri(uri.into());
+                        self._ui.set_message_invitation_status("Connection link ready".into());
+                    }
+                }
+            }
+            if self._ui.get_message_join_view() && self._ui.get_message_join_requested() {
+                self._ui.invoke_check_join_status();
+            }
+        }
         // Agent LIST finishes after the first Slint load. Pull CHAT rows once
         // the vault snapshot has names so unread badges have real slots.
         let listed = self._ui.get_message_chats().row_count()
@@ -6305,7 +6346,7 @@ impl SlintService {
         // input frame rather than silently dropping incoming updates.
         #[cfg(feature = "simplex-agent-ui")]
         if self.frame_timer.is_none() && self.chat_refresh.take()
-            && self._ui.get_page() == 6 && self._ui.get_edit_target() == 0
+            && self._ui.get_page() == 6 && (cfg!(feature = "desktop-real-app") || self._ui.get_edit_target() == 0)
         {
             self.poll_live_chat();
             self.publish_frame();
@@ -7061,6 +7102,8 @@ impl SlintService {
         let event_type = if posted { POSTED_KIND.load(Ordering::Relaxed) } else { kind_and_code >> 32 };
         let code = if posted { POSTED_CODE.load(Ordering::Relaxed) } else { kind_and_code as u32 as u64 };
         let value = if posted { POSTED_VALUE.load(Ordering::Relaxed) } else { get_mr(2) as u64 };
+        #[cfg(feature = "desktop-real-app")]
+        return self.desktop_input(device, event_type, code, value);
         #[cfg(feature = "utm-perf-trace")]
         if device == DEVICE_TABLET && event_type == EVENT_KEY && code == BTN_LEFT {
             debug_println!("PERF|POINTER|{}|{}", perf_time_us(), value);
@@ -7451,7 +7494,7 @@ impl SlintService {
                 // own, and PPC refreshes here can block the UI on network IO.
                 if self._ui.get_page() == 16
                     && self._ui.get_wallet_tab() == wallet_tab_before
-                    && self._ui.get_edit_target() == 0 {
+                    && (cfg!(feature = "desktop-real-app") || self._ui.get_edit_target() == 0) {
                     if !self.wallet_opened {
                         self.wallet_opened = true;
                         let opened = self.wallet_service.smoke_round_trip();
@@ -7706,7 +7749,7 @@ impl SlintService {
         // starved HOME (search keyboard + mouse move → freeze before release).
         // Only poll after a click/key while Messages is still the open page.
         #[cfg(feature = "simplex-agent-ui")]
-        if self._ui.get_page() == 6 && self._ui.get_edit_target() == 0
+        if self._ui.get_page() == 6 && (cfg!(feature = "desktop-real-app") || self._ui.get_edit_target() == 0)
             && ((device == DEVICE_TABLET
                 && event_type == EVENT_KEY
                 && code == BTN_LEFT
@@ -7754,7 +7797,7 @@ impl Handler for SlintService {
         }
         #[cfg(feature = "simplex-agent-ui")]
         if timer_fired && self.chat_refresh.take()
-            && self._ui.get_page() == 6 && self._ui.get_edit_target() == 0
+            && self._ui.get_page() == 6 && (cfg!(feature = "desktop-real-app") || self._ui.get_edit_target() == 0)
         {
             self.poll_live_chat();
         }
@@ -7864,7 +7907,10 @@ impl Handler for SlintService {
             }
         }
         #[cfg(feature="desktop-simplex-frontend")]
-        frontend_probe::publish(&self._ui);
+        {
+            #[cfg(not(feature = "desktop-real-app"))]
+            frontend_probe::publish(&self._ui);
+        }
         self.arm_frame_timer();
         Ok(())
     }

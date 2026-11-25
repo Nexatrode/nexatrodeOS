@@ -2,8 +2,8 @@
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
-pub const FRAME_WIDTH: u32 = 1080;
-pub const FRAME_HEIGHT: u32 = 2340;
+pub const FRAME_WIDTH: u32 = if cfg!(feature = "desktop-real-app") { 1120 } else { 1080 };
+pub const FRAME_HEIGHT: u32 = if cfg!(feature = "desktop-real-app") { 1040 } else { 2340 };
 pub const FRAME_BYTES_PER_PIXEL: u32 = 3;
 pub const FRAME_STRIDE_BYTES: u32 = FRAME_WIDTH * FRAME_BYTES_PER_PIXEL;
 pub const FRAME_PIXEL_BYTES: usize = FRAME_STRIDE_BYTES as usize * FRAME_HEIGHT as usize;
