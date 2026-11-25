@@ -89,7 +89,7 @@ impl RuntimeDomain {
 #[cfg(feature="sunfish-mcfg-writer-trace")]
 impl RuntimeDomain {
     fn show_mcfg_writer(&self,d:&Display,owner:&ModemOwner){
-        for n in 2..=28{d.replace_line(n,"");}d.replace_line(1,if cfg!(feature="sunfish-mcfg-queued-turn"){"MCFG QUEUED TURN"}else if cfg!(feature="sunfish-mcfg-predecessor-trace"){"MCFG PREDECESSOR TURN"}else{"MCFG QUEUE WRITER"});
+        for n in 2..=28{d.replace_line(n,"");}d.replace_line(1,if cfg!(feature="sunfish-mcfg-rx-veto-trace"){"MCFG RX VETO TRACE"}else if cfg!(feature="sunfish-mcfg-queued-turn"){"MCFG QUEUED TURN"}else if cfg!(feature="sunfish-mcfg-predecessor-trace"){"MCFG PREDECESSOR TURN"}else{"MCFG QUEUE WRITER"});
         let age=|t|self.time_from_us(Some(self.runtime_started),t);
         let row=|n,label,values:&[u32]|{d.header_label(n,label);let mut fields=[(0,8);4];for(i,v)in values.iter().enumerate(){fields[i]=(*v,8);}d.header_row(n,true,&fields[..values.len()]);};
         let cap=owner.post_elf_mcfg();let m=cap.and_then(|c|c.mcfg.as_ref());let a=m.map(|m|&m.admission);let seq=m.and_then(|m|m.record_sequence());
@@ -111,6 +111,8 @@ impl RuntimeDomain {
         row(13,"ORIG ACK HOST REQ PUB DONE",&[age(owner.original_tftp_write_trace().and_then(|w|w.ack.done_at)),trace.elf_exchange.and_then(|e|e.host_credit).map_or(u32::MAX,|c|u32::from(c.requested)),trace.elf_exchange.and_then(|e|e.host_credit).map_or(u32::MAX,|c|u32::from(c.remote_intent.is_some())),trace.elf_exchange.and_then(|e|e.host_credit).map_or(u32::MAX,|c|u32::from(c.completed))]);
         #[cfg(feature="sunfish-mcfg-predecessor-trace")]
         {let c=trace.elf_exchange.and_then(|e|e.host_credit);row(13,"ORIG ACK HOST FILE RESULT",&[age(owner.original_tftp_write_trace().and_then(|w|w.ack.done_at)),c.map_or(u32::MAX,|c|u32::from(c.requested)|(u32::from(c.remote_intent.is_some())<<1)|(u32::from(c.completed)<<2)),m.and_then(|m|m.file_before).unwrap_or(u32::MAX),m.and_then(|m|m.server_result).unwrap_or(u32::MAX)]);}
+        #[cfg(feature="sunfish-mcfg-rx-veto-trace")]
+        {self.show_mcfg_rx_rows(d,owner);return;}
         d.header_label(14,if cfg!(feature="sunfish-mcfg-predecessor-trace"){"START END GATES CMD RECORD LO HI"}else{"START END GATES CMD; ARG Q S D R"});
         if let Some(a)=a{for(i,r)in a.records.iter().enumerate(){if let Some(r)=r{#[cfg(not(feature="sunfish-mcfg-predecessor-trace"))]
         d.header_row(15+i,false,&[(age(r.start),8),(age(r.end),8),(r.gates,8),(r.command,2)]);
@@ -133,4 +135,19 @@ impl RuntimeDomain {
         row(27,"READ TOTAL MASK PASSES OMIT",&[reads.total,reads.kinds,a.map_or(0,|a|a.passes),a.map_or(0,|a|a.omitted)]);
         let q=self.wlan_query.snapshot(owner);row(28,"IPA PD STATE WLAN WLFW",&[u32::from(self.ipa_complete_seen),q[1],owner.tftp_wire_counts()[2],q[7]]);
     }
+}
+
+#[cfg(feature="sunfish-mcfg-rx-veto-trace")]
+impl RuntimeDomain{
+ fn show_mcfg_rx_rows(&self,d:&Display,owner:&ModemOwner){
+  let trace=owner.mcfg_rx_veto_trace();let t=owner.mcfg_queued_turn_trace();let age=|at|self.time_from_us(Some(self.runtime_started),at);
+  d.header_label(14,"TOTAL OMIT CALL WRITE RX BLOCK");d.header_row(14,true,&[(trace.total,8),(trace.omitted,8),(t.calls,8),(t.writes,8),(t.rx_veto,8),(t.blocked,8)]);
+  for(i,e)in trace.records.iter().enumerate(){if let Some(e)=e{
+   d.header_row(15+i,false,&[(age(e.at),8),(e.tag,1),(e.call,8),(e.unread,8),(e.early,2),(e.watched_sequence.map_or(u32::MAX,|v|v as u32),8),(e.watched_sequence.map_or(u32::MAX,|v|(v>>32)as u32),8)]);
+   let h=e.header;let q=h.and_then(|h|h.qrtr);let endpoints=h.and_then(|h|h.del_client).or(q.map(|q|[q[1],q[2]])).unwrap_or([u32::MAX;2]);
+   d.header_row(15+i,true,&[(h.map_or(u32::MAX,|h|u32::from(h.command)),4),(h.map_or(u32::MAX,|h|u32::from(h.channel)),4),(h.map_or(u32::MAX,|h|h.parameter),8),(h.map_or(u32::MAX,|h|u32::from(h.bytes)),4),(q.map_or(u32::MAX,|q|q[0]),2),(endpoints[0],8),(endpoints[1],8)]);
+  }}
+  let c=owner.mcfg_close_trace();let(w,_,read)=self.server_check.mcfg_progress();d.header_label(27,"CLOSE OBS COMMIT MCFG W READS");d.header_row(27,true,&[(c.observed,8),(c.committed,8),(w,8),(read,8)]);
+  let q=self.wlan_query.snapshot(owner);d.header_label(28,"IPA PD STATE WLAN WLFW");d.header_row(28,true,&[(u32::from(self.ipa_complete_seen),8),(q[1],8),(owner.tftp_wire_counts()[2],8),(q[7],8)]);
+ }
 }

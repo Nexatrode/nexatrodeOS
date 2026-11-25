@@ -70,4 +70,8 @@ mod tests{
  fn mcfg_queued_adapter_faults_remain_terminal(){
   for mode in 0..4{let(mut a,p)=setup();let before=p.log().len();match mode{0=>p.0.borrow_mut().observation.ready=false,1=>p.0.borrow_mut().fail=Some("snapshot"),2=>p.0.borrow_mut().corrupt_readback=true,_=>p.0.borrow_mut().revoke_after_write=true};assert!(a.publish_mcfg_queued_turn(1).is_err());assert!(!p.log()[before..].iter().any(|o|matches!(o,crate::Op::Head(_)|crate::Op::Notify)));assert!(a.publish_next(1).is_err());assert_eq!(a.session.tftp_tx_progress()[2],0);}
  }
+/* MCFG_RX_VETO_BEGIN */
+#[cfg(feature="sunfish-mcfg-rx-veto-trace")]
+include!("../../tests/sunfish_mcfg_rx_veto_cases.rs");
+/* MCFG_RX_VETO_END */
 }

@@ -6,6 +6,13 @@
 //! No allocation, FIFO initialization, channel negotiation, or IRQ registration.
 #![forbid(unsafe_code)]
 
+/* MCFG_RX_VETO_BEGIN */
+#[cfg(feature="sunfish-mcfg-rx-veto-trace")]
+#[path="qcom_fifo_mcfg_rx_veto.rs"]
+mod mcfg_rx_veto;
+#[cfg(feature="sunfish-mcfg-rx-veto-trace")]
+pub use mcfg_rx_veto::{McfgRxVetoTrace,McfgRxEvent};
+/* MCFG_RX_VETO_END */
 /* MCFG_QUEUED_TURN_BEGIN */
 #[cfg(feature="sunfish-mcfg-queued-turn")]
 #[path="qcom_fifo_mcfg_queued.rs"]
@@ -2163,6 +2170,10 @@ pub struct Adapter<I> {
 /* MCFG_QUEUED_TURN_BEGIN */
     #[cfg(feature="sunfish-mcfg-queued-turn")]
     mcfg_guard: bool,
+/* MCFG_RX_VETO_BEGIN */
+#[cfg(feature="sunfish-mcfg-rx-veto-trace")]
+    mcfg_rx_veto: McfgRxVetoTrace,
+/* MCFG_RX_VETO_END */
     #[cfg(feature="sunfish-mcfg-queued-turn")]
     mcfg_queued: McfgQueuedTurnTrace,
 /* MCFG_QUEUED_TURN_END */
@@ -2201,6 +2212,10 @@ impl<I: Io> Adapter<I> {
 /* MCFG_QUEUED_TURN_BEGIN */
             #[cfg(feature="sunfish-mcfg-queued-turn")]
             mcfg_guard: false,
+/* MCFG_RX_VETO_BEGIN */
+#[cfg(feature="sunfish-mcfg-rx-veto-trace")]
+            mcfg_rx_veto: McfgRxVetoTrace::default(),
+/* MCFG_RX_VETO_END */
             #[cfg(feature="sunfish-mcfg-queued-turn")]
             mcfg_queued: McfgQueuedTurnTrace::default(),
 /* MCFG_QUEUED_TURN_END */
@@ -3156,6 +3171,10 @@ impl<I: Io> Adapter<I> {
         #[cfg(feature = "sunfish-linux-mpss-glink")]
         if let Some(first) = self.ring.control.as_ref().and_then(|c| c.early[0]) {
             self.ring.sample()?;
+/* MCFG_RX_VETO_BEGIN */
+#[cfg(feature="sunfish-mcfg-rx-veto-trace")]
+            self.record_mcfg_rx_event(4,Some(RegistrationHeader::read(&first.bytes[..first.len],false,None)));
+/* MCFG_RX_VETO_END */
             let event = match self.session.ingest(generation, &first.bytes[..first.len]) {
                 Ok(event) => event,
                 Err(error) => {
@@ -3181,6 +3200,10 @@ impl<I: Io> Adapter<I> {
         let size = match self.ring.peek()? {
             Ok(size) => size,
             Err(state) => {
+/* MCFG_RX_VETO_BEGIN */
+#[cfg(feature="sunfish-mcfg-rx-veto-trace")]
+                self.record_mcfg_rx_event(if matches!(state,Receive::Idle){5}else{6},None);
+/* MCFG_RX_VETO_END */
                 #[cfg(feature = "sunfish-ipa-ingress-work")]
                 if let (Some(start), Some(end)) = (ingress_start, self.ring.ingress_clock()) {
                     let (kind, size, detail) = match state {
@@ -3196,6 +3219,10 @@ impl<I: Io> Adapter<I> {
                 return Ok(state);
             }
         };
+/* MCFG_RX_VETO_BEGIN */
+#[cfg(feature="sunfish-mcfg-rx-veto-trace")]
+        self.record_mcfg_rx_event(3,Some(RegistrationHeader::read(&self.ring.record[..size],false,None)));
+/* MCFG_RX_VETO_END */
         #[cfg(feature = "sunfish-wrq-return-pending")]
         if let Some(trace) = self.ring.wrq_return_pending.as_mut()
             .filter(|trace| trace.follows(self.ring.words[2]) && trace.first.is_none())
@@ -3840,6 +3867,10 @@ impl<I: Io> Adapter<I> {
         #[cfg(feature="sunfish-mcfg-queued-turn")]
         if self.mcfg_guard && self.tftp_rx_snapshot().ok_or(Error::NotReady)? != (0,0) {
             self.mcfg_queued.rx_veto=self.mcfg_queued.rx_veto.saturating_add(1);
+/* MCFG_RX_VETO_BEGIN */
+#[cfg(feature="sunfish-mcfg-rx-veto-trace")]
+            self.record_mcfg_rx_event(1,None);
+/* MCFG_RX_VETO_END */
             self.quarantined=false;
             return Ok(Transmit::Idle);
         }
@@ -3913,6 +3944,10 @@ impl<I: Io> Adapter<I> {
         #[cfg(feature="sunfish-mcfg-queued-turn")]
         let mcfg_guard=self.mcfg_guard;
 /* MCFG_QUEUED_TURN_END */
+/* MCFG_RX_VETO_BEGIN */
+#[cfg(feature="sunfish-mcfg-rx-veto-trace")]
+        let mut mcfg_veto_after=false;
+/* MCFG_RX_VETO_END */
         let writer = |record: &[u8]| {
             #[cfg(feature = "sunfish-glink-announcement-reuse")]
             let yield_to_rx = first_grant || (reusable_ack && record.len() == 8
@@ -3944,6 +3979,10 @@ impl<I: Io> Adapter<I> {
 /* MCFG_QUEUED_TURN_BEGIN */
                     #[cfg(feature="sunfish-mcfg-queued-turn")]
                     if mcfg_guard {self.mcfg_queued.rx_veto=self.mcfg_queued.rx_veto.saturating_add(1);}
+/* MCFG_RX_VETO_BEGIN */
+#[cfg(feature="sunfish-mcfg-rx-veto-trace")]
+                    if mcfg_guard {mcfg_veto_after=true;}
+/* MCFG_RX_VETO_END */
 /* MCFG_QUEUED_TURN_END */
                     receive_arrived = true;
                     Err(WriteError::WouldBlock)
@@ -3973,6 +4012,10 @@ impl<I: Io> Adapter<I> {
         };
         #[cfg(not(feature = "sunfish-tftp-oack-followup"))]
         let result = self.session.publish_next(generation, writer);
+/* MCFG_RX_VETO_BEGIN */
+#[cfg(feature="sunfish-mcfg-rx-veto-trace")]
+        if mcfg_veto_after {self.record_mcfg_rx_event(2,None);}
+/* MCFG_RX_VETO_END */
         #[cfg(feature = "sunfish-registry-prearm-io-trace")]
         {
             let arm = self.session.registry_window_trace().target.is_some_and(|p| p.conversion.arms != 0);
@@ -4419,6 +4462,10 @@ impl<I: Io> Adapter<I> {
 /* MCFG_QUEUED_TURN_BEGIN */
         #[cfg(feature="sunfish-mcfg-queued-turn")]
         {self.mcfg_guard=false;self.mcfg_queued=McfgQueuedTurnTrace::default();}
+/* MCFG_RX_VETO_BEGIN */
+#[cfg(feature="sunfish-mcfg-rx-veto-trace")]
+        {self.mcfg_rx_veto=McfgRxVetoTrace::default();}
+/* MCFG_RX_VETO_END */
 /* MCFG_QUEUED_TURN_END */
         #[cfg(feature = "sunfish-first-oack-grant-window")]
         { self.first_grant = FirstGrantTrace::default(); }

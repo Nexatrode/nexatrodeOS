@@ -5,6 +5,8 @@ ROOT=Path(__file__).resolve().parents[1]
 PATTERN=r'/\* MCFG_QUEUED_TURN_BEGIN \*/\n.*?/\* MCFG_QUEUED_TURN_END \*/\n'
 COUNTS={'rust/src/qcom_glink_fifo.rs':8,'rust/src/qcom_modem_owner.rs':5,'rust/src/pixel_mpss_runtime.rs':1,'rust/src/sunfish_mpss_linux_transport.rs':1,'rust/src/sunfish_ipa_linux_qmi_owner.rs':1}
 def legacy_source(path,source):
+ from sunfish_mcfg_rx_veto_source_test import without_rx_veto
+ source=without_rx_veto(path,source)
  blocks=re.findall(PATTERN,source,re.S)
  if path in COUNTS:
   assert len(blocks)==COUNTS[path],(path,len(blocks))
