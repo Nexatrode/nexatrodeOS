@@ -25,7 +25,7 @@ impl Display{
  fn replace_line(&self,n:usize,s:&str){assert!(n<30&&s.len()<=24);self.real.replace_line(n,s);}
  fn hex(&self,n:usize,s:&str,v:u32){self.real.hex(n,s,v);}
  fn header_label(&self,n:usize,s:&str){assert!(n<29&&s.len()<=32);self.real.header_label(n,s);}
- fn header_row(&self,n:usize,second:bool,v:&[(u32,usize)]){assert!(n<29);assert!(v.iter().map(|(_,w)|w+1).sum::<usize>()<=64);self.rows.borrow_mut().push((n,second,v.to_vec()));self.real.header_row(n,second,v);}
+ fn header_row(&self,n:usize,second:bool,v:&[(u32,usize)]){assert!(n<29);assert!(v.iter().map(|(_,w)|w+1).sum::<usize>()<=57);self.rows.borrow_mut().push((n,second,v.to_vec()));self.real.header_row(n,second,v);}
 }
 mod diagnostic{pub(super) PACKED}
 
@@ -69,7 +69,7 @@ fn main(){
  let values=|n|d.rows.borrow().iter().find(|(row,second,_)|*row==n&&*second).unwrap().2.iter().map(|(v,_)|*v).collect::<Vec<_>>();
  r.show_tftp_completion(&d,&o);
  if cfg!(feature="sunfish-mcfg-writer-trace"){
-  assert_eq!(values(3),[0x4a,255,42,1]);assert_eq!(values(4),[140,145,150,190]);assert_eq!(values(5),[160,170,u32::MAX,4]);assert_eq!(values(6),[146,150,3,4]);assert_eq!(values(7),[1,6,5,3]);assert_eq!(values(8),[52,52,29,0]);if cfg!(feature="sunfish-mcfg-predecessor-trace"){assert_eq!(values(9),[148,149,150,10]);assert_eq!(values(13),[50,7,1,0]);assert_eq!(values(15),[9,0,u32::MAX,u32::MAX,1,108,42,1]);}else{assert_eq!(values(9),[148,10,2,1]);assert_eq!(values(15),[9,0,u32::MAX,u32::MAX,1]);}assert_eq!(values(28),[1,0x7fffffff,0,0]);
+  assert_eq!(values(3),[0x4a,255,42,1]);assert_eq!(values(4),[140,145,150,190]);assert_eq!(values(5),[160,170,u32::MAX,4]);assert_eq!(values(6),[146,150,3,4]);assert_eq!(values(7),[1,6,5,3]);assert_eq!(values(8),[52,52,29,0]);if cfg!(feature="sunfish-mcfg-predecessor-trace"){assert_eq!(values(9),[148,149,150,10]);assert_eq!(values(13),[50,7,1,0]);assert_eq!(values(15),[9,0,u32::MAX,u32::MAX,1,108]);assert_eq!(d.rows.borrow().iter().find(|(n,second,_)|*n==15&&!*second).unwrap().2.iter().map(|(v,_)|*v).collect::<Vec<_>>(),[151,152,0x830003,6,42,1]);}else{assert_eq!(values(9),[148,10,2,1]);assert_eq!(values(15),[9,0,u32::MAX,u32::MAX,1]);}assert_eq!(values(28),[1,0x7fffffff,0,0]);
   assert_eq!(&pixels[..1080*2340],&pixels[1080*2340..]);
   if let Ok(p)=std::env::var("SUNFISH_POST_ELF_OUTCOME_PPM"){let mut b=b"P6\n1080 2340\n255\n".to_vec();for v in &pixels[..1080*2340]{b.extend([(v>>16)as u8,(v>>8)as u8,*v as u8]);}std::fs::write(p,b).unwrap();}
   r.hz=0;d.rows.borrow_mut().clear();r.show_tftp_completion(&d,&o);assert_eq!(values(4),[u32::MAX;4]);assert_eq!(values(7),[1,6,5,3]);

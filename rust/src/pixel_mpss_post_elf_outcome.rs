@@ -111,11 +111,14 @@ impl RuntimeDomain {
         row(13,"ORIG ACK HOST REQ PUB DONE",&[age(owner.original_tftp_write_trace().and_then(|w|w.ack.done_at)),trace.elf_exchange.and_then(|e|e.host_credit).map_or(u32::MAX,|c|u32::from(c.requested)),trace.elf_exchange.and_then(|e|e.host_credit).map_or(u32::MAX,|c|u32::from(c.remote_intent.is_some())),trace.elf_exchange.and_then(|e|e.host_credit).map_or(u32::MAX,|c|u32::from(c.completed))]);
         #[cfg(feature="sunfish-mcfg-predecessor-trace")]
         {let c=trace.elf_exchange.and_then(|e|e.host_credit);row(13,"ORIG ACK HOST FILE RESULT",&[age(owner.original_tftp_write_trace().and_then(|w|w.ack.done_at)),c.map_or(u32::MAX,|c|u32::from(c.requested)|(u32::from(c.remote_intent.is_some())<<1)|(u32::from(c.completed)<<2)),m.and_then(|m|m.file_before).unwrap_or(u32::MAX),m.and_then(|m|m.server_result).unwrap_or(u32::MAX)]);}
-        d.header_label(14,"START END GATES CMD; ARG Q S D R");
-        if let Some(a)=a{for(i,r)in a.records.iter().enumerate(){if let Some(r)=r{d.header_row(15+i,false,&[(age(r.start),8),(age(r.end),8),(r.gates,8),(r.command,2)]);#[cfg(not(feature="sunfish-mcfg-predecessor-trace"))]
+        d.header_label(14,if cfg!(feature="sunfish-mcfg-predecessor-trace"){"START END GATES CMD RECORD LO HI"}else{"START END GATES CMD; ARG Q S D R"});
+        if let Some(a)=a{for(i,r)in a.records.iter().enumerate(){if let Some(r)=r{#[cfg(not(feature="sunfish-mcfg-predecessor-trace"))]
+        d.header_row(15+i,false,&[(age(r.start),8),(age(r.end),8),(r.gates,8),(r.command,2)]);
+        #[cfg(feature="sunfish-mcfg-predecessor-trace")]
+        d.header_row(15+i,false,&[(age(r.start),8),(age(r.end),8),(r.gates,8),(r.command,2),(r.record_sequence.map_or(u32::MAX,|n|n as u32),8),(r.record_sequence.map_or(u32::MAX,|n|(n>>32)as u32),8)]);#[cfg(not(feature="sunfish-mcfg-predecessor-trace"))]
         d.header_row(15+i,true,&[(r.parameter,8),(r.kind,2),(r.source,8),(r.destination,8),(r.result,1)]);
         #[cfg(feature="sunfish-mcfg-predecessor-trace")]
-        d.header_row(15+i,true,&[(r.parameter,8),(r.kind,2),(r.source,8),(r.destination,8),(r.result,1),(r.grant_size,8),(r.record_sequence.map_or(u32::MAX,|n|n as u32),8),(r.record_sequence.map_or(u32::MAX,|n|(n>>32)as u32),8)]);}}}
+        d.header_row(15+i,true,&[(r.parameter,8),(r.kind,2),(r.source,8),(r.destination,8),(r.result,1),(r.grant_size,8)]);}}}
         row(23,"CLOSE OBS COMMIT UNSENT KEPT",&[ct.observed,ct.committed,ct.unsent,ct.published.saturating_add(ct.credits)]);
         let(w,bytes,done)=self.server_check.mcfg_progress();row(24,"MCFG WRITES FILE READS STAGE",&[w,bytes.map_or(u32::MAX,|n|n as u32),done,ct.stage]);
         row(25,"OTHER KIND PEER BYTES OP",&cap.and_then(|c|c.other).unwrap_or([u32::MAX;4]));
