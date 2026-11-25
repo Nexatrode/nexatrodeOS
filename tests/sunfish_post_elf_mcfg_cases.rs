@@ -78,4 +78,7 @@ fn post_mcfg_owner_automatic_dispatch_uses_actual_server_result(){
 #[cfg(feature="sunfish-mcfg-close-cleanup")]
 include!("sunfish_mcfg_close_cases.rs");
 
+
+#[cfg(feature="sunfish-mcfg-missing-close")]
+include!("sunfish_mcfg_missing_close_cases.rs");
 }

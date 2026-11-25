@@ -7,6 +7,8 @@ pub struct McfgCloseTrace {
     pub peer:Option<Address>,pub at:Option<u64>,
     #[cfg(feature="sunfish-mcfg-close-handoff")]
     pub stage:u32,
+    #[cfg(feature="sunfish-mcfg-missing-close")]
+    pub kind:u32,
 }
 impl<I:Io> Owner<I>{
     pub fn pending_mcfg_close(&self)->Option<Address>{self.pending_mcfg_close}
@@ -17,6 +19,8 @@ impl<I:Io> Owner<I>{
     pub fn resolve_mcfg_close(&mut self,server:&mut crate::qcom_tftp_server_check::ServerCheck)->Result<(),Error>{
         #[cfg(feature="sunfish-mcfg-close-handoff")]
         {self.mcfg_close_trace.stage=1;}
+        #[cfg(feature="sunfish-mcfg-missing-close")]
+        {self.mcfg_close_trace.kind=u32::MAX;}
         if self.stopped{return Err(Error::Stopped);}
         let peer=self.pending_mcfg_close.ok_or(Error::Stopped)?;
         let result=(||{
@@ -24,6 +28,8 @@ impl<I:Io> Owner<I>{
             let port=server.preflight_mcfg_close(key).map_err(|_|Error::Stopped)?;
             #[cfg(feature="sunfish-mcfg-close-handoff")]
             {self.mcfg_close_trace.stage=2;}
+            #[cfg(feature="sunfish-mcfg-missing-close")]
+            {self.mcfg_close_trace.kind=server.mcfg_close_kind(key);}
             if self.pending_tftp_reply.is_some_and(|r|r.route.destination==peer){return Err(Error::Stopped);}
             let mut retained=0u8;
             for (i,r) in self.peer_tftp_replies.iter().enumerate(){if let Some(r)=r.as_ref().filter(|r|r.meta.route.destination==peer){

@@ -3,7 +3,7 @@ use super::*;
 impl RuntimeDomain {
     pub(super) fn show_tftp_completion(&self, d: &Display, owner: &ModemOwner) {
         for n in 2..=28 { d.replace_line(n, ""); }
-        d.replace_line(1, if cfg!(feature="sunfish-mcfg-close-handoff"){ "MCFG CLOSE HANDOFF" }else if cfg!(feature="sunfish-mcfg-close-cleanup"){ "MCFG CLOSE CLEANUP" }else{ "POST ELF OUTCOME" });
+        d.replace_line(1, if cfg!(feature="sunfish-mcfg-missing-close"){ "MCFG MISSING CLOSE" }else if cfg!(feature="sunfish-mcfg-close-handoff"){ "MCFG CLOSE HANDOFF" }else if cfg!(feature="sunfish-mcfg-close-cleanup"){ "MCFG CLOSE CLEANUP" }else{ "POST ELF OUTCOME" });
         #[cfg(not(feature="sunfish-mcfg-close-handoff"))]
         d.hex(2, "RUNTIME ERROR", self.error);
         let trace = owner.service_registry_trace();
@@ -61,7 +61,11 @@ impl RuntimeDomain {
         #[cfg(not(feature="sunfish-mcfg-close-cleanup"))]
         row(16, "REPLY MASK BLK WIN TSIZE", &[m.map_or(0, |m| m.reply_options.present), m.map_or(u32::MAX, |m| m.reply_options.values[0]), m.map_or(u32::MAX, |m| m.reply_options.values[2]), m.map_or(u32::MAX, |m| m.reply_options.values[3])]);
         #[cfg(feature="sunfish-mcfg-close-cleanup")]
-        {let t=owner.mcfg_close_trace();row(15,"CLOSE OBS COMMIT HELD RETAINED",&[t.observed,t.committed,t.held,t.retained]);row(16,"CLOSE UNSENT KEPT PEER US",&[t.unsent,t.published.saturating_add(t.credits),t.peer.map_or(u32::MAX,|p|p.port),age(t.at)]);}
+        {let t=owner.mcfg_close_trace();row(15,"CLOSE OBS COMMIT HELD RETAINED",&[t.observed,t.committed,t.held,t.retained]);
+            #[cfg(not(feature="sunfish-mcfg-missing-close"))]
+            row(16,"CLOSE UNSENT KEPT PEER US",&[t.unsent,t.published.saturating_add(t.credits),t.peer.map_or(u32::MAX,|p|p.port),age(t.at)]);
+            #[cfg(feature="sunfish-mcfg-missing-close")]
+            row(16,"CLOSE UNSENT KEPT PEER KIND",&[t.unsent,t.published.saturating_add(t.credits),t.peer.map_or(u32::MAX,|p|p.port),t.kind]);}
         row(17, "JOURNAL TOTAL OMIT BAD QWAIT", &[cap.map_or(0, |c| c.total), cap.map_or(0, |c| c.omitted), cap.map_or(0, |c| c.bad), m.map_or(0, |m| diagnostic::packed_counts(m.queue_waits[0], m.queue_waits[1]))]);
         if let Some(c) = cap {
             for (i, h) in c.journal.iter().enumerate() {

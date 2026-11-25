@@ -388,17 +388,37 @@ fn mcfg_error(error: mcfg::Error) -> Error {
 
 #[cfg(feature = "sunfish-tftp-mcfg-ram")]
 impl ServerCheck {
+    #[cfg(feature="sunfish-mcfg-missing-close")]
+    fn missing_mcfg_close_state(t:&Transfer)->bool{
+        // Exact failed-open response for mcfg.tmp, not another absent path or RAM transfer.
+        t.missing_kind==1 && t.mcfg_read.is_none() && t.mcfg_write.is_none()
+            && t.len==0 && t.last_len==0 && t.last_block==0 && !t.complete
+    }
+    #[cfg(feature="sunfish-mcfg-missing-close")]
+    pub(crate) fn mcfg_close_kind(&self,peer:Address)->u32{
+        let Some(t)=self.transfers.iter().find(|t|t.peer==Some(peer))else{return 0;};
+        if t.mcfg_write.is_some(){2}else if t.mcfg_read.is_some(){1}
+        else if Self::missing_mcfg_close_state(t){3}else{u32::MAX}
+    }
     #[cfg(feature="sunfish-mcfg-close-cleanup")]
     pub(crate) fn mcfg_close_transfers(&self)->[Option<(Address,u32)>;TRANSFER_COUNT]{
         core::array::from_fn(|i|{let t=&self.transfers[i];
-            t.peer.filter(|_|!t.abandoned&&(t.mcfg_read.is_some()||t.mcfg_write.is_some()))
+            #[cfg(feature="sunfish-mcfg-missing-close")]
+            let missing=Self::missing_mcfg_close_state(t);
+            #[cfg(not(feature="sunfish-mcfg-missing-close"))]
+            let missing=false;
+            t.peer.filter(|_|!t.abandoned&&(t.mcfg_read.is_some()||t.mcfg_write.is_some()||missing))
                 .map(|p|(p,TRANSFER_PORT+i as u32))})
     }
     #[cfg(feature="sunfish-mcfg-close-cleanup")]
     pub(crate) fn preflight_mcfg_close(&self,peer:Address)->Result<Option<u32>,Error>{
         let Some(i)=self.transfers.iter().position(|t|t.peer==Some(peer))else{return Ok(None);};
         let t=&self.transfers[i];
-        if t.abandoned || (t.mcfg_write.is_none()&&t.mcfg_read.is_none()){return Err(Error::UnexpectedRequest);}
+        #[cfg(feature="sunfish-mcfg-missing-close")]
+        let missing=Self::missing_mcfg_close_state(t);
+        #[cfg(not(feature="sunfish-mcfg-missing-close"))]
+        let missing=false;
+        if t.abandoned || (t.mcfg_write.is_none()&&t.mcfg_read.is_none()&&!missing){return Err(Error::UnexpectedRequest);}
         if t.mcfg_write.as_ref().is_some_and(|w|!w.complete()){self.mcfg_file.can_abort(peer.port).map_err(mcfg_error)?;}
         Ok(Some(TRANSFER_PORT+i as u32))
     }
