@@ -5,6 +5,11 @@ desktop app installation through a separate seL4 process manager. UTM is the
 integration environment. Slint and the existing CPU Skia and VirtIO display
 work remain the rendering foundation.
 
+The accepted GPU-first delivery sequence and current checkpoint status are in
+[the implementation record](desktop-integration-execution.md). Native VirGL
+rendering/readback now works in a separate diskless probe; the presentation
+gate is still failing, so the three-app desktop retains its CPU compositor.
+
 The laboratory implementation now includes a graphical lifecycle image. A
 trusted Microkit-hosted manager and compositor creates a Slint process after
 boot from a bounded resource pool. It clears that window's caches and input
@@ -28,8 +33,9 @@ A separate [native NetSurf guest](../experiments/netsurf-native/README.md)
 now runs packaged HTML/CSS/BMP/PNG/JPEG documents and real forms, links/history and
 scrolling at 2x in disposable UTM. Its opt-in HTTPS worker also fetches and
 renders real NetSurf/IANA/kernel.org pages using guest DNS/TCP and validated
-TLS. It remains a standalone full-screen process without storage or integration
-into the desktop dock, lock, wallet or chat installation. This experiment
+TLS. Its standalone profile remains available; the opt-in three-app desktop now
+also provides a native window and dock item alongside SimpleX and NexaWal.
+Browser persistence and combined desktop lock integration remain pending. This experiment
 supplies no Linux binary ABI.
 
 ## Landscape desktop shell
