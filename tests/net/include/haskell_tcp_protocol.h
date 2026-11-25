@@ -1,5 +1,5 @@
-/* Shared MR holds HASKELL_TCP_SESSIONS wire pages (array). Wallet/worker use
- * their slot's page; agent/shell still share page 0 and set `reserved`. */
+/* Legacy MR contains wallet/worker pages; agent/shell share page 0.
+ * The opt-in desktop browser uses a separate wire page and fixed endpoint. */
 #pragma once
 #include <stdint.h>
 
@@ -10,7 +10,14 @@
 #define WORKER_TCP_CHANNEL 6
 #define HASKELL_TCP_MAX 128
 /** Slot 2 = wallet PD; slot 3 = scan_worker (agent keeps 0/1). */
+#ifdef DESKTOP_BROWSER_NETWORK
+#define HASKELL_TCP_SESSIONS 5
+#define BROWSER_TCP_CHANNEL 8
+#define HASKELL_TCP_BROWSER_SLOT 4u
+extern uintptr_t browser_tcp_page;
+#else
 #define HASKELL_TCP_SESSIONS 4
+#endif
 #define HASKELL_TCP_WALLET_SLOT 2u
 #define HASKELL_TCP_WORKER_SLOT 3u
 #define HASKELL_TCP_MAGIC 0x31504354u /* "TCP1" little endian */

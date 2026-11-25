@@ -104,3 +104,9 @@ The bounded fragment follow-up is reproduced by `dom_work.py` and
 `fragment_limits.py`. The libDOM guard in `fragment_limits.inc` retains an MIT
 license; the frontend helpers declare GPL-2.0-only. Upstream libDOM and NetSurf
 copyright/license headers remain intact in the patched sources.
+
+The optional three-app desktop (`tests/desktop_apps_utm.py --browser`) uses the
+same pinned NetSurf engine, frontend license and dependency notice inventory.
+Its separate window surface and private HTTPS transport add no downloaded
+implementation dependency; the builder exports the browser notices alongside
+the combined disposable image.

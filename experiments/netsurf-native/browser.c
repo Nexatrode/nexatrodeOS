@@ -35,7 +35,10 @@ static struct gui_window window;
 static bool dirty=true, shift, mouse_down, loaded;
 static unsigned frames, navigations;
 static int mouse_x, mouse_y;
-static uint32_t input_tail, dropped;
+static uint32_t input_tail;
+#ifndef NATIVE_DESKTOP
+static uint32_t dropped;
+#endif
 static bool editing;
 static char typed_url[2048];
 static char address[2048] = "resource:index.html";
@@ -156,14 +159,23 @@ static void draw(void){
         if(window.caret_h>0)native_fill(window.caret_x,window.caret_y+BAR-window.scroll,1,window.caret_h,0x806010);
     }
     native_plotters.clip(&ctx,&full);native_fill(0,0,WIDTH,BAR,0x231707);
+#ifdef NATIVE_DESKTOP
+    native_text(10,37,14,0xf4f4e5,"Home");native_text(68,37,14,0xd9b485,"Back");
+#else
     native_text(26,38,17,0xf4f4e5,"Home");native_text(112,38,17,0xd9b485,"Back");
-    native_fill(193,12,WIDTH-693,36,0x38281b);
-    struct rect address_clip={193,12,WIDTH-500,48};native_plotters.clip(&ctx,&address_clip);
-    native_text(208,37,15,0xe5d5b0,editing?typed_url:address);native_plotters.clip(&ctx,&full);
-    native_fill(WIDTH-490,12,90,36,0x38281b);native_text(WIDTH-481,37,15,0xe5d5b0,"Reload");
-    native_fill(WIDTH-395,12,75,36,0x38281b);native_text(WIDTH-381,37,15,0xe5d5b0,"Stop");
+#endif
+    native_fill(ADDRESS_LEFT,12,ADDRESS_RIGHT-ADDRESS_LEFT,36,0x38281b);
+    struct rect address_clip={ADDRESS_LEFT,12,ADDRESS_RIGHT,48};native_plotters.clip(&ctx,&address_clip);
+    native_text(ADDRESS_LEFT+10,37,15,0xe5d5b0,editing?typed_url:address);native_plotters.clip(&ctx,&full);
+    native_fill(RELOAD_LEFT,12,RELOAD_RIGHT-RELOAD_LEFT,36,0x38281b);native_text(RELOAD_LEFT+5,37,14,0xe5d5b0,"Reload");
+    native_fill(STOP_LEFT,12,STOP_RIGHT-STOP_LEFT,36,0x38281b);native_text(STOP_LEFT+8,37,14,0xe5d5b0,"Stop");
+#ifdef NATIVE_DESKTOP
+    struct rect status_clip={8,50,WIDTH-8,BAR};native_plotters.clip(&ctx,&status_clip);
+    native_text(12,68,11,native_page_error()?0x7373ff:0xb5e7a0,native_page_status());
+#else
     struct rect status_clip={WIDTH-310,4,WIDTH,56};native_plotters.clip(&ctx,&status_clip);
     native_text(WIDTH-304,37,11,native_page_error()?0x7373ff:0xb5e7a0,native_page_status());
+#endif
     native_plotters.clip(&ctx,&full);
     atomic_store_explicit(&h->damage_y,0,memory_order_relaxed);
     atomic_store_explicit(&h->damage_height,PIXEL_HEIGHT,memory_order_relaxed);
@@ -216,6 +228,52 @@ static void key(unsigned code,unsigned value){
         else if(code==102)scroll_to(0);else if(code==107)scroll_to(window.height);
     }
 }
+static void pointer_button(unsigned value){
+    if ((value!=0)==mouse_down) return;
+    bool inside=mouse_x>=0 && mouse_x<WIDTH && mouse_y>=0 && mouse_y<HEIGHT;
+    if(inside && mouse_y<BAR){
+        if(!value){
+            if(mouse_x>=RELOAD_LEFT && mouse_x<RELOAD_RIGHT)reload_page();
+            else if(mouse_x>=STOP_LEFT && mouse_x<STOP_RIGHT)stop_page();
+            else if(mouse_x>=ADDRESS_LEFT && mouse_x<ADDRESS_RIGHT){editing=true;typed_url[0]=0;dirty=true;}
+            else if(mouse_x<HOME_RIGHT)navigate(
+#ifdef NATIVE_HTTPS
+                "resource:web.html"
+#else
+                "resource:index.html"
+#endif
+            );
+            else if(mouse_x<BACK_RIGHT && browser_window_back_available(window.bw))browser_window_history_back(window.bw,false);
+        }
+    } else if(inside) {
+        editing=false;browser_window_mouse_click(window.bw,value?BROWSER_MOUSE_PRESS_1:BROWSER_MOUSE_CLICK_1,mouse_x,mouse_y-BAR+window.scroll);
+    } else if(!value)browser_window_mouse_track(window.bw,BROWSER_MOUSE_HOVER,mouse_x,mouse_y-BAR+window.scroll);
+    mouse_down=value!=0;
+}
+static void pointer_move(void){
+    if(mouse_y>=BAR)browser_window_mouse_track(window.bw,mouse_down?BROWSER_MOUSE_HOLDING_1:BROWSER_MOUSE_HOVER,mouse_x,mouse_y-BAR+window.scroll);
+}
+#ifdef NATIVE_DESKTOP
+/* Private, window-local input supplied by the trusted desktop manager. Never
+ * map the raw input-driver ring or global pointer/framebuffer into this PD. */
+static void input(void){
+    uint32_t *q=(void*)input_handoff;
+    uint32_t head=__atomic_load_n(&q[2],__ATOMIC_ACQUIRE);
+    if(head-input_tail>224){input_tail=head;mouse_down=shift=false;}
+    while(input_tail!=head){
+        uint32_t r[4];memcpy(r,q+4+(input_tail++%224)*4,sizeof(r));
+        unsigned device=r[0]&65535,kind=r[0]>>16;
+        if(device==2){mouse_down=shift=false;continue;}
+        if(device==INPUT_DEVICE_KEYBOARD && kind==1 && r[2]<=2){key(r[1],r[2]);continue;}
+        if(device!=INPUT_DEVICE_TABLET)continue;
+        mouse_x=(int16_t)(r[3]&65535)/NATIVE_SCALE;mouse_y=(int16_t)(r[3]>>16)/NATIVE_SCALE;
+        if(kind==3)pointer_move();
+        else if(kind==1 && r[1]==272 && r[2]<=1)pointer_button(r[2]);
+        else if(kind==2 && r[1]==8)scroll_to(window.scroll-(int32_t)r[2]*80);
+    }
+    __atomic_store_n(&q[3],input_tail,__ATOMIC_RELEASE);
+}
+#else
 static void input(void){
     struct input_event_ring *q=(void*)input_handoff;
     uint32_t head=__atomic_load_n(&q->head,__ATOMIC_ACQUIRE),lost=__atomic_load_n(&q->dropped,__ATOMIC_ACQUIRE);
@@ -225,19 +283,9 @@ static void input(void){
         if(e.device==INPUT_DEVICE_TABLET){
             if(e.type==3 && e.code<=1 && e.value<=32767){
                 if(e.code==0)mouse_x=e.value*(WIDTH-1)/32767;else mouse_y=e.value*(HEIGHT-1)/32767;
-                if(mouse_y>=BAR)browser_window_mouse_track(window.bw,mouse_down?BROWSER_MOUSE_HOLDING_1:BROWSER_MOUSE_HOVER,mouse_x,mouse_y-BAR+window.scroll);
-            }else if(e.type==1 && e.code==272 && e.value<=1){
-                if ((e.value!=0)==mouse_down) continue;
-                if(mouse_y<BAR){if(!e.value){if(mouse_x>=WIDTH-490&&mouse_x<WIDTH-400)reload_page();else if(mouse_x>=WIDTH-395&&mouse_x<WIDTH-320)stop_page();else if(mouse_x>=193&&mouse_x<WIDTH-500){editing=true;typed_url[0]=0;dirty=true;}else if(mouse_x<95)navigate(
-#ifdef NATIVE_HTTPS
-                    "resource:web.html"
-#else
-                    "resource:index.html"
-#endif
-                    );else if(mouse_x<185 && browser_window_back_available(window.bw))browser_window_history_back(window.bw,false);}}
-                else {editing=false;browser_window_mouse_click(window.bw,e.value?BROWSER_MOUSE_PRESS_1:BROWSER_MOUSE_CLICK_1,mouse_x,mouse_y-BAR+window.scroll);}
-                mouse_down=e.value!=0;
-            }else if(e.type==2 && e.code==8)scroll_to(window.scroll-(int32_t)e.value*80);
+                pointer_move();
+            }else if(e.type==1 && e.code==272 && e.value<=1)pointer_button(e.value);
+            else if(e.type==2 && e.code==8)scroll_to(window.scroll-(int32_t)e.value*80);
         }else if(e.device==INPUT_DEVICE_KEYBOARD && e.type==1 && e.value<=2)key(e.code,e.value);
     }
     __atomic_store_n(&q->tail,input_tail,__ATOMIC_RELEASE);
@@ -245,9 +293,13 @@ static void input(void){
     p[1]=mouse_x*NATIVE_SCALE;p[2]=mouse_y*NATIVE_SCALE;p[3]=1;__atomic_thread_fence(__ATOMIC_RELEASE);p[0]=rev+2;
     microkit_notify(0);
 }
+#endif
+
 void init(void){
     printf("NETSURF|BOOT|native ARM64|scale=%d\n",NATIVE_SCALE);
+#ifndef NATIVE_DESKTOP
     *(uint32_t*)ui_focus=1;
+#endif
     native_raster_init((unsigned char*)browser_frame+sizeof(slint_frame_header_t));
     static struct netsurf_table table={.misc=&misc,.window=&windows,.fetch=&fetch,.bitmap=&native_bitmaps,.layout=&native_layout};
     check(netsurf_register(&table),"register");

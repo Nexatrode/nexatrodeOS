@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: BSD-2-Clause
-//! Browser-exclusive slot 2 in an otherwise app-free disposable network image.
+//! Dedicated browser transport. Desktop uses a separate wire page/session.
 use core::ptr::NonNull;
 use nexatrode_guest_https::{PollTransport, StreamError};
 use sel4_microkit::{Channel, MessageInfo, get_mr, memory_region_symbol};
+const SLOT: u32 = if cfg!(feature = "desktop-tcp") { 4 } else { 2 };
+const PAGE: usize = if cfg!(feature = "desktop-tcp") { 0 } else { 2 };
 const NET: Channel = Channel::new(1);
 #[repr(C)]
 struct Page {
@@ -25,13 +27,13 @@ pub struct Tcp {
 impl Tcp {
     pub fn new() -> Self {
         let base = memory_region_symbol!(haskell_tcp_page:*mut u8).as_ptr();
-        let page = unsafe { NonNull::new_unchecked(base.cast::<Page>().add(2)) };
+        let page = unsafe { NonNull::new_unchecked(base.cast::<Page>().add(PAGE)) };
         unsafe {
             page.as_ptr().write(Page {
                 magic: 0x31504354,
                 request_len: 0,
                 response_len: 0,
-                slot: 2,
+                slot: SLOT,
                 ip: [0; 4],
                 port: 0,
                 pad: 0,
@@ -51,7 +53,7 @@ impl Tcp {
     }
     fn call(&mut self, label: u64) -> u64 {
         self.p().magic = 0x31504354;
-        self.p().slot = 2;
+        self.p().slot = SLOT;
         NET.pp_call(MessageInfo::new(label, 0)).label()
     }
     pub fn cancel(&mut self) {
@@ -110,6 +112,7 @@ impl PollTransport for Tcp {
         }
     }
     fn try_read(&mut self, out: &mut [u8]) -> Result<Option<usize>, Self::Error> {
+        if self.wide == 0 && cfg!(feature = "desktop-tcp") { self.wide=128; }
         if self.wide == 0 {
             let reply = NET.pp_call(MessageInfo::new(0x428, 0));
             self.wide = if reply.label() == 0x438 {

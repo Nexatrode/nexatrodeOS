@@ -78,6 +78,10 @@ static uintptr_t dns_generations[DNS_SLOT_COUNT];
 #endif
 
 /* Wallet/worker use per-slot wire pages; agent/shell share page 0 + reserved. */
+#ifdef DESKTOP_BROWSER_NETWORK
+/* Mapped only by this server and its browser broker, never the legacy clients. */
+uintptr_t browser_tcp_page;
+#endif
 static uint32_t active_slot;
 static bool wire_is_slot_local;
 
@@ -88,6 +92,10 @@ static volatile struct haskell_tcp_page *pages_base(void)
 
 static volatile struct haskell_tcp_page *page(void)
 {
+#ifdef DESKTOP_BROWSER_NETWORK
+    if (wire_is_slot_local && active_slot == HASKELL_TCP_BROWSER_SLOT)
+        return (volatile struct haskell_tcp_page *)browser_tcp_page;
+#endif
     if (wire_is_slot_local)
         return pages_base() + active_slot;
     return pages_base();

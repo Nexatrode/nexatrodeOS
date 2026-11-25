@@ -6,6 +6,7 @@ publish = false
 license = "BSD-2-Clause"
 
 [features]
+desktop-tcp = []
 test-fixtures = ["nexatrode-guest-https/browser-test-ca"]
 
 [dependencies]

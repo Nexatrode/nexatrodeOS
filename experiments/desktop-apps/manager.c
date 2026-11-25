@@ -1,4 +1,4 @@
-/* Static two-app desktop experiment. This does not grant dynamic lifecycle or
+/* Static desktop app desktop experiment. This does not grant dynamic lifecycle or
  * lock/eviction guarantees: minimizing/closing hides a window, services live on. */
 #include <stddef.h>
 #include <stdint.h>
@@ -27,13 +27,21 @@ void init(void)
     dynamic_active = true; compositor_init();
     desktop.windows[0].open = desktop.windows[0].visible = 1;
     desktop.windows[1].open = desktop.windows[1].visible = 1;
+    #if DESKTOP_APP_COUNT == 3
+    desktop.windows[2]=(struct shell_window){340,152,0,0};
+    desktop.reserved=0x321;
+#endif
     focus(1);
+    #if DESKTOP_APP_COUNT == 3
+    microkit_dbg_puts("DESKTOP_APPS|READY|SimpleX+NexaWal+NetSurf|static-disposable\n");
+#else
     microkit_dbg_puts("DESKTOP_APPS|READY|SimpleX+NexaWal|static-disposable\n");
+#endif
 }
 void notified(microkit_channel channel)
 {
-    for (unsigned i = 0; i < 2; ++i) {
-        uint32_t *q = (void *)(i == 0 ? input_a : input_b);
+    for (unsigned i = 0; i < DESKTOP_APP_COUNT; ++i) {
+        uint32_t *q = (void *)app_input(i+1);
         if (__atomic_exchange_n(&q[1], 0, __ATOMIC_ACQ_REL)) input_notify(i + 1);
     }
     compositor_notified(channel);
@@ -43,7 +51,7 @@ microkit_msginfo protected(microkit_channel channel, microkit_msginfo m)
     if (channel != 61 || microkit_msginfo_get_label(m) != SHELL_REQUEST ||
         microkit_msginfo_get_count(m) != 4 || seL4_MessageInfo_get_extraCaps(m)) return microkit_msginfo_new(1, 0);
     uint64_t command = microkit_mr_get(0), id = microkit_mr_get(1);
-    if (id < 1 || id > 2 || command < 1 || command > 5) return microkit_msginfo_new(1, 0);
+    if (id < 1 || id > DESKTOP_APP_COUNT || command < 1 || command > 5) return microkit_msginfo_new(1, 0);
     struct shell_window *w = &desktop.windows[id - 1];
     if (command == SHELL_APP_LAUNCH) { w->open = w->visible = 1; focus(id); }
     else if (command == SHELL_APP_MINIMIZE || command == SHELL_APP_CLOSE) {
