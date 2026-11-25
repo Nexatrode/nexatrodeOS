@@ -1,6 +1,11 @@
 //! Serialized modem transport owner: bounded work, retained fault state, IRQs.
 //! Native attachment must consume the actual authenticated channel handoff.
 #![forbid(unsafe_code)]
+/* MCFG_QUEUED_TURN_BEGIN */
+#[cfg(feature="sunfish-mcfg-queued-turn")]
+#[path="qcom_owner_mcfg_queued.rs"]
+mod mcfg_queued;
+/* MCFG_QUEUED_TURN_END */
 #[cfg(feature="sunfish-mcfg-close-cleanup")]
 #[path="qcom_owner_mcfg_close.rs"]
 mod mcfg_close;
@@ -1006,6 +1011,10 @@ pub struct Owner<I> {
     pending_firmware_close: Option<crate::qcom_qmi_router::Address>,
     #[cfg(feature="sunfish-mcfg-close-cleanup")]
     pending_mcfg_close: Option<crate::qcom_qmi_router::Address>,
+/* MCFG_QUEUED_TURN_BEGIN */
+    #[cfg(feature="sunfish-mcfg-queued-turn")]
+    mcfg_queued_enabled: bool,
+/* MCFG_QUEUED_TURN_END */
     #[cfg(feature="sunfish-mcfg-close-cleanup")]
     mcfg_close_transfers: [Option<(crate::qcom_qmi_router::Address,u32)>;crate::qcom_tftp_server_check::TRANSFER_COUNT],
     #[cfg(feature="sunfish-mcfg-close-cleanup")]
@@ -1293,6 +1302,10 @@ impl<I: Io> Owner<I> {
             pending_firmware_close: None,
             #[cfg(feature="sunfish-mcfg-close-cleanup")]
             pending_mcfg_close: None,
+/* MCFG_QUEUED_TURN_BEGIN */
+            #[cfg(feature="sunfish-mcfg-queued-turn")]
+            mcfg_queued_enabled: false,
+/* MCFG_QUEUED_TURN_END */
             #[cfg(feature="sunfish-mcfg-close-cleanup")]
             mcfg_close_transfers: [None;crate::qcom_tftp_server_check::TRANSFER_COUNT],
             #[cfg(feature="sunfish-mcfg-close-cleanup")]
@@ -2537,6 +2550,13 @@ impl<I: Io> Owner<I> {
         let first_oack_peer = (self.adapter.tftp_endpoint_trace().is_none()
             && reply.bytes[..reply.meta.bytes].starts_with(&[0, 6]))
             .then_some(reply.meta.route.destination);
+/* MCFG_QUEUED_TURN_BEGIN */
+        #[cfg(feature="sunfish-mcfg-queued-turn")]
+        let mcfg_turn=self.mcfg_queued_enabled
+            && reply.bytes[..reply.meta.bytes]==*crate::qcom_tftp_server_check::MISSING_REPLY
+            && self.mcfg_close_transfers.iter().flatten().any(|(peer,port)|
+                *peer==reply.meta.route.destination && *port==reply.meta.route.source.port);
+/* MCFG_QUEUED_TURN_END */
         if let Err(error) = self.adapter.revalidate(self.generation) { return Err(self.stop(error.into())); }
         #[cfg(not(feature = "sunfish-wlan-first-server-check-repeat"))]
         let queued = self.adapter.queue_tftp_response(self.generation, reply.meta.route, &reply.bytes[..reply.meta.bytes]);
@@ -2562,6 +2582,10 @@ impl<I: Io> Owner<I> {
                 self.peer_tftp_replies[slot] = None;
                 self.peer_tftp_cursor = (slot + 1) % MAX_REQUESTS;
                 self.schedule(interrupts)?;
+/* MCFG_QUEUED_TURN_BEGIN */
+                #[cfg(feature="sunfish-mcfg-queued-turn")]
+                if mcfg_turn {if let Err(error)=self.adapter.publish_mcfg_queued_turn(self.generation){return Err(self.stop(error.into()));}}
+/* MCFG_QUEUED_TURN_END */
                 #[cfg(feature = "sunfish-tftp-oack-early-reserve")]
                 if self.adapter.early_reserved_oack_pending() {
                     if let Err(error) = self.adapter.publish_oack_followup(

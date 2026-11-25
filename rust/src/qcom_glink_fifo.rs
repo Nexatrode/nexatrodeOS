@@ -6,6 +6,13 @@
 //! No allocation, FIFO initialization, channel negotiation, or IRQ registration.
 #![forbid(unsafe_code)]
 
+/* MCFG_QUEUED_TURN_BEGIN */
+#[cfg(feature="sunfish-mcfg-queued-turn")]
+#[path="qcom_fifo_mcfg_queued.rs"]
+mod mcfg_queued;
+#[cfg(feature="sunfish-mcfg-queued-turn")]
+pub use mcfg_queued::McfgQueuedTurnTrace;
+/* MCFG_QUEUED_TURN_END */
 #[cfg(feature = "sunfish-linux-mpss-glink")]
 #[path = "sunfish_mpss_linux_transport.rs"]
 mod boot;
@@ -2153,6 +2160,12 @@ impl GrantRxWindow {
 }
 
 pub struct Adapter<I> {
+/* MCFG_QUEUED_TURN_BEGIN */
+    #[cfg(feature="sunfish-mcfg-queued-turn")]
+    mcfg_guard: bool,
+    #[cfg(feature="sunfish-mcfg-queued-turn")]
+    mcfg_queued: McfgQueuedTurnTrace,
+/* MCFG_QUEUED_TURN_END */
     #[cfg(feature = "sunfish-first-oack-grant-window")]
     first_grant: FirstGrantTrace,
     ring: Ring<I>,
@@ -2185,6 +2198,12 @@ impl<I: Io> Adapter<I> {
         }
         let words = descriptors(&mut io, rx_bytes)?;
         let mut this = Self {
+/* MCFG_QUEUED_TURN_BEGIN */
+            #[cfg(feature="sunfish-mcfg-queued-turn")]
+            mcfg_guard: false,
+            #[cfg(feature="sunfish-mcfg-queued-turn")]
+            mcfg_queued: McfgQueuedTurnTrace::default(),
+/* MCFG_QUEUED_TURN_END */
             #[cfg(feature = "sunfish-first-oack-grant-window")]
             first_grant: FirstGrantTrace::default(),
             ring: Ring {
@@ -3817,6 +3836,14 @@ impl<I: Io> Adapter<I> {
         }
         self.quarantined = true;
         self.ring.sample()?;
+/* MCFG_QUEUED_TURN_BEGIN */
+        #[cfg(feature="sunfish-mcfg-queued-turn")]
+        if self.mcfg_guard && self.tftp_rx_snapshot().ok_or(Error::NotReady)? != (0,0) {
+            self.mcfg_queued.rx_veto=self.mcfg_queued.rx_veto.saturating_add(1);
+            self.quarantined=false;
+            return Ok(Transmit::Idle);
+        }
+/* MCFG_QUEUED_TURN_END */
         #[cfg(feature = "sunfish-first-oack-grant-window")]
         let first_grant = matches!(followup, Some(core::OackFollowup::FirstGrantAd | core::OackFollowup::FirstGrantInit | core::OackFollowup::FirstGrantAck | core::OackFollowup::FirstGrantReply));
         #[cfg(not(feature = "sunfish-first-oack-grant-window"))]
@@ -3882,12 +3909,20 @@ impl<I: Io> Adapter<I> {
         }
         #[cfg(feature = "sunfish-glink-announcement-reuse")]
         let reusable_ack = self.session.reusable_intent_ack_pending();
+/* MCFG_QUEUED_TURN_BEGIN */
+        #[cfg(feature="sunfish-mcfg-queued-turn")]
+        let mcfg_guard=self.mcfg_guard;
+/* MCFG_QUEUED_TURN_END */
         let writer = |record: &[u8]| {
             #[cfg(feature = "sunfish-glink-announcement-reuse")]
             let yield_to_rx = first_grant || (reusable_ack && record.len() == 8
                 && u16::from_le_bytes([record[0],record[1]]) == 8 && word(record,4) == 1);
             #[cfg(not(feature = "sunfish-glink-announcement-reuse"))]
             let yield_to_rx = first_grant;
+/* MCFG_QUEUED_TURN_BEGIN */
+            #[cfg(feature="sunfish-mcfg-queued-turn")]
+            let yield_to_rx=yield_to_rx||mcfg_guard;
+/* MCFG_QUEUED_TURN_END */
             #[cfg(feature = "sunfish-tftp-reserved-writer-io")]
             let before = watch_reserved.then(|| self.ring.io.reserved_io_totals()).flatten();
             #[cfg(feature = "sunfish-wrq-prefix-close")]
@@ -3906,6 +3941,10 @@ impl<I: Io> Adapter<I> {
             }
             match result {
                 Ok(false) => {
+/* MCFG_QUEUED_TURN_BEGIN */
+                    #[cfg(feature="sunfish-mcfg-queued-turn")]
+                    if mcfg_guard {self.mcfg_queued.rx_veto=self.mcfg_queued.rx_veto.saturating_add(1);}
+/* MCFG_QUEUED_TURN_END */
                     receive_arrived = true;
                     Err(WriteError::WouldBlock)
                 }
@@ -4377,6 +4416,10 @@ impl<I: Io> Adapter<I> {
             return Err(Error::IdentityChanged);
         }
         self.session.reset_after_transport_reset(generation)?;
+/* MCFG_QUEUED_TURN_BEGIN */
+        #[cfg(feature="sunfish-mcfg-queued-turn")]
+        {self.mcfg_guard=false;self.mcfg_queued=McfgQueuedTurnTrace::default();}
+/* MCFG_QUEUED_TURN_END */
         #[cfg(feature = "sunfish-first-oack-grant-window")]
         { self.first_grant = FirstGrantTrace::default(); }
         #[cfg(feature = "sunfish-grant-buffer-reads")]

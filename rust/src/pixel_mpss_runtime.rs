@@ -458,6 +458,10 @@ impl RuntimeDomain {
         owner.prepare_tftp_server(0x5000).map_err(|_| 0x4au32)?;
         #[cfg(feature = "sunfish-wlan-state-query")]
         owner.enable_servreg_notif_client(0x4005).map_err(|_| 0x4bu32)?;
+/* MCFG_QUEUED_TURN_BEGIN */
+        #[cfg(feature="sunfish-mcfg-queued-turn")]
+        owner.enable_mcfg_queued_turn();
+/* MCFG_QUEUED_TURN_END */
         owner.start_control().map_err(|_| 0x42u32)?;
         owner.enable_ipa_server(&permit, &mut self.router).map_err(|_| 0x48u32)?;
         let server = (&mut *self.boot).server().map_err(|_| 0x43u32)?;

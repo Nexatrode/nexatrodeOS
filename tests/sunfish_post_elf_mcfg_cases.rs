@@ -88,4 +88,6 @@ include!("sunfish_mcfg_record_identity_cases.rs");
 include!("sunfish_mcfg_writer_cases.rs");
 #[cfg(feature="sunfish-mcfg-predecessor-trace")]
 include!("sunfish_mcfg_predecessor_cases.rs");
+#[cfg(feature="sunfish-mcfg-queued-turn")]
+include!("sunfish_mcfg_queued_cases.rs");
 }

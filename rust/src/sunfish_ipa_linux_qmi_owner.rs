@@ -791,6 +791,10 @@ impl<I: Io> Owner<I> {
             return Err((error.into(), adapter));
         }
         Ok(Self {
+/* MCFG_QUEUED_TURN_BEGIN */
+            #[cfg(feature="sunfish-mcfg-queued-turn")]
+            mcfg_queued_enabled: false,
+/* MCFG_QUEUED_TURN_END */
             #[cfg(feature = "sunfish-linux-rmtfs")]
             linux_rmtfs_id: None,
             #[cfg(feature = "sunfish-linux-rmtfs")]

@@ -607,6 +607,12 @@ impl<I: BootIo> BootTransport<I> {
             early: self.early,
         });
         Ok(Adapter {
+/* MCFG_QUEUED_TURN_BEGIN */
+            #[cfg(feature="sunfish-mcfg-queued-turn")]
+            mcfg_guard: false,
+            #[cfg(feature="sunfish-mcfg-queued-turn")]
+            mcfg_queued: super::McfgQueuedTurnTrace::default(),
+/* MCFG_QUEUED_TURN_END */
             #[cfg(feature = "sunfish-first-oack-grant-window")]
             first_grant: super::FirstGrantTrace::default(),
             ring: ManuallyDrop::into_inner(self.ring),

@@ -3,7 +3,9 @@ from pathlib import Path
 import subprocess,unittest
 ROOT=Path(__file__).resolve().parents[1]
 CANCEL_HOOK='                #[cfg(feature="sunfish-mcfg-record-identity")]\n                self.observe_post_mcfg_cancel(i);\n'
+from sunfish_mcfg_queued_source_test import legacy_source
 def protocol_source(path,source):
+ source=legacy_source(path,source)
  if path=='rust/src/qcom_mcfg_close.rs':
   assert source.count(CANCEL_HOOK)<=1
   return source.replace(CANCEL_HOOK,'')

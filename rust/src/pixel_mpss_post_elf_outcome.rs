@@ -89,7 +89,7 @@ impl RuntimeDomain {
 #[cfg(feature="sunfish-mcfg-writer-trace")]
 impl RuntimeDomain {
     fn show_mcfg_writer(&self,d:&Display,owner:&ModemOwner){
-        for n in 2..=28{d.replace_line(n,"");}d.replace_line(1,if cfg!(feature="sunfish-mcfg-predecessor-trace"){"MCFG PREDECESSOR TURN"}else{"MCFG QUEUE WRITER"});
+        for n in 2..=28{d.replace_line(n,"");}d.replace_line(1,if cfg!(feature="sunfish-mcfg-queued-turn"){"MCFG QUEUED TURN"}else if cfg!(feature="sunfish-mcfg-predecessor-trace"){"MCFG PREDECESSOR TURN"}else{"MCFG QUEUE WRITER"});
         let age=|t|self.time_from_us(Some(self.runtime_started),t);
         let row=|n,label,values:&[u32]|{d.header_label(n,label);let mut fields=[(0,8);4];for(i,v)in values.iter().enumerate(){fields[i]=(*v,8);}d.header_row(n,true,&fields[..values.len()]);};
         let cap=owner.post_elf_mcfg();let m=cap.and_then(|c|c.mcfg.as_ref());let a=m.map(|m|&m.admission);let seq=m.and_then(|m|m.record_sequence());
@@ -121,7 +121,10 @@ impl RuntimeDomain {
         d.header_row(15+i,true,&[(r.parameter,8),(r.kind,2),(r.source,8),(r.destination,8),(r.result,1),(r.grant_size,8)]);}}}
         row(23,"CLOSE OBS COMMIT UNSENT KEPT",&[ct.observed,ct.committed,ct.unsent,ct.published.saturating_add(ct.credits)]);
         let(w,bytes,done)=self.server_check.mcfg_progress();row(24,"MCFG WRITES FILE READS STAGE",&[w,bytes.map_or(u32::MAX,|n|n as u32),done,ct.stage]);
+        #[cfg(not(feature="sunfish-mcfg-queued-turn"))]
         row(25,"OTHER KIND PEER BYTES OP",&cap.and_then(|c|c.other).unwrap_or([u32::MAX;4]));
+        #[cfg(feature="sunfish-mcfg-queued-turn")]
+        {let t=owner.mcfg_queued_turn_trace();row(25,"TURN CALLS WRITES RX VETO BLOCK",&[t.calls,t.writes,t.rx_veto,t.blocked]);}
         row(26,"REPLY OP CODE BYTES PORT",&[m.map_or(u32::MAX,|m|m.reply_opcode),m.map_or(u32::MAX,|m|m.reply_number),m.map_or(0,|m|m.reply_bytes),m.map_or(u32::MAX,|m|m.transfer_port)]);
         let reads=owner.read_sequence();
         #[cfg(not(feature="sunfish-mcfg-predecessor-trace"))]
