@@ -20,3 +20,12 @@ fn post_mcfg_writer_uncertain_and_bounded_history(){
  let a=s.post_elf_mcfg().unwrap().mcfg.unwrap().admission;assert_eq!((a.passes,a.omitted,a.records.iter().flatten().count()),(16,8,8));assert!(a.records.iter().flatten().all(|r|r.result==2));
  assert_eq!(s.publish_next(1,|_|Err(qcom_glink_qmi::WriteError::Uncertain)),Err(qcom_glink_qmi::Error::PublicationUncertain));let a=s.post_elf_mcfg().unwrap().mcfg.unwrap().admission;assert_eq!(a.records[7].unwrap().result,3);let before=a.passes;assert!(s.publish_next(1,|_|panic!("terminal" )).is_err());assert_eq!(s.post_elf_mcfg().unwrap().mcfg.unwrap().admission.passes,before);
 }
+
+#[test]
+fn post_mcfg_writer_pending_close_fences_writer_without_clock(){
+ let(mut s,_wire,route,close)=identity_setup(false);
+ assert_eq!(s.ingest(1,&data(close,&owner_control_frame(6,[0,route.destination.port,0,0]))).unwrap(),Event::McfgClosePending{peer:route.destination});
+ let m=s.post_elf_mcfg().unwrap().mcfg.unwrap();assert_eq!(m.close_at,None);assert_ne!(m.flags&128,0);let passes=m.admission.passes;
+ assert_eq!(s.publish_next(1,|_|panic!("pending close must prevent writer callback")),Err(qcom_glink_qmi::Error::FlowBusy));
+ assert_eq!(s.post_elf_mcfg().unwrap().mcfg.unwrap().admission.passes,passes);
+}

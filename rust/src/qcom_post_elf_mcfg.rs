@@ -159,7 +159,7 @@ impl Session {
         |(u32::from(self.intent_request_ack==Some(false))<<5)
         |(u32::from(self.intent_ack_backing.is_some())<<6)
         |(u32::from(self.receive.iter().any(|r|r.done_pending))<<7)
-        |(u32::from(self.post_elf_mcfg.as_ref().and_then(|c|c.mcfg.as_ref()).is_some_and(|m|m.close_at.is_some()))<<8)
+        |(u32::from(self.post_elf_mcfg.as_ref().and_then(|c|c.mcfg.as_ref()).is_some_and(|m|m.flags&128!=0))<<8)
     }
     pub(crate) fn begin_mcfg_writer_pass(&mut self){
         let Some(i)=self.mcfg_writer_slot()else{return;};let gates=self.mcfg_writer_gates(i);let at=self.intent_ack_clock.map(|c|c());
