@@ -436,3 +436,15 @@ fn busy_needs_an_unambiguous_trusted_error_reply() {
         assert!(!e.is_busy() && !e.is_limit() && !e.needs_full_transactions());
     }
 }
+
+#[test]
+fn retains_exact_legacy_bucket_indices_but_keeps_modern_batches_compact() {
+    let early = decode_block_range(EARLY, 1, 2).unwrap();
+    for block in early {
+        assert_eq!(block.output_indices.len(), block.txs.len() + 1);
+        assert_eq!(block.output_indices[0].len(), block.block.miner_transaction().prefix().outputs.len());
+        assert!(block.first_rct.is_none());
+        assert!(block.next_rct.is_none());
+    }
+    for block in decode_block_range(MODERN, START, 2).unwrap() { assert!(block.output_indices.is_empty()); }
+}

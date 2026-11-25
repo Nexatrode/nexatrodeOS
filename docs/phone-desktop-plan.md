@@ -24,6 +24,14 @@ passed; see [the SimpleX lifecycle evidence](simplex-dynamic-lock.md).
 Regular installation-key migration, NexaWal lifecycle integration and general
 file services remain separate boundaries.
 
+A separate [native NetSurf guest](../experiments/netsurf-native/README.md)
+now runs packaged HTML/CSS/BMP/PNG/JPEG documents and real forms, links/history and
+scrolling at 2x in disposable UTM. Its opt-in HTTPS worker also fetches and
+renders real NetSurf/IANA/kernel.org pages using guest DNS/TCP and validated
+TLS. It remains a standalone full-screen process without storage or integration
+into the desktop dock, lock, wallet or chat installation. This experiment
+supplies no Linux binary ABI.
+
 ## Landscape desktop shell
 
 The opt-in `DESKTOP_SHELL` image adds a 1280×800 logical workspace to the
@@ -193,3 +201,12 @@ See [the app architecture and experiments](desktop-app-direction.md),
 [the wrapped-key prototype](vault-key-prototype.md) for current evidence.
 The [dynamic app lock experiment](dynamic-app-lock.md) records the separate
 passphrase/lifecycle test and its security limits.
+
+The [two-app desktop experiment](../experiments/desktop-apps/README.md) now runs
+SimpleX and NexaWal together in 2× landscape UTM with fresh data. Live messages,
+photos, native typing, background receipt and window restoration passed. Tab
+changes remain measurable under load. After adding indexed legacy-output
+scanning, a disposable wallet completed 4,459 blocks through node height
+3,813,869. Legacy spending and the compact single-block fallback remain
+separate limitations. This static integration still needs the separate desktop
+session-lock/service lifecycle before any personal-data rollout.

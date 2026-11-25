@@ -1,0 +1,19 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>NetSurf native lab</title><link rel="stylesheet" href="resource:lab.css"></head>
+<body><main>
+<p class="eyebrow">NEXATRODEOS / BROWSER LAB</p><h1>A real web page.</h1>
+<p class="lead">HTML, CSS and images. Laid out here, on seL4.</p>
+<div class="picture"><img src="resource:scene.bmp" width="440" height="220" alt="Blue and teal landscape"><p>A packaged bitmap, decoded by NetSurf.</p></div>
+<section class="card form"><h2>Try the form</h2><p>Nothing leaves this disposable machine.</p>
+<form action="resource:result.html" method="get"><label>Your name<br><input name="name" type="text" placeholder="Type a test name" size="26"></label><br>
+<label><input type="checkbox" name="updates" value="yes"> Remember this test choice</label><br>
+<button type="submit">Submit locally</button></form></section>
+<div class="clear"></div><section class="card"><h2>Follow a link</h2>
+<p><a href="resource:second.html">Open the second local page</a> &nbsp; <a href="#below">Jump down this document</a></p></section>
+<section id="below"><h2>Keep scrolling</h2><p>The next sections are part of the HTML document. Use the wheel, arrow keys or Page Down.</p></section>
+<section class="card"><h2>01 / Native layout</h2><p>The HTML parser, DOM, CSS cascade and layout engine are upstream NetSurf code. This is not a picture of a browser.</p></section>
+<section class="card"><h2>02 / Sharp text</h2><p>A packaged Roboto font is rasterized at the physical display density. Layout and painting share the same font metrics.</p></section>
+<section class="card"><h2>03 / Isolated experiment</h2><p>The browser has no wallet, chats, network service or filesystem access. Every resource in this page was packaged at build time.</p></section>
+<section class="card"><h2>04 / A small beginning</h2><p>JavaScript, general browsing, downloads and persistent profiles are future work. First we check rendering, typing and scrolling.</p></section>
+<footer><h2>END OF LOCAL DOCUMENT</h2><p><a href="resource:index.html">Back to the start</a></p></footer>
+</main></body></html>

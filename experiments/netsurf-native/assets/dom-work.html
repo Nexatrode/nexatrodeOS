@@ -1,0 +1,25 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Native DOM work lab</title>
+<style>body{margin:24px;font:22px sans-serif}button{font:22px sans-serif;margin-right:16px}#area{height:220px;overflow:hidden}</style>
+</head><body><h1>Native DOM work lab</h1>
+<button id="small">Small</button><button id="medium">Medium</button><button id="large">Large</button><button id="restore">Restore</button>
+<button id="nodes">Nodes</button><button id="deep">Deep</button>
+<p><input id="entry" value="KEEP" style="font:22px sans-serif;width:360px"></p>
+<p id="result">READY TO TEST</p><div id="area"><p>SAFE FRAME</p></div>
+<script>
+var area=document.getElementById('area');
+function replace(n){
+    var before=area.textContent;console.log('DOM WORK START '+n);
+    try {area.innerHTML=new Array(n+1).join('<span>x</span>');console.log('DOM WORK END '+n);console.log('DOM CHILDREN '+area.childNodes.length);}
+    catch(e){console.log('DOM WORK REJECT '+n);console.log('DOM OLD INTACT '+(area.textContent==before));}
+}
+document.getElementById('small').addEventListener('click',function(){replace(500);});
+document.getElementById('medium').addEventListener('click',function(){replace(2000);});
+document.getElementById('large').addEventListener('click',function(){replace(11000);});
+document.getElementById('nodes').addEventListener('click',function(){replace(3000);});
+document.getElementById('deep').addEventListener('click',function(){
+    var before=area.textContent,s='';for(var i=0;i<540;i++)s+='<div>';
+    s+='TOO DEEP';for(var i=0;i<540;i++)s+='</div>';
+    try{area.innerHTML=s;}catch(e){console.log('DOM DEEP REJECT');console.log('DOM OLD INTACT '+(area.textContent==before));}
+});
+document.getElementById('restore').addEventListener('click',function(){area.innerHTML='<p>RESTORED FRAME</p>';});
+</script></body></html>

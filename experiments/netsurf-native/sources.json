@@ -1,0 +1,107 @@
+[
+  {
+    "name": "netsurf",
+    "repository": "https://github.com/netsurf-browser/netsurf",
+    "revision": "170d89462442c286f80c0604f30e4c7f2a801265",
+    "url": "https://codeload.github.com/netsurf-browser/netsurf/tar.gz/170d89462442c286f80c0604f30e4c7f2a801265",
+    "sha256": "a44e54b2a7c9eca938426b5f56635b01a08d2d369e34b63481716d6fbd7d823e"
+  },
+  {
+    "name": "libcss",
+    "repository": "https://github.com/netsurf-browser/libcss",
+    "revision": "0c4f51901a152ae551987aabdb7881c4f55cdc08",
+    "url": "https://codeload.github.com/netsurf-browser/libcss/tar.gz/0c4f51901a152ae551987aabdb7881c4f55cdc08",
+    "sha256": "8e2da1c41b9dc3810fda8eded25d12ba0f475a6b554e87bfd2fc2839c4d98c9b"
+  },
+  {
+    "name": "libdom",
+    "repository": "https://github.com/netsurf-browser/libdom",
+    "revision": "e4150b65e4e77d6e028912c5cdae084b3a564c93",
+    "url": "https://codeload.github.com/netsurf-browser/libdom/tar.gz/e4150b65e4e77d6e028912c5cdae084b3a564c93",
+    "sha256": "420144f933a2fc2cdefea8f32c07a04c5bc64b06bb80a7c2a27b6b861cac5f8d"
+  },
+  {
+    "name": "libparserutils",
+    "repository": "https://github.com/netsurf-browser/libparserutils",
+    "revision": "c9971265064b194505c6cd398dbdef8788725de7",
+    "url": "https://codeload.github.com/netsurf-browser/libparserutils/tar.gz/c9971265064b194505c6cd398dbdef8788725de7",
+    "sha256": "58448edef9ca31b1db47ebe2ddf78e693e6a0ebc20d2578b7c74a15e8cd44deb"
+  },
+  {
+    "name": "libhubbub",
+    "repository": "https://github.com/netsurf-browser/libhubbub",
+    "revision": "68989e60c786f1ee490db95c44769c368d135262",
+    "url": "https://codeload.github.com/netsurf-browser/libhubbub/tar.gz/68989e60c786f1ee490db95c44769c368d135262",
+    "sha256": "252a852f2c22afe5d0ec38142182424c017b73a12cee1cffd83329dec9c9c742"
+  },
+  {
+    "name": "libwapcaplet",
+    "repository": "https://github.com/netsurf-browser/libwapcaplet",
+    "revision": "74e49210e9c56381c1e60aea309dc80074a54ede",
+    "url": "https://codeload.github.com/netsurf-browser/libwapcaplet/tar.gz/74e49210e9c56381c1e60aea309dc80074a54ede",
+    "sha256": "3e16de3bfb0f46be513c191b488206696cfcf480d8316b317231389e977c87f7"
+  },
+  {
+    "name": "libnsutils",
+    "repository": "https://github.com/netsurf-browser/libnsutils",
+    "revision": "4f0b88241304d97e10c363b81f3cf959404da82b",
+    "url": "https://codeload.github.com/netsurf-browser/libnsutils/tar.gz/4f0b88241304d97e10c363b81f3cf959404da82b",
+    "sha256": "b99ffc5c5a966db6154d11a22e4caf9ede7784f9c58a609b9e6149f33c258436"
+  },
+  {
+    "name": "libnsbmp",
+    "repository": "https://github.com/netsurf-browser/libnsbmp",
+    "revision": "3406e7e0bfb5a8edc73af1cd4ae39553907514fb",
+    "url": "https://codeload.github.com/netsurf-browser/libnsbmp/tar.gz/3406e7e0bfb5a8edc73af1cd4ae39553907514fb",
+    "sha256": "6a92c2aa9301880fc2effb876c37c2192ab148eafeb348669c77fafe2218636c"
+  },
+  {
+    "name": "buildsystem",
+    "repository": "https://github.com/netsurf-browser/buildsystem",
+    "revision": "b38fe7146aa3af08881ba9d6817f19ee7abe4a86",
+    "url": "https://codeload.github.com/netsurf-browser/buildsystem/tar.gz/b38fe7146aa3af08881ba9d6817f19ee7abe4a86",
+    "sha256": "b5877fb14fcc2efd41a821d32b90b0a8fd6a33c7c20094b4d4d1b68c0384dfea"
+  },
+  {
+    "name": "picolibc",
+    "repository": "https://github.com/picolibc/picolibc",
+    "revision": "1.8.12",
+    "url": "https://codeload.github.com/picolibc/picolibc/tar.gz/1.8.12",
+    "sha256": "910a28f42f67b5b136c6b8793d89876b21aa80ae8406df77644422da6e772e8a"
+  },
+  {
+    "name": "stb",
+    "repository": "https://github.com/nothings/stb",
+    "revision": "6b5799bae8a1fe3792691ef4b72ae26434c3e799",
+    "url": "https://codeload.github.com/nothings/stb/tar.gz/6b5799bae8a1fe3792691ef4b72ae26434c3e799",
+    "sha256": "87e9ecd2d2e0cb8fa35bf5a93ea6ca3999595ea4f0a4738ed1aac0a34cbd4da9"
+  },
+  {
+    "name": "zlib",
+    "repository": "https://github.com/madler/zlib",
+    "revision": "v1.3.1",
+    "url": "https://codeload.github.com/madler/zlib/tar.gz/refs/tags/v1.3.1",
+    "sha256": "17e88863f3600672ab49182f217281b6fc4d3c762bde361935e436a95214d05c"
+  },
+  {
+    "name": "libpng",
+    "repository": "https://github.com/pnggroup/libpng",
+    "revision": "v1.6.59",
+    "url": "https://codeload.github.com/pnggroup/libpng/tar.gz/refs/tags/v1.6.59",
+    "sha256": "2540302a1844ad2b2b501977abecfa850f265f97b78f065a712ab4074a89f5b5"
+  },
+  {
+    "name": "libjpeg-turbo",
+    "repository": "https://github.com/libjpeg-turbo/libjpeg-turbo",
+    "revision": "3.2.1",
+    "url": "https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/3.2.1/libjpeg-turbo-3.2.1.tar.gz",
+    "sha256": "c27ad72a68da151177929aa969ae773a2da5ac2af9ce946079314fdac8cece7f"
+  },
+  {
+    "name": "nsgenbind",
+    "repository": "https://github.com/netsurf-browser/nsgenbind",
+    "revision": "bfd1f0ed6c27ffdd813c70ef919eec17d3439a38",
+    "url": "https://codeload.github.com/netsurf-browser/nsgenbind/tar.gz/bfd1f0ed6c27ffdd813c70ef919eec17d3439a38",
+    "sha256": "5531ec1e83fd59bbdfff814668d522c944201230de0374fe3873116b6e4fee99"
+  }
+]

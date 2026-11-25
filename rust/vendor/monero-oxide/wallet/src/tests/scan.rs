@@ -63,6 +63,7 @@ fn wallet_output0() -> WalletOutput {
       },
     },
     metadata: Metadata {
+      legacy_amount: None,
       additional_timelock: Timelock::None,
       subaddress: None,
       payment_id: Some(PaymentId::Encrypted([0, 0, 0, 0, 0, 0, 0, 0])),
@@ -107,6 +108,7 @@ fn wallet_output1() -> WalletOutput {
       },
     },
     metadata: Metadata {
+      legacy_amount: None,
       additional_timelock: Timelock::None,
       subaddress: None,
       payment_id: Some(PaymentId::Encrypted([0, 0, 0, 0, 0, 0, 0, 0])),

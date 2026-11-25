@@ -1,0 +1,19 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Recovery bounds lab</title>
+<style>body{margin:24px;font:24px sans-serif}button{font:24px sans-serif;margin-right:20px}</style>
+</head><body><h1>Recovery bounds lab</h1>
+<button id="deep">Deep tree</button><button id="wide">Wide tree</button><button id="restore">Restore tree</button>
+<div id="area"><p>SAFE FRAME</p></div>
+<script>
+var area=document.getElementById('area');
+document.getElementById('deep').addEventListener('click',function(){
+    var s='';for(var i=0;i<540;i++)s+='<div>';
+    s+='OUTSIDE BOUNDS';for(var i=0;i<540;i++)s+='</div>';area.innerHTML=s;
+});
+document.getElementById('wide').addEventListener('click',function(){
+    var a=[];for(var i=0;i<200;i++){
+        var s='<div>';for(var j=0;j<55;j++)s+='<span>x</span>';a.push(s+'</div>');
+    }
+    area.innerHTML=a.join('');console.log('BOUNDS WIDE BUILT');
+});
+document.getElementById('restore').addEventListener('click',function(){area.innerHTML='<p>RESTORED FRAME</p>';});
+</script></body></html>

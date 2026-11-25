@@ -35,13 +35,22 @@ static void publish_state(void)
 }
 static void input_notify(unsigned owner)
 {
+#ifdef DESKTOP_REAL_APPS
+    if (owner <= 2) { microkit_notify(owner == 1 ? 24 : 25); return; }
+#endif
     if (owner == 1) { if (dynamic_active) dynamic_input_notify(); }
     else microkit_notify(owner == 2 ? 8 : 22);
 }
 static struct desktop_queue *queue_for(unsigned owner) { return (void *)(owner == 1 ? input_a : owner == 2 ? input_b : shell_input); }
+#ifdef DESKTOP_REAL_APPS
+static void app_emit(unsigned, struct desktop_event);
+#endif
 static void emit(unsigned owner, struct desktop_event event)
 {
     if (owner < 1 || owner > 3 || (owner == 1 && !dynamic_active)) return;
+#ifdef DESKTOP_REAL_APPS
+    if (owner <= 2) { app_emit(owner, event); return; }
+#endif
     unsigned i = owner - 1; struct desktop_queue *q = queue_for(owner);
     uint32_t tail = __atomic_load_n(&q->tail, __ATOMIC_ACQUIRE);
     if (sent[i] - tail >= DESKTOP_EVENT_CAPACITY) { reset_pending[i] = true; input_notify(owner); return; }
@@ -87,6 +96,9 @@ static void pointer_event(unsigned value)
     emit(owner, (struct desktop_event){.kind = DESKTOP_POINTER, .value = value, .x = x, .y = y});
     if (value == 0) pointer_owner = 0;
 }
+#ifdef DESKTOP_REAL_APPS
+static void app_scroll(unsigned, int32_t);
+#endif
 static void input(void)
 {
     struct input_event_ring *ring = (void *)input_handoff;
@@ -106,6 +118,12 @@ static void input(void)
             } else if (e.type == 1 && e.code == 272 && e.value <= 1) {
                 pointer_event(e.value);
             }
+#ifdef DESKTOP_REAL_APPS
+            else if (e.type == 2 && e.code == 8 && desktop.focused) {
+                unsigned owner = shell_hit(&desktop, pointer_x, pointer_y);
+                if (owner <= 2) app_scroll(owner, (int32_t)e.value);
+            }
+#endif
         } else if (e.device == INPUT_DEVICE_KEYBOARD && e.type == 1 && e.code <= DESKTOP_KEY_MAX && e.value <= 2) {
             if (dynamic_control(e)) continue;
             unsigned owner = key_owners[e.code];
@@ -133,11 +151,19 @@ static bool snapshot(uintptr_t source, unsigned width, unsigned height, uint8_t 
     if (atomic_load_explicit(&h->revision, memory_order_acquire) != first) return false;
     memcpy(cache, candidate, bytes); *previous = first; return true;
 }
+#ifdef DESKTOP_REAL_APPS
+#include "../desktop-apps/surfaces.h"
+#endif
 static bool compose(void)
 {
     composition_dirty |= snapshot(shell_surface, SHELL_PIXEL_WIDTH, SHELL_PIXEL_HEIGHT, shell_pixels, &shell_revision);
+#ifdef DESKTOP_REAL_APPS
+    composition_dirty |= snapshot_app(surface_a, app_pixels[0], &app_revision[0]);
+    composition_dirty |= snapshot_app(surface_b, app_pixels[1], &app_revision[1]);
+#else
     if (dynamic_active) composition_dirty |= snapshot(surface_a, APP_PIXEL_WIDTH, APP_PIXEL_HEIGHT, app_pixels[0], &app_revision[0]);
     composition_dirty |= snapshot(surface_b, APP_PIXEL_WIDTH, APP_PIXEL_HEIGHT, app_pixels[1], &app_revision[1]);
+#endif
     if (!shell_revision) return false;
     if (!composition_dirty && !focus_dirty) return true;
     slint_frame_header_t *out = (void *)output_frame;
@@ -167,7 +193,7 @@ static bool compose(void)
     atomic_store_explicit(&out->revision, before + 2, memory_order_release);
     composition_dirty = focus_dirty = false; microkit_notify(2); return true;
 }
-static void discard_dynamic_surface(void)
+static void __attribute__((unused)) discard_dynamic_surface(void)
 {
     dynamic_active = false;
     for (unsigned i = 0; i <= DESKTOP_KEY_MAX; ++i) if (key_owners[i] == 1) key_owners[i] = 0;

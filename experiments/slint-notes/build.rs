@@ -20,7 +20,9 @@ fn main() {
         // SAFETY: No threads have been started in this build script yet.
         unsafe { std::env::set_var("SLINT_FONT_SIZES", "31,33,36,41,44,47,50,52,57,60,62,88") };
     }
-    let ui = if std::env::var_os("CARGO_FEATURE_DESKTOP_SHELL_UI").is_some() {
+    let ui = if std::env::var_os("CARGO_FEATURE_DESKTOP_REAL_APP").is_some() {
+        "ui/full_suite.slint"
+    } else if std::env::var_os("CARGO_FEATURE_DESKTOP_SHELL_UI").is_some() {
         "ui/desktop_shell.slint"
     } else if std::env::var_os("CARGO_FEATURE_DESKTOP_SHELL_APP").is_some() {
         "ui/desktop_app.slint"
@@ -37,10 +39,12 @@ fn main() {
         .embed_resources(slint_build::EmbedResourcesKind::EmbedForSoftwareRenderer);
     if std::env::var_os("CARGO_FEATURE_DESKTOP_SHELL_UI").is_some()
         || std::env::var_os("CARGO_FEATURE_DESKTOP_SHELL_APP").is_some()
+        || std::env::var_os("CARGO_FEATURE_DESKTOP_REAL_APP").is_some()
     {
         // Embedded SVGs and font glyphs must be rasterized at the same density
         // as the guest window. Phone adapters retain their existing behavior.
-        let scale = if std::env::var_os("CARGO_FEATURE_DESKTOP_SHELL_2X").is_some() { 2.0 } else { 1.0 };
+        let scale = if std::env::var_os("CARGO_FEATURE_DESKTOP_SHELL_2X").is_some()
+            || std::env::var_os("CARGO_FEATURE_DESKTOP_REAL_APP").is_some() { 2.0 } else { 1.0 };
         ui_config = ui_config.with_scale_factor(scale);
     }
     slint_build::compile_with_config(ui, ui_config)

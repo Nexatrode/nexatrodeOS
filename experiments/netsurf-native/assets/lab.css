@@ -1,0 +1,18 @@
+html { background: #f1f6fa; color: #203545; font-family: sans-serif; font-size: 17px; }
+body { margin: 0; }
+main { max-width: 1080px; margin: 0 auto; padding: 30px 42px 70px; }
+.eyebrow { color: #147e87; font-size: 13px; font-weight: bold; margin: 0 0 12px; }
+h1 { font-size: 45px; margin: 0 0 10px; color: #12283a; }
+h2 { font-size: 23px; margin: 0 0 15px; }
+p { line-height: 1.6; }
+.lead { font-size: 21px; color: #526e80; margin: 0 0 26px; }
+.card { background: white; border: 1px solid #c7dce7; padding: 25px; margin: 20px 0; }
+.form { width: 45%; min-height: 245px; }
+.picture { float: right; width: 44%; margin-top: 20px; }
+.picture img { max-width: 100%; }
+.picture p { font-size: 14px; color: #526e80; }
+.clear { clear: both; }
+input[type=text] { font-size: 18px; padding: 10px; margin: 10px 0 15px; background: #f6fafc; border: 1px solid #6e9cae; }
+button { background: #147e87; color: white; border: 1px solid #147e87; padding: 12px 22px; margin-top: 16px; font-size: 17px; }
+a { color: #087d97; }
+footer { padding: 55px 0; border-top: 1px solid #a8c8d5; margin-top: 50px; }

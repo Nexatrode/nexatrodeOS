@@ -1010,6 +1010,10 @@ pub fn scan_assembled_strict(
     view: &ViewPair, block: Block, txs: Vec<Transaction<Pruned>>, first_rct: Option<u64>,
 ) -> Result<Vec<WalletOutput>, ()> {
     if block.transactions.len() != txs.len() { return Err(()); }
+    // This compact API has no amount-specific indices. Verified range callers
+    // use scan_with_output_indices for V1; never report success after skipping it.
+    if (block.miner_transaction().version() == 1 && !block.miner_transaction().prefix().outputs.is_empty())
+        || txs.iter().any(|tx| tx.version() == 1 && !tx.prefix().outputs.is_empty()) { return Err(()); }
     let has_ringct = matches!(block.miner_transaction(), Transaction::V2 { .. }) && !block.miner_transaction().prefix().outputs.is_empty()
         || txs.iter().any(|tx| matches!(tx, Transaction::V2 { .. }) && !tx.prefix().outputs.is_empty());
     if has_ringct != first_rct.is_some() { return Err(()); }

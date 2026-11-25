@@ -1774,6 +1774,7 @@ impl WalletService {
         self.sync_rpc = SyncRpcKind::GetRingBatch;
         let Some(index) = self.ring_targets.get(self.ring_target_cursor).copied() else { self.sync_fail(b"NEXAWAL | NO SPENDABLE OUTPUT"); return; };
         let Some(output) = self.state.outputs.get(index) else { self.sync_fail(b"NEXAWAL | RING OUTPUT STATE"); return; };
+        if output.is_legacy() { self.sync_fail(b"NEXAWAL | LEGACY SPENDING UNAVAILABLE"); return; }
         let real = (output.index_on_blockchain(), output.key().compress().to_bytes(), output.commitment().commit().compress().to_bytes());
         let mut entropy = Zeroizing::new([0u8; 32]);
         for chunk in entropy.chunks_mut(entropy_protocol::SAMPLE_BYTES) {
