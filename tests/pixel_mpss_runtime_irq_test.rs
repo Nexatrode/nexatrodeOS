@@ -62,6 +62,29 @@ mod native_irq {
         }
         assert_eq!(&*kernel.calls.borrow(), &[4], "the original physical IRQ is rearmed exactly once");
     }
+    #[cfg(feature="sunfish-mcfg-close-cleanup")]
+    #[test]
+    fn mcfg_close_router_holds_irq_until_exclusive_cleanup_and_normal_returns() {
+        let (peer, mut owner)=owner();let mut setup=Irqs::default();
+        owner.prepare_tftp_server(0x5000).unwrap();owner.start_control().unwrap();
+        let mut intents=control(5,2,8);for id in 0u32..8 {intents.extend(4096u32.to_le_bytes());intents.extend(id.to_le_bytes());}
+        peer.push(&intents);owner.notified(8,&mut setup).unwrap();peer.take_tx();
+        owner_control_peer_hello(&peer,&mut owner,&mut setup);take_owner_datagrams(&peer,&mut owner,&mut setup);
+        let request=owner.offer_receive().unwrap();let close=owner.offer_receive().unwrap();owner.notified(8,&mut setup).unwrap();peer.take_tx();
+        peer.push(&data(request,&owner_qrtr_packet(1,0x4a,0x5000,false,b"\0\x01/readwrite/mcfg.tmp\0octet\0")));
+        owner.notified(1,&mut setup).unwrap();assert!(owner.pending_tftp_request().is_some());
+        let kernel=K::default();let mut router=Router::new(kernel.clone(),1);
+        // Transfer the setup continuation into the actual router.
+        qcom_modem_owner::Interrupts::schedule(&mut router).unwrap();
+        peer.push(&data(close,&owner_control_frame(6,[0,0x4a,0,0])));router.capture(1<<4).unwrap();
+        let result=router.dispatch(&mut owner).unwrap();assert!(result.deferred);assert!(owner.pending_mcfg_close().is_some());
+        assert!(kernel.calls.borrow().is_empty());assert_eq!(router.report().pending_modem,1<<4);
+        let mut server=qcom_tftp_server_check::ServerCheck::new();owner.resolve_mcfg_close(&mut server).unwrap();
+        for _ in 0..8 {router.dispatch(&mut owner).unwrap();if router.report().pending_modem==0 {break;}}
+        assert_eq!(&*kernel.calls.borrow(),&[4]);assert!(router.report().error.is_none());
+        assert!(owner.pending_tftp_request().is_none());assert_eq!(owner.mcfg_close_trace().committed,1);
+        assert!(owner_datagrams(&peer.take_tx()).is_empty(),"cleanup sends normal receive returns, never a late OACK");
+    }
     #[test]
     fn native_irq_actual_owner_maps_physical_four_five_and_preserves_other_owners() {
         let (mut owner, _) = actor();

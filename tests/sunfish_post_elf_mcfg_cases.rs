@@ -75,4 +75,7 @@ fn post_mcfg_owner_automatic_dispatch_uses_actual_server_result(){
  let id=o.offer_receive().unwrap();o.notified(8,&mut irq).unwrap();peer.take_tx();peer.push(&data(id,&owner_qrtr_packet(1,0x4a,m.transfer_port,false,END)));o.notified(1,&mut irq).unwrap();o.service_tftp_server_check_step(&mut server,&mut irq).unwrap();
  assert_eq!(o.post_elf_mcfg().unwrap().mcfg.unwrap().first_client,Some(0x50009));assert_eq!(server.mcfg_progress(),(1,Some(1),0));
 }
+#[cfg(feature="sunfish-mcfg-close-cleanup")]
+include!("sunfish_mcfg_close_cases.rs");
+
 }

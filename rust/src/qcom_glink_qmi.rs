@@ -16,6 +16,12 @@
 //! supports a narrower profile than the complete Linux transports.
 #![forbid(unsafe_code)]
 
+#[cfg(feature="sunfish-mcfg-close-cleanup")]
+#[path="qcom_mcfg_close.rs"]
+mod mcfg_close;
+#[cfg(feature="sunfish-mcfg-close-cleanup")]
+pub(crate) use mcfg_close::McfgCloseOutcome;
+
 #[cfg(feature="sunfish-elf-window-trace")]
 #[path="qcom_elf_window.rs"]
 mod elf_window;
@@ -369,6 +375,8 @@ impl TftpHandle {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Event {
+    #[cfg(feature="sunfish-mcfg-close-cleanup")]
+    McfgClosePending { peer: Address },
     #[cfg(feature = "sunfish-tftp-wlan-close-handoff")]
     FirmwareClosePending { peer: Address },
     /// An observed close is held pending an owner decision; no cleanup or
@@ -1116,6 +1124,10 @@ pub struct Session {
     tftp_firmware_peers: [Option<Address>; TFTP_OWNER_PEER_SLOTS],
     #[cfg(feature = "sunfish-tftp-wlan-close-handoff")]
     pending_firmware_close: Option<(Address, usize)>,
+    #[cfg(feature="sunfish-mcfg-close-cleanup")]
+    pending_mcfg_close: Option<(Address, usize)>,
+    #[cfg(feature="sunfish-mcfg-close-cleanup")]
+    mcfg_close_transfers: [Option<(Address,u32)>; crate::qcom_tftp_server_check::TRANSFER_COUNT],
     capacity_diagnostic: Option<CapacityDiagnostic>,
     #[cfg(feature = "sunfish-qrtr-deferred-requests")]
     next_deferred_sequence: u64,
@@ -2057,6 +2069,10 @@ impl Session {
             tftp_firmware_peers: [None; TFTP_OWNER_PEER_SLOTS],
             #[cfg(feature = "sunfish-tftp-wlan-close-handoff")]
             pending_firmware_close: None,
+            #[cfg(feature="sunfish-mcfg-close-cleanup")]
+            pending_mcfg_close: None,
+            #[cfg(feature="sunfish-mcfg-close-cleanup")]
+            mcfg_close_transfers: [None; crate::qcom_tftp_server_check::TRANSFER_COUNT],
             capacity_diagnostic: None,
             #[cfg(feature = "sunfish-qrtr-deferred-requests")]
             next_deferred_sequence: 1,
@@ -2160,6 +2176,8 @@ impl Session {
         if self.pending_tftp_close.is_some() { return Err(Error::FlowBusy); }
         #[cfg(feature = "sunfish-tftp-wlan-close-handoff")]
         if self.pending_firmware_close.is_some() { return Err(Error::FlowBusy); }
+        #[cfg(feature="sunfish-mcfg-close-cleanup")]
+        if self.pending_mcfg_close.is_some() { return Err(Error::FlowBusy); }
         Ok(())
     }
 
@@ -2994,6 +3012,8 @@ impl Session {
         { self.tftp_firmware_peers = [None; TFTP_OWNER_PEER_SLOTS]; }
         #[cfg(feature = "sunfish-tftp-wlan-close-handoff")]
         { self.pending_firmware_close = None; }
+        #[cfg(feature="sunfish-mcfg-close-cleanup")]
+        {self.pending_mcfg_close=None;self.mcfg_close_transfers.fill(None);}
         self.capacity_diagnostic = None;
         #[cfg(feature = "sunfish-qrtr-deferred-requests")]
         { self.next_deferred_sequence = 1; }
@@ -5490,6 +5510,10 @@ impl Session {
             _ => None,
         };
         if let Some(port) = closed {
+            #[cfg(feature="sunfish-mcfg-close-cleanup")]
+            if matches!(command, control::Command::DelClient(_)) && self.hold_mcfg_close(Address{node:self.config.peer_node,port},index) {
+                return Ok(Event::McfgClosePending{peer:Address{node:self.config.peer_node,port}});
+            }
             #[cfg(feature = "sunfish-qrtr-deferred-requests")]
             if let Some(first) = self.receive.iter().position(|rx| rx.state == RxState::Deferred && rx.used >= 32 &&
                 word(&rx.bytes, 8) == self.config.peer_node && word(&rx.bytes, 12) == port) {

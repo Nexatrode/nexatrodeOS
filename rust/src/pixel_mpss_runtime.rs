@@ -472,6 +472,8 @@ impl RuntimeDomain {
         let Some(Stage::Services(owner)) = self.stage.as_mut() else {
             return Err(0x50);
         };
+        #[cfg(feature="sunfish-mcfg-close-cleanup")]
+        if owner.pending_mcfg_close().is_some(){owner.resolve_mcfg_close(&mut self.server_check).map_err(|_|0x64u32)?;}
         let server = (&mut *self.boot).server().map_err(|_| 0x51u32)?;
         // Both configurations call the same bounded handler once per pass.
         // The opt-in ordering gives it the first turn without skipping the
@@ -496,6 +498,8 @@ impl RuntimeDomain {
                         #[cfg(feature = "sunfish-tftp-early-dispatch-experiment")]
                         {
                             self.router.dispatch(owner).map_err(|_| 0x61u32)?;
+                            #[cfg(feature="sunfish-mcfg-close-cleanup")]
+                            if owner.pending_mcfg_close().is_some(){owner.resolve_mcfg_close(&mut self.server_check).map_err(|_|0x64u32)?;}
                             #[cfg(feature = "sunfish-tftp-wlan-close-handoff")]
                             if owner.pending_firmware_close().is_some() {
                                 owner.resolve_firmware_close(&mut self.firmware).map_err(|_| 0x63u32)?;
@@ -510,6 +514,8 @@ impl RuntimeDomain {
                             #[cfg(feature = "sunfish-wlan-first-server-check-retry")]
                             let dispatched = self.router.dispatch_queued_tftp_retry(owner)
                                 .map_err(|_| 0x61u32)?;
+                            #[cfg(feature="sunfish-mcfg-close-cleanup")]
+                            if owner.pending_mcfg_close().is_some(){owner.resolve_mcfg_close(&mut self.server_check).map_err(|_|0x64u32)?;}
                             #[cfg(feature = "sunfish-tftp-wlan-close-handoff")]
                             if owner.pending_firmware_close().is_some() {
                                 owner.resolve_firmware_close(&mut self.firmware).map_err(|_| 0x63u32)?;
@@ -518,6 +524,8 @@ impl RuntimeDomain {
                             let dispatched = false;
                             let dispatched = dispatched || self.router.dispatch_queued_server_check_oack(owner, counter)
                                 .map_err(|_| 0x61u32)?;
+                            #[cfg(feature="sunfish-mcfg-close-cleanup")]
+                            if owner.pending_mcfg_close().is_some(){owner.resolve_mcfg_close(&mut self.server_check).map_err(|_|0x64u32)?;}
                             #[cfg(feature = "sunfish-tftp-wlan-close-handoff")]
                             if owner.pending_firmware_close().is_some() {
                                 owner.resolve_firmware_close(&mut self.firmware).map_err(|_| 0x63u32)?;
@@ -533,6 +541,8 @@ impl RuntimeDomain {
                         {
                             self.router.dispatch_queued_original_final_ack(owner)
                                 .map_err(|_| 0x61u32)?;
+                            #[cfg(feature="sunfish-mcfg-close-cleanup")]
+                            if owner.pending_mcfg_close().is_some(){owner.resolve_mcfg_close(&mut self.server_check).map_err(|_|0x64u32)?;}
                             #[cfg(feature = "sunfish-tftp-wlan-close-handoff")]
                             if owner.pending_firmware_close().is_some() {
                                 owner.resolve_firmware_close(&mut self.firmware).map_err(|_| 0x63u32)?;
@@ -553,6 +563,8 @@ impl RuntimeDomain {
             () => {{
                 let handled = self.router.service_cold_ipa_registration(owner, counter)
                     .map_err(|_| 0x54u32)?;
+                #[cfg(feature="sunfish-mcfg-close-cleanup")]
+                if owner.pending_mcfg_close().is_some(){owner.resolve_mcfg_close(&mut self.server_check).map_err(|_|0x64u32)?;}
                 #[cfg(feature = "sunfish-tftp-wlan-close-handoff")]
                 if owner.pending_firmware_close().is_some() {
                     owner.resolve_firmware_close(&mut self.firmware).map_err(|_| 0x63u32)?;
@@ -634,6 +646,8 @@ impl RuntimeDomain {
                 #[cfg(feature = "sunfish-registry-handoff-turn")]
                 {
                     self.router.dispatch_registry_handoff(owner).map_err(|_| 0x61u32)?;
+                    #[cfg(feature="sunfish-mcfg-close-cleanup")]
+                    if owner.pending_mcfg_close().is_some(){owner.resolve_mcfg_close(&mut self.server_check).map_err(|_|0x64u32)?;}
                     #[cfg(feature = "sunfish-tftp-wlan-close-handoff")]
                     if owner.pending_firmware_close().is_some() {
                         owner.resolve_firmware_close(&mut self.firmware).map_err(|_| 0x63u32)?;
@@ -836,6 +850,8 @@ impl RuntimeDomain {
                 self.oack_barrier_domains.observe(before_flags, owner.tftp_endpoint_trace().map(|trace| trace.flags), before_io.barrier_domain_total, after);
             }
             dispatched.map_err(|_| 0x61u32)?;
+            #[cfg(feature="sunfish-mcfg-close-cleanup")]
+            if owner.pending_mcfg_close().is_some(){owner.resolve_mcfg_close(&mut self.server_check).map_err(|_|0x64u32)?;}
             #[cfg(feature = "sunfish-tftp-wlan-close-handoff")]
             if owner.pending_firmware_close().is_some() {
                 owner.resolve_firmware_close(&mut self.firmware).map_err(|_| 0x63u32)?;

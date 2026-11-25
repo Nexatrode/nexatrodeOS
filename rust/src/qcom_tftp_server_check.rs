@@ -252,6 +252,8 @@ impl ServerCheck {
     fn receive_inner(&mut self, route: Route, packet: &[u8], out: &mut [u8]) -> Result<Reply, Error> {
         if route.source.node != 0 || route.destination.node != 1 || route.source.port == 0
             || route.source.port >= 0xffff_fffe { return Err(Error::WrongRoute); }
+        #[cfg(feature="sunfish-mcfg-close-cleanup")]
+        if self.transfers.iter().any(|t|t.peer==Some(route.source)&&t.abandoned){return Err(Error::UnexpectedRequest);}
         if route.destination.port == SERVICE_PORT {
             #[cfg(feature = "sunfish-tftp-mcfg-ram")]
             if let Some(reply) = self.mcfg_request(route, packet, out)? { return Ok(reply); }
@@ -386,6 +388,27 @@ fn mcfg_error(error: mcfg::Error) -> Error {
 
 #[cfg(feature = "sunfish-tftp-mcfg-ram")]
 impl ServerCheck {
+    #[cfg(feature="sunfish-mcfg-close-cleanup")]
+    pub(crate) fn mcfg_close_transfers(&self)->[Option<(Address,u32)>;TRANSFER_COUNT]{
+        core::array::from_fn(|i|{let t=&self.transfers[i];
+            t.peer.filter(|_|!t.abandoned&&(t.mcfg_read.is_some()||t.mcfg_write.is_some()))
+                .map(|p|(p,TRANSFER_PORT+i as u32))})
+    }
+    #[cfg(feature="sunfish-mcfg-close-cleanup")]
+    pub(crate) fn preflight_mcfg_close(&self,peer:Address)->Result<Option<u32>,Error>{
+        let Some(i)=self.transfers.iter().position(|t|t.peer==Some(peer))else{return Ok(None);};
+        let t=&self.transfers[i];
+        if t.abandoned || (t.mcfg_write.is_none()&&t.mcfg_read.is_none()){return Err(Error::UnexpectedRequest);}
+        if t.mcfg_write.as_ref().is_some_and(|w|!w.complete()){self.mcfg_file.can_abort(peer.port).map_err(mcfg_error)?;}
+        Ok(Some(TRANSFER_PORT+i as u32))
+    }
+    #[cfg(feature="sunfish-mcfg-close-cleanup")]
+    pub(crate) fn close_mcfg_peer(&mut self,peer:Address)->Result<(),Error>{
+        if self.preflight_mcfg_close(peer)?.is_none(){return Ok(());}
+        let t=self.transfers.iter_mut().find(|t|t.peer==Some(peer)).ok_or(Error::WrongRoute)?;
+        if let Some(w)=t.mcfg_write.as_mut(){w.cancel(&mut self.mcfg_file).map_err(mcfg_error)?;}
+        t.abandoned=true;Ok(())
+    }
     fn mcfg_request(&mut self, route: Route, packet: &[u8], out: &mut [u8]) -> Result<Option<Reply>, Error> {
         let write = packet.starts_with(b"\0\x02/readwrite/mcfg.tmp\0");
         let read = packet.starts_with(b"\0\x01/readwrite/mcfg.tmp\0");

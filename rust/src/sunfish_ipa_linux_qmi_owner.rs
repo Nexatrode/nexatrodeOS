@@ -830,6 +830,12 @@ impl<I: Io> Owner<I> {
             firmware_peers: [None; crate::qcom_qrtr_tftp::MAX_ACTIVE_TRANSFERS],
             #[cfg(feature = "sunfish-tftp-wlan-close-handoff")]
             pending_firmware_close: None,
+            #[cfg(feature="sunfish-mcfg-close-cleanup")]
+            pending_mcfg_close: None,
+            #[cfg(feature="sunfish-mcfg-close-cleanup")]
+            mcfg_close_transfers: [None;crate::qcom_tftp_server_check::TRANSFER_COUNT],
+            #[cfg(feature="sunfish-mcfg-close-cleanup")]
+            mcfg_close_trace: crate::qcom_modem_owner::McfgCloseTrace::default(),
             #[cfg(feature = "sunfish-native-tftp-server-check")]
             queue_full_kind: 0,
             #[cfg(feature = "sunfish-native-tftp-server-check")]

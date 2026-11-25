@@ -2919,6 +2919,19 @@ impl<I: Io> Adapter<I> {
         self.quarantined = false;
         Ok(())
     }
+    #[cfg(feature="sunfish-mcfg-close-cleanup")]
+    pub(crate) fn set_mcfg_close_transfers(&mut self,g:u64,transfers:[Option<(crate::qcom_qmi_router::Address,u32)>;crate::qcom_tftp_server_check::TRANSFER_COUNT])->Result<(),Error>{
+        self.session.set_mcfg_close_transfers(g,transfers).map_err(Into::into)
+    }
+    #[cfg(feature="sunfish-mcfg-close-cleanup")]
+    pub(crate) fn commit_mcfg_close(&mut self,g:u64,peer:crate::qcom_qmi_router::Address,port:Option<u32>,handles:&[Option<TftpHandle>;core::MAX_REQUESTS])->Result<core::McfgCloseOutcome,Error>{
+        if g!=self.ring.generation{return Err(Error::StaleGeneration);}
+        if self.quarantined{return Err(Error::Quarantined);}
+        self.quarantined=true;
+        self.ring.sample()?;
+        let result=self.session.commit_mcfg_close(g,peer,port,handles)?;
+        self.quarantined=false;Ok(result)
+    }
     pub fn retired_rmtfs_peer_count(&self) -> usize {
         self.session.retired_rmtfs_peer_count()
     }
