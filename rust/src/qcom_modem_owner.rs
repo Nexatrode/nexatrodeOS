@@ -214,6 +214,11 @@ pub trait Interrupts {
 
 /// Observations do not decide eligibility. Flags: armed1, consumed2, entered4,
 /// normal dispatch returned8, exact reply published/completed16, dispatch failed32.
+#[cfg(feature="sunfish-elf-capacity-retry")]
+#[path="qcom_elf_capacity_turn.rs"]
+mod elf_capacity_turn;
+#[cfg(feature="sunfish-elf-capacity-retry")]
+pub use elf_capacity_turn::ElfCapacityTurnTrace;
 #[cfg(feature="sunfish-elf-queued-handoff")]
 #[derive(Clone,Copy,Debug,Default,Eq,PartialEq)]
 pub struct ElfQueuedTurnTrace {
@@ -1040,6 +1045,12 @@ pub struct Owner<I> {
     queued_elf_turn:Option<RequestHandle>,
     #[cfg(feature="sunfish-elf-queued-handoff")]
     elf_queued_turn_trace:ElfQueuedTurnTrace,
+    #[cfg(feature="sunfish-elf-capacity-retry")]
+    elf_capacity_waiting:Option<RequestHandle>,
+    #[cfg(feature="sunfish-elf-capacity-retry")]
+    elf_capacity_taken:bool,
+    #[cfg(feature="sunfish-elf-capacity-retry")]
+    elf_capacity_trace:ElfCapacityTurnTrace,
     #[cfg(feature = "sunfish-wlan-registry-txn4-timing")]
     registry_txn4_handle: Option<RequestHandle>,
     tftp_trace: TftpObserverTrace,
@@ -1315,6 +1326,12 @@ impl<I: Io> Owner<I> {
             queued_elf_turn:None,
             #[cfg(feature="sunfish-elf-queued-handoff")]
             elf_queued_turn_trace:ElfQueuedTurnTrace::default(),
+            #[cfg(feature="sunfish-elf-capacity-retry")]
+            elf_capacity_waiting:None,
+            #[cfg(feature="sunfish-elf-capacity-retry")]
+            elf_capacity_taken:false,
+            #[cfg(feature="sunfish-elf-capacity-retry")]
+            elf_capacity_trace:ElfCapacityTurnTrace::default(),
             #[cfg(feature = "sunfish-wlan-registry-txn4-timing")]
             registry_txn4_handle: None,
             tftp_trace: TftpObserverTrace::new(),
@@ -2954,6 +2971,10 @@ impl<I: Io> Owner<I> {
             },
             interrupts,
         );
+        #[cfg(feature="sunfish-elf-capacity-retry")]
+        if matches!(&queue_result,Err(Error::Transport(fifo::Error::Session(crate::qcom_glink_qmi::Error::NoCapacity)))) {
+            self.arm_elf_capacity_turn(handle);
+        }
         #[cfg(feature = "sunfish-wlan-elf-registry-turns")]
         if let Some(elf) = self.service_registry_trace.elf.as_mut()
             && self.elf_lookup_handle != Some(handle) && elf.dispatch.selected.is_none()

@@ -4192,6 +4192,9 @@ impl Session {
         ).map(|_| ())
     }
 
+    #[cfg(feature="sunfish-elf-capacity-retry")]
+    pub(crate) fn normal_tx_free(&self)->Option<usize>{self.free_tx_slot()}
+
     fn free_tx_slot(&self) -> Option<usize> {
         self.transmit[..TX_SLOTS].iter().position(|tx| tx.len == 0)
     }

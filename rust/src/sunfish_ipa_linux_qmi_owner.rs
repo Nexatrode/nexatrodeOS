@@ -876,6 +876,12 @@ impl<I: Io> Owner<I> {
             queued_elf_turn:None,
             #[cfg(feature="sunfish-elf-queued-handoff")]
             elf_queued_turn_trace:ElfQueuedTurnTrace::default(),
+            #[cfg(feature="sunfish-elf-capacity-retry")]
+            elf_capacity_waiting:None,
+            #[cfg(feature="sunfish-elf-capacity-retry")]
+            elf_capacity_taken:false,
+            #[cfg(feature="sunfish-elf-capacity-retry")]
+            elf_capacity_trace:ElfCapacityTurnTrace::default(),
             #[cfg(feature = "sunfish-wlan-registry-txn4-timing")]
             registry_txn4_handle: None,
             tftp_trace: TftpObserverTrace::new(),

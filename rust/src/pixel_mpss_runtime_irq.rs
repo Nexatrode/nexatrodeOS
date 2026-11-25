@@ -302,6 +302,18 @@ impl<K: Kernel> Router<K> {
         self.dispatch(owner).map(|_| true)
     }
 
+    /// One normal registry service attempt before TFTP may refill a released slot.
+    #[cfg(feature="sunfish-elf-capacity-retry")]
+    pub fn service_elf_capacity_retry<I:Io>(&mut self,owner:&mut Owner<I>)
+        ->Result<Option<modem::ServiceProgress>,Error>{
+        if let Err(error)=self.live(){owner.fault();return Err(error);}
+        if !self.continuation || self.other!=0{return Ok(None);}
+        if owner.generation()!=self.generation || self.identity.is_some_and(|id|id!=owner.identity()){
+            owner.fault();return Err(self.fail(Error::Identity));
+        }
+        owner.dispatch_elf_capacity_retry(self).map_err(|e|self.fail(Error::Owner(e)))
+    }
+
     /// One normal checked dispatch immediately after the exact ELF reply queues.
     /// The capability is consumed before any callback; blocked attempts fall back
     /// to the existing continuation. Other owners and terminal faults keep priority.

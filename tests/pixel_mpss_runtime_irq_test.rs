@@ -340,6 +340,9 @@ mod native_irq {
         router.dispatch(&mut owner).unwrap();
         assert_eq!(&*kernel.calls.borrow(), &[4]);
     }
+    #[cfg(feature="sunfish-elf-capacity-retry")]
+    mod elf_capacity_cases {include!("sunfish_elf_capacity_retry_cases.rs");}
+
     #[cfg(feature="sunfish-elf-queued-handoff")]
     mod elf_queue_cases {include!("sunfish_elf_queued_turn_cases.rs");}
 

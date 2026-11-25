@@ -596,6 +596,8 @@ impl RuntimeDomain {
         };
         #[cfg(not(feature = "sunfish-ipa-registration-early-turn"))]
         let early_ipa = false;
+        #[cfg(feature="sunfish-elf-capacity-retry")]
+        {self.router.service_elf_capacity_retry(owner).map_err(|_|0x61u32)?;}
         #[cfg(all(feature = "sunfish-native-tftp-server-check", feature = "sunfish-tftp-early-service-experiment"))]
         tftp_service_step!();
         // TFTP can dispatch the router after the first IPA check and arm
