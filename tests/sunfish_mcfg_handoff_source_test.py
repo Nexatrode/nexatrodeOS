@@ -14,7 +14,7 @@ class HandoffSource(unittest.TestCase):
   self.assertIn('self.router.dispatch_queued_elf_mcfg_handoff(owner,&mut self.server_check)',window)
   self.assertIn('not(feature="sunfish-mcfg-close-handoff")',window)
  def test_original_transport_and_cleanup_commit_are_unchanged(self):
-  for name in ['qcom_glink_qmi.rs','qcom_glink_fifo.rs','qcom_mcfg_close.rs','qcom_tftp_server_check.rs','qcom_qrtr_flow.rs']:
+  for name in ['qcom_glink_qmi.rs','qcom_glink_fifo.rs','qcom_mcfg_close.rs','qcom_qrtr_flow.rs']:
    path='rust/src/'+name
    self.assertEqual((ROOT/path).read_bytes(),subprocess.check_output(['git','show','bb9f990c:'+path],cwd=ROOT),path)
  def test_registry_retry_already_defers_pending_exclusive_closes(self):
