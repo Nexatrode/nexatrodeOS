@@ -51,3 +51,6 @@ fn elf_third_uncertain_writer_and_wrong_reply_never_release_older_owners(){
  let(mut s,h3,h4,elf,_,_)=setup(false,true);assert!(s.queue_elf_third_reply(&elf,Reply::Failure{error:0}).is_err());assert!(s.reply_fully_published(&h3)&&s.reply_fully_published(&h4));third(&mut s,&elf).unwrap();
  assert_eq!(s.publish_next(1,|_|Err(WriteError::Uncertain)),Err(Error::PublicationUncertain));assert!(s.publish_next(1,|_|panic!("quarantined")).is_err());assert!(!s.reply_fully_published(&elf));
 }
+
+#[cfg(feature="sunfish-elf-tx-slots")]
+include!("sunfish_elf_tx_slots_cases.rs");

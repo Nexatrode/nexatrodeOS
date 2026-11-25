@@ -2347,6 +2347,8 @@ impl<I: Io> Adapter<I> {
     }
     #[cfg(feature="sunfish-elf-window-trace")]
     pub fn elf_window_trace(&self)->Option<&core::ElfWindowTrace>{self.session.elf_window_trace()}
+    #[cfg(feature="sunfish-elf-tx-slots")]
+    pub fn elf_tx_slots(&self)->Option<&core::ElfTxSlots>{self.session.elf_tx_slots()}
     #[cfg(feature="sunfish-post-elf-mcfg-trace")]
     pub fn post_elf_mcfg(&self)->Option<&core::PostElfMcfgTrace>{self.session.post_elf_mcfg()}
     #[cfg(feature="sunfish-post-elf-mcfg-trace")]

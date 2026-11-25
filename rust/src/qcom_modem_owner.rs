@@ -2042,6 +2042,8 @@ impl<I: Io> Owner<I> {
     pub fn elf_completion_turn_taken(&self)->bool {self.elf_slot_turn_taken}
     #[cfg(feature="sunfish-elf-window-trace")]
     pub fn elf_window_trace(&self)->Option<&crate::qcom_glink_qmi::ElfWindowTrace>{self.adapter.elf_window_trace()}
+    #[cfg(feature="sunfish-elf-tx-slots")]
+    pub fn elf_tx_slots(&self)->Option<&crate::qcom_glink_qmi::ElfTxSlots>{self.adapter.elf_tx_slots()}
     #[cfg(feature="sunfish-post-elf-mcfg-trace")]
     pub fn post_elf_mcfg(&self)->Option<&crate::qcom_glink_qmi::PostElfMcfgTrace>{self.adapter.post_elf_mcfg()}
     #[cfg(feature="sunfish-registry-tx3-wire-headers")]

@@ -32,6 +32,8 @@ pub struct ElfWindowTrace {
 }
 const _:()={assert!(::core::mem::size_of::<ElfWindowTrace>()<=3072);};
 impl Session {
+    #[cfg(feature="sunfish-elf-tx-slots")]
+    pub(super) fn elf_window_request_matches(&self,h:RequestHandle)->bool{self.elf_window.as_ref().is_some_and(|w|w.request==h)}
     pub fn elf_window_trace(&self)->Option<&ElfWindowTrace>{self.elf_window.as_ref()}
     pub(super) fn start_elf_window(&mut self,h:RequestHandle,index:usize){
         if self.elf_window.is_some(){return;}
