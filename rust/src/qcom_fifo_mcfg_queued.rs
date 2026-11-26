@@ -5,6 +5,10 @@ pub struct McfgQueuedTurnTrace {pub calls:u32,pub writes:u32,pub rx_veto:u32,pub
 impl<I:Io> Adapter<I>{
     pub(crate) fn mcfg_queued_turn_trace(&self)->McfgQueuedTurnTrace{self.mcfg_queued}
     pub(crate) fn publish_mcfg_queued_turn(&mut self,generation:u64)->Result<(),Error>{
+/* MCFG_IDLE_TURN_BEGIN */
+#[cfg(feature="sunfish-mcfg-idle-turn")]
+        {let mut progress=super::mcfg_idle::TurnProgress::default();return self.publish_mcfg_checked_turn(generation,&mut progress);}
+/* MCFG_IDLE_TURN_END */
         self.check(generation)?;
         self.mcfg_queued.calls=self.mcfg_queued.calls.saturating_add(1);
         for _ in 0..4 {
@@ -26,6 +30,11 @@ impl<I:Io> Adapter<I>{
     }
 }
 
+/* MCFG_IDLE_TURN_BEGIN */
+#[cfg(feature="sunfish-mcfg-idle-turn")]
+#[cfg(all(test,mpss_glink_transport_tests))]
+pub(crate) fn mcfg_idle_fixture()->(Adapter<crate::Fake>,crate::Fake,core::TftpHandle,u32){tests::idle_fixture()}
+/* MCFG_IDLE_TURN_END */
 #[cfg(all(test,mpss_glink_transport_tests))]
 mod tests{
  use super::*;
@@ -74,4 +83,12 @@ mod tests{
 #[cfg(feature="sunfish-mcfg-rx-veto-trace")]
 include!("../../tests/sunfish_mcfg_rx_veto_cases.rs");
 /* MCFG_RX_VETO_END */
+/* MCFG_IDLE_TURN_BEGIN */
+#[cfg(feature="sunfish-mcfg-idle-turn")]
+include!("../../tests/sunfish_mcfg_idle_adapter_cases.rs");
+/* MCFG_IDLE_TURN_END */
+/* MCFG_IDLE_TURN_BEGIN */
+#[cfg(feature="sunfish-mcfg-idle-turn")]
+include!("../../tests/sunfish_mcfg_idle_fixture.rs");
+/* MCFG_IDLE_TURN_END */
 }

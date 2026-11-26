@@ -5,6 +5,8 @@ ROOT=Path(__file__).resolve().parents[1]
 PATTERN=r'/\* MCFG_RX_VETO_BEGIN \*/\n.*?/\* MCFG_RX_VETO_END \*/\n'
 COUNTS={'rust/src/qcom_glink_fifo.rs':11,'rust/src/sunfish_mpss_linux_transport.rs':1,'rust/src/qcom_owner_mcfg_queued.rs':1,'rust/src/qcom_fifo_mcfg_queued.rs':1}
 def without_rx_veto(path,source):
+ from sunfish_mcfg_idle_source_test import without_idle
+ source=without_idle(path,source)
  blocks=re.findall(PATTERN,source,re.S)
  if path in COUNTS:
   assert len(blocks)==COUNTS[path],(path,len(blocks));assert all('#[cfg(feature="sunfish-mcfg-rx-veto-trace")]'in b for b in blocks)

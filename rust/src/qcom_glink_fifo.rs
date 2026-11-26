@@ -6,6 +6,18 @@
 //! No allocation, FIFO initialization, channel negotiation, or IRQ registration.
 #![forbid(unsafe_code)]
 
+/* MCFG_IDLE_TURN_BEGIN */
+#[cfg(feature="sunfish-mcfg-idle-turn")]
+#[cfg(all(test,mpss_glink_transport_tests))]
+pub(crate) use mcfg_queued::mcfg_idle_fixture;
+/* MCFG_IDLE_TURN_END */
+/* MCFG_IDLE_TURN_BEGIN */
+#[cfg(feature="sunfish-mcfg-idle-turn")]
+#[path="qcom_fifo_mcfg_idle.rs"]
+mod mcfg_idle;
+#[cfg(feature="sunfish-mcfg-idle-turn")]
+pub use mcfg_idle::McfgIdleTurnTrace;
+/* MCFG_IDLE_TURN_END */
 /* MCFG_RX_VETO_BEGIN */
 #[cfg(feature="sunfish-mcfg-rx-veto-trace")]
 #[path="qcom_fifo_mcfg_rx_veto.rs"]
@@ -2170,6 +2182,10 @@ pub struct Adapter<I> {
 /* MCFG_QUEUED_TURN_BEGIN */
     #[cfg(feature="sunfish-mcfg-queued-turn")]
     mcfg_guard: bool,
+/* MCFG_IDLE_TURN_BEGIN */
+#[cfg(feature="sunfish-mcfg-idle-turn")]
+    mcfg_idle: McfgIdleTurnTrace,
+/* MCFG_IDLE_TURN_END */
 /* MCFG_RX_VETO_BEGIN */
 #[cfg(feature="sunfish-mcfg-rx-veto-trace")]
     mcfg_rx_veto: McfgRxVetoTrace,
@@ -2212,6 +2228,10 @@ impl<I: Io> Adapter<I> {
 /* MCFG_QUEUED_TURN_BEGIN */
             #[cfg(feature="sunfish-mcfg-queued-turn")]
             mcfg_guard: false,
+/* MCFG_IDLE_TURN_BEGIN */
+#[cfg(feature="sunfish-mcfg-idle-turn")]
+            mcfg_idle: McfgIdleTurnTrace::default(),
+/* MCFG_IDLE_TURN_END */
 /* MCFG_RX_VETO_BEGIN */
 #[cfg(feature="sunfish-mcfg-rx-veto-trace")]
             mcfg_rx_veto: McfgRxVetoTrace::default(),
@@ -4462,6 +4482,10 @@ impl<I: Io> Adapter<I> {
 /* MCFG_QUEUED_TURN_BEGIN */
         #[cfg(feature="sunfish-mcfg-queued-turn")]
         {self.mcfg_guard=false;self.mcfg_queued=McfgQueuedTurnTrace::default();}
+/* MCFG_IDLE_TURN_BEGIN */
+#[cfg(feature="sunfish-mcfg-idle-turn")]
+        {self.mcfg_idle=McfgIdleTurnTrace::default();}
+/* MCFG_IDLE_TURN_END */
 /* MCFG_RX_VETO_BEGIN */
 #[cfg(feature="sunfish-mcfg-rx-veto-trace")]
         {self.mcfg_rx_veto=McfgRxVetoTrace::default();}

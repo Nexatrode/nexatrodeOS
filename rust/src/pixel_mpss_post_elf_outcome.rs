@@ -89,7 +89,7 @@ impl RuntimeDomain {
 #[cfg(feature="sunfish-mcfg-writer-trace")]
 impl RuntimeDomain {
     fn show_mcfg_writer(&self,d:&Display,owner:&ModemOwner){
-        for n in 2..=28{d.replace_line(n,"");}d.replace_line(1,if cfg!(feature="sunfish-mcfg-rx-veto-trace"){"MCFG RX VETO TRACE"}else if cfg!(feature="sunfish-mcfg-queued-turn"){"MCFG QUEUED TURN"}else if cfg!(feature="sunfish-mcfg-predecessor-trace"){"MCFG PREDECESSOR TURN"}else{"MCFG QUEUE WRITER"});
+        for n in 2..=28{d.replace_line(n,"");}d.replace_line(1,if cfg!(feature="sunfish-mcfg-idle-turn"){"MCFG IDLE RETAINED TURN"}else if cfg!(feature="sunfish-mcfg-rx-veto-trace"){"MCFG RX VETO TRACE"}else if cfg!(feature="sunfish-mcfg-queued-turn"){"MCFG QUEUED TURN"}else if cfg!(feature="sunfish-mcfg-predecessor-trace"){"MCFG PREDECESSOR TURN"}else{"MCFG QUEUE WRITER"});
         let age=|t|self.time_from_us(Some(self.runtime_started),t);
         let row=|n,label,values:&[u32]|{d.header_label(n,label);let mut fields=[(0,8);4];for(i,v)in values.iter().enumerate(){fields[i]=(*v,8);}d.header_row(n,true,&fields[..values.len()]);};
         let cap=owner.post_elf_mcfg();let m=cap.and_then(|c|c.mcfg.as_ref());let a=m.map(|m|&m.admission);let seq=m.and_then(|m|m.record_sequence());
@@ -140,8 +140,10 @@ impl RuntimeDomain {
 #[cfg(feature="sunfish-mcfg-rx-veto-trace")]
 impl RuntimeDomain{
  fn show_mcfg_rx_rows(&self,d:&Display,owner:&ModemOwner){
-  let trace=owner.mcfg_rx_veto_trace();let t=owner.mcfg_queued_turn_trace();let age=|at|self.time_from_us(Some(self.runtime_started),at);
-  d.header_label(14,"TOTAL OMIT CALL WRITE RX BLOCK");d.header_row(14,true,&[(trace.total,8),(trace.omitted,8),(t.calls,8),(t.writes,8),(t.rx_veto,8),(t.blocked,8)]);
+  let trace=owner.mcfg_rx_veto_trace();let t=owner.mcfg_queued_turn_trace();
+  #[cfg(feature="sunfish-mcfg-idle-turn")]let t=owner.mcfg_idle_turn_trace();
+  let age=|at|self.time_from_us(Some(self.runtime_started),at);
+  d.header_label(14,if cfg!(feature="sunfish-mcfg-idle-turn"){"TOTAL OMIT IDLE WRITE RX BLOCK"}else{"TOTAL OMIT CALL WRITE RX BLOCK"});d.header_row(14,true,&[(trace.total,8),(trace.omitted,8),(t.calls,8),(t.writes,8),(t.rx_veto,8),(t.blocked,8)]);
   for(i,e)in trace.records.iter().enumerate(){if let Some(e)=e{
    d.header_row(15+i,false,&[(age(e.at),8),(e.tag,1),(e.call,8),(e.unread,8),(e.early,2),(e.watched_sequence.map_or(u32::MAX,|v|v as u32),8),(e.watched_sequence.map_or(u32::MAX,|v|(v>>32)as u32),8)]);
    let h=e.header;let q=h.and_then(|h|h.qrtr);let endpoints=h.and_then(|h|h.del_client).or(q.map(|q|[q[1],q[2]])).unwrap_or([u32::MAX;2]);

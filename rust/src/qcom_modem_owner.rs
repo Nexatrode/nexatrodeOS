@@ -1,6 +1,11 @@
 //! Serialized modem transport owner: bounded work, retained fault state, IRQs.
 //! Native attachment must consume the actual authenticated channel handoff.
 #![forbid(unsafe_code)]
+/* MCFG_IDLE_TURN_BEGIN */
+#[cfg(feature="sunfish-mcfg-idle-turn")]
+#[path="qcom_owner_mcfg_idle.rs"]
+mod mcfg_idle;
+/* MCFG_IDLE_TURN_END */
 /* MCFG_QUEUED_TURN_BEGIN */
 #[cfg(feature="sunfish-mcfg-queued-turn")]
 #[path="qcom_owner_mcfg_queued.rs"]
@@ -280,6 +285,10 @@ struct PendingTftpReply {
 #[cfg(feature = "sunfish-tftp-per-peer-reply-experiment")]
 #[derive(Clone, Copy)]
 struct PeerTftpReply {
+/* MCFG_IDLE_TURN_BEGIN */
+#[cfg(feature="sunfish-mcfg-idle-turn")]
+    mcfg_idle_used: bool,
+/* MCFG_IDLE_TURN_END */
     meta: PendingTftpReply,
     bytes: [u8; crate::qcom_tftp::MAX_REQUEST_BYTES],
     #[cfg(feature = "sunfish-wlan-first-server-check-repeat")]
@@ -2674,6 +2683,10 @@ impl<I: Io> Owner<I> {
                             source: crate::qcom_qmi_router::Address { node: route.source_node, port: route.source_port },
                             destination: crate::qcom_qmi_router::Address { node: route.destination.node, port: route.destination.port },
                         }, bytes: len }, bytes,
+/* MCFG_IDLE_TURN_BEGIN */
+#[cfg(feature="sunfish-mcfg-idle-turn")]
+                        mcfg_idle_used: false,
+/* MCFG_IDLE_TURN_END */
                         #[cfg(feature = "sunfish-wlan-first-server-check-repeat")]
                         request: handle,
                     });
@@ -2719,6 +2732,10 @@ impl<I: Io> Owner<I> {
             let mut bytes = [0; crate::qcom_tftp::MAX_REQUEST_BYTES];
             bytes[..reply.len].copy_from_slice(&self.tftp_output[..reply.len]);
             self.peer_tftp_replies[free] = Some(PeerTftpReply {
+/* MCFG_IDLE_TURN_BEGIN */
+#[cfg(feature="sunfish-mcfg-idle-turn")]
+                mcfg_idle_used: false,
+/* MCFG_IDLE_TURN_END */
                 meta: PendingTftpReply {
                     route: crate::qcom_glink_qmi::TftpReplyRoute {
                         source: crate::qcom_qmi_router::Address { node: reply.route.source.node, port: reply.route.source.port },
@@ -3380,6 +3397,10 @@ impl<I: Io> Owner<I> {
         self.adapter.revalidate(self.generation)?;
         let mut progress = Progress::default();
         let mut exhausted = true;
+/* MCFG_IDLE_TURN_BEGIN */
+#[cfg(feature="sunfish-mcfg-idle-turn")]
+        let mut mcfg_idle_spent=false;
+/* MCFG_IDLE_TURN_END */
         for _ in 0..WORK_BUDGET {
             #[cfg(all(feature = "sunfish-tftp-deferred-close-experiment", not(feature = "sunfish-tftp-peer-close-experiment")))]
             {
@@ -3801,6 +3822,12 @@ impl<I: Io> Owner<I> {
                     continue;
                 }
             }
+/* MCFG_IDLE_TURN_BEGIN */
+#[cfg(feature="sunfish-mcfg-idle-turn")]
+            let mcfg_idle_writes=if !mcfg_idle_spent&&matches!(rx,Receive::Idle){
+                match self.lend_mcfg_idle_turn()?{Some(n)=>{mcfg_idle_spent=true;progress.published+=n;n},None=>0}
+            }else{0};
+/* MCFG_IDLE_TURN_END */
             #[cfg(feature = "sunfish-tftp-oack-followup")]
             let repeat_was_done = self.adapter.oack_slot_follow()
                 .is_some_and(|trace| trace.exact_repeat_done_at.is_some());
@@ -3988,6 +4015,10 @@ impl<I: Io> Owner<I> {
                     && matches!(rx, Receive::Session(Event::TransmitDone))) {
                 break;
             }
+/* MCFG_IDLE_TURN_BEGIN */
+#[cfg(feature="sunfish-mcfg-idle-turn")]
+            let tx_progress=tx_progress||mcfg_idle_writes!=0;
+/* MCFG_IDLE_TURN_END */
             if !rx_progress && !tx_progress {
                 exhausted = false;
                 break;
