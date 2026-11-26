@@ -182,7 +182,7 @@ impl RuntimeDomain{
  fn show_startup_prerequisites(&self,d:&Display,owner:&ModemOwner){
   let age=|at|self.time_from_us(Some(self.runtime_started),at);
   let row=|n,label,values:&[u32]|{d.header_label(n,label);let mut fields=[(0,8);6];for(i,v)in values.iter().enumerate(){fields[i]=(*v,8);}d.header_row(n,true,&fields[..values.len()]);};
-  for n in 2..=28{d.replace_line(n,"");}d.replace_line(1,if cfg!(feature="sunfish-efs-early-error-turn"){"MODEM EFS EARLY ERROR"}else if cfg!(feature="sunfish-efs-reply-fifo"){"MODEM EFS REPLY FIFO"}else if cfg!(feature="sunfish-tftp-arrival-order"){"EARLY TFTP ARRIVAL ORDER"}else{"EARLY STARTUP REPLIES"});
+  for n in 2..=28{d.replace_line(n,"");}d.replace_line(1,if cfg!(feature="sunfish-efs-service-handoff"){"EFS SERVICE HANDOFF"}else if cfg!(feature="sunfish-efs-early-error-turn"){"MODEM EFS EARLY ERROR"}else if cfg!(feature="sunfish-efs-reply-fifo"){"MODEM EFS REPLY FIFO"}else if cfg!(feature="sunfish-tftp-arrival-order"){"EARLY TFTP ARRIVAL ORDER"}else{"EARLY STARTUP REPLIES"});
   let close=owner.mcfg_close_trace();row(2,"ERROR DETAIL CLOSE STAGE",&[self.error,self.detail,owner.pending_mcfg_close().map_or(u32::MAX,|p|p.port),close.stage]);
   let first=owner.original_tftp_write_trace();row(3,"ORIG PEER WRQ OACK DATA",&[first.map_or(u32::MAX,|w|w.peer.port),age(first.and_then(|w|w.received_at)),age(first.and_then(|w|w.oack.published_at)),age(first.and_then(|w|w.data).and_then(|w|w.received_at))]);
   row(4,"ACK PHASE PUB DONE CLOSE",&[first.map_or(u32::MAX,|w|u32::from(w.ack.phase)),age(first.and_then(|w|w.ack.published_at)),age(first.and_then(|w|w.ack.done_at)),age(first.and_then(|w|w.timing.first_close_at))]);
@@ -206,7 +206,12 @@ impl RuntimeDomain{
    {   row(16,"VISIBLE CLOSE FINISH EVICT",&[c.and_then(|c|c.visible_at_close).map_or(u32::MAX,u32::from),w.map_or(0,|w|u32::from(w.fifo.finished)),w.map_or(0,|w|w.fifo.history_evictions)]);
    let r=p.reads[2];row(17,"EFS OP CODE LEN TRACKED",&[r.map_or(u32::MAX,|r|r.opcode),r.map_or(u32::MAX,|r|r.number),r.map_or(u32::MAX,|r|r.reply_bytes),u32::from(w.is_some())]);}
    #[cfg(feature="sunfish-efs-early-error-turn")]
-   {let t=owner.efs_error_turn_trace();row(16,"VISIBLE CLOSE FIN EVICT STOP",&[c.and_then(|c|c.visible_at_close).map_or(u32::MAX,u32::from),w.map_or(0,|w|u32::from(w.fifo.finished)),w.map_or(0,|w|w.fifo.history_evictions),t.stop]);row(17,"EARLY CALL WRITE RX BLOCK",&[t.calls,t.writes,t.rx_veto,t.blocked]);}
+   {let t=owner.efs_error_turn_trace();
+    #[cfg(not(feature="sunfish-efs-service-handoff"))]
+    {row(16,"VISIBLE CLOSE FIN EVICT STOP",&[c.and_then(|c|c.visible_at_close).map_or(u32::MAX,u32::from),w.map_or(0,|w|u32::from(w.fifo.finished)),w.map_or(0,|w|w.fifo.history_evictions),t.stop]);row(17,"EARLY CALL WRITE RX BLOCK",&[t.calls,t.writes,t.rx_veto,t.blocked]);}
+    #[cfg(feature="sunfish-efs-service-handoff")]
+    {let service=owner.efs_service_trace();let commands=t.commands.iter().enumerate().fold(0u32,|v,(i,c)|v|((u32::from(*c)&255)<<(i*8)));row(16,"VISIBLE CLOSE FIN EVICT STOP CMDS",&[c.and_then(|c|c.visible_at_close).map_or(u32::MAX,u32::from),w.map_or(0,|w|u32::from(w.fifo.finished)),w.map_or(0,|w|w.fifo.history_evictions),t.stop,commands]);row(17,"EARLY CALL WRITE RX BLOCK SVC STATE",&[t.calls,t.writes,t.rx_veto,t.blocked,service.calls,service.outcome]);}
+   }
 
   }
   let reads=owner.read_sequence();row(28,"READ MASK RULE EFS OMIT R E",&[diagnostic::packed_counts(reads.total,reads.kinds),p.total[0],p.total[1],p.omitted[0],p.omitted[1]]);

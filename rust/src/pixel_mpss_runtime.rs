@@ -466,6 +466,10 @@ impl RuntimeDomain {
 #[cfg(feature="sunfish-efs-early-error-turn")]
         owner.enable_efs_error_turn();
 /* EFS_EARLY_TURN_END */
+/* EFS_SERVICE_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-efs-service-handoff")]
+        owner.enable_efs_service_handoff();
+/* EFS_SERVICE_HANDOFF_END */
         owner.start_control().map_err(|_| 0x42u32)?;
         owner.enable_ipa_server(&permit, &mut self.router).map_err(|_| 0x48u32)?;
         let server = (&mut *self.boot).server().map_err(|_| 0x43u32)?;
@@ -560,6 +564,17 @@ impl RuntimeDomain {
                     qcom_modem_owner::TftpServiceProgress::Ignored(_) => self.server_check_ignored = self.server_check_ignored.saturating_add(1),
                     _ => {},
                 }
+/* EFS_SERVICE_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-efs-service-handoff")]
+                if let Some(progress)=owner.service_efs_handoff(&mut self.server_check,
+                    #[cfg(feature="sunfish-tftp-wlan-mux")] Some(&mut self.firmware), &mut self.router).map_err(|_|0x55u32)? {
+                    match progress {
+                        qcom_modem_owner::TftpServiceProgress::ResponseQueued => self.server_check_queued=self.server_check_queued.saturating_add(1),
+                        qcom_modem_owner::TftpServiceProgress::Ignored(_) => self.server_check_ignored=self.server_check_ignored.saturating_add(1),
+                        _=>{},
+                    }
+                }
+/* EFS_SERVICE_HANDOFF_END */
                 #[cfg(feature = "sunfish-ipa-schedule-trace")]
                 self.ipa_schedule.observe(counter(), 5, ipa_schedule_milestones(owner));
                 #[cfg(feature = "sunfish-ipa-registration-prep-trace")]

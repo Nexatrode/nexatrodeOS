@@ -1,6 +1,13 @@
 //! Serialized modem transport owner: bounded work, retained fault state, IRQs.
 //! Native attachment must consume the actual authenticated channel handoff.
 #![forbid(unsafe_code)]
+/* EFS_SERVICE_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-efs-service-handoff")]
+#[path="qcom_owner_efs_service.rs"]
+mod efs_service;
+#[cfg(feature="sunfish-efs-service-handoff")]
+pub use efs_service::EfsServiceTrace;
+/* EFS_SERVICE_HANDOFF_END */
 /* EFS_EARLY_TURN_BEGIN */
 #[cfg(feature="sunfish-efs-early-error-turn")]
 #[path="qcom_owner_efs_early.rs"]
@@ -1005,6 +1012,18 @@ pub struct Owner<I> {
     scheduled: bool,
     requests: [Option<RequestHandle>; MAX_REQUESTS],
     tftp_requests: [Option<TftpHandle>; MAX_REQUESTS],
+/* EFS_SERVICE_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-efs-service-handoff")]
+    efs_service_enabled: bool,
+#[cfg(feature="sunfish-efs-service-handoff")]
+    efs_service_used: bool,
+#[cfg(feature="sunfish-efs-service-handoff")]
+    efs_ruleset_request: Option<TftpHandle>,
+#[cfg(feature="sunfish-efs-service-handoff")]
+    efs_ruleset_queued: bool,
+#[cfg(feature="sunfish-efs-service-handoff")]
+    efs_service_trace: EfsServiceTrace,
+/* EFS_SERVICE_HANDOFF_END */
 /* EFS_EARLY_TURN_BEGIN */
 #[cfg(feature="sunfish-efs-early-error-turn")]
     efs_error_turn_enabled: bool,
@@ -1306,6 +1325,18 @@ impl<I: Io> Owner<I> {
             scheduled: false,
             requests: [None; MAX_REQUESTS],
             tftp_requests: [None; MAX_REQUESTS],
+/* EFS_SERVICE_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-efs-service-handoff")]
+            efs_service_enabled: false,
+#[cfg(feature="sunfish-efs-service-handoff")]
+            efs_service_used: false,
+#[cfg(feature="sunfish-efs-service-handoff")]
+            efs_ruleset_request: None,
+#[cfg(feature="sunfish-efs-service-handoff")]
+            efs_ruleset_queued: false,
+#[cfg(feature="sunfish-efs-service-handoff")]
+            efs_service_trace: EfsServiceTrace::default(),
+/* EFS_SERVICE_HANDOFF_END */
 /* EFS_EARLY_TURN_BEGIN */
 #[cfg(feature="sunfish-efs-early-error-turn")]
             efs_error_turn_enabled: false,
@@ -2583,6 +2614,10 @@ impl<I: Io> Owner<I> {
     fn flush_peer_tftp_reply(&mut self, slot: usize, interrupts: &mut impl Interrupts)
         -> Result<bool, Error> {
         let Some(reply) = self.peer_tftp_replies[slot].as_ref() else { return Ok(false); };
+/* EFS_SERVICE_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-efs-service-handoff")]
+        let request=reply.request;
+/* EFS_SERVICE_HANDOFF_END */
 /* EFS_EARLY_TURN_BEGIN */
 #[cfg(feature="sunfish-efs-early-error-turn")]
         let efs_turn=self.efs_error_turn_enabled&&!self.efs_error_turn_used&&reply.bytes[..reply.meta.bytes]==*crate::qcom_tftp_server_check::MISSING_REPLY&&!self.first_efs_error_closed&&self.first_efs_error_request==Some((reply.request,reply.meta.route.destination));
@@ -2636,6 +2671,10 @@ impl<I: Io> Owner<I> {
 #[cfg(feature="sunfish-efs-early-error-turn")]
                 if efs_turn{self.efs_error_turn_used=true;if let Err(error)=self.adapter.publish_efs_error_turn(self.generation){return Err(self.stop(error.into()));}}
 /* EFS_EARLY_TURN_END */
+/* EFS_SERVICE_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-efs-service-handoff")]
+                if self.efs_ruleset_request==Some(request) { self.efs_ruleset_queued=true; }
+/* EFS_SERVICE_HANDOFF_END */
                 #[cfg(feature = "sunfish-tftp-oack-early-reserve")]
                 if self.adapter.early_reserved_oack_pending() {
                     if let Err(error) = self.adapter.publish_oack_followup(
@@ -3699,6 +3738,10 @@ impl<I: Io> Owner<I> {
                     let first_endpoint = self.adapter.tftp_endpoint_trace();
                     let (route, packet) = self.adapter.tftp_datagram(self.generation, &handle)?;
                     let opcode = if packet.len() >= 2 { u16::from_be_bytes([packet[0], packet[1]]) } else { 0 };
+/* EFS_SERVICE_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-efs-service-handoff")]
+                    if self.efs_service_enabled && self.efs_ruleset_request.is_none() && opcode==tftp::OP_RRQ && route.source.port==crate::qcom_tftp_server_check::SERVICE_PORT && packet[2..].split(|b|*b==0).next()==Some(b"/readwrite/ota_firewall/ruleset".as_slice()) { self.efs_ruleset_request=Some(handle); }
+/* EFS_SERVICE_HANDOFF_END */
 /* EFS_EARLY_TURN_BEGIN */
 #[cfg(feature="sunfish-efs-early-error-turn")]
                     if self.efs_error_turn_enabled&&self.first_efs_error_request.is_none()&&opcode==tftp::OP_RRQ&&route.source.port==crate::qcom_tftp_server_check::SERVICE_PORT&&packet[2..].split(|b|*b==0).next()==Some(b"/readwrite/modem_efs".as_slice()){

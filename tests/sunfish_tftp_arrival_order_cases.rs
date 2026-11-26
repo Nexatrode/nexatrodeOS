@@ -58,3 +58,4 @@ fn efs_reply_fifo_owner_tail_close_foreign_receipt_and_exact_done(){
 }
 
 include!("sunfish_efs_early_cases.rs");
+include!("sunfish_efs_service_cases.rs");
