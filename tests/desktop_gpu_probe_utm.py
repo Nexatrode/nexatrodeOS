@@ -7,7 +7,7 @@ ROOT=Path(__file__).resolve().parents[1]
 CTL='/Applications/UTM.app/Contents/MacOS/utmctl'
 def ctl(*v):return subprocess.run([CTL,*v],capture_output=True,text=True,timeout=30)
 def main():
- p=argparse.ArgumentParser(description=__doc__);p.add_argument('--guest',type=Path,required=True);p.add_argument('--template',type=Path,required=True);p.add_argument('--device',choices=['virtio-gpu-device','virtio-gpu-gl-device'],required=True);a=p.parse_args()
+ p=argparse.ArgumentParser(description=__doc__);p.add_argument('--guest',type=Path,required=True);p.add_argument('--template',type=Path,required=True);p.add_argument('--device',choices=['virtio-gpu-device','virtio-gpu-gl-device'],required=True);p.add_argument('--inspect-seconds',type=int,choices=range(46),default=0,help='keep the diskless probe visible briefly for native display inspection');p.add_argument('--keep-running',action='store_true',help='retain only this diskless VM for explicit interactive inspection');a=p.parse_args()
  guest=a.guest.resolve();assert guest.is_relative_to(ROOT/'build/desktop-gpu')
  m=json.loads((guest/'build.json').read_text());assert not m['disk'] and not m['network']
  sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
@@ -16,6 +16,7 @@ def main():
  tag=str(uuid.uuid4()).upper();out=guest/a.device;out.mkdir(exist_ok=False)
  bundle=out/('GPU-Probe-'+tag[:8]+'.utm');data=bundle/'Data';data.mkdir(parents=True)
  cfg=plistlib.loads(a.template.read_bytes());cfg['Information'].update(UUID=tag,Name='NexatrodeOS GPU Probe — Disposable '+tag[:8])
+ cfg['Information']['Notes']='Diskless GPU protocol probe. No wallet, chats, storage or network.'
  cfg['Drive']=[];cfg['Network']=[];cfg['Serial']=[];cfg['Sharing'].update(ClipboardSharing=False,DirectoryShareMode='None')
  cfg['Display'][0]['Hardware']=a.device;cfg['Display'][0]['DynamicResolution']=False
  shutil.copyfile(guest/'loader.img',data/'loader.img')
@@ -82,9 +83,14 @@ def main():
    result['scanout_captured']=True
  except Exception as e:result['error']=str(e);result['passed']=False
  finally:
+  if a.inspect_seconds and registered:
+   print('GPU_PROBE_INSPECT|'+tag,flush=True);time.sleep(a.inspect_seconds)
   if (data/'scanout.ppm').exists():shutil.copyfile(data/'scanout.ppm',out/'scanout.ppm')
   monitor.close()
-  if registered:
+  if registered and a.keep_running and result.get('textures_verified'):
+   if trace.exists():shutil.copyfile(trace,out/'serial.log')
+   result['retained_running']=True;result['bundle']=str(bundle)
+  elif registered:
    try:
     ctl('stop',tag)
     if trace.exists():shutil.copyfile(trace,out/'serial.log')

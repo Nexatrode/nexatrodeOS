@@ -32,6 +32,17 @@
 uintptr_t browser_frame, input_handoff, ui_focus, ui_pointer;
 struct gui_window { struct browser_window *bw; int scroll, width, height, caret_x, caret_y, caret_h; };
 static struct gui_window window;
+#ifdef NATIVE_DISPLAY_RESIZE
+#include "../desktop-gpu/display_protocol.h"
+uintptr_t desktop_display_mode;
+int native_view_height=520;
+static void resize_viewport(void) {
+    const struct display_mode *m=(void*)desktop_display_mode;uint32_t revision=__atomic_load_n(&m->revision,__ATOMIC_ACQUIRE),height=m->app_height;
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    if(!revision||(revision&1)||revision!=__atomic_load_n(&m->revision,__ATOMIC_ACQUIRE)||height<360||height>520||height==(unsigned)native_view_height)return;
+    native_view_height=height;if(window.bw)browser_window_schedule_reformat(window.bw);native_ui_status_changed();
+}
+#endif
 static bool dirty=true, shift, mouse_down, loaded;
 static unsigned frames, navigations;
 static int mouse_x, mouse_y;
@@ -184,6 +195,9 @@ static void draw(void){
     if(loaded && window.height>0)printf("NETSURF|READY|frame=%u|height=%d\n",frames,window.height);
 }
 static void pump(void){
+#ifdef NATIVE_DISPLAY_RESIZE
+    resize_viewport();
+#endif
     for(unsigned budget=0;budget<128;++budget){
         uint64_t now=native_ms();int due=-1;
         for(unsigned i=0;i<128;++i)if(tasks[i].live && tasks[i].due<=now){due=i;break;}
@@ -325,4 +339,8 @@ void init(void){
 #endif
     pump();
 }
-void notified(microkit_channel channel){if(channel==1)input();pump();}
+void notified(microkit_channel channel){
+#ifdef NATIVE_DISPLAY_RESIZE
+    resize_viewport();
+#endif
+    if(channel==1)input();pump();}

@@ -34,6 +34,22 @@ pub struct FrameSurfaceHeader {
 }
 
 impl FrameSurfaceHeader {
+    /// Desktop viewport publication within the existing maximum-size mapping.
+    /// The sole producer holds a mutable header while readers use the seqlock.
+    pub fn publish_viewport(&mut self,pixels:&mut [u8],source:&[u8],height:u32,y:u32,rows:u32) -> bool {
+        if height==0||height>FRAME_HEIGHT||pixels.len()!=FRAME_PIXEL_BYTES||source.len()!=FRAME_PIXEL_BYTES{return false;}
+        let changed=self.height!=height;
+        let y=if changed {0} else {y};
+        let rows=if changed {height} else {rows.min(height.saturating_sub(y))};
+        if rows==0{return true;}
+        let odd=self.revision.load(Ordering::Relaxed).wrapping_add(1)|1;
+        self.revision.store(odd,Ordering::Release);core::sync::atomic::fence(Ordering::SeqCst);
+        self.width=FRAME_WIDTH;self.height=height;self.stride_bytes=FRAME_STRIDE_BYTES;self.format=FRAME_FORMAT_RGB8;
+        self.damage_y.store(y,Ordering::Relaxed);self.damage_height.store(rows,Ordering::Relaxed);
+        let start=y as usize*FRAME_STRIDE_BYTES as usize;let bytes=rows as usize*FRAME_STRIDE_BYTES as usize;
+        unsafe {crate::frame_copy::copy_nonoverlapping_ram(pixels.as_mut_ptr().add(start),source.as_ptr().add(start),bytes);}
+        self.revision.store(odd.wrapping_add(1),Ordering::Release);true
+    }
     pub const fn new() -> Self {
         Self {
             revision: AtomicU32::new(0),
@@ -104,6 +120,34 @@ impl Default for FrameSurfaceHeader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn viewport_shrink_grow_and_damage_stay_inside_the_mapping() {
+        let mut header=FrameSurfaceHeader::new();
+        let mut pixels=alloc::vec![0xa5;FRAME_PIXEL_BYTES];
+        let mut source=alloc::vec![0x31;FRAME_PIXEL_BYTES];
+        let short=FRAME_HEIGHT/2;
+        assert!(header.publish_viewport(&mut pixels,&source,short,FRAME_HEIGHT,1));
+        assert_eq!(header.height,short);
+        assert_eq!(header.damage_y.load(Ordering::Acquire),0);
+        let boundary=(short*FRAME_STRIDE_BYTES) as usize;
+        assert!(pixels[..boundary].iter().all(|b|*b==0x31));
+        assert!(pixels[boundary..].iter().all(|b|*b==0xa5));
+        source.fill(0x72);
+        assert!(header.publish_viewport(&mut pixels,&source,FRAME_HEIGHT,0,1));
+        assert!(pixels.iter().all(|b|*b==0x72));
+        assert_eq!(header.damage_height.load(Ordering::Acquire),FRAME_HEIGHT);
+        let revision=header.revision.load(Ordering::Acquire);
+        assert!(!header.publish_viewport(&mut pixels,&source,FRAME_HEIGHT+1,0,1));
+        assert!(!header.publish_viewport(&mut pixels,&source,0,0,1));
+        assert_eq!(header.revision.load(Ordering::Acquire),revision);
+        source.fill(0x19);
+        assert!(header.publish_viewport(&mut pixels,&source,FRAME_HEIGHT,FRAME_HEIGHT-1,100));
+        let last=((FRAME_HEIGHT-1)*FRAME_STRIDE_BYTES) as usize;
+        assert!(pixels[..last].iter().all(|b|*b==0x72));
+        assert!(pixels[last..].iter().all(|b|*b==0x19));
+        assert_eq!(header.damage_height.load(Ordering::Acquire),1);
+    }
 
     #[test]
     fn accepts_only_the_expected_bounded_rgb_surface() {

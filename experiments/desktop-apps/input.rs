@@ -7,6 +7,8 @@ impl SlintService {
     pub(super) fn desktop_input(&mut self,device:u64,kind:u64,code:u64,value:u64)
         -> Result<MessageInfo,Infallible>
     {
+        #[cfg(feature="desktop-resize-app")]
+        self.apply_desktop_mode();
         if device==2 {
             if self.desktop_pointer.take().is_some(){self.window.window().dispatch_event(WindowEvent::PointerReleased{position:slint::LogicalPosition::new(-1.0,-1.0),button:PointerEventButton::Left});}
             for held in &mut self.desktop_held {

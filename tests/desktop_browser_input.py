@@ -4,13 +4,15 @@ import re
 import subprocess
 import struct
 import time
+from desktop_gpu_capture import capture
 
 
 class BrowserCase:
     x,y=340,152
-    def __init__(self, monitor, trace, temporary, evidence, click, until, ui):
+    def __init__(self, monitor, trace, temporary, evidence, click, until, ui,gpu=False):
         self.monitor=monitor;self.trace=trace;self.temporary=temporary;self.evidence=evidence
         self.click=click;self.until=until;self.ui=ui;self.checks=[]
+        self.gpu=gpu
     def state(self):
         path=self.temporary/'shell-state.bin'
         self.monitor.send('pmemsave',{'val':0x5fbb4000,'size':64,'filename':str(path)})
@@ -37,7 +39,7 @@ class BrowserCase:
         end=time.monotonic()+35
         while time.monotonic()<end:
             ppm=self.temporary/'browser-check.ppm';crop=self.temporary/'browser-crop.png'
-            self.monitor.send('screendump',{'filename':str(ppm)})
+            capture(self.monitor,ppm,self.gpu)
             subprocess.run(['magick',str(ppm),'-crop',f'1120x1040+{self.x*2}+{self.y*2}','+repage',str(crop)],check=True,timeout=20)
             text=subprocess.run(['tesseract',str(crop),'stdout','--psm','11'],capture_output=True,text=True,check=True,timeout=30).stdout
             compact=lambda s:re.sub('[^a-z0-9]','',s.lower())

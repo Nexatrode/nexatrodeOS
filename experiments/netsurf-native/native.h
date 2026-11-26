@@ -12,7 +12,13 @@
 #endif
 #ifdef NATIVE_DESKTOP
 #define WIDTH 560
+#define MAX_HEIGHT 520
+#ifdef NATIVE_DISPLAY_RESIZE
+extern int native_view_height;
+#define HEIGHT native_view_height
+#else
 #define HEIGHT 520
+#endif
 #define BAR 80
 #define ADDRESS_LEFT 128
 #define ADDRESS_RIGHT (WIDTH-152)
@@ -25,6 +31,7 @@
 #else
 #define WIDTH 1280
 #define HEIGHT 800
+#define MAX_HEIGHT 800
 #define BAR 60
 #define ADDRESS_LEFT 193
 #define ADDRESS_RIGHT (WIDTH-500)
@@ -37,6 +44,7 @@
 #endif
 #define PIXEL_WIDTH (WIDTH * NATIVE_SCALE)
 #define PIXEL_HEIGHT (HEIGHT * NATIVE_SCALE)
+#define MAX_PIXEL_HEIGHT (MAX_HEIGHT * NATIVE_SCALE)
 struct asset { const char *name; const unsigned char *data; size_t size; };
 extern const struct asset native_assets[];
 extern const size_t native_asset_count;

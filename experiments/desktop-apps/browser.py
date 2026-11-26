@@ -3,14 +3,14 @@ import sys
 import xml.etree.ElementTree as ET
 
 
-def build(root, out, inputs, base):
+def build(root, out, inputs, base, resize=False):
     sys.path.insert(0, str(root / 'experiments/netsurf-native'))
     from build import frontend, run, export_licenses
     from network import build_worker
     # Reuse only the pinned public engine/dependency builds. Never a VM disk.
     assert base.is_relative_to(root / 'build/netsurf-native')
     assert (base / 'deps/netsurf/netsurf-native.a').is_file()
-    frontend(base, out, inputs, 2, https=True, javascript=True, desktop=True)
+    frontend(base, out, inputs, 2, https=True, javascript=True, desktop=True,resize=resize)
     build_worker(base, out, inputs, run, desktop=True)
     import subprocess
     symbols=subprocess.check_output(['/opt/homebrew/opt/llvm/bin/llvm-nm',out/'browser.elf'],text=True)

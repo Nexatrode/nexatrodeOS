@@ -16,12 +16,16 @@ static struct shell_state desktop = {.top = 2, .windows = {{68, 126, 0, 0}, {650
 static uint32_t sent[DESKTOP_SHELL_OWNER], driver_tail, driver_dropped;
 static bool reset_pending[DESKTOP_SHELL_OWNER], input_ready;
 static unsigned pointer_owner;
+#ifdef DESKTOP_VIRGL
+static unsigned drag_owner;
+static int32_t drag_offset_x,drag_offset_y;
+#endif
 #if DESKTOP_APP_COUNT == 3
 static unsigned chrome_pending;
 #endif
 static int32_t pointer_x, pointer_y;
 static uint8_t key_owners[DESKTOP_KEY_MAX + 1];
-#define APP_BYTES (APP_PIXEL_WIDTH * APP_PIXEL_HEIGHT * 3u)
+#define APP_BYTES (APP_PIXEL_WIDTH * APP_MAX_PIXEL_HEIGHT * 3u)
 static uint8_t shell_pixels[SLINT_FRAME_PIXEL_BYTES], candidate[SLINT_FRAME_PIXEL_BYTES];
 static uint8_t app_pixels[DESKTOP_APP_COUNT][APP_BYTES];
 static uint32_t shell_revision, app_revision[DESKTOP_APP_COUNT];
@@ -87,12 +91,18 @@ static void focus(unsigned owner)
 }
 static void release_owner(unsigned owner)
 {
+#ifdef DESKTOP_VIRGL
+    if(drag_owner==owner){drag_owner=0;pointer_owner=0;}
+#endif
     for (unsigned i = 0; i <= DESKTOP_KEY_MAX; ++i) if (key_owners[i] == owner) key_owners[i] = 0;
     if (pointer_owner == owner) pointer_owner = 0;
     emit(owner, (struct desktop_event){.kind = DESKTOP_RESET});
 }
 static void reset_input(void)
 {
+#ifdef DESKTOP_VIRGL
+    drag_owner=0;
+#endif
     memset(key_owners, 0, sizeof(key_owners)); pointer_owner = 0;
 #if DESKTOP_APP_COUNT == 3
     chrome_pending = 0;
@@ -133,6 +143,24 @@ static void chrome_activate(unsigned action)
 #endif
 static void pointer_event(unsigned value)
 {
+#ifdef DESKTOP_VIRGL
+    if(value==1&&!pointer_owner){
+        unsigned id=shell_window_at(&desktop,pointer_x,pointer_y);
+        if(id){const struct shell_window *w=&desktop.windows[id-1];
+            if(pointer_y<w->y && pointer_x<w->x+(int)APP_WIDTH-92){
+                drag_owner=id;drag_offset_x=pointer_x-w->x;drag_offset_y=pointer_y-w->y;
+                pointer_owner=DESKTOP_SHELL_OWNER;focus(id);return;
+            }
+        }
+    }
+    if(drag_owner){
+        if(value==2){struct shell_window *w=&desktop.windows[drag_owner-1];
+            int32_t x=w->x,y=w->y;shell_position(w,pointer_x-drag_offset_x,pointer_y-drag_offset_y);
+            if(x!=w->x||y!=w->y)publish_state();
+        } else if(value==0){drag_owner=0;pointer_owner=0;}
+        return;
+    }
+#endif
     unsigned owner = pointer_owner ? pointer_owner : shell_hit(&desktop, pointer_x, pointer_y);
     if (value == 1 && !pointer_owner) {
 #if DESKTOP_APP_COUNT == 3
@@ -215,6 +243,12 @@ static bool snapshot(uintptr_t source, unsigned width, unsigned height, uint8_t 
 #endif
 static bool compose(void)
 {
+#ifdef DESKTOP_VIRGL
+    /* The renderer owns read-only producer mappings and snapshots on its own
+     * scheduling context. Navigation never waits for texture upload or fences. */
+    microkit_notify(2);
+    return true;
+#endif
     composition_dirty |= snapshot(shell_surface, SHELL_PIXEL_WIDTH, SHELL_PIXEL_HEIGHT, shell_pixels, &shell_revision);
 #ifdef DESKTOP_REAL_APPS
     composition_dirty |= snapshot_app(surface_a, app_pixels[0], &app_revision[0]);

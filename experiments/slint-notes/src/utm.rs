@@ -385,6 +385,8 @@ struct SlintService {
     desktop_held: [Option<slint::SharedString>; 256],
     #[cfg(feature = "desktop-real-app")]
     desktop_pointer: Option<slint::LogicalPosition>,
+    #[cfg(feature="desktop-resize-app")]
+    desktop_height:u32,
 }
 
 /// NexaWal shell client: opcodes only; payload lives on wallet_transfer.
@@ -3605,20 +3607,27 @@ impl SlintService {
         )
     }
 
+    #[cfg(feature="desktop-resize-app")]
+    fn apply_desktop_mode(&mut self) -> bool {
+        let Some(mode)=personal_os_slint_notes_spike::desktop_resize::read() else {return false;};
+        let height=mode.app_height*2;if height==self.desktop_height{return false;}
+        self.desktop_height=height;self.window.set_size(PhysicalSize::new(FRAME_WIDTH,height));self.window.request_redraw();
+        self.shown_view=-1;self.wallet_face_tab_dirty=true;
+        unsafe {for i in 0..PAGE_PICTURE_COUNT {(*core::ptr::addr_of_mut!(PAGE_PICTURE_META).cast::<PagePictureMeta>().add(i)).ready=false;}}
+        true
+    }
+    fn publish_surface(&mut self,y:u32,height:u32) {
+        let shared=unsafe {core::slice::from_raw_parts_mut(self.pixels.as_ptr(),FRAME_PIXEL_BYTES)};
+        #[cfg(feature="desktop-resize-app")]
+        let ok=unsafe {self.header.as_mut()}.publish_viewport(shared,&self.rendered,self.desktop_height,y,height);
+        #[cfg(not(feature="desktop-resize-app"))]
+        let ok=unsafe {self.header.as_ref()}.publish_rows(shared,&self.rendered,y,height);
+        assert!(ok,"publish bounded Slint viewport");
+    }
     fn publish_copied_frame(&mut self) {
         #[cfg(feature = "utm-perf-trace")]
         let trace_start = perf_time_us();
-        let shared_pixels =
-            unsafe { core::slice::from_raw_parts_mut(self.pixels.as_ptr(), FRAME_PIXEL_BYTES) };
-        assert!(
-            unsafe { self.header.as_ref() }.publish_rows(
-                shared_pixels,
-                &self.rendered,
-                0,
-                FRAME_HEIGHT
-            ),
-            "publish stored page"
-        );
+        self.publish_surface(0,FRAME_HEIGHT);
         core::sync::atomic::fence(Ordering::SeqCst);
         #[cfg(feature = "utm-perf-trace")]
         debug_println!("PERF|CACHE_PUBLISH|{}|{}", trace_start, perf_time_us());
@@ -3943,6 +3952,8 @@ impl SlintService {
     }
 
     fn publish_frame(&mut self) {
+        #[cfg(feature="desktop-resize-app")]
+        self.apply_desktop_mode();
         #[cfg(feature = "desktop-apps-observe")]
         desktop_observation::publish(&self._ui);
         if self.defer_frame {
@@ -4028,12 +4039,7 @@ impl SlintService {
             self.shown_stamp = self.view_stamp();
             return;
         }
-        let shared_pixels =
-            unsafe { core::slice::from_raw_parts_mut(self.pixels.as_ptr(), FRAME_PIXEL_BYTES) };
-        assert!(
-            unsafe { self.header.as_ref() }.publish_rows(shared_pixels, &self.rendered, band.y, height),
-            "publish Slint frame"
-        );
+        self.publish_surface(band.y,height);
         core::sync::atomic::fence(Ordering::SeqCst);
         self.shown_view = view;
         self.shown_stamp = self.view_stamp();
@@ -5543,6 +5549,8 @@ fn init() -> SlintService {
         desktop_held: core::array::from_fn(|_| None),
         #[cfg(feature = "desktop-real-app")]
         desktop_pointer: None,
+        #[cfg(feature="desktop-resize-app")]
+        desktop_height:FRAME_HEIGHT,
     };
     // Paint ARMED only. Open+queue runs on the first GPU→input→SLINT pulse
     // after scanout — init-time OPEN/REFRESH Calls left the shell with no
@@ -7768,6 +7776,8 @@ impl Handler for SlintService {
     type Error = Infallible;
 
     fn notified(&mut self, channels: ChannelSet) -> Result<(), Self::Error> {
+        #[cfg(feature="desktop-resize-app")]
+        if self.apply_desktop_mode(){self.publish_frame();SLINT_INPUT.notify();}
         slint::platform::update_timers_and_animations();
         #[cfg(feature = "utm-device-lock")]
         {

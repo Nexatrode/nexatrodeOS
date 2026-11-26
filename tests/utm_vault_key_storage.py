@@ -5,6 +5,7 @@ Inputs are test-only Microkit images/configuration. Every case creates its own
 blank GPT disk. No real VM disk or provisioned vault image is read or copied.
 """
 import argparse
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -48,8 +49,19 @@ def build_loader(point, artifacts, sdk, directory):
 
 class QmpPipe:
     def __init__(self, path):
-        self.output = os.open(str(path) + ".out", os.O_RDONLY | os.O_NONBLOCK)
+        self.output = None
         self.input = None
+        self.client_lock = os.open(str(path) + '.client.lock', os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            # A FIFO has one reply stream: two readers can steal each other's
+            # replies even when each uses request IDs. Keep the inode after
+            # closing so another client cannot bypass a live lock by unlinking.
+            fcntl.flock(self.client_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.output = os.open(str(path) + ".out", os.O_RDONLY | os.O_NONBLOCK)
+        except BaseException:
+            os.close(self.client_lock)
+            self.client_lock = None
+            raise RuntimeError(f'QMP monitor unavailable or already owned by another client: {path}') from None
         self.buffer = b""
         self.next_id = 0
         self.path = path
@@ -90,8 +102,11 @@ class QmpPipe:
         raise RuntimeError("QMP command timed out: " + command)
 
     def close(self):
-        if self.input is not None: os.close(self.input)
-        os.close(self.output)
+        for name in ('input', 'output', 'client_lock'):
+            fd = getattr(self, name)
+            if fd is not None:
+                os.close(fd)
+                setattr(self, name, None)
 
 
 def wait_marker(trace, marker, after=0):
