@@ -3824,7 +3824,7 @@ impl<I: Io> Owner<I> {
             }
 /* MCFG_IDLE_TURN_BEGIN */
 #[cfg(feature="sunfish-mcfg-idle-turn")]
-            let mcfg_idle_writes=if !mcfg_idle_spent&&matches!(rx,Receive::Idle){
+            let mcfg_idle_progress=if !mcfg_idle_spent&&matches!(rx,Receive::Idle){
                 match self.lend_mcfg_idle_turn()?{Some(n)=>{mcfg_idle_spent=true;progress.published+=n;n},None=>0}
             }else{0};
 /* MCFG_IDLE_TURN_END */
@@ -4017,7 +4017,7 @@ impl<I: Io> Owner<I> {
             }
 /* MCFG_IDLE_TURN_BEGIN */
 #[cfg(feature="sunfish-mcfg-idle-turn")]
-            let tx_progress=tx_progress||mcfg_idle_writes!=0;
+            let tx_progress=tx_progress||mcfg_idle_progress!=0;
 /* MCFG_IDLE_TURN_END */
             if !rx_progress && !tx_progress {
                 exhausted = false;

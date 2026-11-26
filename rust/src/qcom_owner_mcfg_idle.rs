@@ -19,8 +19,9 @@ impl<I:Io> Owner<I>{
 #[cfg(all(test,mpss_glink_transport_tests))]
 mod tests{
  use super::*;
- fn setup()->(crate::Fake,Owner<crate::Fake>,crate::Irqs,u32){
-  let(a,p,h,close)=crate::qcom_glink_fifo::mcfg_idle_fixture();let route=crate::qcom_glink_qmi::TftpReplyRoute{source:crate::qcom_qmi_router::Address{node:1,port:0x5006},destination:crate::qcom_qmi_router::Address{node:0,port:0x4a}};let mut o=Owner::attach(a,1).unwrap();o.enable_mcfg_queued_turn();o.mcfg_close_transfers[0]=Some((route.destination,route.source.port));let mut bytes=[0;crate::qcom_tftp::MAX_REQUEST_BYTES];let body=crate::qcom_tftp_server_check::MISSING_REPLY;bytes[..body.len()].copy_from_slice(body);
+ fn setup()->(crate::Fake,Owner<crate::Fake>,crate::Irqs,u32){setup_slack(None)}
+ fn setup_slack(slack:Option<usize>)->(crate::Fake,Owner<crate::Fake>,crate::Irqs,u32){
+  let(a,p,h,close)=crate::qcom_glink_fifo::mcfg_idle_fixture(slack);let route=crate::qcom_glink_qmi::TftpReplyRoute{source:crate::qcom_qmi_router::Address{node:1,port:0x5006},destination:crate::qcom_qmi_router::Address{node:0,port:0x4a}};let mut o=Owner::attach(a,1).unwrap();o.enable_mcfg_queued_turn();o.mcfg_close_transfers[0]=Some((route.destination,route.source.port));let mut bytes=[0;crate::qcom_tftp::MAX_REQUEST_BYTES];let body=crate::qcom_tftp_server_check::MISSING_REPLY;bytes[..body.len()].copy_from_slice(body);
   o.peer_tftp_replies[0]=Some(PeerTftpReply{meta:PendingTftpReply{route,bytes:body.len()},bytes,request:h,
    #[cfg(feature="sunfish-mcfg-idle-turn")]mcfg_idle_used:false});p.clear();(p,o,crate::Irqs::default(),close)
  }
@@ -48,6 +49,11 @@ mod tests{
  fn mcfg_idle_owner_one_retained_opportunity_per_work_and_per_reply(){
   let(_,mut o,mut i,_)=setup();let mut second=o.peer_tftp_replies[0].unwrap();second.meta.route.destination.port=0x4b;second.meta.route.source.port=0x5007;o.mcfg_close_transfers[1]=Some((second.meta.route.destination,second.meta.route.source.port));o.peer_tftp_replies[1]=Some(second);
   o.notified(8,&mut i).unwrap();assert_eq!(o.mcfg_idle_turn_trace().calls,1);assert!(o.peer_tftp_replies[0].unwrap().mcfg_idle_used);assert!(!o.peer_tftp_replies[1].unwrap().mcfg_idle_used);o.notified(8,&mut i).unwrap();assert_eq!(o.mcfg_idle_turn_trace().calls,2);assert!(o.peer_tftp_replies[1].unwrap().mcfg_idle_used);o.notified(8,&mut i).unwrap();assert_eq!(o.mcfg_idle_turn_trace().calls,2);
+ }
+
+ #[test]
+ fn mcfg_idle_owner_read_notification_is_progress_and_normal_retry_survives(){
+  let(p,mut o,mut i,_)=setup_slack(Some(16));let out=o.notified(8,&mut i).unwrap();assert_eq!(out.published,1);let t=o.mcfg_idle_turn_trace();assert_eq!((t.calls,t.writes,t.blocked),(1,0,1));assert!(o.peer_tftp_replies[0].unwrap().mcfg_idle_used);assert_eq!(o.tftp_tx_progress()[1],0);let wire=p.take_tx();assert_eq!(&wire[wire.len()-8..],&[13,0,0,0,0,0,0,0]);o.notified(8,&mut i).unwrap();assert_eq!(o.mcfg_idle_turn_trace().calls,1);assert_eq!(o.tftp_tx_progress()[1],1);assert!(o.peer_tftp_replies[0].is_some());
  }
 
 }

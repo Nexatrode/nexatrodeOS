@@ -33,7 +33,7 @@ impl<I:Io> Adapter<I>{
 /* MCFG_IDLE_TURN_BEGIN */
 #[cfg(feature="sunfish-mcfg-idle-turn")]
 #[cfg(all(test,mpss_glink_transport_tests))]
-pub(crate) fn mcfg_idle_fixture()->(Adapter<crate::Fake>,crate::Fake,core::TftpHandle,u32){tests::idle_fixture()}
+pub(crate) fn mcfg_idle_fixture(slack:Option<usize>)->(Adapter<crate::Fake>,crate::Fake,core::TftpHandle,u32){tests::idle_fixture(slack)}
 /* MCFG_IDLE_TURN_END */
 #[cfg(all(test,mpss_glink_transport_tests))]
 mod tests{
