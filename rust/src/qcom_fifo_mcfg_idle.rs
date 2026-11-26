@@ -10,12 +10,24 @@ impl<I:Io> Adapter<I>{
   let mut p=TurnProgress::default();self.mcfg_idle.calls=self.mcfg_idle.calls.saturating_add(1);
   let result=self.publish_mcfg_checked_turn(g,&mut p);
   self.mcfg_idle.writes=self.mcfg_idle.writes.saturating_add(p.writes);self.mcfg_idle.rx_veto=self.mcfg_idle.rx_veto.saturating_add(u32::from(p.rx_veto));self.mcfg_idle.blocked=self.mcfg_idle.blocked.saturating_add(u32::from(p.blocked));
+/* MCFG_IDLE_DETAIL_BEGIN */
+#[cfg(feature="sunfish-mcfg-idle-detail")]
+  self.finish_idle_detail(p.writes,u32::from(p.rx_veto),u32::from(p.blocked));
+/* MCFG_IDLE_DETAIL_END */
   result.map(|_|p.writes+p.notifications)
  }
  pub(super) fn publish_mcfg_checked_turn(&mut self,g:u64,p:&mut TurnProgress)->Result<(),Error>{
   self.check(g)?;self.mcfg_queued.calls=self.mcfg_queued.calls.saturating_add(1);
   for _ in 0..4 {
+/* MCFG_IDLE_DETAIL_BEGIN */
+#[cfg(feature="sunfish-mcfg-idle-detail")]
+   self.begin_idle_detail_attempt();
+/* MCFG_IDLE_DETAIL_END */
    self.mcfg_guard=true;let result=self.publish_next(g);self.mcfg_guard=false;
+/* MCFG_IDLE_DETAIL_BEGIN */
+#[cfg(feature="sunfish-mcfg-idle-detail")]
+   self.end_idle_detail_attempt(&result);
+/* MCFG_IDLE_DETAIL_END */
    match result?{
     Transmit::Session(op)=>{p.writes+=1;self.mcfg_queued.writes=self.mcfg_queued.writes.saturating_add(1);if !matches!(op,Published::ReceiveDone(_)|Published::ReceiveIntent(_)|Published::IntentRequestAck{..}){break;}},
     Transmit::Blocked{read_notification_sent}=>{p.notifications+=u32::from(read_notification_sent);p.blocked=true;self.mcfg_queued.blocked=self.mcfg_queued.blocked.saturating_add(1);break;},

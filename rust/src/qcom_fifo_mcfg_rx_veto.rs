@@ -13,6 +13,10 @@ impl McfgRxVetoTrace{
 impl<I:Io> Adapter<I>{
  pub(crate) fn mcfg_rx_veto_trace(&self)->&McfgRxVetoTrace{&self.mcfg_rx_veto}
  pub(super) fn record_mcfg_rx_event(&mut self,tag:u32,header:Option<RegistrationHeader>){
+/* MCFG_IDLE_DETAIL_BEGIN */
+#[cfg(feature="sunfish-mcfg-idle-detail")]
+  self.observe_idle_detail_rx(tag,header);
+/* MCFG_IDLE_DETAIL_END */
   let m=self.session.post_elf_mcfg().and_then(|c|c.mcfg.as_ref());
   if m.is_some_and(|m|m.flags&0x130!=0)||(tag>2&&!self.mcfg_rx_veto.active){return;}
   if tag<=2{self.mcfg_rx_veto.active=true;}

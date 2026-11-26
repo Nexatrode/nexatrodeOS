@@ -5,6 +5,8 @@ ROOT=Path(__file__).resolve().parents[1]
 PATTERN=r'/\* MCFG_IDLE_TURN_BEGIN \*/\n.*?/\* MCFG_IDLE_TURN_END \*/\n'
 COUNTS={'rust/src/qcom_glink_fifo.rs':5,'rust/src/sunfish_mpss_linux_transport.rs':1,'rust/src/qcom_fifo_mcfg_queued.rs':4,'rust/src/qcom_modem_owner.rs':7}
 def without_idle(path,source):
+ from sunfish_mcfg_idle_detail_source_test import without_detail
+ source=without_detail(path,source)
  blocks=re.findall(PATTERN,source,re.S)
  if path in COUNTS:
   assert len(blocks)==COUNTS[path],(path,len(blocks));assert all('#[cfg(feature="sunfish-mcfg-idle-turn")]'in b for b in blocks)

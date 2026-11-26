@@ -1,6 +1,10 @@
 //! A retained missing-MCFG response lends one turn after normal validated idle.
 use super::*;
 impl<I:Io> Owner<I>{
+/* MCFG_IDLE_DETAIL_BEGIN */
+#[cfg(feature="sunfish-mcfg-idle-detail")]
+ pub fn mcfg_idle_detail(&self)->&fifo::McfgIdleDetail{self.adapter.mcfg_idle_detail()}
+/* MCFG_IDLE_DETAIL_END */
  pub fn mcfg_idle_turn_trace(&self)->fifo::McfgIdleTurnTrace{self.adapter.mcfg_idle_turn_trace()}
  pub(super) fn lend_mcfg_idle_turn(&mut self)->Result<Option<u32>,Error>{
   if !self.mcfg_queued_enabled||self.pending_mcfg_close.is_some()||self.firmware_close_is_pending(){return Ok(None);}
@@ -11,6 +15,10 @@ impl<I:Io> Owner<I>{
   let Some(slot)=slot else{return Ok(None);};
   // Consume this logical retained reply's opportunity before any fallible I/O.
   // Removing it on admission or close removes the latch with it.
+/* MCFG_IDLE_DETAIL_BEGIN */
+#[cfg(feature="sunfish-mcfg-idle-detail")]
+  {let r=self.peer_tftp_replies[slot].as_ref().unwrap();self.adapter.arm_idle_detail(r.meta.route,r.meta.bytes,slot);}
+/* MCFG_IDLE_DETAIL_END */
   self.peer_tftp_replies[slot].as_mut().unwrap().mcfg_idle_used=true;
   self.adapter.publish_mcfg_idle_turn(self.generation).map(Some).map_err(Into::into)
  }
@@ -56,4 +64,8 @@ mod tests{
   let(p,mut o,mut i,_)=setup_slack(Some(16));let out=o.notified(8,&mut i).unwrap();assert_eq!(out.published,1);let t=o.mcfg_idle_turn_trace();assert_eq!((t.calls,t.writes,t.blocked),(1,0,1));assert!(o.peer_tftp_replies[0].unwrap().mcfg_idle_used);assert_eq!(o.tftp_tx_progress()[1],0);let wire=p.take_tx();assert_eq!(&wire[wire.len()-8..],&[13,0,0,0,0,0,0,0]);o.notified(8,&mut i).unwrap();assert_eq!(o.mcfg_idle_turn_trace().calls,1);assert_eq!(o.tftp_tx_progress()[1],1);assert!(o.peer_tftp_replies[0].is_some());
  }
 
+/* MCFG_IDLE_DETAIL_BEGIN */
+#[cfg(feature="sunfish-mcfg-idle-detail")]
+include!("../../tests/sunfish_mcfg_idle_detail_cases.rs");
+/* MCFG_IDLE_DETAIL_END */
 }

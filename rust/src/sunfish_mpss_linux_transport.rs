@@ -610,6 +610,10 @@ impl<I: BootIo> BootTransport<I> {
 /* MCFG_QUEUED_TURN_BEGIN */
             #[cfg(feature="sunfish-mcfg-queued-turn")]
             mcfg_guard: false,
+/* MCFG_IDLE_DETAIL_BEGIN */
+#[cfg(feature="sunfish-mcfg-idle-detail")]
+            idle_detail: super::McfgIdleDetail::default(),
+/* MCFG_IDLE_DETAIL_END */
 /* MCFG_IDLE_TURN_BEGIN */
 #[cfg(feature="sunfish-mcfg-idle-turn")]
             mcfg_idle: super::McfgIdleTurnTrace::default(),

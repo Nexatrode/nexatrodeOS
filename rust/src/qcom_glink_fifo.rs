@@ -6,6 +6,13 @@
 //! No allocation, FIFO initialization, channel negotiation, or IRQ registration.
 #![forbid(unsafe_code)]
 
+/* MCFG_IDLE_DETAIL_BEGIN */
+#[cfg(feature="sunfish-mcfg-idle-detail")]
+#[path="qcom_fifo_mcfg_idle_detail.rs"]
+mod mcfg_idle_detail;
+#[cfg(feature="sunfish-mcfg-idle-detail")]
+pub use mcfg_idle_detail::McfgIdleDetail;
+/* MCFG_IDLE_DETAIL_END */
 /* MCFG_IDLE_TURN_BEGIN */
 #[cfg(feature="sunfish-mcfg-idle-turn")]
 #[cfg(all(test,mpss_glink_transport_tests))]
@@ -2182,6 +2189,10 @@ pub struct Adapter<I> {
 /* MCFG_QUEUED_TURN_BEGIN */
     #[cfg(feature="sunfish-mcfg-queued-turn")]
     mcfg_guard: bool,
+/* MCFG_IDLE_DETAIL_BEGIN */
+#[cfg(feature="sunfish-mcfg-idle-detail")]
+    idle_detail: McfgIdleDetail,
+/* MCFG_IDLE_DETAIL_END */
 /* MCFG_IDLE_TURN_BEGIN */
 #[cfg(feature="sunfish-mcfg-idle-turn")]
     mcfg_idle: McfgIdleTurnTrace,
@@ -2228,6 +2239,10 @@ impl<I: Io> Adapter<I> {
 /* MCFG_QUEUED_TURN_BEGIN */
             #[cfg(feature="sunfish-mcfg-queued-turn")]
             mcfg_guard: false,
+/* MCFG_IDLE_DETAIL_BEGIN */
+#[cfg(feature="sunfish-mcfg-idle-detail")]
+            idle_detail: McfgIdleDetail::default(),
+/* MCFG_IDLE_DETAIL_END */
 /* MCFG_IDLE_TURN_BEGIN */
 #[cfg(feature="sunfish-mcfg-idle-turn")]
             mcfg_idle: McfgIdleTurnTrace::default(),
@@ -3985,6 +4000,10 @@ impl<I: Io> Adapter<I> {
             #[cfg(feature = "sunfish-grant-buffer-reads")]
             { self.ring.grant_session_write = true; }
             let result = self.ring.write_checked(record, TX_RESERVE, yield_to_rx);
+/* MCFG_IDLE_DETAIL_BEGIN */
+#[cfg(feature="sunfish-mcfg-idle-detail")]
+            if self.idle_detail.writer_active {self.idle_detail.header(RegistrationHeader::read(record,true,None),record);}
+/* MCFG_IDLE_DETAIL_END */
             #[cfg(feature = "sunfish-grant-buffer-reads")]
             { self.ring.grant_session_write = false; }
             #[cfg(feature = "sunfish-wrq-prefix-close")]
@@ -4482,6 +4501,10 @@ impl<I: Io> Adapter<I> {
 /* MCFG_QUEUED_TURN_BEGIN */
         #[cfg(feature="sunfish-mcfg-queued-turn")]
         {self.mcfg_guard=false;self.mcfg_queued=McfgQueuedTurnTrace::default();}
+/* MCFG_IDLE_DETAIL_BEGIN */
+#[cfg(feature="sunfish-mcfg-idle-detail")]
+        {self.idle_detail=McfgIdleDetail::default();}
+/* MCFG_IDLE_DETAIL_END */
 /* MCFG_IDLE_TURN_BEGIN */
 #[cfg(feature="sunfish-mcfg-idle-turn")]
         {self.mcfg_idle=McfgIdleTurnTrace::default();}

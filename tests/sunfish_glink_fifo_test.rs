@@ -71,6 +71,10 @@ enum Op {
 }
 
 struct Memory {
+/* MCFG_IDLE_DETAIL_BEGIN */
+#[cfg(feature="sunfish-mcfg-idle-detail")]
+    append_after_notify: Option<Vec<u8>>,
+/* MCFG_IDLE_DETAIL_END */
     words: [u32; 8],
     tx: Vec<u8>,
     rx: Vec<u8>,
@@ -103,6 +107,10 @@ impl Fake {
     fn new(tx: u32, rx: u32) -> Self {
         Self(Rc::new(RefCell::new(Memory {
             words: [tx, tx, rx, rx, 0x1234, 2, 3, 4],
+/* MCFG_IDLE_DETAIL_BEGIN */
+#[cfg(feature="sunfish-mcfg-idle-detail")]
+            append_after_notify: None,
+/* MCFG_IDLE_DETAIL_END */
             tx: vec![0xa5; FIFO_BYTES],
             rx: vec![0x5a; FIFO_BYTES],
             observation: Observation {
@@ -297,6 +305,10 @@ impl Io for Fake {
             !self.0.borrow().panic_on_notify,
             "notification outcome lost"
         );
+/* MCFG_IDLE_DETAIL_BEGIN */
+#[cfg(feature="sunfish-mcfg-idle-detail")]
+        {let bytes=self.0.borrow_mut().append_after_notify.take();if let Some(bytes)=bytes{self.push(&bytes);}}
+/* MCFG_IDLE_DETAIL_END */
         Ok(())
     }
 }

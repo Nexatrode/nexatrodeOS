@@ -1,0 +1,27 @@
+# First actual idle-turn detail
+
+IMG_9770 proved that the idle opportunity ran once and committed one control operation before a fresh RX veto. It did not identify the actual retained peer or control, and ten middle RX observations were omitted from the global queue/idle log. The later post-ELF watcher was still canceled at close. Those observations do not establish that the first idle opportunity belonged to that later watched transaction.
+
+`sunfish-mcfg-idle-detail` changes observation only. The existing Owner copies the selected retained response's peer port, local transfer port, TFTP body length and host cache slot into a first-loan capture before consuming its opportunity. The capture never rebinds to later calls. The same checked writer still selects and commits packets; no observer state selects, authorizes, retries or cancels work.
+
+For each of at most four writer attempts, the capture retains optional start/end clocks, the candidate header already passed to the checked writer, the outcome and the last validated cached RX byte count. Result 1 is known Session publication; 2 TX backpressure; 3 terminal/uncertain error; 4 RX veto; 5 ordinary idle; 6 waiting for an intent. A veto before selection has no candidate header. A callback error can leave a candidate header without a known publication; its result must be read. A blocked read notification is not a Session candidate header, although its normal Owner progress accounting is preserved.
+
+After this specific loan, the capture follows headers already read by normal receive processing, independently of the later post-ELF watcher's lifetime. It records normal idle/partial observations and stops at the next normal idle or a framing-decoded DEL_CLIENT for the exact selected peer node/port. Headers are observed before semantic ingestion; a framing observation alone does not claim successful acceptance or tail advancement. The first four and last four RX events are retained, with total/omitted counts. Unknown clocks remain unknown. Optional clock calls and fixed copying can perturb handset timing.
+
+No FIFO read, cursor sample, queue check, grant/credit priority, lifecycle validation, writer retry or permission is added or removed. Existing missing-MCFG policy, real receipt identity, bounded opportunity, one-use latches, backpressure notifications and fault handling are unchanged. The test-only Fake can inject a packet after a known notify to exercise one committed control followed by a fresh veto; this injector is not native code.
+
+The panel **MCFG IDLE TURN DETAIL** keeps rows 2–12 as the later post-ELF watcher and ELF/IPA outcomes, then distinguishes the actual earlier loan:
+
+- Row 13: `IDLE PEER LOCAL BODY SLOT` is copied from the real retained host response; the slot is a host cache index, not a GLINK intent or transaction number.
+- Row 14: first loan's call number, start/end clocks, Session writes, RX veto and TX block summary.
+- Rows 15–18: TX attempts. First line is start/end, GLINK command/channel/parameter. Second is result, framed size, QRTR kind, source/destination and cached RX bytes. For an INTENT advertisement (command 5), source/destination columns instead show its first advertised intent ID and size; the parameter shows the advertised count.
+- Rows 19–26: RX observations. First line is time, observation tag, cached unread bytes and early-queue count. Tags 3/4/5/6 mean normal framed header, retained early header, validated normal idle and partial/pending. Second line is GLINK command/channel/parameter/size, QRTR kind and ports. DEL_CLIENT shows actual node/port; a normal command-5 advertisement shows its first intent ID/size. Early advertisement IDs are left unknown, as no new read is introduced.
+- Row 27: this loan's RX total/omitted and global close observations/commits. Row 28: IPA complete, PD state, WLAN requests and WLFW servers.
+
+Only initial DATA frames are decoded as QRTR; continuations remain unknown. A later target reservation shown above is not the loan's identity. The 57-character physical row budget and dual-framebuffer equality are tested.
+
+Offline tests cover actual four-commit ordering and advertisement identity, a control commit followed by a veto and normal RX/idle, exact peer close before any post-ELF watcher exists, refusal to rebind later metadata, and bounded clockless retention. Negative controls remove context arming or the independent RX hook. The ordinary retained-predecessor/receipt replay is compiled with the observer on/off and must produce identical committed bytes and complete Fake I/O operations (optional clock absent). Source normalization compares exact marked additions against `32ebe7a0`; all queueing, flow, runtime/IRQ and close boundaries are preserved.
+
+The private ready profile is `.cache/sunfish-native-wifi/private/native-mcfg-idle-detail-v1`. Its final manifest binds committed source, native ELF, packed boot image, source pins, selected-stack audit and actual packed capability archive. Prior delivered artifacts remain immutable. The pinned SDK is reused; native code and packed loader/report/CapDL/archive are reproduced and verified. No device command is automatic. Wait at least one minute after manual temporary cold boot and photograph the full panel.
+
+This is a targeted diagnostic of the actual idle opportunity, not a new scheduling fix. WLAN firmware requests and WLFW remain unconfirmed; Linux's WLAN-before-MCFG ordering remains a reason not to treat this local exchange alone as the WLAN trigger.
