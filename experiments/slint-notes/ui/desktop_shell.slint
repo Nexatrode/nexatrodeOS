@@ -16,7 +16,8 @@ component DockItem inherits Rectangle {
 export component DesktopShell inherits Window {
     title: "NexatrodeOS Desktop";
     preferred-width: 1280px; preferred-height: 800px;
-    min-width: 800px; min-height: 600px;
+    min-width: root.layer-window > 0 ? 562px : 800px;
+    min-height: root.layer-window > 0 ? (root.app-height + 44) * 1px : 600px;
     default-font-family: "Roboto";
     default-font-weight: 400;
     in property <string> clock: "";

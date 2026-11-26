@@ -15,6 +15,12 @@ uintptr_t mmio, dma, dma_paddr, shell_surface, shell_state, ui_pointer;
 uintptr_t surface_a, surface_b, surface_c, output_frame, shell_decorations, gpu_observation;
 #include "transport.h"
 #include "pacing.h"
+#include "damage.h"
+#include "composition.h"
+static struct gpu_stamp buffer_stamp[2];
+static struct gpu_rect backdrop_pending[2];
+static uint64_t damaged_pixels,drawn_pixels;
+static uint32_t drawn_blits;
 #ifdef DESKTOP_DYNAMIC
 #include "display_protocol.h"
 uintptr_t desktop_display_mode,display_ack;
@@ -47,9 +53,11 @@ _Static_assert(0x8000000+DW*MAX_DH*4<=0x9000000,"bounded resize DMA textures");
 static uint32_t offsets[9]={0x20000,0x1020000,0x2020000,0x3020000,0x34a0000,0x3920000,0x3e00000,0x4400000,0x4a00000};
 _Static_assert(0x4a00000+DW*MAX_DH*4<=0x6000000,"bounded DMA textures");
 #endif
+#ifdef DESKTOP_GPU_VERIFY
 static const unsigned cursor_width[11]={1,2,3,4,5,6,7,4,3,2,1};
 #define CURSOR_UNIT (4u*DESKTOP_SCALE)
 static const unsigned round_inset[14]={11,8,6,5,4,3,2,2,1,1,1,0,0,0};
+#endif
 static uint32_t stream[4000], words, target, frames, uploads;
 /* Kept as an ELF symbol for the disposable QMP completion benchmark. This
  * advances only after both scanout and flush commands complete successfully. */
@@ -62,6 +70,10 @@ static struct {
     uint64_t begin,wait_begin,snapshot_end,compose_end,handled_ticks,start_gap,pending_age,last_poll,max_poll_gap;
     uint32_t old_uploads,commands_begin,snapshot_index,draw_fence,present_fence,poll_calls;
     bool dirty;
+    struct gpu_stamp stamp;
+    struct gpu_rect damage;
+    uint64_t drawn_pixels;
+    uint32_t blits;
 #ifdef DESKTOP_GPU_VERIFY
     int pointer_x,pointer_y;bool pointer_visible;
 #endif
@@ -101,6 +113,7 @@ static bool submit(void) {
 static bool blit(unsigned source,int sx,int sy,int dx,int dy,unsigned width,unsigned height) {
     if(!width||!height)return true;
     if(dx<0||dy<0||dx+(uint64_t)width>W||dy+(uint64_t)height>H){failed=true;microkit_dbg_puts("DESKTOP_GPU|FAIL|blit bounds\n");return false;}
+    work.drawn_pixels+=(uint64_t)width*height;++work.blits;
     if(words+22>4000 && !submit())return false;
     uint32_t *b=stream+words;for(unsigned i=0;i<22;++i)b[i]=0;
     b[0]=16|(21<<16);b[1]=15;b[4]=target;b[6]=1;b[7]=dx;b[8]=dy;b[10]=width;b[11]=height;b[12]=1;
@@ -125,14 +138,17 @@ static bool resize_targets(void) {
         request();*(uint32_t*)(dma+GPU_REQUEST+24)=id;if(!ok(command(0x102,0,32)))return false;
     }
     if(!resource(7,W,H,offsets[0],true)||!resource(8,W,H,offsets[1],true))return false;
+    buffer_stamp[0].valid=buffer_stamp[1].valid=false;
     targets_dirty=false;return true;
 }
 #endif
-static bool upload(unsigned i,unsigned width,unsigned height) {
+static bool upload(unsigned i,unsigned width,struct gpu_rect rect) {
+    if(gpu_rect_empty(rect))return true;
     volatile uint32_t *dest=(void*)(dma+offsets[i+2]);const uint8_t *src=cache[i];
     unsigned stride=i==0?MAX_W:width,resource_height=i==0?MAX_H:i<=3?APP_MAX_PIXEL_HEIGHT:MAX_DH;
-    for(unsigned y=0;y<height;++y)for(unsigned x=0;x<width;++x){unsigned n=y*width+x;dest[y*stride+x]=0xff000000u|((uint32_t)src[n*3]<<16)|((uint32_t)src[n*3+1]<<8)|src[n*3+2];}
-    request();uint32_t *v=(void*)(dma+GPU_REQUEST+24);v[3]=width;v[4]=height;v[5]=1;v[8]=10+i;v[10]=stride*4;v[11]=stride*resource_height*4;
+    for(unsigned y=rect.y;y<(unsigned)rect.bottom;++y)for(unsigned x=rect.x;x<(unsigned)rect.right;++x){unsigned n=y*width+x;dest[y*stride+x]=0xff000000u|((uint32_t)src[n*3]<<16)|((uint32_t)src[n*3+1]<<8)|src[n*3+2];}
+    request();uint32_t *v=(void*)(dma+GPU_REQUEST+24);v[0]=rect.x;v[1]=rect.y;v[3]=rect.right-rect.x;v[4]=rect.bottom-rect.y;v[5]=1;
+    v[6]=((unsigned)rect.y*stride+rect.x)*4;v[8]=10+i;v[10]=stride*4;v[11]=stride*resource_height*4;
     ++uploads;bool success=defer_command(0x205,1,72);if(!success){failed=true;microkit_dbg_puts("DESKTOP_GPU|FAIL|upload queue\n");}return success;
 }
 static bool snapshot(unsigned i,uintptr_t source,unsigned width,unsigned height) {
@@ -143,14 +159,20 @@ static bool snapshot(unsigned i,uintptr_t source,unsigned width,unsigned height)
     if(!rev||(rev&1)||rev==revisions[i])return false;
     const uint32_t *fields=(void*)source;
     if(fields[1]!=width||fields[2]!=height||fields[3]!=width*3)return false;
-    unsigned header=(i>=1&&i<=3)?sizeof(slint_frame_header_t):16;
+    unsigned header=i==0?GPU_BACKDROP_HEADER_BYTES:(i<=3?sizeof(slint_frame_header_t):16);
     if(i>=1&&i<=3 && fields[4]!=SLINT_FRAME_FORMAT_RGB8)return false;
+    struct gpu_rect rect={0,0,width,height};
+    if(i==0){uint32_t history[GPU_BACKDROP_HISTORY*5];const volatile uint32_t *v=(void*)(source+16);
+        for(unsigned n=0;n<GPU_BACKDROP_HISTORY*5;++n)history[n]=v[n];
+        rect=gpu_backdrop_changes(revisions[0],rev,history,width,height);
+    }
     const volatile uint8_t *p=(void*)(source+header);
-    for(unsigned n=0;n<width*height*3;++n)scratch[n]=p[n];
+    for(unsigned y=rect.y;y<(unsigned)rect.bottom;++y)for(unsigned n=rect.x*3;n<(unsigned)rect.right*3;++n)scratch[y*width*3+n]=p[y*width*3+n];
     atomic_thread_fence(memory_order_acquire);
     if(atomic_load_explicit(&h->revision,memory_order_acquire)!=rev)return false;
-    for(unsigned n=0;n<width*height*3;++n)cache[i][n]=scratch[n];
-    if(!upload(i,width,height))return false;
+    for(unsigned y=rect.y;y<(unsigned)rect.bottom;++y)for(unsigned n=rect.x*3;n<(unsigned)rect.right*3;++n)cache[i][y*width*3+n]=scratch[y*width*3+n];
+    if(!upload(i,width,rect))return false;
+    if(i==0)for(unsigned b=0;b<2;++b)gpu_union(&backdrop_pending[b],rect);
     revisions[i]=rev;return true;
 }
 static bool read_scene(void) {
@@ -235,47 +257,14 @@ static void prepare_frame(void) {
     if(!work.dirty||!revisions[0]||!scene_revision||failed){phase=FRAME_IDLE;return;}
     work.snapshot_end=ticks();
     target=7+(frames&1);words=0;
-    if(!blit(10,0,0,0,0,W,H))return;
-    unsigned order[DESKTOP_APP_COUNT];shell_order(&scene,order);
-    for(unsigned i=0;i<DESKTOP_APP_COUNT;++i){unsigned id=order[i];struct shell_window *w=&scene.windows[id-1];
-        if(!w->visible||!revisions[id+3])continue;
-        int x=w->x*DESKTOP_SCALE,y=w->y*DESKTOP_SCALE;
-        /* Move a complete retained decoration and content as one scene. */
-        int dx=x-DESKTOP_SCALE,dy=y-43*DESKTOP_SCALE;
-        /* Merge adjacent equal-inset rows. The pixel mask is unchanged, but
-         * three visible windows need 84 blits including cursor, rather than
-         * 132 separately dispatched strips. No new image upload is needed. */
-        unsigned edge=0;while(edge<14&&round_inset[edge])++edge;
-        if(!blit(13+id,0,edge*DESKTOP_SCALE,dx,dy+edge*DESKTOP_SCALE,DW,DH-2*edge*DESKTOP_SCALE))return;
-        for(unsigned r=0;r<edge;){
-            unsigned n=1;while(r+n<edge&&round_inset[r+n]==round_inset[r])++n;
-            unsigned inset=round_inset[r]*DESKTOP_SCALE;
-            if(!blit(13+id,inset,r*DESKTOP_SCALE,dx+inset,dy+r*DESKTOP_SCALE,DW-2*inset,n*DESKTOP_SCALE))return;
-            unsigned row=DH-(r+n)*DESKTOP_SCALE;
-            if(!blit(13+id,inset,row,dx+inset,dy+row,DW-2*inset,n*DESKTOP_SCALE))return;
-            r+=n;
-        }
-        if(!revisions[id])continue;
-        static const unsigned corner[10]={0,0,0,1,1,2,3,4,6,9};
-        unsigned first=0;while(first<10&&!corner[first])++first;
-        if(!blit(10+id,0,0,x,y,AW,AH-(10-first)*DESKTOP_SCALE))return;
-        for(unsigned r=first;r<10;){
-            unsigned n=1;while(r+n<10&&corner[r+n]==corner[r])++n;
-            unsigned inset=corner[r]*DESKTOP_SCALE,row=AH-20+r*DESKTOP_SCALE;
-            if(!blit(10+id,inset,row,x+inset,y+row,AW-2*inset,n*DESKTOP_SCALE))return;
-            r+=n;
-        }
-    }
-    /* Cursor uses opaque one-pixel spans: no alpha shader is needed. The
-     * source is a retained cyan patch in the reserved scratch DMA page. */
-    if(pointer_ok&&visible&&px>=0&&py>=0&&px<(int)W&&py<(int)H){
-        for(unsigned row=0;row<11;++row){unsigned y=py+row*CURSOR_UNIT;if(y>=H)break;
-            unsigned width=cursor_width[row]*CURSOR_UNIT,height=CURSOR_UNIT;
-            if(px+(int)width>(int)W)width=W-px;if(y+height>H)height=H-y;
-            if(!blit(20,0,0,px,y,width,height))return;}
-    }
+    work.stamp=(struct gpu_stamp){.valid=true,.cursor=pointer_ok&&visible,.width=W,.height=H,.app_height=APP_HEIGHT,.px=px,.py=py,.scene=scene};
+    work.stamp.backdrop_damage=backdrop_pending[target-7];
+    for(unsigned i=0;i<7;++i)work.stamp.revisions[i]=revisions[i];
+    work.damage=gpu_damage(&buffer_stamp[target-7],&work.stamp);
+    if(!gpu_compose(&work.stamp,work.damage,blit)){failed=true;return;}
+    bool has_draw=words!=0;
     if(!submit())return;
-    work.draw_fence=(uint32_t)next_fence;
+    work.draw_fence=has_draw?(uint32_t)next_fence:0;
 #ifdef DESKTOP_GPU_VERIFY
     work.pointer_x=px;work.pointer_y=py;work.pointer_visible=pointer_ok&&visible;
 #endif
@@ -293,6 +282,10 @@ static void complete_frame(unsigned source) {
 #endif
     uint64_t begin=work.begin,wait_begin=work.wait_begin,snapshot_end=work.snapshot_end,compose_end=work.compose_end;
     unsigned old_uploads=work.old_uploads,commands_begin=work.commands_begin;
+    buffer_stamp[target-7]=work.stamp; /* Commit only after the final fence. */
+    backdrop_pending[target-7]=(struct gpu_rect){0};
+    if(!gpu_rect_empty(work.damage))damaged_pixels+=(uint64_t)(work.damage.right-work.damage.x)*(work.damage.bottom-work.damage.y);
+    drawn_pixels+=work.drawn_pixels;drawn_blits+=work.blits;
     presented_scene_revision=scene_revision;
     __atomic_add_fetch(&frames,1,__ATOMIC_RELEASE);
     volatile uint32_t *stats=(void*)gpu_observation;uint32_t generation=stats[0];stats[0]=generation+1;__atomic_thread_fence(__ATOMIC_SEQ_CST);
@@ -302,6 +295,8 @@ static void complete_frame(unsigned source) {
     /* Bounded timing-only history. No app text, pixels or key events. The
      * existing observation seqlock also protects each 80-byte ring record. */
     stats[13]=0x4d4f5431;stats[14]=48;
+    stats[27]=(uint32_t)damaged_pixels;stats[28]=damaged_pixels>>32;
+    stats[29]=(uint32_t)drawn_pixels;stats[30]=drawn_pixels>>32;stats[31]=drawn_blits;
     _Static_assert((32+48*20)*sizeof(uint32_t)<=4096,"bounded timing history");
     volatile uint32_t *sample=stats+32+((frames-1)%48)*20;
     uint64_t end=ticks(),hz=frequency();

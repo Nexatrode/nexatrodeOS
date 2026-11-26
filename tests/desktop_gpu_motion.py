@@ -153,7 +153,16 @@ def main():
             guard()
         locked_after=host_locked()
         assert a.allow_locked_host or not locked_after,'Mac locked during measurement; reject visible-drag result'
-        result={'uuid':session['uuid'],'loader_sha256':session['loader_sha256'],'gpu_verify':False,
+        composition=None
+        if last_stats[31]:
+            u64=lambda v,i:v[i]|(v[i+1]<<32)
+            count=last_stats[2]-initial_stats[2];full=count*mode[2]*mode[3]
+            damaged=u64(last_stats,27)-u64(initial_stats,27)
+            composition={'completed_frames':count,'damaged_pixels':damaged,
+                'full_frame_equivalent_pixels':full,'damaged_fraction':damaged/full,
+                'emitted_blit_pixels':u64(last_stats,29)-u64(initial_stats,29),
+                'emitted_blits':(last_stats[31]-initial_stats[31])&0xffffffff}
+        result={'uuid':session['uuid'],'loader_sha256':session['loader_sha256'],'gpu_verify':False,'composition':composition,
                 'host_screen_locked_before':locked_before,'host_screen_locked_after':locked_after,
                 'locked_host_diagnostic_allowed':a.allow_locked_host,
                 'harness_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),'mode_settled_seconds':2,

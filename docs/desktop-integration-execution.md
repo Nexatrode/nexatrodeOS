@@ -19,7 +19,13 @@ disposable UTM data. Saved wallets/chats and Pixel Wi-Fi work are excluded.
    three-app builder connects an isolated retained-texture renderer with separate
    backdrop, decoration and app surfaces. Held-button geometry changes have
    completed GPU frames without changing the backdrop revision. Further work:
-   host refresh synchronization, GPU reset/recovery, alpha blending and finer damage.
+   host refresh synchronization, GPU reset/recovery and alpha blending.
+   The renderer now clips composition to conservative damage tracked separately
+   for each alternating scanout target. Shell backdrop updates carry an eight-entry
+   damage history for partial uploads, and focus changes regenerate only the old
+   and new active decorations in a separate window-sized Slint adapter. Missing
+   history or changed dimensions force a full repair. See the GPU experiment's
+   partial-redraw checks and measured limitations.
    Software 60 Hz start pacing and IRQ-driven upload/presentation completion are
    implemented in the experimental VirGL renderer. Pending command leases stay
    bounded to four, one frame remains in flight, and a one-shot watchdog checks

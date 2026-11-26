@@ -6,9 +6,14 @@ integration environment. Slint and the existing CPU Skia and VirtIO display
 work remain the rendering foundation.
 
 The accepted GPU-first delivery sequence and current checkpoint status are in
-[the implementation record](desktop-integration-execution.md). Native VirGL
-rendering/readback now works in a separate diskless probe; the presentation
-gate is still failing, so the three-app desktop retains its CPU compositor.
+[the implementation record](desktop-integration-execution.md). The opt-in
+three-app ARM64 UTM desktop now uses retained VirGL composition, native
+window/fullscreen resizing, completion-driven pacing and partial redraws.
+Slint and NetSurf still rasterize their app content on the CPU. The CPU
+compositor remains the default/fallback; Pixel GPU acceleration is unverified.
+See the [GPU checkpoint](../experiments/desktop-gpu/README.md) for measured
+results and remaining presentation limits. The historical two-app lifecycle
+shell below is a separate regression fixture, not the current three-app build.
 
 The laboratory implementation now includes a graphical lifecycle image. A
 trusted Microkit-hosted manager and compositor creates a Slint process after

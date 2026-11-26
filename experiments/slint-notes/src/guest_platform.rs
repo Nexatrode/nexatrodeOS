@@ -1,5 +1,5 @@
-use alloc::{boxed::Box, rc::Rc};
-use core::time::Duration;
+use alloc::{boxed::Box, rc::Rc, collections::VecDeque};
+use core::{time::Duration,cell::RefCell};
 use slint::platform::{Platform, WindowAdapter, software_renderer::MinimalSoftwareWindow};
 
 use crate::frame_clock::{elapsed, next_wake_delay};
@@ -22,13 +22,14 @@ pub fn counter_ticks() -> u64 {
 
 struct GuestPlatform {
     window: Rc<MinimalSoftwareWindow>,
+    adapters: RefCell<VecDeque<Rc<MinimalSoftwareWindow>>>,
     origin: u64,
     frequency: u32,
 }
 
 impl Platform for GuestPlatform {
     fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, slint::PlatformError> {
-        Ok(self.window.clone())
+        Ok(self.adapters.borrow_mut().pop_front().unwrap_or_else(||self.window.clone()))
     }
 
     fn duration_since_start(&self) -> Duration {
@@ -53,8 +54,17 @@ pub fn counter_frequency() -> u32 {
 }
 
 pub fn install(window: &Rc<MinimalSoftwareWindow>) {
+    install_with_windows(window,&[]);
+}
+
+/// The primary adapter is consumed first, followed by explicitly supplied
+/// private render targets. Ordinary one-window callers retain their behavior.
+pub fn install_with_windows(window: &Rc<MinimalSoftwareWindow>,additional:&[Rc<MinimalSoftwareWindow>]) {
+    let mut adapters=VecDeque::new();adapters.push_back(window.clone());
+    adapters.extend(additional.iter().cloned());
     slint::platform::set_platform(Box::new(GuestPlatform {
         window: window.clone(),
+        adapters: RefCell::new(adapters),
         origin: counter_ticks(),
         frequency: counter_frequency(),
     }))
