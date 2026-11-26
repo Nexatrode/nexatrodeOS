@@ -13,7 +13,7 @@
 #include "netsurf/types.h"
 
 static unsigned char *pixels;
-static struct rect clipping = {0, 0, PIXEL_WIDTH, PIXEL_HEIGHT};
+static struct rect clipping = {0, 0, PIXEL_WIDTH, MAX_PIXEL_HEIGHT};
 static stbtt_fontinfo font;
 struct bitmap { int width, height; bool opaque; unsigned char *data; };
 struct glyph { int cp, size, width, height, xoff, yoff; unsigned char *alpha; };

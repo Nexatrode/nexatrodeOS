@@ -38,6 +38,8 @@ pub mod photo_ipc;
 pub mod chat_drag;
 pub mod frame_clock;
 pub mod wall_clock;
+#[cfg(any(feature="desktop-resize-shell",feature="desktop-resize-app"))]
+pub mod desktop_resize;
 pub mod frame_wake;
 #[cfg(target_os = "none")]
 pub mod guest_platform;

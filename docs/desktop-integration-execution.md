@@ -9,18 +9,34 @@ disposable UTM data. Saved wallets/chats and Pixel Wi-Fi work are excluded.
 
 1. **GPU feasibility — in progress.** The native diskless probe now discovers
    VirGL capabilities and verifies rendered clears and retained-texture blits.
-   Full-resolution GPU readback also passes, but scanout capture is black and
-   fails the presentation gate. Host-backend identification, lifetime/reset checks
+   Full-resolution GPU readback passes and native UTM inspection shows the
+   rendered surface. QMP capture is black because it observes a separate CPU
+   surface in this setup. Host-backend identification, lifetime/reset checks
    and equivalent CPU/GPU measurements are still required. A failed feasibility
    gate retains the CPU backend and records the exact unsupported requirement;
    it does not silently expand into a Vulkan/Mesa port.
-2. **Retained compositor and scheduling — pending.** Separate wallpaper, chrome,
-   decorations and app content. Bound pending frames, coalesce drag geometry
+2. **Retained compositor and scheduling — in progress.** The opt-in `--virgl`
+   three-app builder connects an isolated retained-texture renderer with separate
+   backdrop, decoration and app surfaces. Held-button geometry changes have
+   completed GPU frames without changing the backdrop revision. Further work:
+   host refresh synchronization, GPU reset/recovery, alpha blending and finer damage.
+   Software 60 Hz start pacing and IRQ-driven upload/presentation completion are
+   implemented in the experimental VirGL renderer. Pending command leases stay
+   bounded to four, one frame remains in flight, and a one-shot watchdog checks
+   late completion without busy-waiting. Long host completion stalls remain in
+   the recorded UTM results; pacing is not a sustained 60 Hz guarantee.
+   Bound pending frames, coalesce drag geometry
    without losing button/key transitions, and release buffers on completion.
    Upload only changed content; CPU fallback repaints old/new damaged regions.
    Measure input wait, rendering, composition, copy/upload and completion
    separately from QMP/host-display observations. Keep the existing appearance.
-3. **Resizing — pending.** Negotiate dimensions, scale and generation. Support
+3. **Resizing — experimental display-mode path implemented.** The opt-in GPU
+   builder negotiates native UTM window/full-screen modes over a display-only
+   SPICE agent, bounds modes to 1600×1200–3840×2160 at 2×, relays app viewport
+   changes and forces redraw on stride changes. Native input stays on VirtIO;
+   fenced scanout resources use the active dimensions for correct tablet
+   normalization. Individual app-window edge resizing and maximize/restore
+   remain future work. Continue to negotiate dimensions, scale and generation. Support
    display-mode changes, resize and maximize/restore, with checked allocations,
    replacement acknowledgements and old-surface retention until release.
    Defaults: 2×; integer 1×/2× support; maximum 3840×2160 physical; minimum

@@ -3,20 +3,32 @@
 #include <stdint.h>
 #define SHELL_CHANNEL 61u
 #define SHELL_REQUEST 0x7b0u
+#ifdef DESKTOP_DYNAMIC
+static uint32_t desktop_width=1280u,desktop_height=800u,desktop_app_height=520u;
+#define SHELL_WIDTH desktop_width
+#define SHELL_HEIGHT desktop_height
+#else
 #define SHELL_WIDTH 1280u
 #define SHELL_HEIGHT 800u
+#endif
 #ifndef DESKTOP_APP_COUNT
 #define DESKTOP_APP_COUNT 2u
 #endif
 #define DESKTOP_SHELL_OWNER (DESKTOP_APP_COUNT + 1u)
 _Static_assert(DESKTOP_APP_COUNT == 2 || DESKTOP_APP_COUNT == 3, "supported app counts");
 #define APP_WIDTH 560u
-#define APP_HEIGHT 520u
+#define APP_MAX_HEIGHT 520u
+#ifdef DESKTOP_DYNAMIC
+#define APP_HEIGHT desktop_app_height
+#else
+#define APP_HEIGHT APP_MAX_HEIGHT
+#endif
 #ifndef DESKTOP_SCALE
 #define DESKTOP_SCALE 1u
 #endif
 #define APP_PIXEL_WIDTH (APP_WIDTH * DESKTOP_SCALE)
 #define APP_PIXEL_HEIGHT (APP_HEIGHT * DESKTOP_SCALE)
+#define APP_MAX_PIXEL_HEIGHT (APP_MAX_HEIGHT * DESKTOP_SCALE)
 #define SHELL_PIXEL_WIDTH (SHELL_WIDTH * DESKTOP_SCALE)
 #define SHELL_PIXEL_HEIGHT (SHELL_HEIGHT * DESKTOP_SCALE)
 _Static_assert(DESKTOP_SCALE == 1 || DESKTOP_SCALE == 2, "supported desktop scales");

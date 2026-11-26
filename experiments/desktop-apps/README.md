@@ -49,6 +49,23 @@ service. The public prepared agent and hardware drivers are code/config inputs.
 The public block-client configuration is relocated to this image's vault map;
 its virtual addresses must agree with the SDF.
 
+### Experimental GPU composition
+
+Add `--virgl` to the three-app (`--browser`) build to select the isolated
+retained-texture VirGL compositor. The original CPU image remains the default.
+Slint and NetSurf still rasterize app content on the CPU; composition and scanout
+use VirGL. GPU DMA and MMIO are mapped only into the trusted renderer, and app
+surface mappings in that renderer are read-only. The manager does not wait on
+GPU fences or perform full-frame composition in this configuration.
+
+Use `--gpu-verify` on the builder for full app tests with diagnostic GPU readback
+and sampled CPU-reference comparison. Without it, use `--gpu-navigation` on the
+runner to test window dragging and three-app dock switching through completed
+scanout/flush commands. Add `--leave-running` to leave that disposable VM open
+for inspection. Diagnostic readback and physical-display observations are
+different evidence; QMP's ordinary screenshot path is black with this GL setup.
+See [the native GPU experiment](../desktop-gpu/README.md) for boundaries.
+
 The runner creates its own UUID, disk, GPT partition, private upstream SimpleX
 peer and files. Network egress is enabled for real relay traffic and the wallet
 node. The combined fixture is explicitly **disposable-data-only**: its vault
@@ -257,11 +274,11 @@ again, since each test intentionally creates a new UUID and blank disk.
 
 ### Display and storage boundaries
 
-The guest display remains fixed at 2560×1600 physical / 1280×800 logical pixels.
-Changing the UTM host window or entering fullscreen does not negotiate a new
-guest mode or relayout the desktop. App windows can move, minimize and close;
-resizing app windows is not implemented. Dynamic mode negotiation, surface
-resizing and responsive app layouts remain separate work.
+The default CPU image and older GPU images use a fixed 2560×1600 physical /
+1280×800 logical display. The optional `--desktop-resize` GPU build below
+negotiates display sizes and relays bounded viewport changes to the apps.
+App windows can move, minimize and close. Individual window-edge resizing is
+not implemented.
 
 The fixture uses a raw 64 MiB disk image with a GPT partition. Inside it is the
 custom vault block/record format, not ext4, FAT or APFS. App namespaces and fixed
@@ -270,3 +287,118 @@ and rollback journal, wallet state and photos. The vault's AES-256-GCM-SIV
 records and commit/recovery protocols are not a general directory filesystem.
 This disposable build uses the public development key; the separate wrapped-key
 and installation-key fixtures are not enabled here.
+
+### Native UTM desktop resizing (experimental GPU path)
+
+Build the three-app GPU image with `--browser --virgl --desktop-resize`. This
+adds a native, display-only SPICE agent over VirtIO PCI serial; it does not add
+clipboard sharing, file transfer, a command shell, or saved-data access. The
+runner enables UTM dynamic resolution and native Retina resolution only for
+these disposable fixtures, with a fresh blank disk.
+
+The manager accepts a single-monitor request, bounds physical dimensions to
+1600×1200–3840×2160, rounds down to even dimensions, and keeps a 2× logical
+scale. The dock follows the desktop size; windows are clamped back into view.
+Apps keep their 560-point width, with a 380–520-point viewport height to fit
+shorter desktops. NetSurf schedules reflow and the Slint frontends resize their
+windows. Guest DMA reservations stay at bounded maximum capacity. The two host
+scanout textures are recreated at the active dimensions after fenced detach and
+release of the previous resources; SPICE uses their dimensions to normalize
+tablet coordinates. The agent replies only after the GPU has
+completed scanout and flush for the requested mode.
+
+For readback/reference validation add `--gpu-verify`, boot using
+`tests/desktop_apps_run.py --boot-only --leave-running`, resize the **native UTM
+window** or enter/exit full screen, then run:
+
+```sh
+python3 tests/desktop_resize_input.py --guest build/desktop-apps/resize-verify \
+  --label windowed --exercise
+```
+
+Repeat with `--changed --label fullscreen` and `--changed --label restored`.
+The validator checks the actual SPICE request, manager mode, completed GPU
+acknowledgment, window bounds, dock focus, held dragging and sampled GPU pixels
+against the CPU reference. It never fabricates a host monitor request. The
+capture is diagnostic GPU readback, not a measurement of physical display
+latency. Sizes outside the supported range are bounded and UTM may scale or
+letterbox the result. This does not implement resizing individual app windows.
+
+Host checks for resize clamps, invalid requests, input cancellation, and bounded
+frame growth/shrinkage:
+
+```sh
+clang -O0 -fno-builtin -I tests/surface_stub tests/desktop_resize_test.c \
+  -o /tmp/desktop-resize-test
+/tmp/desktop-resize-test
+rustc --edition 2021 --test --cfg 'feature="desktop-real-app"' \
+  tests/desktop_resize_frame_test.rs -o /tmp/desktop-resize-frame-test
+/tmp/desktop-resize-frame-test
+```
+
+The corrected resize build was tested on November 25, 2026 with a blank disk
+and no saved wallet or chats. Native UTM window sizing produced 1600×1564 and
+1600×1200 modes; full screen produced 2624×1644; returning to windowed mode
+restored 1600×1200. At each recorded size, the GPU reference/readback, independent
+dock and edge pixel checks, dock focus, held guest-window drag and search typing
+passed. The first run exposed stale shell pixels after stride changes; full
+redraw on mode changes fixed that. Automated input now waits for the mode to
+settle and uses ceiling conversion to avoid one-pixel absolute-input rounding
+errors. Failed runs are retained separately from passing observations.
+
+Evidence: `build/desktop-apps/resize-verify/resize-observations.json` and the
+`resize-*.png` captures. These are diagnostic GPU readbacks. Native UTM captures
+also showed the clean full-screen and restored layouts. QMP-injected input is
+verified by those initial observations; native input failed in the original
+`05A90E91` fixture and required the follow-up fixes below. Those QMP observations
+must not be treated as evidence of native keyboard or mouse support.
+
+Native-input investigation found two independent defects. SPICE routed mouse
+events to the display-only agent rather than the VirtIO tablet, despite the
+agent advertising no mouse capability. The launcher now sets
+`-spice agent-mouse=off`, preserving ordinary device input and display-agent
+monitor configuration. Maximum-sized scanout textures then caused the tablet
+coordinates to be normalized against the wrong dimensions; recreating the two
+scanout textures at the active mode fixed native targeting. Clipboard and
+directory sharing remain disabled.
+
+The corrected `0F7D4AFB` diagnostic fixture received native UTM/SPICE clicks and
+keyboard input: search showed `n` in windowed mode and `nf` after entering
+2624×1644 full screen. These actions used native computer-use input, without QMP
+input injection in that fixture. Its temporary input tracing is diagnostic only;
+normal fixtures omit it. Both intermediate input-trace fixtures were retired
+after preserving the observations. The normal build, without expensive GPU
+reference verification or key tracing, booted successfully as disposable
+`13014BA0-53ED-4DCB-9F28-E36FD5E4231F`. Its native reopen check remains pending
+while the Mac is locked. Scope and source/loader hashes are recorded in
+`build/desktop-apps/resize-verify/native-input-validation.json`. Saved
+installation data and Pixel Wi-Fi were untouched.
+
+The user subsequently confirmed native input worked. The same disposable VM
+now contains the bounded GPU frame-submission improvement described in the
+desktop-gpu README. The normal build omits GPU reference readback and input
+tracing; its final short held-motion runs reached about 58 completed frames/s,
+with remaining long-tail stalls recorded rather than discarded. See
+`build/desktop-apps/resize-verify/motion-validation.json` for the tested loader,
+pixel checks and separate native host display observation.
+
+The same disposable now runs the completion-driven, software-paced GPU build.
+Drawing and texture uploads yield to Microkit until their validated completion;
+normal starts are capped at 60 Hz and idle work stops. The final short minimum-size
+run completed about 56 frames/s, but longer runs retained severe completion
+stalls, so this is not a consistently smooth 60 Hz claim. Normal/diagnostic,
+native/QMP and handler/wait timings are distinguished in
+`build/desktop-apps/resize-verify/paced-scheduling-validation.json` and the
+desktop-gpu README. Saved wallet/chats and Pixel work remain untouched.
+
+The subsequent timestamped GPU investigation reduced steady batches to one
+final fence and merged identical rounded-edge strips (132 to 84 blits with
+three visible apps and the cursor). The final trace-free 2624×1644 held-drag
+run completed 55.37 frames/s, with 17.60 ms median and 24.90 ms p95 intervals;
+its maximum was 81.02 ms. The host displayed complete moved content while the
+QMP drag remained held. Long host/guest scheduling stalls were reproduced in
+older-image controls, and intermittent early SMP boot hangs remain unresolved.
+See the desktop-gpu README and
+`build/desktop-apps/resize-verify/stall-profiling-validation.json` for all
+outliers, diagnostic failures and native-input limitations. The tracing-only
+fixture was retired; `13014BA0` runs the normal build without GPU or key tracing.

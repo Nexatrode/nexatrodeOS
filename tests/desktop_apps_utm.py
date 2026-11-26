@@ -21,7 +21,12 @@ def main():
     p.add_argument('--output',type=Path,required=True)
     p.add_argument('--resume',action='store_true')
     p.add_argument('--browser',action='store_true',help='add windowed NetSurf with its own HTTPS session')
-    a=p.parse_args(); inputs=a.inputs.resolve(); out=a.output.resolve(); storage=a.storage.resolve(); shellbase=a.shell_base.resolve()
+    p.add_argument('--virgl',action='store_true',help='experimental isolated retained-texture GPU compositor')
+    p.add_argument('--gpu-verify',action='store_true',help='export GPU readback for pixel tests (adds frame overhead)')
+    p.add_argument('--desktop-resize',action='store_true',help='native display-only SPICE agent and bounded 2x dynamic viewport')
+    a=p.parse_args()
+    if a.desktop_resize and not (a.browser and a.virgl):p.error('--desktop-resize requires --browser --virgl')
+    inputs=a.inputs.resolve(); out=a.output.resolve(); storage=a.storage.resolve(); shellbase=a.shell_base.resolve()
     if (out.exists() and not (a.resume and (out/'.disposable-build').is_file())) or not out.is_relative_to(ROOT/'build') or out.is_relative_to(inputs): p.error('use a fresh worktree build directory')
     out.mkdir(parents=True,exist_ok=a.resume)
     (out/'.disposable-build').touch()
@@ -38,12 +43,12 @@ def main():
         for b in bins:command+=['--bin',b]
         subprocess.run(list(map(str,command)),cwd=ROOT,env=e,check=True)
         return ROOT/target/'aarch64-sel4-microkit/release'
-    target=cargo('experiments/slint-notes/Cargo.toml','desktop-chat-window,desktop-apps-observe',['slint_notes_utm','slint_photo_reader','slint_photo_worker','slint_transcript_worker'])
+    target=cargo('experiments/slint-notes/Cargo.toml','desktop-chat-window,desktop-apps-observe'+(',desktop-resize-app' if a.desktop_resize else ''),['slint_notes_utm','slint_photo_reader','slint_photo_worker','slint_transcript_worker'])
     shutil.copyfile(target/'slint_notes_utm.elf',out/'chat_ui.elf')
     for b in ('slint_photo_reader','slint_photo_worker','slint_transcript_worker'):shutil.copyfile(target/(b+'.elf'),out/(b+'.elf'))
-    target=cargo('experiments/slint-notes/Cargo.toml','desktop-wallet-window,desktop-apps-observe',['slint_notes_utm'])
+    target=cargo('experiments/slint-notes/Cargo.toml','desktop-wallet-window,desktop-apps-observe'+(',desktop-resize-app' if a.desktop_resize else ''),['slint_notes_utm'])
     shutil.copyfile(target/'slint_notes_utm.elf',out/'wallet_ui.elf')
-    target=cargo('experiments/slint-notes/Cargo.toml','desktop-browser-shell' if a.browser else 'desktop-apps-shell',['desktop_shell'])
+    target=cargo('experiments/slint-notes/Cargo.toml','desktop-resize-shell' if a.desktop_resize else 'desktop-virgl-shell' if a.virgl else 'desktop-browser-shell' if a.browser else 'desktop-apps-shell',['desktop_shell'])
     shutil.copyfile(target/'desktop_shell.elf',out/'desktop_shell.elf')
     bins=['rust_vault_disk','rust_messages_agent_app','rust_entropy_rng','rust_clock']
     target=cargo('rust/Cargo.toml','storage-test,simplex-agent-vault,utm-slint-input,utm-photo-reader,utm-transcript-worker',bins,'build/desktop-apps-backends')
@@ -55,7 +60,7 @@ def main():
     if a.browser:
         sys.path.insert(0,str(ROOT/'experiments/desktop-apps'))
         import browser as desktop_browser
-        desktop_browser.build(ROOT,out,inputs,ROOT/'build/netsurf-native')
+        desktop_browser.build(ROOT,out,inputs,ROOT/'build/netsurf-native',resize=a.desktop_resize)
     # Only the public agent code/config is imported. Never the vault ELF.
     shutil.copyfile(inputs/'pds/agentstore_probe.elf',out/'agentstore_probe.elf')
     for b in ('blk_driver.elf','blk_virt.elf'):shutil.copyfile(storage/b,out/b)
@@ -81,8 +86,10 @@ def main():
     for section in ('timer_client_config','net_client_config','lib_sddf_lwip_config'):
         run('llvm-objcopy','--update-section',f'.{section}={out}/network/{section}.data',out/'network/dhcp_client.elf')
     shutil.copyfile(out/'network/dhcp_client.elf',out/'dhcp_client.elf')
+    if a.virgl and not a.browser:p.error('VirGL currently requires the three-app fixture')
+    if a.gpu_verify and not a.virgl:p.error('--gpu-verify requires --virgl')
     flags=['clang','--target=aarch64-none-elf','-mcpu=cortex-a53','-mgeneral-regs-only','-std=gnu11','-O2','-ffreestanding','-fno-stack-protector','-nostdlib','-Wall','-Wextra','-Werror','-I',board/'include']
-    run(*flags,*(['-DDESKTOP_APP_COUNT=3'] if a.browser else []),'-DDESKTOP_SCALE=2u','-DSLINT_FRAME_WIDTH=2560u','-DSLINT_FRAME_HEIGHT=1600u','-DSLINT_FRAME_REGION_BYTES=0x1000000u','-c',ROOT/'experiments/desktop-apps/manager.c','-o',out/'manager.o')
+    run(*flags,*(['-DDESKTOP_DYNAMIC'] if a.desktop_resize else []),*(['-DDESKTOP_VIRGL'] if a.virgl else []),*(['-DDESKTOP_APP_COUNT=3'] if a.browser else []),'-DDESKTOP_SCALE=2u','-DSLINT_FRAME_WIDTH=2560u','-DSLINT_FRAME_HEIGHT=1600u','-DSLINT_FRAME_REGION_BYTES=0x1000000u','-c',ROOT/'experiments/desktop-apps/manager.c','-o',out/'manager.o')
     run('ld.lld','-L',board/'lib',out/'manager.o','-lmicrokit','-T','microkit.ld','-o',out/'manager.elf')
     run(*flags,'-c',ROOT/'experiments/desktop-simplex/environment.c','-o',out/'environment.o')
     run('ld.lld','-L',board/'lib',out/'environment.o','-lmicrokit','-T','microkit.ld','-o',out/'environment.elf')
@@ -167,7 +174,8 @@ def main():
         elif name in originals:
             m=copy.deepcopy(originals[name]);
             if a.browser and name=='shell_state':m.set('phys_addr','0x5fbb4000')
-            if name=='slint_frame':m.set('size','0x1000000')
+            if name=='slint_frame':m.set('size','0x2000000' if a.desktop_resize else '0x1000000')
+            if name=='shell_surface' and a.desktop_resize:m.set('size','0x2000000')
             system.append(m)
         else:
             base=name.split('_',1)[1]
@@ -175,6 +183,47 @@ def main():
             if old is None:raise ValueError('unknown region '+name)
             m=copy.deepcopy(old);m.set('name',name);m.attrib.pop('phys_addr',None);system.append(m)
     if a.browser:desktop_browser.attach(system,manager,inputs,channel,mapping,mr)
+    if a.virgl:
+        gpu_irq=copy.deepcopy(pd('gpu_driver').find('irq'));gpu_irq.set('id','1')
+        for name in ('gpu_client','gpu_driver','gpu_virt'):system.remove(pd(name))
+        for c in list(system.findall('channel')):
+            if any(e.get('pd') in {'gpu_client','gpu_driver','gpu_virt'} for e in c):system.remove(c)
+        render=ET.SubElement(system,'protection_domain',name='desktop_gpu',priority='126',budget='2000',period='10000',stack_size='0x20000')
+        ET.SubElement(render,'program_image',path='desktop_gpu.elf')
+        render.append(gpu_irq)
+        for name,addr,symbol in [('shell_surface',0x70000000,'shell_surface'),('shell_state',0x72000000,'shell_state'),('ui_pointer',0x72001000,'ui_pointer'),('chat_frame',0x74000000,'surface_a'),('wallet_frame',0x75000000,'surface_b'),('browser_frame',0x76000000,'surface_c')]:mapping(render,name,addr,'r',symbol)
+        ET.SubElement(render,'map',mr='virtio_regs',vaddr='0x40000000',perms='rw',cached='false',setvar_vaddr='mmio')
+        mr('desktop_gpu_dma',0x9000000 if a.desktop_resize else 0x6000000,page_size='0x200000')
+        ET.SubElement(render,'map',mr='desktop_gpu_dma',vaddr='0x60000000',perms='rw',cached='false',setvar_vaddr='dma')
+        ET.SubElement(render,'setvar',symbol='dma_paddr',region_paddr='desktop_gpu_dma')
+        mr('shell_decorations',0xc00000,page_size='0x200000')
+        mapping(pd('desktop_shell'),'shell_decorations',0x76000000,'rw','shell_decorations')
+        mapping(render,'shell_decorations',0x7a000000,'r','shell_decorations')
+        system.find("memory_region[@name='shell_heap']").set('size','0x8000000' if a.desktop_resize else '0x4000000')
+        if a.desktop_resize:
+            pd('desktop_shell').find("map[@mr='shell_heap']").set('vaddr','0x80000000')
+        mr('gpu_observation',0x1000,phys_addr='0x5fba0000')
+        mapping(render,'gpu_observation',0x7b000000,'rw','gpu_observation')
+        if a.gpu_verify:
+            frame=system.find("memory_region[@name='slint_frame']");frame.set('phys_addr','0x5d000000')
+            mapping(render,'slint_frame',0x78000000,'rw','output_frame')
+        channel('desktop_manager',2,'desktop_gpu',0)
+        channel('desktop_gpu',2,'timer_driver',12,True)
+        used={m.get('mr') for m in system.iter('map')}
+        for r in list(system.findall('memory_region')):
+            if r.get('name') not in used:system.remove(r)
+        run(*flags,'-mstrict-align',*(['-DDESKTOP_DYNAMIC'] if a.desktop_resize else []),'-DDESKTOP_APP_COUNT=3','-DDESKTOP_SCALE=2u','-DSLINT_FRAME_WIDTH=2560u','-DSLINT_FRAME_HEIGHT=1600u','-DSLINT_FRAME_REGION_BYTES=0x1000000u',*(['-DDESKTOP_GPU_VERIFY'] if a.gpu_verify else []),'-c',ROOT/'experiments/desktop-gpu/renderer.c','-o',out/'desktop_gpu.o')
+        run('ld.lld','-L',board/'lib',out/'desktop_gpu.o','-lmicrokit','-T','microkit.ld','-o',out/'desktop_gpu.elf')
+    if a.desktop_resize:
+        from desktop_resize_agent_build import attach,compile_agent
+        attach(system);compile_agent(inputs,out)
+        mr('desktop_display_mode',4096,phys_addr='0x5fb92000')
+        manager.find("map[@mr='slint_frame']").set('vaddr','0x7c000000')
+        manager.find("map[@mr='shell_surface']").set('vaddr','0x70000000')
+        mapping(manager,'display_request',0x6b001000,'r','desktop_display_request')
+        for name,addr,perms in [('desktop_manager',0x6b000000,'rw'),('desktop_shell',0x77000000,'r'),('desktop_gpu',0x7b001000,'r'),('chat_ui',0x73000000,'r'),('wallet_ui',0x73000000,'r'),('native_browser',0x73000000,'r')]:
+            mapping(pd(name),'desktop_display_mode',addr,perms,'desktop_display_mode')
+        mapping(pd('desktop_gpu'),'display_ack',0x7b002000,'rw','display_ack')
     # Retain the original 4-core wallet worker affinities; normal service PDs on CPU0.
     ET.indent(system);ET.ElementTree(system).write(out/'desktop-apps.system',encoding='utf-8',xml_declaration=True)
     from desktop_apps_manifest import validate
@@ -184,10 +233,12 @@ def main():
     sources=[Path(__file__),*[x for x in (ROOT/'experiments/desktop-apps').glob('*') if x.suffix in {'.c','.h','.rs','.py'}],ROOT/'experiments/slint-notes/ui/desktop_chat.slint',ROOT/'experiments/slint-notes/ui/full_suite.slint',ROOT/'experiments/desktop-shell/compositor.c',ROOT/'experiments/desktop-shell/shell.rs']
     sources += [ROOT/'experiments/slint-notes/Cargo.toml',ROOT/'experiments/slint-notes/build.rs',ROOT/'experiments/slint-notes/ui/desktop_shell.slint',ROOT/'experiments/hvf-smp/accelerated.system',*list((ROOT/'experiments/slint-notes/src').glob('*.rs')),ROOT/'tests/desktop_apps_manifest.py',ROOT/'rust/walletcore-core/examples/disposable_wallet.rs']
     sources += [*list((ROOT/'rust/walletcore-core/src').glob('*.rs')),ROOT/'rust/src/wallet_scan_pool.rs',ROOT/'rust/src/wallet_app.rs',ROOT/'rust/vendor/monero-oxide/wallet/src/scan.rs',ROOT/'rust/vendor/monero-oxide/wallet/src/output.rs',ROOT/'rust/vendor/monero-oxide/wallet/src/decoys.rs']
-    sources += [ROOT/'experiments/desktop-shell/protocol.h',ROOT/'experiments/slint-notes/assets/icons/browser.svg',ROOT/'tests/desktop_browser_input.py',ROOT/'tests/desktop_apps_input.py',ROOT/'tests/desktop_apps_run.py']
+    sources += [ROOT/'experiments/desktop-shell/protocol.h',ROOT/'experiments/slint-notes/assets/icons/browser.svg',ROOT/'tests/desktop_browser_input.py',ROOT/'tests/desktop_apps_input.py',ROOT/'tests/desktop_apps_run.py',ROOT/'tests/desktop_display_config.py',ROOT/'tests/desktop_display_config_test.py']
+    sources += [ROOT/'experiments/desktop-gpu/renderer.c',ROOT/'experiments/desktop-gpu/transport.h',ROOT/'experiments/desktop-gpu/pacing.h',ROOT/'tests/desktop_gpu_pacing_test.c',ROOT/'tests/desktop_gpu_capture.py',ROOT/'tests/desktop_gpu_navigation.py',ROOT/'tests/desktop_gpu_motion.py',ROOT/'tests/desktop_gpu_stall_trace.py',ROOT/'tests/desktop_gpu_stall_trace_test.py',ROOT/'tests/desktop_gpu_transport_test.c',ROOT/'tests/desktop_resize_agent_build.py',ROOT/'tests/desktop_resize_input.py',ROOT/'tests/desktop_resize_test.c',ROOT/'tests/desktop_resize_frame_test.rs',ROOT/'experiments/desktop-gpu/display_protocol.h',ROOT/'experiments/desktop-gpu/display_agent.c']
+    sources += [ROOT/'tests'/name for name in ('desktop_boot_ready.py','desktop_boot_ready_test.py','desktop_boot_stress.py','desktop_boot_stress_test.py','utm_vault_key_storage.py')]
     if a.browser:
         sources += [p for p in (ROOT/'experiments/netsurf-native').rglob('*') if p.is_file() and '__pycache__' not in str(p)]
         sources += [ROOT/'tests/net/dhcp_client.c',ROOT/'tests/net/haskell_tcp_service.c',ROOT/'tests/net/include/haskell_tcp_protocol.h',ROOT/'experiments/guest-https/src/lib.rs',ROOT/'experiments/guest-https/Cargo.toml']
-    (out/'build.json').write_text(json.dumps({'browser':a.browser,'apps':['SimpleX','NexaWal']+(['NetSurf'] if a.browser else []),'scale':2,'resolution':[2560,1600],'vcpus':4,'saved_data_used':False,'development_storage_key':True,'static_services':True,'sources':{str(x.relative_to(ROOT)):sha(x) for x in sources if x.is_file()},'artifacts':{x.name:sha(x) for x in out.glob('*.elf')},'loader_sha256':sha(out/'loader.img')},indent=2)+'\n')
+    (out/'build.json').write_text(json.dumps({'desktop_resize':a.desktop_resize,'resize_bounds':[[1600,1200],[3840,2160]] if a.desktop_resize else None,'virgl':a.virgl,'gpu_verify':a.gpu_verify,'browser':a.browser,'apps':['SimpleX','NexaWal']+(['NetSurf'] if a.browser else []),'scale':2,'resolution':[2560,1600],'vcpus':4,'saved_data_used':False,'development_storage_key':True,'static_services':True,'sources':{str(x.relative_to(ROOT)):sha(x) for x in sources if x.is_file()},'artifacts':{x.name:sha(x) for x in out.glob('*.elf')},'loader_sha256':sha(out/'loader.img')},indent=2)+'\n')
 
 if __name__=='__main__':main()

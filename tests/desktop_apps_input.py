@@ -2,13 +2,14 @@
 import base64, hashlib, json, math, re, shutil, statistics, struct, subprocess, time, urllib.request
 from pathlib import Path
 from simplex_live_peer import Peer
+from desktop_gpu_capture import capture
 
-def exercise(monitor,trace,temporary,evidence,browser=False):
+def exercise(monitor,trace,temporary,evidence,browser=False,gpu=False):
     checks=[];peer=None;samples=[];browser_case=None
     chat_dock=556 if browser else 596
     def output():
         text=trace.read_text(errors='replace')
-        for bad in ('MON|ERROR','panicked at','VMFault','Data Abort','Prefetch Abort','GUEST_AGENT_RESTORE_FAIL','HASKELL_EXIT|'):
+        for bad in ('MON|ERROR','panicked at','VMFault','Data Abort','Prefetch Abort','GUEST_AGENT_RESTORE_FAIL','HASKELL_EXIT|','DESKTOP_GPU|FAIL|'):
             if bad in text:raise RuntimeError('desktop app guest failed: '+text[-4000:])
         return text
     def until(predicate,timeout=120):
@@ -35,7 +36,7 @@ def exercise(monitor,trace,temporary,evidence,browser=False):
     def word(text):
         for c in text:key({' ':'spc','-':'minus',':':'semicolon','.':'dot'}.get(c,c));time.sleep(.012)
     def frame(name):
-        path=temporary/(name+'.ppm');monitor.send('screendump',{'filename':str(path)});data=path.read_bytes();shutil.copyfile(path,evidence/path.name);h=re.match(rb'P6\s+(\d+)\s+(\d+)\s+255\s',data)
+        path=temporary/(name+'.ppm');capture(monitor,path,gpu);data=path.read_bytes();shutil.copyfile(path,evidence/path.name);h=re.match(rb'P6\s+(\d+)\s+(\d+)\s+255\s',data)
         assert h and tuple(map(int,h.groups()))==(2560,1600),'desktop must remain 2x'
         subprocess.run(['magick',str(path),str(evidence/(name+'.png'))],check=True)
         return data[h.end():]
@@ -53,7 +54,7 @@ def exercise(monitor,trace,temporary,evidence,browser=False):
         until(lambda:ui()[0][0][4]==1)
         if browser:
             from desktop_browser_input import BrowserCase
-            browser_case=BrowserCase(monitor,trace,temporary,evidence,click,until,ui)
+            browser_case=BrowserCase(monitor,trace,temporary,evidence,click,until,ui,gpu=gpu)
             browser_case.initial()
         frame('desktop-ready');checks.append('both real 2x frontends publish independent surfaces in the landscape shell')
         peer=Peer(temporary/'peer')
@@ -71,9 +72,15 @@ def exercise(monitor,trace,temporary,evidence,browser=False):
         data=base64.b64encode((Path(__file__).resolve().parents[1]/'experiments/desktop-simplex/fixture.jpg').read_bytes()).decode()
         command=[{'msgContent':{'type':'image','text':'desktopphoto','image':'data:image/jpg;base64,'+data}}]
         peer.command(f'/_send @{cid} json '+json.dumps(command));until(lambda:ui()[0][0][6]>0)
-        pixels=frame('desktop-photo')
-        blue=sum(1 for i in range(0,len(pixels),3) if abs(pixels[i]-18)<=5 and abs(pixels[i+1]-91)<=5 and abs(pixels[i+2]-134)<=5)
-        assert blue>10000,('photo did not reach presented pixels',blue)
+        blue=0
+        def photo_visible():
+            nonlocal blue
+            pixels=frame('desktop-photo')
+            blue=sum(1 for i in range(0,len(pixels),3) if abs(pixels[i]-18)<=5 and abs(pixels[i+1]-91)<=5 and abs(pixels[i+2]-134)<=5)
+            return blue>10000
+        # Decode-ready can precede frontend publication and GPU upload. Require
+        # the actual image pixels, with a bounded wait for that asynchronous path.
+        until(photo_visible,timeout=60)
         checks.append('real incoming photo runs through receive, transcript, thumbnail reader/decoder workers and appears in presented pixels')
         # Enroll only a fresh disposable wallet; no saved seed is imported.
         tip=json.load(urllib.request.urlopen('https://rpc.nexawal.com/get_height',timeout=20))['height']
@@ -116,7 +123,7 @@ def exercise(monitor,trace,temporary,evidence,browser=False):
         frame('desktop-concurrent')
         checks.append('wallet scans against rpc.nexawal.com while minimized SimpleX receives and restores; sending still works without restarting either service')
         def wallet_picture():
-            path=temporary/'timed.ppm';monitor.send('screendump',{'filename':str(path)})
+            path=temporary/'timed.ppm';capture(monitor,path,gpu)
             data=path.read_bytes();h=re.match(rb'P6\s+(\d+)\s+(\d+)\s+255\s',data);assert h
             rgb=data[h.end():]
             # The pointer and dock are outside this wallet-content region.
@@ -144,6 +151,10 @@ def exercise(monitor,trace,temporary,evidence,browser=False):
             browser_case.finish()
             checks.extend(browser_case.checks)
         report={'checks':checks,'saved_data_used':False,'fresh_peer':True,'photo_presented_pixels':blue,'wallet_node':'rpc.nexawal.com:443','wallet_tip_at_start':tip,'wallet_restore_height':restore_height,'legacy_regression_range':3812148,'wallet_detail_before':before,'wallet_detail_after':after,'tab_observed_ms':samples,'tab_median_ms':statistics.median(samples),'tab_p95_ms':sorted(samples)[math.ceil(len(samples)*.95)-1],'timing_scope':'host QMP mouse press to changed presented wallet-content pixels plus matching tab state; sampled polling, excludes physical host display latency','static_service_lifecycle':True,'lock_integrated':False,'wallet_full_sync_completed':fully_synced,'wallet_terminal_status':terminal,'photo_ready_after_run':ui()[0][0][6]}
+        report['gpu_readback_verification']=gpu
+        if gpu:
+            report['timing_scope']='host QMP mouse press to changed diagnostic GPU-readback pixels plus matching tab state; includes readback/reference verification/polling and excludes physical display latency'
+            report['checks']=[c.replace('presented pixels','GPU-readback pixels') for c in checks]
         (evidence/'validation.json').write_text(json.dumps(report,indent=2)+'\n')
         for c in checks:print('CHECK '+c,flush=True)
         assert fully_synced, 'full wallet scan failed: '+terminal

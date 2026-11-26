@@ -291,7 +291,7 @@ netsurf-native.a: $$(OBJECTS)
     print('Built native ARM64 NetSurf engine archive', flush=True)
 
 
-def frontend(base, out, inputs, scale, https=False, javascript=False, test_hooks=False, desktop=False):
+def frontend(base, out, inputs, scale, https=False, javascript=False, test_hooks=False, desktop=False, resize=False):
     sdk = inputs / 'sdk'
     board = sdk / 'board/qemu_virt_aarch64_el1/smp-debug'
     compiler = base / 'cc.py'
@@ -329,6 +329,9 @@ def frontend(base, out, inputs, scale, https=False, javascript=False, test_hooks
     if desktop: flags += ['-DNATIVE_DESKTOP=1']
     if https: flags += ['-DNATIVE_HTTPS=1']
     if javascript: flags += ['-DNATIVE_JAVASCRIPT=1']
+    if resize:
+        assert desktop
+        flags += ['-DNATIVE_DISPLAY_RESIZE=1']
     if test_hooks: flags += ['-DNATIVE_BROWSER_TESTS=1']
     objects = []
     for unit in (('browser.c', 'platform.c', 'raster.c', 'page.c', 'alloc_guard.c', 'dom_budget.c', 'assets.c', 'assets.S') + (('https.c',) if https else ()) + (('javascript_forms.c',) if javascript else ())):

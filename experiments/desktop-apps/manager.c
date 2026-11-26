@@ -20,10 +20,39 @@ void *memset(void *to, int value, size_t n)
 #undef init
 #undef notified
 #undef fault
+#ifdef DESKTOP_DYNAMIC
+#include "../desktop-gpu/display_protocol.h"
+uintptr_t desktop_display_mode,desktop_display_request;
+static uint32_t resize_serial;
+static void resize_display(bool initial) {
+    struct display_mode next={0};
+    if(initial){display_dimensions(DISPLAY_DEFAULT_W,DISPLAY_DEFAULT_H,&next);}
+    else {
+        const struct display_request *r=(void*)desktop_display_request;
+        uint32_t rev=__atomic_load_n(&r->revision,__ATOMIC_ACQUIRE);struct display_request copy=*r;
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        if(!rev||(rev&1)||rev!=__atomic_load_n(&r->revision,__ATOMIC_ACQUIRE)||!copy.serial||copy.serial==resize_serial||!copy.width||!copy.height||copy.width>16384||copy.height>16384)return;
+        display_dimensions(copy.width,copy.height,&next);next.serial=copy.serial;
+    }
+    bool changed=next.width/2!=desktop_width||next.height/2!=desktop_height||next.app_height!=desktop_app_height;
+    desktop_width=next.width/2;desktop_height=next.height/2;desktop_app_height=next.app_height;
+    struct display_mode *out=(void*)desktop_display_mode;uint32_t rev=__atomic_load_n(&out->revision,__ATOMIC_RELAXED);
+    __atomic_store_n(&out->revision,rev+1,__ATOMIC_RELEASE);__atomic_thread_fence(__ATOMIC_SEQ_CST);
+    out->serial=next.serial;out->width=next.width;out->height=next.height;out->scale=2;out->app_height=next.app_height;
+    __atomic_store_n(&out->revision,rev+2,__ATOMIC_RELEASE);resize_serial=next.serial;
+    if(!initial){
+        if(changed){reset_input();for(unsigned i=0;i<DESKTOP_APP_COUNT;++i)shell_position(&desktop.windows[i],desktop.windows[i].x,desktop.windows[i].y);pointer_x=shell_clamp(pointer_x,0,desktop_width-1);pointer_y=shell_clamp(pointer_y,0,desktop_height-1);}
+        publish_state();microkit_notify(2);for(unsigned i=1;i<=DESKTOP_APP_COUNT;++i)input_notify(i);
+    }
+}
+#endif
 static void dynamic_input_notify(void) { microkit_notify(24); }
 static bool dynamic_control(struct input_event_record e) { (void)e; return false; }
 void init(void)
 {
+#ifdef DESKTOP_DYNAMIC
+    resize_display(true);
+#endif
     dynamic_active = true; compositor_init();
     desktop.windows[0].open = desktop.windows[0].visible = 1;
     desktop.windows[1].open = desktop.windows[1].visible = 1;
@@ -40,6 +69,9 @@ void init(void)
 }
 void notified(microkit_channel channel)
 {
+#ifdef DESKTOP_DYNAMIC
+    if(channel==31)resize_display(false);
+#endif
     for (unsigned i = 0; i < DESKTOP_APP_COUNT; ++i) {
         uint32_t *q = (void *)app_input(i+1);
         if (__atomic_exchange_n(&q[1], 0, __ATOMIC_ACQ_REL)) input_notify(i + 1);
