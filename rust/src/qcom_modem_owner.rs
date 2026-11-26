@@ -1,6 +1,11 @@
 //! Serialized modem transport owner: bounded work, retained fault state, IRQs.
 //! Native attachment must consume the actual authenticated channel handoff.
 #![forbid(unsafe_code)]
+/* EFS_EARLY_TURN_BEGIN */
+#[cfg(feature="sunfish-efs-early-error-turn")]
+#[path="qcom_owner_efs_early.rs"]
+mod efs_early;
+/* EFS_EARLY_TURN_END */
 /* MCFG_IDLE_TURN_BEGIN */
 #[cfg(feature="sunfish-mcfg-idle-turn")]
 #[path="qcom_owner_mcfg_idle.rs"]
@@ -1000,6 +1005,16 @@ pub struct Owner<I> {
     scheduled: bool,
     requests: [Option<RequestHandle>; MAX_REQUESTS],
     tftp_requests: [Option<TftpHandle>; MAX_REQUESTS],
+/* EFS_EARLY_TURN_BEGIN */
+#[cfg(feature="sunfish-efs-early-error-turn")]
+    efs_error_turn_enabled: bool,
+#[cfg(feature="sunfish-efs-early-error-turn")]
+    efs_error_turn_used: bool,
+#[cfg(feature="sunfish-efs-early-error-turn")]
+    first_efs_error_request: Option<(TftpHandle,crate::qcom_qmi_router::Address)>,
+#[cfg(feature="sunfish-efs-early-error-turn")]
+    first_efs_error_closed: bool,
+/* EFS_EARLY_TURN_END */
     #[cfg(feature = "sunfish-tftp-rx-yield-experiment")]
     tftp_yield_debt: bool,
     #[cfg(feature = "sunfish-ipa-registration-rx-first")]
@@ -1291,6 +1306,16 @@ impl<I: Io> Owner<I> {
             scheduled: false,
             requests: [None; MAX_REQUESTS],
             tftp_requests: [None; MAX_REQUESTS],
+/* EFS_EARLY_TURN_BEGIN */
+#[cfg(feature="sunfish-efs-early-error-turn")]
+            efs_error_turn_enabled: false,
+#[cfg(feature="sunfish-efs-early-error-turn")]
+            efs_error_turn_used: false,
+#[cfg(feature="sunfish-efs-early-error-turn")]
+            first_efs_error_request: None,
+#[cfg(feature="sunfish-efs-early-error-turn")]
+            first_efs_error_closed: false,
+/* EFS_EARLY_TURN_END */
             #[cfg(feature = "sunfish-tftp-rx-yield-experiment")]
             tftp_yield_debt: false,
             #[cfg(feature = "sunfish-ipa-registration-rx-first")]
@@ -2558,6 +2583,10 @@ impl<I: Io> Owner<I> {
     fn flush_peer_tftp_reply(&mut self, slot: usize, interrupts: &mut impl Interrupts)
         -> Result<bool, Error> {
         let Some(reply) = self.peer_tftp_replies[slot].as_ref() else { return Ok(false); };
+/* EFS_EARLY_TURN_BEGIN */
+#[cfg(feature="sunfish-efs-early-error-turn")]
+        let efs_turn=self.efs_error_turn_enabled&&!self.efs_error_turn_used&&reply.bytes[..reply.meta.bytes]==*crate::qcom_tftp_server_check::MISSING_REPLY&&!self.first_efs_error_closed&&self.first_efs_error_request==Some((reply.request,reply.meta.route.destination));
+/* EFS_EARLY_TURN_END */
         #[cfg(feature = "sunfish-wlan-first-server-check-retry")]
         if self.adapter.cancel_closed_tftp_retry(&reply.request) {
             self.peer_tftp_replies[slot] = None;
@@ -2603,6 +2632,10 @@ impl<I: Io> Owner<I> {
                 #[cfg(feature="sunfish-mcfg-queued-turn")]
                 if mcfg_turn {if let Err(error)=self.adapter.publish_mcfg_queued_turn(self.generation){return Err(self.stop(error.into()));}}
 /* MCFG_QUEUED_TURN_END */
+/* EFS_EARLY_TURN_BEGIN */
+#[cfg(feature="sunfish-efs-early-error-turn")]
+                if efs_turn{self.efs_error_turn_used=true;if let Err(error)=self.adapter.publish_efs_error_turn(self.generation){return Err(self.stop(error.into()));}}
+/* EFS_EARLY_TURN_END */
                 #[cfg(feature = "sunfish-tftp-oack-early-reserve")]
                 if self.adapter.early_reserved_oack_pending() {
                     if let Err(error) = self.adapter.publish_oack_followup(
@@ -3498,6 +3531,19 @@ impl<I: Io> Owner<I> {
             #[cfg(feature="sunfish-mcfg-close-cleanup")]
             self.adapter.set_mcfg_close_transfers(self.generation,self.mcfg_close_transfers)?;
             let rx = self.adapter.poll_receive(self.generation)?;
+/* EFS_EARLY_TURN_BEGIN */
+#[cfg(feature="sunfish-efs-early-error-turn")]
+            if let Some((_,peer))=self.first_efs_error_request{
+                self.first_efs_error_closed|=match rx{
+                    Receive::Session(Event::QrtrControl(crate::qcom_qrtr_control::Event::ClientRemoved(port)))=>peer.port==port,
+                    #[cfg(feature="sunfish-mcfg-close-cleanup")]
+                    Receive::Session(Event::McfgClosePending{peer:closed})=>closed==peer,
+                    #[cfg(feature="sunfish-tftp-wlan-close-handoff")]
+                    Receive::Session(Event::FirmwareClosePending{peer:closed})=>closed==peer,
+                    _=>false,
+                };
+            }
+/* EFS_EARLY_TURN_END */
             #[cfg(feature="sunfish-mcfg-close-cleanup")]
             if let Receive::Session(Event::McfgClosePending{peer})=rx {
                 self.pending_mcfg_close=Some(peer);self.mcfg_close_trace.observed=self.mcfg_close_trace.observed.saturating_add(1);
@@ -3653,6 +3699,12 @@ impl<I: Io> Owner<I> {
                     let first_endpoint = self.adapter.tftp_endpoint_trace();
                     let (route, packet) = self.adapter.tftp_datagram(self.generation, &handle)?;
                     let opcode = if packet.len() >= 2 { u16::from_be_bytes([packet[0], packet[1]]) } else { 0 };
+/* EFS_EARLY_TURN_BEGIN */
+#[cfg(feature="sunfish-efs-early-error-turn")]
+                    if self.efs_error_turn_enabled&&self.first_efs_error_request.is_none()&&opcode==tftp::OP_RRQ&&route.source.port==crate::qcom_tftp_server_check::SERVICE_PORT&&packet[2..].split(|b|*b==0).next()==Some(b"/readwrite/modem_efs".as_slice()){
+                        self.first_efs_error_request=Some((handle,route.destination));
+                    }
+/* EFS_EARLY_TURN_END */
                     #[cfg(feature = "sunfish-tftp-data-peer-observer")]
                     if opcode == tftp::OP_DATA && packet.len() >= 4 {
                         if let Some(clock) = self.rmtfs_event_clock {

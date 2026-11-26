@@ -68,6 +68,13 @@ use crate::qcom_qmi_router::Context;
 mod efs_reply;
 #[cfg(feature="sunfish-efs-reply-fifo")]
 pub use efs_reply::EfsReplyFifo;
+/* EFS_EARLY_TURN_BEGIN */
+#[cfg(feature="sunfish-efs-early-error-turn")]
+#[path="qcom_fifo_efs_early.rs"]
+mod efs_early;
+#[cfg(feature="sunfish-efs-early-error-turn")]
+pub use efs_early::EfsErrorTurnTrace;
+/* EFS_EARLY_TURN_END */
 /* EFS_REPLY_FIFO_END */
 
 pub const FIFO_BYTES: usize = 0x4000;
@@ -1504,6 +1511,10 @@ struct Ring<I> {
 /* EFS_REPLY_FIFO_BEGIN */
 #[cfg(feature="sunfish-efs-reply-fifo")]
     efs_reply: Option<efs_reply::EfsReplyWatch>,
+/* EFS_EARLY_TURN_BEGIN */
+#[cfg(feature="sunfish-efs-early-error-turn")]
+    efs_error_turn: EfsErrorTurnTrace,
+/* EFS_EARLY_TURN_END */
 /* EFS_REPLY_FIFO_END */
     #[cfg(feature="sunfish-registry-tx3-wire-headers")]
     registry_wire: Option<RegistryWireTrace>,
@@ -2304,6 +2315,10 @@ impl<I: Io> Adapter<I> {
 /* EFS_REPLY_FIFO_BEGIN */
 #[cfg(feature="sunfish-efs-reply-fifo")]
                 efs_reply: None,
+/* EFS_EARLY_TURN_BEGIN */
+#[cfg(feature="sunfish-efs-early-error-turn")]
+                efs_error_turn: EfsErrorTurnTrace::default(),
+/* EFS_EARLY_TURN_END */
 /* EFS_REPLY_FIFO_END */
                 #[cfg(feature="sunfish-registry-tx3-wire-headers")]
                 registry_wire: None,
@@ -4612,6 +4627,10 @@ impl<I: Io> Adapter<I> {
 /* EFS_REPLY_FIFO_BEGIN */
 #[cfg(feature="sunfish-efs-reply-fifo")]
         {self.ring.efs_reply=None;}
+/* EFS_EARLY_TURN_BEGIN */
+#[cfg(feature="sunfish-efs-early-error-turn")]
+        {self.ring.efs_error_turn=EfsErrorTurnTrace::default();}
+/* EFS_EARLY_TURN_END */
 /* EFS_REPLY_FIFO_END */
         #[cfg(feature="sunfish-registry-tx3-wire-headers")]
         { self.ring.registry_wire=None; }

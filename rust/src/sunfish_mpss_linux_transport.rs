@@ -222,6 +222,10 @@ impl<I: BootIo> BootTransport<I> {
 /* EFS_REPLY_FIFO_BEGIN */
 #[cfg(feature="sunfish-efs-reply-fifo")]
                 efs_reply: None,
+/* EFS_EARLY_TURN_BEGIN */
+#[cfg(feature="sunfish-efs-early-error-turn")]
+                efs_error_turn: crate::qcom_glink_fifo::EfsErrorTurnTrace::default(),
+/* EFS_EARLY_TURN_END */
 /* EFS_REPLY_FIFO_END */
             #[cfg(feature="sunfish-registry-tx3-wire-headers")]
             registry_wire: None,
