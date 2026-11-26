@@ -2,6 +2,8 @@
 use super::*;
 impl RuntimeDomain {
     pub(super) fn show_tftp_completion(&self, d: &Display, owner: &ModemOwner) {
+        #[cfg(feature="sunfish-startup-prerequisites")]
+        {self.show_startup_prerequisites(d,owner);return;}
         #[cfg(feature="sunfish-mcfg-writer-trace")]
         {self.show_mcfg_writer(d,owner);return;}
         for n in 2..=28 { d.replace_line(n, ""); }
@@ -172,5 +174,28 @@ impl RuntimeDomain{
   }}
   let cl=owner.mcfg_close_trace();d.header_label(27,"RX TOTAL OMIT CLOSE OBS COMMIT");d.header_row(27,true,&[(c.rx_total,8),(c.rx_omitted,8),(cl.observed,8),(cl.committed,8)]);
   let q=self.wlan_query.snapshot(owner);d.header_label(28,"IPA PD STATE WLAN WLFW");d.header_row(28,true,&[(u32::from(self.ipa_complete_seen),8),(q[1],8),(owner.tftp_wire_counts()[2],8),(q[7],8)]);
+ }
+}
+
+#[cfg(feature="sunfish-startup-prerequisites")]
+impl RuntimeDomain{
+ fn show_startup_prerequisites(&self,d:&Display,owner:&ModemOwner){
+  let age=|at|self.time_from_us(Some(self.runtime_started),at);
+  let row=|n,label,values:&[u32]|{d.header_label(n,label);let mut fields=[(0,8);6];for(i,v)in values.iter().enumerate(){fields[i]=(*v,8);}d.header_row(n,true,&fields[..values.len()]);};
+  for n in 2..=28{d.replace_line(n,"");}d.replace_line(1,"EARLY STARTUP REPLIES");
+  let close=owner.mcfg_close_trace();row(2,"ERROR DETAIL CLOSE STAGE",&[self.error,self.detail,owner.pending_mcfg_close().map_or(u32::MAX,|p|p.port),close.stage]);
+  let first=owner.original_tftp_write_trace();row(3,"ORIG PEER WRQ OACK DATA",&[first.map_or(u32::MAX,|w|w.peer.port),age(first.and_then(|w|w.received_at)),age(first.and_then(|w|w.oack.published_at)),age(first.and_then(|w|w.data).and_then(|w|w.received_at))]);
+  row(4,"ACK PHASE PUB DONE CLOSE",&[first.map_or(u32::MAX,|w|u32::from(w.ack.phase)),age(first.and_then(|w|w.ack.published_at)),age(first.and_then(|w|w.ack.done_at)),age(first.and_then(|w|w.timing.first_close_at))]);
+  let t=owner.service_registry_trace();let elf=t.elf;row(5,"ELF RX QUEUE PUB DONE",&[age(elf.and_then(|e|e.received)),age(elf.and_then(|e|e.queued)),age(elf.and_then(|e|e.published)),age(elf.and_then(|e|e.done))]);
+  let e=t.elf_exchange;let c=e.and_then(|e|e.host_credit);row(6,"ELF MATCH CREDIT LOC Q DONE",&[e.map_or(u32::MAX,|e|u32::from(e.qmi_matches_reference)),c.map_or(u32::MAX,|c|u32::from(c.requested)|(u32::from(c.remote_intent.is_some())<<1)|(u32::from(c.completed)<<2)),t.queued_names,t.completed_names]);
+  let q=self.wlan_query.snapshot(owner);row(7,"IPA PD STATE WLAN WLFW",&[u32::from(self.ipa_complete_seen),q[1],owner.tftp_wire_counts()[2],q[7]]);
+  let p=owner.startup_prerequisites();for(i,r)in p.reads.iter().enumerate(){let n=8+i*5;let r=r.as_ref();let seq=r.and_then(|r|r.record_sequence());
+   row(n,"K PEER FLAGS RECORD LO HI",&[r.map_or(u32::MAX,|r|r.kind),r.map_or(u32::MAX,|r|r.peer.port),r.map_or(0,|r|r.flags),seq.map_or(u32::MAX,|s|s as u32),seq.map_or(u32::MAX,|s|(s>>32)as u32)]);
+   row(n+1,"BYTES RSIZE OPTS ERR OPT CLIENT",&[r.map_or(u32::MAX,|r|r.request_bytes),r.map_or(u32::MAX,|r|r.rsize),r.map_or(0,|r|r.options_present),r.map_or(u32::MAX,|r|r.result),r.map_or(0,|r|r.options_flags),r.map_or(u32::MAX,|r|r.client)]);
+   row(n+2,"RX DISPATCH QUEUE",&[age(r.and_then(|r|r.received)),age(r.and_then(|r|r.dispatched)),age(r.and_then(|r|r.queued))]);
+   row(n+3,"PUB DONE CLOSE",&[age(r.and_then(|r|r.published)),age(r.and_then(|r|r.done)),age(r.and_then(|r|r.close))]);
+   d.header_label(n+4,"OP CODE LEN PORT TRY BUSY CAP");d.header_row(n+4,true,&[(r.map_or(u32::MAX,|r|r.opcode),4),(r.map_or(u32::MAX,|r|r.number),4),(r.map_or(0,|r|r.reply_bytes),4),(r.map_or(u32::MAX,|r|r.local_port),8),(r.map_or(0,|r|r.attempts),4),(r.map_or(0,|r|r.waits[0]),4),(r.map_or(0,|r|r.waits[1]),4)]);
+  }
+  let reads=owner.read_sequence();row(28,"READ MASK RULE EFS OMIT R E",&[diagnostic::packed_counts(reads.total,reads.kinds),p.total[0],p.total[1],p.omitted[0],p.omitted[1]]);
  }
 }

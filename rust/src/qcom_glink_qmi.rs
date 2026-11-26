@@ -44,6 +44,13 @@ pub use elf_window::{ElfWindowTrace,ElfWindowSnapshot,ElfWindowEntry,ElfWindowRe
 mod post_elf_mcfg;
 #[cfg(feature="sunfish-post-elf-mcfg-trace")]
 pub use post_elf_mcfg::{PostElfMcfgTrace, PostMcfgRequest, McfgOptionIds, McfgWireRecord};
+/* STARTUP_PREREQ_BEGIN */
+#[cfg(feature="sunfish-startup-prerequisites")]
+#[path="qcom_startup_prerequisites.rs"]
+mod startup_prerequisites;
+#[cfg(feature="sunfish-startup-prerequisites")]
+pub use startup_prerequisites::{StartupPrerequisites,StartupRead};
+/* STARTUP_PREREQ_END */
 
 #[cfg(feature = "sunfish-linux-ipa-qmi")]
 #[path = "sunfish_ipa_linux_qmi_link.rs"]
@@ -976,6 +983,10 @@ pub struct Session {
     elf_exchange: Option<ElfExchangeTrace>,
     #[cfg(feature="sunfish-post-elf-mcfg-trace")]
     post_elf_mcfg: Option<PostElfMcfgTrace>,
+/* STARTUP_PREREQ_BEGIN */
+#[cfg(feature="sunfish-startup-prerequisites")]
+    startup_prerequisites: StartupPrerequisites,
+/* STARTUP_PREREQ_END */
     #[cfg(feature="sunfish-elf-window-trace")]
     elf_window:Option<ElfWindowTrace>,
     #[cfg(feature="sunfish-elf-tx-slots")]
@@ -1954,6 +1965,10 @@ impl Session {
             elf_exchange: None,
             #[cfg(feature="sunfish-post-elf-mcfg-trace")]
             post_elf_mcfg: None,
+/* STARTUP_PREREQ_BEGIN */
+#[cfg(feature="sunfish-startup-prerequisites")]
+            startup_prerequisites: StartupPrerequisites::default(),
+/* STARTUP_PREREQ_END */
             #[cfg(feature="sunfish-elf-window-trace")]
             elf_window:None,
             #[cfg(feature="sunfish-elf-tx-slots")]
@@ -2907,6 +2922,10 @@ impl Session {
         { self.elf_exchange = None; }
         #[cfg(feature="sunfish-post-elf-mcfg-trace")]
         { self.post_elf_mcfg = None; }
+/* STARTUP_PREREQ_BEGIN */
+#[cfg(feature="sunfish-startup-prerequisites")]
+        { self.startup_prerequisites = StartupPrerequisites::default(); }
+/* STARTUP_PREREQ_END */
         #[cfg(feature="sunfish-elf-window-trace")]
         {self.elf_window=None;}
         #[cfg(feature="sunfish-elf-tx-slots")]
@@ -3845,6 +3864,10 @@ impl Session {
         );
         #[cfg(feature="sunfish-post-elf-mcfg-trace")]
         self.observe_post_mcfg_queue(handle,route,result);
+/* STARTUP_PREREQ_BEGIN */
+#[cfg(feature="sunfish-startup-prerequisites")]
+        self.observe_startup_queue(handle,route,result);
+/* STARTUP_PREREQ_END */
         #[cfg(feature = "sunfish-tftp-oack-reserve")]
         if result == Ok(TX_SLOTS) {
             self.reserved_oack = Some(ReservedOack {
@@ -5106,6 +5129,10 @@ impl Session {
                 let handle=TftpHandle {owner:self.owner,generation:self.generation,intent:self.receive[index].tftp_datagram_id()};
                 #[cfg(feature="sunfish-post-elf-mcfg-trace")]
                 self.observe_post_mcfg_receive(index,handle);
+/* STARTUP_PREREQ_BEGIN */
+#[cfg(feature="sunfish-startup-prerequisites")]
+                self.observe_startup_read(index,handle);
+/* STARTUP_PREREQ_END */
                 return Ok(Event::TftpRequest(handle));
             }
             let observation =
@@ -5464,6 +5491,10 @@ impl Session {
         let command = self.control.decode(&self.receive[index].bytes[..len])?;
         #[cfg(feature="sunfish-post-elf-mcfg-trace")]
         if let control::Command::DelClient(port)=command {self.observe_post_mcfg_close(port);}
+/* STARTUP_PREREQ_BEGIN */
+#[cfg(feature="sunfish-startup-prerequisites")]
+        if let control::Command::DelClient(port)=command {self.observe_startup_close(port);}
+/* STARTUP_PREREQ_END */
         #[cfg(feature = "sunfish-first-oack-after-ipa-publish")]
         if self.first_oack_after_ipa_publish && self.first_oack_eligibility.close_mask.is_none()
             && let control::Command::DelClient(port) = command
@@ -6501,6 +6532,10 @@ impl Session {
         }
         #[cfg(feature="sunfish-post-elf-mcfg-trace")]
         self.observe_post_mcfg_done(index,id);
+/* STARTUP_PREREQ_BEGIN */
+#[cfg(feature="sunfish-startup-prerequisites")]
+        self.observe_startup_done(index,id);
+/* STARTUP_PREREQ_END */
         self.transmit[index].remote_slot = None;
         self.transmit[index].glink_done = true;
         #[cfg(feature = "sunfish-tftp-oack-reserve")]
@@ -9294,6 +9329,10 @@ impl Session {
                     self.freeze_elf_writer(index);
                     #[cfg(feature="sunfish-post-elf-mcfg-trace")]
                     self.observe_post_mcfg_publication(index,remote);
+/* STARTUP_PREREQ_BEGIN */
+#[cfg(feature="sunfish-startup-prerequisites")]
+                    self.observe_startup_publication(index,remote);
+/* STARTUP_PREREQ_END */
                     #[cfg(feature = "sunfish-registry-handoff-turn")]
                     if let Some(prior) = self.registry_window.predecessor.as_mut()
                         && let TxKind::Reply { receive, .. } = self.transmit[index].kind

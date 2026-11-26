@@ -2141,6 +2141,10 @@ impl<I: Io> Owner<I> {
     pub fn tftp_wire_counts(&self) -> [u32; 4] { self.tftp_wire_counts }
     #[cfg(feature = "sunfish-wlan-read-sequence")]
     pub fn read_sequence(&self) -> &ReadSequence { &self.read_sequence }
+/* STARTUP_PREREQ_BEGIN */
+#[cfg(feature="sunfish-startup-prerequisites")]
+    pub fn startup_prerequisites(&self)->&crate::qcom_glink_qmi::StartupPrerequisites{self.adapter.startup_prerequisites()}
+/* STARTUP_PREREQ_END */
 
     #[cfg(feature = "sunfish-wlan-elf-tftp-timeline")]
     pub fn wlan_discovery_times(&self) -> (Option<u64>, Option<u64>) {
@@ -2756,6 +2760,10 @@ impl<I: Io> Owner<I> {
         );
         #[cfg(feature="sunfish-post-elf-mcfg-trace")]
         if let Some(before)=post_mcfg_file_before {self.adapter.observe_post_mcfg_dispatch(&handle,before,dispatch,&self.tftp_output);}
+/* STARTUP_PREREQ_BEGIN */
+#[cfg(feature="sunfish-startup-prerequisites")]
+        self.adapter.observe_startup_dispatch(&handle,dispatch,&self.tftp_output);
+/* STARTUP_PREREQ_END */
         #[cfg(feature="sunfish-mcfg-close-cleanup")]
         self.refresh_mcfg_transfers(server);
         self.finish_tftp_request(&handle, interrupts)?;

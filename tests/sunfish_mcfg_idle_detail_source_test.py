@@ -4,6 +4,8 @@ ROOT=Path(__file__).resolve().parents[1]
 PATTERN=r'/\* MCFG_IDLE_DETAIL_BEGIN \*/\n.*?/\* MCFG_IDLE_DETAIL_END \*/\n'
 COUNTS={'rust/src/qcom_glink_fifo.rs':5,'rust/src/sunfish_mpss_linux_transport.rs':1,'rust/src/qcom_owner_mcfg_idle.rs':3,'rust/src/qcom_fifo_mcfg_idle.rs':3,'rust/src/qcom_fifo_mcfg_rx_veto.rs':1,'tests/sunfish_glink_fifo_test.rs':3}
 def without_detail(path,source):
+ from sunfish_startup_prerequisites_source_test import without_startup
+ source=without_startup(path,source)
  blocks=re.findall(PATTERN,source,re.S)
  if path in COUNTS:
   assert len(blocks)==COUNTS[path],(path,len(blocks));assert all('#[cfg(feature="sunfish-mcfg-idle-detail")]'in b for b in blocks)

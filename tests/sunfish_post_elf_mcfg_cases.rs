@@ -90,4 +90,24 @@ include!("sunfish_mcfg_writer_cases.rs");
 include!("sunfish_mcfg_predecessor_cases.rs");
 #[cfg(feature="sunfish-mcfg-queued-turn")]
 include!("sunfish_mcfg_queued_cases.rs");
+#[test]
+fn startup_prerequisites_owner_early_negative_reply_and_real_completion(){
+ for (kind,path) in [(1,b"/readwrite/ota_firewall/ruleset".as_slice()),(2,b"/readwrite/modem_efs".as_slice())]{
+  let(p,mut o,mut i)=mc_owner();let mut server=qcom_tftp_server_check::ServerCheck::new();let mut req=b"\0\x01".to_vec();req.extend(path);req.extend(b"\0octet\0rsize\x000\0");mc_input(&p,&mut o,&mut i,0x21,0x5000,&req);
+  #[cfg(feature="sunfish-startup-prerequisites")]
+  {let k=(kind-1)*2;assert_eq!(o.startup_prerequisites().reads[k].unwrap().flags,1);assert!(o.post_elf_mcfg().is_none());}
+  #[cfg(not(feature="sunfish-startup-prerequisites"))]let _=kind;
+  o.service_tftp_server_check_step(&mut server,&mut i).unwrap();
+  #[cfg(feature="sunfish-startup-prerequisites")]
+  {let r=o.startup_prerequisites().reads[(kind-1)*2].unwrap();assert_eq!((r.flags,r.result,r.opcode,r.number,r.reply_bytes,r.attempts),(15,0,5,1,19,1));assert!(r.record_sequence().is_some());}
+  o.notified(8,&mut i).unwrap();let wire=p.take_tx();
+  #[cfg(feature="sunfish-startup-prerequisites")]
+  assert_eq!(o.startup_prerequisites().reads[(kind-1)*2].unwrap().flags,31);
+  acknowledge_outgoing_glink(&p,&mut o,&mut i,&wire);
+  #[cfg(feature="sunfish-startup-prerequisites")]
+  assert_eq!(o.startup_prerequisites().reads[(kind-1)*2].unwrap().flags,63);
+  assert!(o.error().is_none());print!("STARTUP_PREREQ_WIRE ");for b in &wire{print!("{b:02x}");}println!();println!("STARTUP_PREREQ_IO {:?}",p.log());
+ }
+}
+
 }
