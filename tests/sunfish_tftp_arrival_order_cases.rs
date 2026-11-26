@@ -46,3 +46,13 @@ fn tftp_arrival_order_owner_exact_wrq_coalescing_keeps_original_handle(){
  mc_input(&p,&mut o,&mut i,0x21,0x5000,efs);assert_eq!(o.pending_tftp_request(),Some(original));let(route,body)=o.tftp_datagram(&original).unwrap();assert_eq!((route.destination.port,body),(0x1f,qcom_tftp_server_check::REQUEST));
  o.service_tftp_server_check_step(&mut server,&mut i).unwrap();o.notified(8,&mut i).unwrap();let wire=p.take_tx();let datagrams=owner_datagrams(&wire);assert!(datagrams.iter().any(|b|b.len()>=32+qcom_tftp_server_check::OACK.len()&&&b[32..32+qcom_tftp_server_check::OACK.len()]==qcom_tftp_server_check::OACK));acknowledge_outgoing_glink(&p,&mut o,&mut i,&wire);assert!(o.error().is_none());
 }
+#[cfg(feature="sunfish-efs-reply-fifo")]
+#[test]
+fn efs_reply_fifo_owner_tail_close_foreign_receipt_and_exact_done(){
+ let(p,mut o,mut i)=mc_owner();let mut server=qcom_tftp_server_check::ServerCheck::new();let efs=b"\0\x01/readwrite/modem_efs\0octet\0";let rule=b"\0\x01/readwrite/ota_firewall/ruleset\0octet\0";
+ mc_input(&p,&mut o,&mut i,0x22,0x5000,efs);o.service_tftp_server_check_step(&mut server,&mut i).unwrap();o.notified(8,&mut i).unwrap();let wire=p.take_tx();let w=o.efs_reply_fifo().unwrap();assert_eq!(w.record,o.startup_prerequisites().reads[2].unwrap().record_sequence().unwrap());assert!(!w.fifo.finished);
+ o.notified(8,&mut i).unwrap();assert!(o.efs_reply_fifo().unwrap().fifo.peer_tail_at.is_some());assert!(!o.efs_reply_fifo().unwrap().fifo.finished);
+ mc_input(&p,&mut o,&mut i,0x30,0x5000,rule);o.service_tftp_server_check_step(&mut server,&mut i).unwrap();o.notified(8,&mut i).unwrap();let other=p.take_tx();acknowledge_outgoing_glink(&p,&mut o,&mut i,&other);assert!(!o.efs_reply_fifo().unwrap().fifo.finished);
+ mc_close(&p,&mut o,&mut i,0x22);assert!(o.efs_reply_fifo().unwrap().unread_at_close.is_some());assert!(!o.efs_reply_fifo().unwrap().fifo.finished);
+ acknowledge_outgoing_glink(&p,&mut o,&mut i,&wire);let w=o.efs_reply_fifo().unwrap();assert!(w.fifo.finished);assert!(w.fifo.completion.is_some());assert_eq!(w.fifo.completion.unwrap().visible_at_close,Some(false));assert_eq!(o.startup_prerequisites().reads[2].unwrap().flags,0xbf);assert!(o.error().is_none());
+}

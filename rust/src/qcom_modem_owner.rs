@@ -2144,6 +2144,10 @@ impl<I: Io> Owner<I> {
 /* STARTUP_PREREQ_BEGIN */
 #[cfg(feature="sunfish-startup-prerequisites")]
     pub fn startup_prerequisites(&self)->&crate::qcom_glink_qmi::StartupPrerequisites{self.adapter.startup_prerequisites()}
+/* EFS_REPLY_FIFO_BEGIN */
+#[cfg(feature="sunfish-efs-reply-fifo")]
+    pub fn efs_reply_fifo(&self)->Option<fifo::EfsReplyFifo>{self.adapter.efs_reply_fifo()}
+/* EFS_REPLY_FIFO_END */
 /* STARTUP_PREREQ_END */
 
     #[cfg(feature = "sunfish-wlan-elf-tftp-timeline")]

@@ -3,6 +3,8 @@ import re,subprocess,unittest
 ROOT=Path(__file__).resolve().parents[1]
 PATTERN=r'/\* TFTP_ARRIVAL_ORDER_BEGIN \*/\n.*?/\* TFTP_ARRIVAL_ORDER_END \*/\n'
 def without_arrival(path,source):
+ from sunfish_efs_reply_fifo_source_test import without_efs_fifo
+ source=without_efs_fifo(path,source)
  blocks=re.findall(PATTERN,source,re.S)
  if path=='rust/src/qcom_modem_owner.rs':assert len(blocks)==1 and '#[cfg(feature="sunfish-tftp-arrival-order")]'in blocks[0],(path,len(blocks))
  else:assert not blocks,path

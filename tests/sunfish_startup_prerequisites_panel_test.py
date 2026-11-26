@@ -13,7 +13,7 @@ use std::cell::RefCell;
 #[path=DISPLAY]mod physical;
 struct Display{real:physical::Display,rows:RefCell<Vec<(usize,bool,Vec<(u32,usize)>)>>}
 impl Display{
- fn replace_line(&self,n:usize,s:&str){assert!(n<30&&s.len()<=24);if n==1{assert_eq!(s,if cfg!(feature="sunfish-tftp-arrival-order"){"EARLY TFTP ARRIVAL ORDER"}else{"EARLY STARTUP REPLIES"});}self.real.replace_line(n,s);}
+ fn replace_line(&self,n:usize,s:&str){assert!(n<30&&s.len()<=24);if n==1{assert_eq!(s,if cfg!(feature="sunfish-efs-reply-fifo"){"MODEM EFS REPLY FIFO"}else if cfg!(feature="sunfish-tftp-arrival-order"){"EARLY TFTP ARRIVAL ORDER"}else{"EARLY STARTUP REPLIES"});}self.real.replace_line(n,s);}
  fn header_label(&self,n:usize,s:&str){assert!(n<29&&s.len()<=57);self.real.header_label(n,s);}
  fn header_row(&self,n:usize,second:bool,v:&[(u32,usize)]){assert!(n<29);assert!(v.iter().map(|(_,w)|w).sum::<usize>()+v.len()-1<=57);self.rows.borrow_mut().push((n,second,v.to_vec()));self.real.header_row(n,second,v);}
 }
@@ -32,8 +32,12 @@ impl Read{fn record_sequence(&self)->Option<u64>{self.seq}}
 struct Prereqs{reads:[Option<Read>;4],total:[u32;2],omitted:[u32;2]}
 struct Reads{total:u32,kinds:u32}
 struct Close{stage:u32}
-struct ModemOwner{first:Option<Write>,trace:Trace,p:Prereqs}
+#[derive(Clone,Copy)]struct Bounds{last_absent:Option<u64>,first_visible:Option<u64>,bytes_ahead:Option<u32>,visible_at_close:Option<bool>}
+#[derive(Clone,Copy)]struct Fifo{peer_tail_at:Option<u64>,completion:Option<Bounds>,finished:bool,history_evictions:u32}
+#[derive(Clone,Copy)]struct Efs{record:u64,intent:u32,armed:Option<u64>,unread_at_arm:u32,unread_at_close:Option<u32>,fifo:Fifo}
+struct ModemOwner{first:Option<Write>,trace:Trace,p:Prereqs,f:Option<Efs>}
 impl ModemOwner{
+ fn efs_reply_fifo(&self)->Option<Efs>{self.f}
  fn original_tftp_write_trace(&self)->Option<Write>{self.first}
  fn service_registry_trace(&self)->Trace{self.trace}
  fn mcfg_close_trace(&self)->Close{Close{stage:6}}
@@ -49,15 +53,15 @@ fn main(){
  let mut pixels=vec![0u32;1080*2340*2];let d=Display{real:unsafe{physical::Display::new(pixels.as_mut_ptr())},rows:RefCell::new(vec![])};
  let phase=Phase{phase:4,published_at:Some(140),done_at:Some(150)};
  let read=Read{kind:1,peer:Address{port:0x21},flags:255,seq:Some(0x10000001e),request_bytes:85,rsize:0,options_present:16,options_flags:0,result:0,client:0x50009,received:Some(200),dispatched:Some(210),queued:Some(220),published:Some(230),done:Some(240),close:Some(250),opcode:5,number:1,reply_bytes:19,local_port:0x5004,attempts:2,waits:[1,0]};
- let mut o=ModemOwner{first:Some(Write{peer:Address{port:0x1f},received_at:Some(110),oack:phase,data:Some(Data{received_at:Some(130)}),ack:phase,timing:Timing{first_close_at:Some(160)}}),trace:Trace{elf:Some(Elf{received:Some(300),queued:Some(310),published:Some(320),done:Some(330)}),elf_exchange:Some(Exchange{qmi_matches_reference:true,host_credit:Some(Credit{requested:true,remote_intent:Some(1),completed:true})}),queued_names:0x3e,completed_names:0x3e},p:Prereqs{reads:[Some(read),None,Some(Read{kind:2,..read}),None],total:[3,2],omitted:[1,0]}};
+ let mut o=ModemOwner{f:Some(Efs{record:0x10000001e,intent:7,armed:Some(230),unread_at_arm:0,unread_at_close:Some(72),fifo:Fifo{peer_tail_at:Some(235),completion:Some(Bounds{last_absent:Some(240),first_visible:Some(260),bytes_ahead:Some(72),visible_at_close:Some(false)}),finished:true,history_evictions:2}}),first:Some(Write{peer:Address{port:0x1f},received_at:Some(110),oack:phase,data:Some(Data{received_at:Some(130)}),ack:phase,timing:Timing{first_close_at:Some(160)}}),trace:Trace{elf:Some(Elf{received:Some(300),queued:Some(310),published:Some(320),done:Some(330)}),elf_exchange:Some(Exchange{qmi_matches_reference:true,host_credit:Some(Credit{requested:true,remote_intent:Some(1),completed:true})}),queued_names:0x3e,completed_names:0x3e},p:Prereqs{reads:[Some(read),None,Some(Read{kind:2,done:Some(280),..read}),None],total:[3,2],omitted:[1,0]}};
  let mut r=RuntimeDomain{runtime_started:100,hz:1000000,error:0,detail:0,ipa_complete_seen:true,wlan_query:Query};
- r.show_startup_prerequisites(&d,&o);let values=|n|d.rows.borrow().iter().find(|(row,_,_)|*row==n).unwrap().2.iter().map(|(v,_)|*v).collect::<Vec<_>>();
- assert_eq!(values(3),[0x1f,10,40,30]);assert_eq!(values(4),[4,40,50,60]);assert_eq!(values(5),[200,210,220,230]);assert_eq!(values(6),[1,7,0x3e,0x3e]);assert_eq!(values(8),[1,0x21,255,30,1]);assert_eq!(values(9),[85,0,16,0,0,0x50009]);assert_eq!(values(10),[100,110,120]);assert_eq!(values(11),[130,140,150]);assert_eq!(values(12),[5,1,19,0x5004,2,1,0]);assert_eq!(values(13),[u32::MAX,u32::MAX,0,u32::MAX,u32::MAX]);assert_eq!(values(18)[0],2);assert_eq!(values(28),[0x9002e,3,2,1,0]);assert_eq!(&pixels[..1080*2340],&pixels[1080*2340..]);
+ r.show_startup_prerequisites(&d,&o);let values=|n|d.rows.borrow().iter().rev().find(|(row,_,_)|*row==n).unwrap().2.iter().map(|(v,_)|*v).collect::<Vec<_>>();
+ assert_eq!(values(3),[0x1f,10,40,30]);assert_eq!(values(4),[4,40,50,60]);assert_eq!(values(5),[200,210,220,230]);assert_eq!(values(6),[1,7,0x3e,0x3e]);assert_eq!(values(8),[1,0x21,255,30,1]);assert_eq!(values(9),[85,0,16,0,0,0x50009]);assert_eq!(values(10),[100,110,120]);assert_eq!(values(11),[130,140,150]);assert_eq!(values(12),[5,1,19,0x5004,2,1,0]);if cfg!(feature="sunfish-efs-reply-fifo"){assert_eq!(values(13),[30,1,7,130]);assert_eq!(values(14),[135,0,72]);assert_eq!(values(15),[140,160,72]);assert_eq!(values(16),[0,1,2]);assert_eq!(values(17),[5,1,19,1]);assert_eq!(values(21),[130,180,150]);}else{assert_eq!(values(13),[u32::MAX,u32::MAX,0,u32::MAX,u32::MAX]);}assert_eq!(values(18)[0],2);assert_eq!(values(28),[0x9002e,3,2,1,0]);assert_eq!(&pixels[..1080*2340],&pixels[1080*2340..]);
  if let Ok(p)=std::env::var("SUNFISH_STARTUP_PANEL_PPM"){let mut b=b"P6\n1080 2340\n255\n".to_vec();for v in &pixels[..1080*2340]{b.extend([(v>>16)as u8,(v>>8)as u8,*v as u8]);}std::fs::write(p,b).unwrap();}
- r.hz=0;d.rows.borrow_mut().clear();r.show_startup_prerequisites(&d,&o);assert_eq!(values(10),[u32::MAX;3]);assert_eq!(values(11),[u32::MAX;3]);assert_eq!(values(9),[85,0,16,0,0,0x50009]);
- r.hz=1000000;o.first=None;o.trace.elf=None;o.trace.elf_exchange=None;o.p.reads=[None;4];d.rows.borrow_mut().clear();r.show_startup_prerequisites(&d,&o);assert_eq!(values(4),[u32::MAX;4]);assert_eq!(values(5),[u32::MAX;4]);assert_eq!(values(8),[u32::MAX,u32::MAX,0,u32::MAX,u32::MAX]);assert_eq!(&pixels[..1080*2340],&pixels[1080*2340..]);println!("Actual startup renderer: identities, zero versus absent options, paired clocks, omissions and both buffers passed");
+ r.hz=0;d.rows.borrow_mut().clear();r.show_startup_prerequisites(&d,&o);assert_eq!(values(10),[u32::MAX;3]);assert_eq!(values(11),[u32::MAX;3]);if cfg!(feature="sunfish-efs-reply-fifo"){assert_eq!(values(14),[u32::MAX,0,72]);assert_eq!(values(15),[u32::MAX,u32::MAX,72]);}assert_eq!(values(9),[85,0,16,0,0,0x50009]);
+ r.hz=1000000;o.first=None;o.trace.elf=None;o.trace.elf_exchange=None;o.p.reads=[None;4];o.f=None;d.rows.borrow_mut().clear();r.show_startup_prerequisites(&d,&o);assert_eq!(values(4),[u32::MAX;4]);assert_eq!(values(5),[u32::MAX;4]);assert_eq!(values(8),[u32::MAX,u32::MAX,0,u32::MAX,u32::MAX]);assert_eq!(&pixels[..1080*2340],&pixels[1080*2340..]);println!("Actual startup renderer: identities, zero versus absent options, paired clocks, omissions and both buffers passed");
 }
 '''.replace('DISPLAY',json.dumps(str(ROOT/'rust/src/pixel_probe_display.rs'))).replace('PACKED',packed).replace('CLOCK',clock).replace('RENDER',render)
   with tempfile.TemporaryDirectory()as tmp:
-   p=Path(tmp);(p/'panel.rs').write_text(code);subprocess.run(['rustc','+nightly-2026-09-25','--edition=2024',*(['--cfg','feature="sunfish-tftp-arrival-order"'] if os.environ.get('SUNFISH_ARRIVAL_PANEL') else []),'--cfg','feature="sunfish-registry-tx3-wire-headers"','--cfg','feature="sunfish-wrq-post-return-callers"','--cfg','feature="sunfish-ipa-registration-reply-headers"','-Adead_code',str(p/'panel.rs'),'-o',str(p/'panel')],check=True);subprocess.run([str(p/'panel')],check=True)
+   p=Path(tmp);(p/'panel.rs').write_text(code);subprocess.run(['rustc','+nightly-2026-09-25','--edition=2024',*(['--cfg','feature="sunfish-tftp-arrival-order"'] if os.environ.get('SUNFISH_ARRIVAL_PANEL') else []),*(['--cfg','feature="sunfish-efs-reply-fifo"'] if os.environ.get('SUNFISH_EFS_FIFO_PANEL') else []),'--cfg','feature="sunfish-registry-tx3-wire-headers"','--cfg','feature="sunfish-wrq-post-return-callers"','--cfg','feature="sunfish-ipa-registration-reply-headers"','-Adead_code',str(p/'panel.rs'),'-o',str(p/'panel')],check=True);subprocess.run([str(p/'panel')],check=True)
 if __name__=='__main__':unittest.main()
