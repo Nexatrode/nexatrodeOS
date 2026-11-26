@@ -182,7 +182,7 @@ impl RuntimeDomain{
  fn show_startup_prerequisites(&self,d:&Display,owner:&ModemOwner){
   let age=|at|self.time_from_us(Some(self.runtime_started),at);
   let row=|n,label,values:&[u32]|{d.header_label(n,label);let mut fields=[(0,8);6];for(i,v)in values.iter().enumerate(){fields[i]=(*v,8);}d.header_row(n,true,&fields[..values.len()]);};
-  for n in 2..=28{d.replace_line(n,"");}d.replace_line(1,"EARLY STARTUP REPLIES");
+  for n in 2..=28{d.replace_line(n,"");}d.replace_line(1,if cfg!(feature="sunfish-tftp-arrival-order"){"EARLY TFTP ARRIVAL ORDER"}else{"EARLY STARTUP REPLIES"});
   let close=owner.mcfg_close_trace();row(2,"ERROR DETAIL CLOSE STAGE",&[self.error,self.detail,owner.pending_mcfg_close().map_or(u32::MAX,|p|p.port),close.stage]);
   let first=owner.original_tftp_write_trace();row(3,"ORIG PEER WRQ OACK DATA",&[first.map_or(u32::MAX,|w|w.peer.port),age(first.and_then(|w|w.received_at)),age(first.and_then(|w|w.oack.published_at)),age(first.and_then(|w|w.data).and_then(|w|w.received_at))]);
   row(4,"ACK PHASE PUB DONE CLOSE",&[first.map_or(u32::MAX,|w|u32::from(w.ack.phase)),age(first.and_then(|w|w.ack.published_at)),age(first.and_then(|w|w.ack.done_at)),age(first.and_then(|w|w.timing.first_close_at))]);

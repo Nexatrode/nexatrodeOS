@@ -3764,6 +3764,21 @@ impl<I: Io> Owner<I> {
                     #[cfg(feature = "sunfish-native-tftp-server-check")]
                     { self.tftp_wrq_coalesced = self.tftp_wrq_coalesced.saturating_add(1); }
                 } else {
+/* TFTP_ARRIVAL_ORDER_BEGIN */
+#[cfg(feature="sunfish-tftp-arrival-order")]
+                {
+                    // This serialized Owner list contains opaque held handles,
+                    // not GLINK buffers. Pack existing entries stably before
+                    // appending, so a reused lower hole cannot overtake them.
+                    let mut next = 0;
+                    for index in 0..MAX_REQUESTS {
+                        if let Some(held) = self.tftp_requests[index].take() {
+                            self.tftp_requests[next] = Some(held);
+                            next += 1;
+                        }
+                    }
+                }
+/* TFTP_ARRIVAL_ORDER_END */
                 let Some(slot) = self.tftp_requests.iter_mut().find(|slot| slot.is_none()) else {
                     #[cfg(feature = "sunfish-native-tftp-server-check")]
                     { self.queue_full_kind = 2; }

@@ -4,6 +4,8 @@ ROOT=Path(__file__).resolve().parents[1]
 PATTERN=r'/\* STARTUP_PREREQ_BEGIN \*/\n.*?/\* STARTUP_PREREQ_END \*/\n'
 COUNTS={'rust/src/qcom_glink_qmi.rs':9,'rust/src/qcom_glink_fifo.rs':1,'rust/src/qcom_modem_owner.rs':2}
 def without_startup(path,source):
+ from sunfish_tftp_arrival_order_source_test import without_arrival
+ source=without_arrival(path,source)
  blocks=re.findall(PATTERN,source,re.S)
  if path in COUNTS:assert len(blocks)==COUNTS[path],(path,len(blocks));assert all('#[cfg(feature="sunfish-startup-prerequisites")]'in b for b in blocks)
  else:assert not blocks,path

@@ -13,7 +13,7 @@ use std::cell::RefCell;
 #[path=DISPLAY]mod physical;
 struct Display{real:physical::Display,rows:RefCell<Vec<(usize,bool,Vec<(u32,usize)>)>>}
 impl Display{
- fn replace_line(&self,n:usize,s:&str){assert!(n<30&&s.len()<=24);self.real.replace_line(n,s);}
+ fn replace_line(&self,n:usize,s:&str){assert!(n<30&&s.len()<=24);if n==1{assert_eq!(s,if cfg!(feature="sunfish-tftp-arrival-order"){"EARLY TFTP ARRIVAL ORDER"}else{"EARLY STARTUP REPLIES"});}self.real.replace_line(n,s);}
  fn header_label(&self,n:usize,s:&str){assert!(n<29&&s.len()<=57);self.real.header_label(n,s);}
  fn header_row(&self,n:usize,second:bool,v:&[(u32,usize)]){assert!(n<29);assert!(v.iter().map(|(_,w)|w).sum::<usize>()+v.len()-1<=57);self.rows.borrow_mut().push((n,second,v.to_vec()));self.real.header_row(n,second,v);}
 }
@@ -59,5 +59,5 @@ fn main(){
 }
 '''.replace('DISPLAY',json.dumps(str(ROOT/'rust/src/pixel_probe_display.rs'))).replace('PACKED',packed).replace('CLOCK',clock).replace('RENDER',render)
   with tempfile.TemporaryDirectory()as tmp:
-   p=Path(tmp);(p/'panel.rs').write_text(code);subprocess.run(['rustc','+nightly-2026-09-25','--edition=2024','--cfg','feature="sunfish-registry-tx3-wire-headers"','--cfg','feature="sunfish-wrq-post-return-callers"','--cfg','feature="sunfish-ipa-registration-reply-headers"','-Adead_code',str(p/'panel.rs'),'-o',str(p/'panel')],check=True);subprocess.run([str(p/'panel')],check=True)
+   p=Path(tmp);(p/'panel.rs').write_text(code);subprocess.run(['rustc','+nightly-2026-09-25','--edition=2024',*(['--cfg','feature="sunfish-tftp-arrival-order"'] if os.environ.get('SUNFISH_ARRIVAL_PANEL') else []),'--cfg','feature="sunfish-registry-tx3-wire-headers"','--cfg','feature="sunfish-wrq-post-return-callers"','--cfg','feature="sunfish-ipa-registration-reply-headers"','-Adead_code',str(p/'panel.rs'),'-o',str(p/'panel')],check=True);subprocess.run([str(p/'panel')],check=True)
 if __name__=='__main__':unittest.main()
