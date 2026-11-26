@@ -1,6 +1,11 @@
 //! Serialized modem transport owner: bounded work, retained fault state, IRQs.
 //! Native attachment must consume the actual authenticated channel handoff.
 #![forbid(unsafe_code)]
+/* EFS_REPLY_OVERLAP_BEGIN */
+#[cfg(feature="sunfish-efs-reply-overlap")]
+#[path="qcom_owner_efs_overlap.rs"]
+mod efs_overlap;
+/* EFS_REPLY_OVERLAP_END */
 /* EFS_SERVICE_HANDOFF_BEGIN */
 #[cfg(feature="sunfish-efs-service-handoff")]
 #[path="qcom_owner_efs_service.rs"]

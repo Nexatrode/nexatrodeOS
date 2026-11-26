@@ -4,6 +4,8 @@ ROOT=Path(__file__).resolve().parents[1]
 PATTERN=r'/\* EFS_SERVICE_HANDOFF_BEGIN \*/\n.*?/\* EFS_SERVICE_HANDOFF_END \*/\n'
 COUNTS={'rust/src/qcom_modem_owner.rs':6,'rust/src/pixel_mpss_runtime.rs':2,'rust/src/sunfish_ipa_linux_qmi_owner.rs':1}
 def without_service(path,source):
+ from sunfish_efs_overlap_source_test import without_overlap
+ source=without_overlap(path,source)
  blocks=re.findall(PATTERN,source,re.S)
  if path in COUNTS:assert len(blocks)==COUNTS[path],(path,len(blocks));assert all('#[cfg(feature="sunfish-efs-service-handoff")]'in b for b in blocks)
  else:assert not blocks,path

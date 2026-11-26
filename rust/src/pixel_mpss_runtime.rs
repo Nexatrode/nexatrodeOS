@@ -470,6 +470,10 @@ impl RuntimeDomain {
 #[cfg(feature="sunfish-efs-service-handoff")]
         owner.enable_efs_service_handoff();
 /* EFS_SERVICE_HANDOFF_END */
+/* EFS_REPLY_OVERLAP_BEGIN */
+#[cfg(feature="sunfish-efs-reply-overlap")]
+        owner.enable_efs_reply_overlap();
+/* EFS_REPLY_OVERLAP_END */
         owner.start_control().map_err(|_| 0x42u32)?;
         owner.enable_ipa_server(&permit, &mut self.router).map_err(|_| 0x48u32)?;
         let server = (&mut *self.boot).server().map_err(|_| 0x43u32)?;
