@@ -43,7 +43,7 @@ def attach(system, manager, mapping, mr, channel, *, storage=False):
     mr('map_frame',0x400000,page_size='0x200000')
     mr('map_heap',0x1000000,page_size='0x200000')
     mr('map_input',4096)
-    mr('map_observation',4096,phys_addr='0x5fb96000')
+    mr('map_observation',8192,phys_addr='0x5fb96000')
     # A full-region draw slightly exceeds 4 ms on this guest. A 4/10 ms
     # reservation therefore inserts a 6 ms replenishment wait mid-frame.
     # Keep the reservation bounded and below every interactive frontend's
@@ -86,7 +86,7 @@ def attach_mobile(system, ui, mapping, mr, channel, *, storage=False):
     mr('mobile_maps_frame',0x800000,page_size='0x200000')
     mr('mobile_maps_heap',0x1000000,page_size='0x200000')
     mr('mobile_maps_input',4096)
-    mr('map_observation',4096,phys_addr='0x5fb96000')
+    mr('map_observation',8192,phys_addr='0x5fb96000')
     app=ET.SubElement(system,'protection_domain',name='offline_map',priority='95',budget='8000',period='10000',stack_size='0x100000')
     ET.SubElement(app,'program_image',path='offline-map.elf')
     for name,va,symbol in [('mobile_maps_frame',0x60000000,'map_frame'),('mobile_maps_heap',0x64000000,'map_heap'),('mobile_maps_input',0x70000000,'input_handoff'),('map_observation',0x71000000,'map_observation')]:mapping(app,name,va,'rw',symbol)

@@ -90,6 +90,23 @@ composition does not supply the full graphics API that Drape expects.
 
 ## Two storage-backed regions (disposable UTM only)
 
+Named place labels and visible road labels can be tapped to open a details card.
+The card shows the offline name, feature kind and the map geometry's anchor
+coordinates (not a GPS fix or a guaranteed entrance/address). A cyan marker
+identifies the selected map point. Use × to close, tap empty map space to clear,
+or drag to pan. Movement of up to six logical pixels is treated as tap jitter;
+crossing that threshold starts a pan with the full initial displacement. Card
+touches do not pan the map underneath. Changing regions or using Fit clears the
+selection, and stale label hit rectangles are invalidated after camera/viewport
+changes. Details survive ordinary app switching but are not saved on disk.
+
+`tests/comaps_interaction_test.c` checks the gesture threshold and cancellation
+under sanitizers. `tests/comaps_details_utm.py --guest <stage> [--mobile]` checks
+real place/road cards, jitter versus dragging, card input consumption, private
+focus, both regions and stale-selection cleanup in a disposable fixture. The
+second page of the public observation region exposes bounded selection/hit
+metadata for those checks; no other app gets that mapping.
+
 Add `--map-storage` to either the desktop or mobile `--maps` builder. This keeps
 the existing embedded-region mode available, and creates a new 32 MiB public-map
 pack with Gibraltar (1,272,536 bytes) and San Marino (1,980,495 bytes), pinned in

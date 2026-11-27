@@ -17,6 +17,7 @@
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
 #include "labels.h"
+#include "interaction.h"
 #ifdef MAP_STORAGE
 #include "storage_format.h"
 #include "regions_generated.h"
@@ -73,14 +74,18 @@ extern const unsigned char map_blob[], map_blob_end[], map_font[];
 static unsigned char *pixels;
 static stbtt_fontinfo font;
 static uint32_t input_tail,dropped,frames;
-static int mx,my,lastx,lasty;
+static int mx,my;
 static bool held,changed;
+static struct map_gesture gesture;
+static struct map_labels last_layout;
+static unsigned label_features[MAP_MAX_LABELS],selected_feature;
+static uint64_t selection_revision;
+static char selection_title[100];
 static double cx,cy,units,initial_units;
 static unsigned zoom_level;
 #ifdef MAP_PROFILE
 uintptr_t map_observation;
 static uint64_t input_events,input_at;
-static struct map_labels last_layout;
 static void profile(uint64_t start,uint64_t *phases,uint64_t rendered,uint64_t notified) {
     _Atomic uint64_t *p=(void*)map_observation;
     uint64_t revision=atomic_load_explicit(p,memory_order_relaxed);
@@ -95,6 +100,16 @@ static void profile(uint64_t start,uint64_t *phases,uint64_t rendered,uint64_t n
     _Static_assert(464*8+MAP_MAX_LABELS*4*4<=4096,"bounded label rectangles after timing history");
     uint32_t *rect=(void*)(p+464);
     for(unsigned i=0;i<last_layout.count;++i){struct map_label_rect r=last_layout.rect[i];rect[i*4]=r.left;rect[i*4+1]=r.top;rect[i*4+2]=r.right;rect[i*4+3]=r.bottom;}
+    _Static_assert((536+MAP_MAX_LABELS*6)*8<=8192,"bounded public selection metadata");
+    p[512]=0x4e584d4445543031ULL;p[513]=selected_feature;p[514]=selection_revision;
+    p[515]=held;p[516]=gesture.dragging;p[517]=last_layout.count;p[518]=BOTTOM-94;p[519]=active;
+    memset((void*)(p+520),0,96);
+    if(selected_feature&&selected_feature<=map.feature_count)memcpy((void*)(p+520),map.features[selected_feature-1].name,96);
+    for(unsigned i=0;i<last_layout.count;i++){
+        struct map_label_rect r=last_layout.rect[i];unsigned n=536+i*6;
+        p[n]=label_features[i]+1;p[n+1]=r.left;p[n+2]=r.top;p[n+3]=r.right;p[n+4]=r.bottom;
+        p[n+5]=map.features[label_features[i]].geometry;
+    }
     if(start){unsigned slot=frames%32;uint64_t data[14]={frames,input_events,input_at,start,phases[0],phases[1],phases[2],rendered,notified,zoom_level,(uint64_t)(int64_t)(cx*1e9),(uint64_t)(int64_t)(cy*1e9),(uint64_t)(units*1e12),0};
         for(unsigned i=0;i<14;i++)p[16+slot*14+i]=data[i];}
     atomic_store_explicit(p,revision+2,memory_order_release);
@@ -133,6 +148,37 @@ static int text(int x,int y,int size,uint32_t colour,const char *s) {
         int advance,bearing;stbtt_GetCodepointHMetrics(&font,cp,&advance,&bearing);pen+=advance*scale;
     }
     return (int)(pen/SCALE)-x;
+}
+static void selection_clear(void){if(selected_feature){selected_feature=0;selection_revision++;changed=true;}}
+static void selection_set(unsigned feature) {
+    if(feature>=map.feature_count||!map.features[feature].name[0])return;
+    selected_feature=feature+1;selection_revision++;changed=true;
+    const char *name=map.features[feature].name;size_t keep=strlen(name);bool ellipsis=false;
+    for(;;){
+        snprintf(selection_title,sizeof(selection_title),"%.*s%s",(int)keep,name,ellipsis?"…":"");
+        struct map_label_rect bounds;
+        if(!map_text_bounds(&font,19*SCALE,selection_title,&bounds)||bounds.right-bounds.left<=(W-84)*SCALE||!keep)break;
+        keep--;while(keep&&((unsigned char)name[keep]&192)==128)keep--;ellipsis=true;
+    }
+}
+static void select_at(int x,int y) {
+    for(unsigned i=0;i<last_layout.count;i++){
+        struct map_label_rect r=last_layout.rect[i];
+        if(x*SCALE>=r.left&&x*SCALE<r.right&&y*SCALE>=r.top&&y*SCALE<r.bottom){selection_set(label_features[i]);return;}
+    }
+#ifdef MAP_MOBILE
+    /* Exact label hits win. Nearby touch misses get at least a 44-pixel target;
+     * overlapping enlarged targets choose the nearest label center. */
+    int best=-1;int64_t distance=INT64_MAX;
+    for(unsigned i=0;i<last_layout.count;i++){
+        struct map_label_rect r=last_layout.rect[i];int px=(r.left+r.right)/2,py=(r.top+r.bottom)/2;
+        int width=r.right-r.left,height=r.bottom-r.top;if(width<44*SCALE)width=44*SCALE;if(height<44*SCALE)height=44*SCALE;
+        int64_t dx=x*SCALE-px,dy=y*SCALE-py;
+        if(dx>=-width/2&&dx<=width/2&&dy>=-height/2&&dy<=height/2&&dx*dx+dy*dy<distance){distance=dx*dx+dy*dy;best=(int)i;}
+    }
+    if(best>=0){selection_set(label_features[best]);return;}
+#endif
+    selection_clear();
 }
 static double sx(double x){return W/2+(x-cx)/units;}
 static double sy(double y){return (TOP+BOTTOM)/2-(y-cy)/units;}
@@ -175,6 +221,8 @@ static void triangle(struct map_point a,struct map_point b,struct map_point c,ui
     }
 }
 static void reset(void) {
+    selection_clear();held=false;map_gesture_cancel(&gesture);
+    last_layout.count=0;
 #ifdef MAP_STORAGE
     if(loaded_region==1){cx=0;cy=0;initial_units=fmax((map.maxx-map.minx)/W,(map.maxy-map.miny)/(BOTTOM-TOP))*1.05;}
     else
@@ -189,7 +237,7 @@ static void reset(void) {
 static void zoom(int direction) {
     if(direction>0&&zoom_level<6){units/=1.5;zoom_level++;}
     if(direction<0&&zoom_level>0){units*=1.5;zoom_level--;}
-    changed=true;
+    last_layout.count=0;changed=true;
 }
 static void draw(void) {
     if(!changed||!active)return;changed=false;uint64_t started=us(),phases[3];
@@ -226,14 +274,26 @@ static void draw(void) {
         int x=anchor_x-(glyph.right+glyph.left)/(2*SCALE);
         for(unsigned attempt=0;attempt<3;++attempt){int y=anchor_y+(attempt==0?-4:attempt==1?size+8:-size-12);
             struct map_label_rect bounds={x*SCALE+glyph.left-3*SCALE,y*SCALE+glyph.top-3*SCALE,x*SCALE+glyph.right+4*SCALE,y*SCALE+glyph.bottom+4*SCALE};
-            if(!map_label_admit(&layout,f->name,bounds,(struct map_label_rect){4*SCALE,(TOP+4)*SCALE,(W-4)*SCALE,(BOTTOM-4)*SCALE}))continue;
+            int label_bottom=selected_feature?BOTTOM-98:BOTTOM-4;
+            if(!map_label_admit(&layout,f->name,bounds,(struct map_label_rect){4*SCALE,(TOP+4)*SCALE,(W-4)*SCALE,label_bottom*SCALE}))continue;
+            label_features[layout.count-1]=i;
             text(x+1,y+1,size,0xffffff,f->name);text(x,y,size,0x334752,f->name);break;
         }
     }
     labels=layout.count;
-#ifdef MAP_PROFILE
     last_layout=layout;
-#endif
+    if(selected_feature&&selected_feature<=map.feature_count){
+        struct map_feature *f=&map.features[selected_feature-1];struct map_point p=map.points[f->first+f->count/2];
+        int x=sx(p.x),y=sy(p.y);
+        if(x>=10&&x<W-10&&y>=TOP+10&&y<(int)BOTTOM-104){
+            for(int yy=-9;yy<=9;yy++)for(int xx=-9;xx<=9;xx++)if(xx*xx+yy*yy<=81)fill(x+xx,y+yy,1,1,xx*xx+yy*yy>36?0xffffff:0x19bfd1);
+        }
+        int top=BOTTOM-94;fill(6,top,W-12,88,0x102c3a);fill(6,top,W-12,2,0x34cddd);
+        text(18,top+27,19,0xe9f7fb,selection_title);text(W-40,top+29,26,0x92e3e0,"×");
+        unsigned s=style(f);text(18,top+49,14,0x91b5c5,s==8?"Place · offline map":s==4||s==5?"Road · offline map":"Offline map feature");
+        double lon=map.origin_x+p.x,lat=atan(sinh((map.origin_y+p.y)*3.141592653589793/180))*180/3.141592653589793;
+        char coordinates[80];snprintf(coordinates,sizeof(coordinates),"Map point: %.5f, %.5f",lat,lon);text(18,top+72,13,0x91b5c5,coordinates);
+    }
     fill(0,0,W,TOP,0x0b202d);
 #if defined(MAP_DESKTOP) || defined(MAP_MOBILE)
 #ifdef MAP_STORAGE
@@ -301,15 +361,26 @@ static void constrain(void) {
 #if defined(MAP_DESKTOP) || defined(MAP_MOBILE)
 static void map_key(unsigned code,unsigned value) {
     if(value==0||value>2)return;
-    if(code==13||code==78)zoom(1);else if(code==12||code==74)zoom(-1);
+    if(code==1){selection_clear();held=false;map_gesture_cancel(&gesture);}
+    else if(code==13||code==78)zoom(1);else if(code==12||code==74)zoom(-1);
     else if(code==35||code==102)reset();
     else if(code==105){cx-=80*units;changed=true;}else if(code==106){cx+=80*units;changed=true;}
     else if(code==103){cy+=80*units;changed=true;}else if(code==108){cy-=80*units;changed=true;}
-    constrain();
+    constrain();if(code==103||code==105||code==106||code==108)last_layout.count=0;
 }
 #endif
+static void motion(void) {
+    int dx,dy;if(held&&map_gesture_move(&gesture,mx,my,&dx,&dy)){
+        cx-=dx*units;cy+=dy*units;constrain();last_layout.count=0;changed=true;
+    }
+}
 static void map_button(unsigned value) {
-    if(!value){held=false;return;}
+    if(!value){
+        motion();bool tap=map_gesture_end(&gesture);held=false;
+        if(tap&&my>=TOP&&my<(int)BOTTOM)select_at(mx,my);
+        return;
+    }
+    held=false;map_gesture_cancel(&gesture);
 #ifdef MAP_STORAGE
     if(my>=0&&my<TOP&&mx<BUTTON_LEFT){region_picker=!region_picker;changed=true;return;}
     if(region_picker){
@@ -320,8 +391,12 @@ static void map_button(unsigned value) {
         region_picker=false;changed=true;return;
     }
     if(loaded_region==2)return;
+    if(storage_state==2&&my>=TOP+6&&my<TOP+60)return;
 #endif
-    if(my>=TOP&&my<(int)BOTTOM){held=true;lastx=mx;lasty=my;}
+    if(selected_feature&&my>=(int)BOTTOM-94&&my<(int)BOTTOM-6){
+        if(mx>=W-56&&my<(int)BOTTOM-50)selection_clear();return;
+    }
+    if(my>=TOP&&my<(int)BOTTOM){held=true;map_gesture_begin(&gesture,mx,my);}
     else if(my>=14&&my<=56&&mx>=BUTTON_LEFT){if(mx>=BUTTON_LEFT+2*BUTTON_STEP)reset();else if(mx>=BUTTON_LEFT+BUTTON_STEP)zoom(1);else zoom(-1);}
 }
 #if defined(MAP_DESKTOP) || defined(MAP_MOBILE)
@@ -333,7 +408,7 @@ static void set_height(unsigned height) {
 #endif
     double factor=1.;
     for(unsigned i=0;i<zoom_level;i++)factor*=1.5;
-    units=initial_units/factor;changed=true;held=false;
+    units=initial_units/factor;changed=true;held=false;map_gesture_cancel(&gesture);last_layout.count=0;
 }
 #ifdef MAP_DESKTOP
 static void resize(void) {
@@ -351,7 +426,7 @@ static void input(void) {
     resize();
 #endif
     uint32_t *q=(void*)input_handoff;uint32_t head=__atomic_load_n(q+2,__ATOMIC_ACQUIRE);
-    if(head-input_tail>224){input_tail=head;held=false;active=false;}
+    if(head-input_tail>224){input_tail=head;held=false;active=false;map_gesture_cancel(&gesture);}
     while(input_tail!=head){
         uint32_t e[4];memcpy(e,q+4+(input_tail++%224)*4,sizeof(e));unsigned device=e[0]&65535,kind=e[0]>>16;
 #ifdef MAP_PROFILE
@@ -359,18 +434,18 @@ static void input(void) {
 #endif
 #ifdef MAP_MOBILE
         if(device==3){
-            if(kind==0){held=false;active=e[2]!=0;}
+            if(kind==0){held=false;active=e[2]!=0;map_gesture_cancel(&gesture);}
             else if(kind==1&&e[2]>=320&&e[2]<=720)set_height(e[2]);
             continue;
         }
 #else
-        if(device==2){held=false;active=e[2]!=0;continue;}
+        if(device==2){held=false;active=e[2]!=0;map_gesture_cancel(&gesture);continue;}
 #endif
         if(!active)continue;
         if(device==0&&kind==1){map_key(e[1],e[2]);continue;}
         if(device!=1)continue;
         mx=(int16_t)(e[3]&65535)/SCALE;my=(int16_t)(e[3]>>16)/SCALE;
-        if(kind==3&&held){cx-=(mx-lastx)*units;cy+=(my-lasty)*units;lastx=mx;lasty=my;constrain();changed=true;}
+        if(kind==3&&held)motion();
         else if(kind==1&&e[1]==272&&e[2]<=1)map_button(e[2]);
         else if(kind==2&&e[1]==8)zoom((int32_t)e[2]>0?1:-1);
     }
@@ -383,18 +458,13 @@ static void input(void) {
 static void input(void) {
     struct input_event_ring *q=(void*)input_handoff;
     uint32_t head=__atomic_load_n(&q->head,__ATOMIC_ACQUIRE),lost=__atomic_load_n(&q->dropped,__ATOMIC_ACQUIRE);
-    if(head-input_tail>INPUT_EVENT_CAPACITY||lost!=dropped){input_tail=head;dropped=lost;held=false;}
+    if(head-input_tail>INPUT_EVENT_CAPACITY||lost!=dropped){input_tail=head;dropped=lost;held=false;map_gesture_cancel(&gesture);}
     while(input_tail!=head) {
         struct input_event_record e=q->events[input_tail++&INPUT_EVENT_MASK];if(e.reserved)continue;
         if(e.device==INPUT_DEVICE_TABLET) {
             if(e.type==3&&e.code<=1&&e.value<=32767){if(e.code==0)mx=e.value*(W-1)/32767;else my=e.value*(H-1)/32767;}
-            if((e.type==0||e.type==3)&&held){cx-=(mx-lastx)*units;cy+=(my-lasty)*units;lastx=mx;lasty=my;constrain();changed=true;}
-            if(e.type==1&&e.code==272&&e.value<=1) {
-                if(e.value){
-                    if(my>=TOP&&my<BOTTOM){held=true;lastx=mx;lasty=my;}
-                    else map_button(1);
-                } else held=false;
-            }
+            if((e.type==0||e.type==3)&&held)motion();
+            if(e.type==1&&e.code==272&&e.value<=1)map_button(e.value);
             if(e.type==2&&e.code==8)zoom((int32_t)e.value>0?1:-1);
         } else if(e.device==INPUT_DEVICE_KEYBOARD&&e.type==1&&e.value==1) {
             if(e.code==13||e.code==78)zoom(1);else if(e.code==12||e.code==74)zoom(-1);
@@ -402,6 +472,7 @@ static void input(void) {
             else if(e.code==105){cx-=80*units;changed=true;}else if(e.code==106){cx+=80*units;changed=true;}
             else if(e.code==103){cy+=80*units;changed=true;}else if(e.code==108){cy-=80*units;changed=true;}
             constrain();
+            if(e.code==103||e.code==105||e.code==106||e.code==108)last_layout.count=0;
         }
     }
     __atomic_store_n(&q->tail,input_tail,__ATOMIC_RELEASE);publish_pointer();draw();
@@ -434,6 +505,7 @@ void init(void) {
 static void storage_request(unsigned command,unsigned region) {
     struct map_store_page *p=(void*)map_store_control;
     requested_region=region;storage_error=0;storage_state=command==MAP_STORE_COMMIT?3:1;held=false;
+    map_gesture_cancel(&gesture);if(command!=MAP_STORE_COMMIT)selection_clear();
     p->command=command;p->region=region;p->length=0;
     __atomic_store_n(&p->sequence,++storage_sequence,__ATOMIC_RELEASE);microkit_notify(2);changed=true;
 }
