@@ -1,7 +1,16 @@
 //! Read-only projection of existing first-ELF phases, admission owners and pool history.
 use super::*;
+/* TX3_RETRY_PANEL_BEGIN */
+#[cfg(feature="sunfish-tx3-elf-retry")]
+#[path="pixel_mpss_tx3_elf_retry.rs"]
+mod tx3_elf_retry;
+/* TX3_RETRY_PANEL_END */
 impl RuntimeDomain {
     pub(super) fn show_elf_prequeue_owners(&self,d:&Display,owner:&ModemOwner){
+/* TX3_RETRY_PANEL_BEGIN */
+#[cfg(feature="sunfish-tx3-elf-retry")]
+        {self.show_tx3_elf_retry(d,owner);return;}
+/* TX3_RETRY_PANEL_END */
         for n in 2..=28{d.replace_line(n,"");}
         d.replace_line(1,"ELF PREQUEUE OWNERS");
         let age=|t|self.time_from_us(Some(self.runtime_started),t);
