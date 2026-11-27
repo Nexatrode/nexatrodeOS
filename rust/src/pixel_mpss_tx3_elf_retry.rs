@@ -1,5 +1,10 @@
 //! Frozen predecessor gates beside the exact blocked-ELF retry boundaries.
 use super::*;
+/* READY_OUTCOME_BEGIN */
+#[cfg(feature="sunfish-ready-startup-outcome")]
+#[path="pixel_mpss_ready_startup_outcome.rs"]
+mod ready_startup_outcome;
+/* READY_OUTCOME_END */
 /* ELF_POOL_PANEL_BEGIN */
 #[cfg(feature="sunfish-elf-pool-release")]
 #[path="pixel_mpss_elf_pool_release.rs"]
@@ -7,6 +12,10 @@ mod elf_pool_release;
 /* ELF_POOL_PANEL_END */
 impl RuntimeDomain {
     pub(super) fn show_tx3_elf_retry(&self,d:&Display,owner:&ModemOwner){
+/* READY_OUTCOME_BEGIN */
+#[cfg(feature="sunfish-ready-startup-outcome")]
+        {self.show_ready_startup_outcome(d,owner);return;}
+/* READY_OUTCOME_END */
 /* STARTUP_PRESSURE_PANEL_BEGIN */
 #[cfg(feature="sunfish-startup-pressure")]
         if owner.elf_tx_slots().is_some(){self.show_elf_pool_release(d,owner);return;}
