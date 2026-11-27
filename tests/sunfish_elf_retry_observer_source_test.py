@@ -10,7 +10,9 @@ def without_retry(path,source):
   assert len(blocks)==expected,(path,name,len(blocks),expected)
   assert all('#[cfg(feature="sunfish-tx3-elf-retry")]'in b for b in blocks)
   source=re.sub(pat,'',source,flags=re.S)
- if path=='rust/Cargo.toml':source=source.replace('sunfish-tx3-elf-retry = ["sunfish-elf-prequeue-owners"]\n','')
+ if path=='rust/Cargo.toml':
+  source=source.replace('sunfish-elf-pool-release = ["sunfish-tx3-elf-retry"]\n','')
+  source=source.replace('sunfish-tx3-elf-retry = ["sunfish-elf-prequeue-owners"]\n','')
  return source
 UNCHANGED=['qcom_glink_qmi.rs','qcom_glink_fifo.rs','qcom_elf_window.rs','qcom_elf_slot_turn.rs','qcom_elf_capacity_turn.rs','qcom_elf_publication.rs','qcom_elf_tx_slots.rs','qcom_qrtr_flow.rs','qcom_efs_overlap.rs','qcom_owner_efs_overlap.rs','qcom_fifo_efs_reply.rs','qcom_owner_efs_service.rs','qcom_owner_efs_early.rs','qcom_fifo_efs_early.rs','qcom_tftp_server_check.rs','qcom_owner_mcfg_close.rs','pixel_mpss_runtime.rs','pixel_mpss_runtime_irq.rs','pixel_mpss_post_elf_outcome.rs','pixel_mpss_post_efs_elf.rs','sunfish_ipa_linux_qmi_owner.rs','sunfish_smmu_native.rs']
 class Boundary(unittest.TestCase):

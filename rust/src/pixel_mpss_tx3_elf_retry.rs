@@ -1,7 +1,16 @@
 //! Frozen predecessor gates beside the exact blocked-ELF retry boundaries.
 use super::*;
+/* ELF_POOL_PANEL_BEGIN */
+#[cfg(feature="sunfish-elf-pool-release")]
+#[path="pixel_mpss_elf_pool_release.rs"]
+mod elf_pool_release;
+/* ELF_POOL_PANEL_END */
 impl RuntimeDomain {
     pub(super) fn show_tx3_elf_retry(&self,d:&Display,owner:&ModemOwner){
+/* ELF_POOL_PANEL_BEGIN */
+#[cfg(feature="sunfish-elf-pool-release")]
+        {self.show_elf_pool_release(d,owner);return;}
+/* ELF_POOL_PANEL_END */
         for n in 2..=28{d.replace_line(n,"");}d.replace_line(1,"TX3 AND ELF RETRY");
         let age=|t|self.time_from_us(Some(self.runtime_started),t);let span=|a,b|self.time_from_us(a,b);
         let row=|n,label,values:&[u32]|{d.header_label(n,label);let mut f=[(0,8);6];for(i,v)in values.iter().enumerate(){f[i]=(*v,8);}d.header_row(n,true,&f[..values.len()]);};
