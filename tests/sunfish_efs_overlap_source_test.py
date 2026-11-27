@@ -4,6 +4,8 @@ ROOT=Path(__file__).resolve().parents[1]
 PATTERN=r'/\* EFS_REPLY_OVERLAP_BEGIN \*/\n.*?/\* EFS_REPLY_OVERLAP_END \*/\n'
 COUNTS={'rust/src/qcom_glink_qmi.rs':8,'rust/src/qcom_glink_fifo.rs':1,'rust/src/qcom_modem_owner.rs':1,'rust/src/pixel_mpss_runtime.rs':1,'rust/src/qcom_fifo_efs_reply.rs':1}
 def without_overlap(path,source):
+ from sunfish_elf_retry_observer_source_test import without_retry
+ source=without_retry(path,source)
  blocks=re.findall(PATTERN,source,re.S)
  if path in COUNTS:assert len(blocks)==COUNTS[path],(path,len(blocks));assert all('#[cfg(feature="sunfish-efs-reply-overlap")]'in b for b in blocks)
  else:assert not blocks,path

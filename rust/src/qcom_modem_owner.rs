@@ -251,6 +251,13 @@ pub trait Interrupts {
 mod elf_capacity_turn;
 #[cfg(feature="sunfish-elf-capacity-retry")]
 pub use elf_capacity_turn::ElfCapacityTurnTrace;
+/* ELF_RETRY_OBSERVER_BEGIN */
+#[cfg(feature="sunfish-tx3-elf-retry")]
+#[path="qcom_owner_elf_retry.rs"]
+mod elf_retry_observer;
+#[cfg(feature="sunfish-tx3-elf-retry")]
+pub use elf_retry_observer::ElfRetryTrace;
+/* ELF_RETRY_OBSERVER_END */
 #[cfg(feature="sunfish-elf-queued-handoff")]
 #[derive(Clone,Copy,Debug,Default,Eq,PartialEq)]
 pub struct ElfQueuedTurnTrace {
@@ -1109,6 +1116,10 @@ pub struct Owner<I> {
     elf_lookup_handle: Option<RequestHandle>,
     #[cfg(feature="sunfish-elf-first-slot-turn")]
     elf_slot_turn_taken:bool,
+/* ELF_RETRY_OBSERVER_BEGIN */
+#[cfg(feature="sunfish-tx3-elf-retry")]
+    elf_retry:ElfRetryTrace,
+/* ELF_RETRY_OBSERVER_END */
     #[cfg(feature="sunfish-elf-queued-handoff")]
     queued_elf_turn:Option<RequestHandle>,
     #[cfg(feature="sunfish-elf-queued-handoff")]
@@ -1422,6 +1433,10 @@ impl<I: Io> Owner<I> {
             elf_lookup_handle: None,
             #[cfg(feature="sunfish-elf-first-slot-turn")]
             elf_slot_turn_taken:false,
+/* ELF_RETRY_OBSERVER_BEGIN */
+#[cfg(feature="sunfish-tx3-elf-retry")]
+            elf_retry:ElfRetryTrace::default(),
+/* ELF_RETRY_OBSERVER_END */
             #[cfg(feature="sunfish-elf-queued-handoff")]
             queued_elf_turn:None,
             #[cfg(feature="sunfish-elf-queued-handoff")]
@@ -3065,6 +3080,10 @@ impl<I: Io> Owner<I> {
         interrupts: &mut impl Interrupts,
     ) -> Result<ServiceProgress, Error> {
         self.check()?;
+/* ELF_RETRY_OBSERVER_BEGIN */
+#[cfg(feature="sunfish-tx3-elf-retry")]
+        self.observe_elf_retry_entry();
+/* ELF_RETRY_OBSERVER_END */
         #[cfg(feature = "sunfish-registry-handoff-turn")]
         { self.registry_last_dispatch = None; }
         #[cfg(feature = "sunfish-wlan-elf-dispatch-timing")]
@@ -3082,6 +3101,10 @@ impl<I: Io> Owner<I> {
         let Some(handle) = self.pending_request_for_service(Service::ServiceRegistry)? else {
             return Ok(ServiceProgress::Idle);
         };
+/* ELF_RETRY_OBSERVER_BEGIN */
+#[cfg(feature="sunfish-tx3-elf-retry")]
+        self.observe_elf_retry_selection(handle);
+/* ELF_RETRY_OBSERVER_END */
         #[cfg(feature = "sunfish-wlan-elf-dispatch-timing")]
         if self.elf_lookup_handle == Some(handle)
             && let Some(elf) = self.service_registry_trace.elf.as_mut()
@@ -3461,6 +3484,10 @@ impl<I: Io> Owner<I> {
                     #[cfg(feature = "sunfish-wlan-elf-phase-io")]
                     { elf.io.receive_pass_end = self.adapter.elf_io_totals(); }
                 }
+/* ELF_RETRY_OBSERVER_BEGIN */
+#[cfg(feature="sunfish-tx3-elf-retry")]
+                self.observe_elf_retry_return(progress);
+/* ELF_RETRY_OBSERVER_END */
                 self.stopped = false;
                 Ok(progress)
             }
@@ -3695,6 +3722,10 @@ impl<I: Io> Owner<I> {
                 {
                     blocker.done = self.rmtfs_event_clock.map(|clock| clock());
                 }
+/* ELF_RETRY_OBSERVER_BEGIN */
+#[cfg(feature="sunfish-tx3-elf-retry")]
+                self.observe_elf_retry_receipt(handle,progress);
+/* ELF_RETRY_OBSERVER_END */
                 #[cfg(feature = "sunfish-wlan-elf-timing")]
                 if self.elf_lookup_handle == Some(handle) {
                     if let Some(elf) = self.service_registry_trace.elf.as_mut() {
@@ -4114,6 +4145,10 @@ impl<I: Io> Owner<I> {
                 && self.adapter.take_elf_slot_turn(&handle,&waiting)
             {
                 self.elf_slot_turn_taken=true;
+/* ELF_RETRY_OBSERVER_BEGIN */
+#[cfg(feature="sunfish-tx3-elf-retry")]
+                self.observe_elf_retry_slot(handle);
+/* ELF_RETRY_OBSERVER_END */
                 break;
             }
             #[cfg(all(feature = "sunfish-wlan-elf-completion-turn",not(feature="sunfish-elf-first-slot-turn")))]

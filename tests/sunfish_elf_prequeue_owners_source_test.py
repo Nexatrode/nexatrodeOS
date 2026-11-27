@@ -6,6 +6,8 @@ BASE='737501ff'
 PATTERN=r'/\* ELF_PREQUEUE_PANEL_BEGIN \*/\n.*?/\* ELF_PREQUEUE_PANEL_END \*/\n'
 COUNTS={'rust/src/pixel_mpss_post_efs_elf.rs':2}
 def without_panel(path,source):
+ from sunfish_elf_retry_observer_source_test import without_retry
+ source=without_retry(path,source)
  blocks=re.findall(PATTERN,source,re.S)
  assert len(blocks)==COUNTS.get(path,0),(path,len(blocks))
  assert all('#[cfg(feature="sunfish-elf-prequeue-owners")]'in b for b in blocks)
@@ -15,7 +17,7 @@ class Boundary(unittest.TestCase):
  def test_existing_execution_and_producers_are_identical(self):
   for n in UNCHANGED+['pixel_mpss_post_efs_elf.rs']:
    f='rust/src/'+n;self.assertEqual(without_panel(f,(ROOT/f).read_text()),subprocess.check_output(['git','show',BASE+':'+f],text=True),f)
-  line='sunfish-elf-prequeue-owners = ["sunfish-post-efs-elf-writer"]\n';s=(ROOT/'rust/Cargo.toml').read_text();self.assertEqual(s.count(line),1);self.assertEqual(s.replace(line,''),subprocess.check_output(['git','show',BASE+':rust/Cargo.toml'],text=True))
+  line='sunfish-elf-prequeue-owners = ["sunfish-post-efs-elf-writer"]\n';s=(ROOT/'rust/Cargo.toml').read_text();from sunfish_elf_retry_observer_source_test import without_retry;s=without_retry('rust/Cargo.toml',s);self.assertEqual(s.count(line),1);self.assertEqual(s.replace(line,''),subprocess.check_output(['git','show',BASE+':rust/Cargo.toml'],text=True))
  def test_only_read_only_existing_metadata(self):
   s=(ROOT/'rust/src/pixel_mpss_elf_prequeue_owners.rs').read_text();self.assertIn('fn show_elf_prequeue_owners(&self,d:&Display,owner:&ModemOwner)',s)
   for bad in ['&mut','unsafe','read_volatile','with_io','revalidate','publish_next','queue_response','finish_after_glink','clock.ticks','owner.sample','owner.receive','owner.transmit']:self.assertNotIn(bad,s)

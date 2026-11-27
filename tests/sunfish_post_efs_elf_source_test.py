@@ -6,6 +6,8 @@ BASE='5e32c158'
 PATTERN=r'/\* POST_EFS_ELF_PANEL_BEGIN \*/\n.*?/\* POST_EFS_ELF_PANEL_END \*/\n'
 COUNTS={'rust/src/pixel_mpss_post_elf_outcome.rs':2}
 def without_panel(path,source):
+ from sunfish_elf_retry_observer_source_test import without_retry
+ source=without_retry(path,source)
  blocks=re.findall(PATTERN,source,re.S)
  assert len(blocks)==COUNTS.get(path,0),(path,len(blocks))
  assert all('#[cfg(feature="sunfish-post-efs-elf-writer")]'in b for b in blocks)

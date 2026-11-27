@@ -1819,3 +1819,6 @@ fn elf_third_owner_publishes_without_old_receipts_and_keeps_all_identities(){
  let q=lo_message(0,0x21,5,&[(1,b"kernel/elf_loader"),(0x10,&0u32.to_le_bytes())]);r.enqueue(&lo_packet(1,9,qcom_servreg::LOCAL_PORT,true,&q));r.owner.notified(1,&mut r.irqs).unwrap();let before=r.held_host.clone();r.peer.0.borrow_mut().observation.ready=false;
  assert!(r.owner.dispatch_service_registry_step(&mut r.irqs).is_err());assert!(r.owner.elf_window_trace().unwrap().admitted.is_none());assert_eq!(r.held_host,before);assert!(r.owner.error().is_some());
 }
+
+#[cfg(feature="sunfish-elf-prequeue-owners")]
+mod elf_retry_observer_cases {include!("sunfish_elf_retry_owner_cases.rs");}
