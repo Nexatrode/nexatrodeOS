@@ -291,12 +291,15 @@ netsurf-native.a: $$(OBJECTS)
     print('Built native ARM64 NetSurf engine archive', flush=True)
 
 
-def frontend(base, out, inputs, scale, https=False, javascript=False, test_hooks=False, desktop=False, resize=False):
+def frontend(base, out, inputs, scale, https=False, javascript=False, test_hooks=False, desktop=False, resize=False, mobile=False):
     sdk = inputs / 'sdk'
     board = sdk / 'board/qemu_virt_aarch64_el1/smp-debug'
     compiler = base / 'cc.py'
     source = base / 'deps/netsurf'
     assets = {p.name: p.read_bytes() for p in (HERE / 'assets').iterdir() if p.is_file()}
+    if mobile:
+        assets['index.html']=(HERE.parent/'mobile-browser/lab.html').read_bytes()
+        assets['lab.css']+=b'\n@media (max-width:600px) { main { padding:20px 16px; } h1 { font-size:32px; } .form,.picture { float:none; width:auto; } input[type=text] { max-width:90%; } }\n'
     assets['scene.bmp'] = scene()
     assets.update(decoder_fixtures(out))
     for name in ('default.css', 'quirks.css', 'internal.css', 'adblock.css'):
@@ -324,9 +327,12 @@ def frontend(base, out, inputs, scale, https=False, javascript=False, test_hooks
     flags = ['-std=gnu11', '-O2', '-DNS_NEXATRODE', '-D_POSIX_C_SOURCE=200809L', '-DNDEBUG',
              '-include', 'native_compat.h', '-I' + str(board / 'include'), '-I' + str(HERE),
              '-I' + str(source), '-I' + str(source / 'include'), '-I' + str(base / 'deps/stb'),
-             f'-DNATIVE_SCALE={scale}', f'-DSLINT_FRAME_WIDTH={(560 if desktop else 1280)*scale}u', f'-DSLINT_FRAME_HEIGHT={(520 if desktop else 800)*scale}u',
-             ('-DSLINT_FRAME_REGION_BYTES=0x400000u' if desktop else '-DSLINT_FRAME_REGION_BYTES=0x1000000u')]
+             f'-DNATIVE_SCALE={scale}', f'-DSLINT_FRAME_WIDTH={(360 if mobile else 560 if desktop else 1280)*scale}u', f'-DSLINT_FRAME_HEIGHT={(720 if mobile else 520 if desktop else 800)*scale}u',
+             ('-DSLINT_FRAME_REGION_BYTES=0x800000u' if mobile else '-DSLINT_FRAME_REGION_BYTES=0x400000u' if desktop else '-DSLINT_FRAME_REGION_BYTES=0x1000000u')]
     if desktop: flags += ['-DNATIVE_DESKTOP=1']
+    if mobile:
+        assert not desktop and not resize and scale == 3
+        flags += ['-DNATIVE_MOBILE=1']
     if https: flags += ['-DNATIVE_HTTPS=1']
     if javascript: flags += ['-DNATIVE_JAVASCRIPT=1']
     if resize:

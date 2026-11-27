@@ -82,9 +82,14 @@ tests the lifecycle engine on the host; no guest fault-injection result is claim
 General dynamic installation remains a subsequent integration, outside the
 fixed service restart group.
 
-Phone NetSurf, x86 virtual-machine support and Mac mini hardware drivers follow
-that consolidation. The common app/service code remains shared; layouts,
-hardware transports and platform build descriptions are adapters.
+An opt-in [phone NetSurf profile](../experiments/mobile-browser/README.md) now
+shares the native engine and HTTPS worker with the desktop and has passed
+disposable UTM checks for touch, forms, images, JavaScript, HTTPS and app routing.
+It remains a development-key assembly, outside the shared wrapped-session lock
+profile; Pixel hardware integration is still pending. x86 virtual-machine
+support and Mac mini hardware drivers remain later work. The common app/service
+code remains shared; layouts, hardware transports and platform build descriptions
+are adapters.
 
 ## November 25–26, 2026 verification
 

@@ -1,0 +1,17 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Phone browser lab</title><style>
+body { margin:16px; color:#142c3c; background:white; font:18px sans-serif; }
+h1 { font-size:26px; margin:0 0 12px; } p { margin:12px 0; }
+input[type=text] { font:18px sans-serif; padding:8px; width:240px; }
+button { font:18px sans-serif; padding:10px; margin-top:12px; }
+img { max-width:100%; } .space { height:1100px; }
+</style></head><body><h1>Phone browser lab</h1>
+<p id="script">SCRIPT NOT RUN</p>
+<form action="resource:result.html" method="get">
+<label>Name<br><input id="name" name="name" type="text" size="16"></label><br>
+<label><input type="checkbox" name="updates" value="yes"> Remember this choice</label><br>
+<button type="submit">Submit locally</button></form>
+<p>PNG and JPEG</p><img src="resource:alpha.png" width="120" height="80" alt="PNG"><img src="resource:baseline.jpg" width="120" height="80" alt="JPEG">
+<p><a href="resource:second.html">Second local page</a></p>
+<div class="space"></div><footer>END OF PHONE DOCUMENT</footer>
+<script>document.getElementById('script').textContent='PHONE SCRIPT WORKED';</script>
+</body></html>

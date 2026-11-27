@@ -11,10 +11,12 @@ use core::{
     sync::atomic::{AtomicBool, AtomicPtr, AtomicU16, AtomicU64, AtomicUsize, Ordering},
 };
 mod skia_guest;
+#[cfg(feature="mobile-netsurf")]
+mod mobile_browser_utm;
 #[cfg(feature = "desktop-real-app")]
 #[path = "../../desktop-apps/input.rs"]
 mod desktop_window;
-#[cfg(feature = "desktop-apps-observe")]
+#[cfg(any(feature = "desktop-apps-observe",feature="mobile-browser-test"))]
 #[path = "../../desktop-apps/observe.rs"]
 mod desktop_observation;
 #[cfg(all(feature = "desktop-simplex-frontend", not(feature = "desktop-real-app")))]
@@ -43,7 +45,7 @@ use slint::{
 
 const WIDTH: usize = FRAME_WIDTH as usize;
 const HEIGHT: usize = FRAME_HEIGHT as usize;
-const HEAP_BYTES: usize = 0x2000000;
+const HEAP_BYTES: usize = if cfg!(feature="mobile-netsurf") {0x4000000} else {0x2000000};
 // Match the Pixel 4a panel: 1080x2340 at the same scale as the Pixel guest.
 const SCALE: f32 = if cfg!(feature = "desktop-real-app") { 2.0 } else { 2.6086957 };
 
@@ -301,6 +303,8 @@ struct PhotoTicket {
 mod device_lock_utm;
 
 struct SlintService {
+    #[cfg(feature="mobile-netsurf")]
+    mobile_browser: Rc<RefCell<mobile_browser_utm::Browser>>,
     #[cfg(feature = "utm-device-lock")]
     device_lock: Rc<RefCell<device_lock_utm::DeviceLock>>,
     frame_timer: Option<Channel>,
@@ -3736,7 +3740,7 @@ impl SlintService {
         // even if a background page changes while the device is locked.
         let locked = self._ui.get_device_lock_screen();
         let (chrome_y, chrome_height) = skia_guest::page_chrome_band(page);
-        if !locked && (skia_guest::take_chrome_page(page)
+        if !locked && !(cfg!(feature="mobile-netsurf") && page==18) && (skia_guest::take_chrome_page(page)
             || full
             || personal_os_slint_notes_spike::frame::bands_intersect(slint_y, slint_bottom, chrome_y, chrome_height))
         {
@@ -3952,9 +3956,11 @@ impl SlintService {
     }
 
     fn publish_frame(&mut self) {
+        #[cfg(feature="mobile-netsurf")]
+        self.mobile_browser.borrow_mut().poll(&self._ui);
         #[cfg(feature="desktop-resize-app")]
         self.apply_desktop_mode();
-        #[cfg(feature = "desktop-apps-observe")]
+        #[cfg(any(feature = "desktop-apps-observe",feature="mobile-browser-test"))]
         desktop_observation::publish(&self._ui);
         if self.defer_frame {
             self.frame_dirty = true;
@@ -4173,6 +4179,8 @@ fn init() -> SlintService {
     ui.set_wallet_node("".into());
     ui.set_wallet_node_status("Loading saved node…".into());
     personal_os_slint_notes_spike::suite::wire(&ui);
+    #[cfg(feature="mobile-netsurf")]
+    let mobile_browser=mobile_browser_utm::Browser::initialize(&ui);
     #[cfg(feature = "simplex-agent-ui")]
     ui.set_show_preview_privacy_controls(false);
     let notes_service = NotesServiceClient {
@@ -5466,6 +5474,8 @@ fn init() -> SlintService {
     CATCH_UP_FLAG.store(unsafe { focus.as_ptr().add(1) }, Ordering::Release);
     let timer_id = *sel4_microkit::var!(slint_timer_channel: usize = usize::MAX);
     let mut service = SlintService {
+        #[cfg(feature="mobile-netsurf")]
+        mobile_browser,
         #[cfg(feature = "utm-device-lock")]
         device_lock,
         #[cfg(feature = "utm-photo-worker")]
@@ -7154,6 +7164,16 @@ impl SlintService {
                 return Ok(MessageInfo::new(REPLY_SLINT_EVENT_OK, 0));
             }
         }
+        #[cfg(feature="mobile-netsurf")]
+        {
+            let packed=POSTED_POSITION.load(Ordering::Relaxed);
+            let x=if posted {(packed&65535) as u32} else {unsafe {core::ptr::addr_of!((*self.pointer.as_ptr()).x).read_volatile()}};
+            let y=if posted {(packed>>16) as u32} else {unsafe {core::ptr::addr_of!((*self.pointer.as_ptr()).y).read_volatile()}};
+            let browser_handled=self.mobile_browser.borrow_mut().input(&self._ui,device,event_type,code,value,x,y);
+            if browser_handled {
+                self.publish_frame();SLINT_INPUT.notify();return Ok(MessageInfo::new(REPLY_SLINT_EVENT_OK,0));
+            }
+        }
         // Timer callbacks and wallet IPC may reuse the message registers.
         // Capture the input packet above before invoking either.
         slint::platform::update_timers_and_animations();
@@ -7393,7 +7413,7 @@ impl SlintService {
                     self._ui.set_edit_target(0);
                     debug_println!("SLINT UTM HOME HIT simplex");
                 } else if col_w > 0.0 && row(0.14, 0.19).contains(&y) && right.contains(&x) {
-                    self._ui.set_page(2);
+                    self._ui.set_page(if self._ui.get_browser_available() {18} else {2});
                     self._ui.set_contact_detail(false);
                     self._ui.set_edit_target(0);
                     debug_println!("SLINT UTM HOME HIT contacts");
@@ -7788,6 +7808,11 @@ impl Handler for SlintService {
                 self.publish_frame();
                 SLINT_INPUT.notify();
             }
+        }
+        #[cfg(feature="mobile-netsurf")]
+        if channels.contains(Channel::new(17)) {
+            if self._ui.get_page()==18 {self.publish_frame();SLINT_INPUT.notify();}
+            else {self.mobile_browser.borrow_mut().poll(&self._ui);}
         }
         let timer_fired = self.frame_timer.is_some_and(|channel| channels.contains(channel));
         if timer_fired {

@@ -10,7 +10,21 @@
 #ifndef NATIVE_SCALE
 #define NATIVE_SCALE 2
 #endif
-#ifdef NATIVE_DESKTOP
+#ifdef NATIVE_MOBILE
+#define WIDTH 360
+#define MAX_HEIGHT 720
+extern int native_mobile_height;
+#define HEIGHT native_mobile_height
+#define BAR 96
+#define ADDRESS_LEFT 8
+#define ADDRESS_RIGHT (WIDTH-8)
+#define RELOAD_LEFT 176
+#define RELOAD_RIGHT 264
+#define STOP_LEFT 268
+#define STOP_RIGHT (WIDTH-8)
+#define HOME_RIGHT 84
+#define BACK_RIGHT 172
+#elif defined(NATIVE_DESKTOP)
 #define WIDTH 560
 #define MAX_HEIGHT 520
 #ifdef NATIVE_DISPLAY_RESIZE
