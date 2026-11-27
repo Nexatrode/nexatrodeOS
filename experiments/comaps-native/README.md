@@ -253,3 +253,51 @@ Upstream revision and the map's URL, version, size and SHA-256 are pinned in
 CoMaps Apache-2.0 provenance; font and stb notices are also exported with builds.
 Map data is © OpenStreetMap contributors under ODbL. Attribution remains visible
 in the viewer; source and map distributor links are in the notice.
+
+## Private saved places (opt-in disposable experiment)
+
+Add `--map-private` to a `--maps --map-storage` mobile or desktop build, using a
+fresh stage and disposable disks. Search for a place or road, open its details,
+and choose **SAVE**. **SAVED** in the footer opens the list. First use enrolls a
+**separate Maps passphrase**, with confirmation; it is not the device passphrase.
+Save up to 16 named coordinates across the two regions, rename or delete them,
+and reopen one to switch regions and center the map. Dragging the list, its
+arrows/Enter and the mouse wheel navigate longer lists. **LOCK**, leaving Maps, input overflow and
+60 seconds of inactivity close the private vault. Mobile device lock also removes
+Maps focus. An unlock never happens merely because an app regains focus.
+
+Maps reuses the existing allocation-free AES-256-GCM-SIV record helpers and
+PBKDF2-HMAC-SHA256 (600,000 rounds) wrapped-key prototype. A fresh random 256-bit
+key and independent envelope salt/nonce come from the guest's VirtIO RNG. The
+passphrase wraps that key; it does not appear on disk. Bookmark counts, names,
+regions and coordinates occupy a fixed 2 KiB encrypted payload. AAD covers the
+record magic, generation, nonce and key envelope. The entire record must
+authenticate before any bookmark is installed. Maps owns the key and plaintext;
+its disk service sees only opaque ciphertext in a dedicated shared 8 KiB page.
+Neither Maps component receives another app's vault namespace or key.
+
+Two 4 KiB banks at 1 MiB in the otherwise public map pack are reserved for this
+namespace. Saves write the other bank and require VirtIO FLUSH before reporting
+success. Enrollment persists both banks before acknowledgement. Restart begins
+locked, tries newest valid authenticated data first and can recover the older
+bank after a torn newer write. Damaged nonempty banks never silently enroll a
+new key. This region is separate from both the public selection journal and the
+pinned map payload extents. Public map corruption/recovery tests must not reset
+these private banks in a personal-data deployment; all current tests are disposable.
+
+Lock zeroizes the live key/envelope, passphrase and confirmation buffers, pending
+save, structured bookmarks and shared map surface (including unused rows). The
+map returns to its public overview. The mobile shell and desktop compositor can
+retain freed pixel copies; this is **not** a whole-RAM, GPU-cache, stack/register
+or full-session erasure guarantee. The rest of the four-app profile still uses
+its public development storage key. This is an app-scoped prototype, not the
+shared three-app wrapped-key restart group, Titan M, secure boot or a production
+security boundary. Retry delays are monotonic-session software delays and can
+be reset by reboot; disk snapshots can be rolled back and attacked offline.
+
+`tests/comaps_private_utm.py` validates saving, rename/delete, authentication,
+focus loss, cold restart and damaged/torn banks with only the recorded disposable
+UUID and public-map disk. It checks real composed pixels and verifies that a
+private test name/passphrase do not appear in the raw disk. Crypto unit tests
+cover envelope and record authentication, fallback and live-key zeroization;
+`tests/comaps_private_contract_test.py` rejects cross-app authority additions.

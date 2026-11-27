@@ -9,7 +9,8 @@
 #define MAP_FILE_LIMIT (8u*1024*1024)
 #define MAP_FILE_OFFSET(i) ((uint64_t)(i+1)*MAP_FILE_LIMIT)
 #define MAP_STORAGE_MAGIC 0x4e584d53544f5231ULL
-enum { MAP_STORE_BOOT=1, MAP_STORE_LOAD=2, MAP_STORE_COMMIT=3 };
+enum { MAP_STORE_BOOT=1, MAP_STORE_LOAD=2, MAP_STORE_COMMIT=3, MAP_PRIVATE_READ=4, MAP_PRIVATE_WRITE=5 };
+#define MAP_PRIVATE_OFFSET (1024u*1024u)
 enum { MAP_STORE_OK=0, MAP_STORE_IO=1, MAP_STORE_CORRUPT=2, MAP_STORE_INVALID=3 };
 struct map_store_page {
     uint64_t sequence, command, region, length, generation, result, complete;

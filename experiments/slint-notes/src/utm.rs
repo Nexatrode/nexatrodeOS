@@ -6346,6 +6346,8 @@ impl SlintService {
             POSTED_ACTIVE.store(true, Ordering::Release);
             #[cfg(feature = "utm-device-lock")]
             let secret_input = self._ui.get_device_lock_screen();
+            #[cfg(all(feature = "utm-device-lock",feature="mobile-maps"))]
+            let secret_input = secret_input || self._ui.get_maps_private_entry();
             let _ = self.handle_input(SLINT_INPUT, MessageInfo::new(REQUEST_SLINT_EVENT, 3));
             #[cfg(feature = "utm-device-lock")]
             if secret_input || self._ui.get_device_lock_screen() {

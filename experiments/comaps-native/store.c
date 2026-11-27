@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Dedicated public-map disk. One IRQ-driven VirtIO request in flight; no vault,
  * network, host service or UI-thread disk waits. Only the two pinned extents
- * are readable and only the two selection sectors are writable.
+ * are readable and only the two selection sectors are writable by default.
+ * MAP_PRIVATE adds only two fixed ciphertext banks, never private plaintext.
  */
 #include <microkit.h>
 #include <stdatomic.h>
@@ -9,6 +10,11 @@
 #include "storage_format.h"
 #include "regions_generated.h"
 uintptr_t map_disk_regs,map_disk_dma,map_store_control,map_store_bytes;
+#ifdef MAP_PRIVATE
+uintptr_t map_private_cipher;
+static bool private_operation;
+static unsigned private_bank;
+#endif
 #define DMA_PA 0x5f880000ULL
 #define CHUNK 65536u
 struct descriptor {uint64_t address;uint32_t length;uint16_t flags,next;};
@@ -35,6 +41,9 @@ static struct map_store_page *page(void){return (void*)map_store_control;}
 static void done(unsigned error) {
     struct map_store_page *p=page();p->region=region;p->generation=generation;
     p->result=error;p->length=error?0:map_regions[region].length;
+#ifdef MAP_PRIVATE
+    if(private_operation){p->region=private_bank;p->length=error?0:8192;private_operation=false;}
+#endif
     __atomic_store_n(&p->complete,sequence,__ATOMIC_RELEASE);busy=false;microkit_notify(1);
 }
 static bool submit(unsigned code,uint64_t byte,size_t size) {
@@ -59,9 +68,14 @@ static void complete(void) {
     uint16_t next=u[1];if(next==used)return;
     atomic_thread_fence(memory_order_seq_cst);
     uint32_t *entry=(void*)(dma+0x204+(used%8)*8);
-    unsigned expected=(phase==1||phase==2)?(unsigned)amount+1:1;
+    unsigned expected=(phase==1||phase==2||phase==5)?(unsigned)amount+1:1;
     if(!busy||(uint16_t)(next-used)!=1||entry[0]!=0||entry[1]!=expected||dma[0x310]!=0){online=false;if(busy)done(MAP_STORE_IO);return;}
     used=next;
+#ifdef MAP_PRIVATE
+    if(phase==5){dma_read((void*)map_private_cipher,dma+0x1000,8192);done(MAP_STORE_OK);return;}
+    if(phase==6){phase=7;if(!submit(4,0,0))done(MAP_STORE_IO);return;}
+    if(phase==7){done(MAP_STORE_OK);return;}
+#endif
     if(phase==1){
         dma_read(journals,dma+0x1000,8192);generation=0;bank=1;region=0;
         for(unsigned i=0;i<2;i++){uint64_t gen;unsigned r;if(map_selection_read(journals+i*4096,&gen,&r)&&gen>generation){generation=gen;region=r;bank=i;}}
@@ -94,6 +108,13 @@ void notified(microkit_channel channel) {
     struct map_store_page *p=page();uint64_t next=__atomic_load_n(&p->sequence,__ATOMIC_ACQUIRE);
     if(!next||next==sequence)return;sequence=next;busy=true;
     if(!online){region=0;done(MAP_STORE_IO);return;}
+#ifdef MAP_PRIVATE
+    if(p->command==MAP_PRIVATE_READ){private_operation=true;private_bank=0;phase=5;if(!submit(0,MAP_PRIVATE_OFFSET,8192))done(MAP_STORE_IO);return;}
+    if(p->command==MAP_PRIVATE_WRITE){private_operation=true;private_bank=p->region;region=0;
+        if(private_bank>1){done(MAP_STORE_INVALID);return;}
+        phase=6;dma_write((void*)(map_disk_dma+0x1000),(void*)(map_private_cipher+private_bank*4096),4096);
+        if(!submit(1,MAP_PRIVATE_OFFSET+private_bank*4096,4096))done(MAP_STORE_IO);return;}
+#endif
     if(p->command==MAP_STORE_BOOT){phase=1;if(!submit(0,0,8192))done(MAP_STORE_IO);return;}
     if(p->region>1){region=0;done(MAP_STORE_INVALID);return;}region=(unsigned)p->region;
     if(p->command==MAP_STORE_LOAD){readable=false;phase=2;offset=0;read_next();}

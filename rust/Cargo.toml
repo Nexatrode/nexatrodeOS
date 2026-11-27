@@ -16,6 +16,7 @@ utm-simplex-live-test = ["utm-dynamic-vault-lock", "simplex-agent-vault", "utm-p
 utm-notes-interruption-test = ["utm-dynamic-vault-lock"]
 utm-dynamic-vault-skip-evict = ["utm-dynamic-vault-lock"]
 utm-device-lock = []
+utm-maps-private = []
 wallet-wide-rx = []
 iphone-shell = []
 utm-slint-input = []

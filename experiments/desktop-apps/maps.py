@@ -6,7 +6,7 @@ import subprocess
 import xml.etree.ElementTree as ET
 
 
-def build(root, out, inputs, run, *, mobile=False, storage=False):
+def build(root, out, inputs, run, *, mobile=False, storage=False, private=False):
     here=root/'experiments/comaps-native';base=root/'build/comaps'
     spec=importlib.util.spec_from_file_location('comaps_prepare',here/'prepare.py')
     preparation=importlib.util.module_from_spec(spec);spec.loader.exec_module(preparation)
@@ -22,12 +22,18 @@ def build(root, out, inputs, run, *, mobile=False, storage=False):
         '-DSLINT_FRAME_HEIGHT=2160u' if mobile else '-DSLINT_FRAME_HEIGHT=1040u',
         '-DSLINT_FRAME_REGION_BYTES=0x800000u' if mobile else '-DSLINT_FRAME_REGION_BYTES=0x400000u']
     if storage:flags+=['-DMAP_STORAGE=1']
+    crypto=[]
+    if private:
+        assert storage
+        flags+=['-DMAP_PRIVATE=1']
+        run('cargo','+nightly-2026-09-25','build','--locked','--offline','--release','-Zjson-target-spec','--config',root/'rust/.cargo/config.toml','--manifest-path',here/'private-crypto/Cargo.toml','--target',root/'rust/targets/aarch64-sel4-microkit.json','--target-dir',root/'build/maps-private-crypto')
+        crypto=[root/'build/maps-private-crypto/aarch64-sel4-microkit/release/libmaps_private_crypto.a']
     for unit in ('viewer','mwm'):run('clang',*flags,'-c',here/(unit+'.c'),'-o',out/('maps-'+unit+'.o'))
     font=root/'experiments/slint-notes/assets/fonts/Roboto-Regular.ttf'
     blob='' if storage else 'map_blob:\n.incbin "'+str(region)+'"\nmap_blob_end:\n'
     (out/'maps-assets.S').write_text('.section .rodata\n.balign 8\n.global map_blob,map_blob_end,map_font\n'+blob+'.balign 8\nmap_font:\n.incbin "'+str(font)+'"\n')
     run('clang','--target=aarch64-none-elf','-c',out/'maps-assets.S','-o',out/'maps-assets.o')
-    run('ld.lld','--gc-sections','-L',board/'lib','-L',sysroot/'lib','-T',board/'lib/microkit.ld',out/'maps-viewer.o',out/'maps-mwm.o',out/'maps-assets.o','--start-group','-lmicrokit','-lc','-lm','--end-group','-o',out/'offline-map.elf')
+    run('ld.lld','--gc-sections','-L',board/'lib','-L',sysroot/'lib','-T',board/'lib/microkit.ld',out/'maps-viewer.o',out/'maps-mwm.o',out/'maps-assets.o',*crypto,'--start-group','-lmicrokit','-lc','-lm','--end-group','-o',out/'offline-map.elf')
     if storage:
         for unit in ('store','hash'):run('clang',*flags,'-c',here/(unit+'.c'),'-o',out/('maps-'+unit+'.o'))
         run('ld.lld','--gc-sections','-L',board/'lib','-L',sysroot/'lib','-T',board/'lib/microkit.ld',out/'maps-store.o',out/'maps-hash.o','--start-group','-lmicrokit','-lc','--end-group','-o',out/'map-store.elf')
@@ -39,7 +45,7 @@ def build(root, out, inputs, run, *, mobile=False, storage=False):
     return pin
 
 
-def attach(system, manager, mapping, mr, channel, *, storage=False):
+def attach(system, manager, mapping, mr, channel, *, storage=False, private=False):
     mr('map_frame',0x400000,page_size='0x200000')
     mr('map_heap',0x1000000,page_size='0x200000')
     mr('map_input',4096)
@@ -57,6 +63,7 @@ def attach(system, manager, mapping, mr, channel, *, storage=False):
     channel('offline_map',0,'desktop_manager',29)
     channel('offline_map',1,'desktop_manager',28)
     if storage:attach_storage(system,app,mapping,mr,channel)
+    if private:attach_private(system,app,mapping,mr,channel)
 
 
 def validate(system):
@@ -66,14 +73,16 @@ def validate(system):
         assert start+size<=next_start,('overlapping physical regions',name,next_name)
     app=domains['offline_map']
     stored='map_store' in domains
+    private=system.find("memory_region[@name='map_private_cipher']") is not None
     assert {m.get('mr'):m.get('perms') for m in app.findall('map')}==dict({
-        'map_frame':'rw','map_heap':'rw','map_input':'rw','map_observation':'rw','desktop_display_mode':'r'},**({'map_store_control':'rw','map_store_bytes':'r'} if stored else {}))
+        'map_frame':'rw','map_heap':'rw','map_input':'rw','map_observation':'rw','desktop_display_mode':'r'},**({'map_store_control':'rw','map_store_bytes':'r'} if stored else {}),**({'map_private_cipher':'rw'} if private else {}))
     links={}
     for c in system.findall('channel'):
         a,b=list(c)
         for x,y in ((a,b),(b,a)):links[x.get('pd'),int(x.get('id'))]=(y.get('pd'),int(y.get('id')))
-    assert {i:peer for (pd,i),peer in links.items() if pd=='offline_map'}==({0:('desktop_manager',29),1:('desktop_manager',28)}|({2:('map_store',1)} if stored else {}))
+    assert {i:peer for (pd,i),peer in links.items() if pd=='offline_map'}==({0:('desktop_manager',29),1:('desktop_manager',28)}|({2:('map_store',1)} if stored else {})|({3:('entropy_rng',5),4:('timer_driver',14)} if private else {}))
     if stored:validate_storage(system)
+    if private:validate_private(system)
     for name in ('chat_ui','wallet_ui','native_browser','wallet_app','simplex_agent','vault'):
         assert not {'map_frame','map_heap','map_input','map_observation'} & {m.get('mr') for m in domains[name].findall('map')}
     for name in ('desktop_manager','desktop_gpu'):
@@ -82,7 +91,7 @@ def validate(system):
     assert 'lock_auth' not in domains,'Maps is not part of the curated three-app wrapped lock group'
 
 
-def attach_mobile(system, ui, mapping, mr, channel, *, storage=False):
+def attach_mobile(system, ui, mapping, mr, channel, *, storage=False, private=False):
     mr('mobile_maps_frame',0x800000,page_size='0x200000')
     mr('mobile_maps_heap',0x1000000,page_size='0x200000')
     mr('mobile_maps_input',4096)
@@ -98,25 +107,28 @@ def attach_mobile(system, ui, mapping, mr, channel, *, storage=False):
     channel('offline_map',0,'slint_ui',19)
     channel('slint_ui',20,'offline_map',1)
     if storage:attach_storage(system,app,mapping,mr,channel)
+    if private:attach_private(system,app,mapping,mr,channel)
 
 
 def validate_mobile(system):
     domains={p.get('name'):p for p in system.findall('protection_domain')}
     uses=lambda name:{m.get('mr'):m.get('perms') for m in domains[name].findall('map')}
     stored='map_store' in domains
-    assert uses('offline_map')==dict(mobile_maps_frame='rw',mobile_maps_heap='rw',mobile_maps_input='rw',map_observation='rw',mobile_maps_state='rw',**({'map_store_control':'rw','map_store_bytes':'r'} if stored else {}))
+    private=system.find("memory_region[@name='map_private_cipher']") is not None
+    assert uses('offline_map')==dict(mobile_maps_frame='rw',mobile_maps_heap='rw',mobile_maps_input='rw',map_observation='rw',mobile_maps_state='rw',**({'map_store_control':'rw','map_store_bytes':'r'} if stored else {}),**({'map_private_cipher':'rw'} if private else {}))
     assert uses('slint_ui')['mobile_maps_frame']=='r' and uses('slint_ui')['mobile_maps_input']=='rw'
     assert uses('slint_ui')['mobile_maps_state']=='r'
-    private={'mobile_maps_frame','mobile_maps_heap','mobile_maps_input','map_observation','mobile_maps_state'}
+    private_regions={'mobile_maps_frame','mobile_maps_heap','mobile_maps_input','map_observation','mobile_maps_state'}
     for name in domains:
-        if name not in ('offline_map','slint_ui'):assert not private&uses(name).keys(),name
+        if name not in ('offline_map','slint_ui'):assert not private_regions&uses(name).keys(),name
     assert not {'mobile_maps_heap','map_observation'}&uses('slint_ui').keys()
     links={}
     for c in system.findall('channel'):
         a,b=list(c)
         for x,y in ((a,b),(b,a)):links[x.get('pd'),int(x.get('id'))]=(y.get('pd'),int(y.get('id')))
-    assert {i:peer for (pd,i),peer in links.items() if pd=='offline_map'}==({0:('slint_ui',19),1:('slint_ui',20)}|({2:('map_store',1)} if stored else {}))
+    assert {i:peer for (pd,i),peer in links.items() if pd=='offline_map'}==({0:('slint_ui',19),1:('slint_ui',20)}|({2:('map_store',1)} if stored else {})|({3:('entropy_rng',5),4:('timer_driver',14)} if private else {}))
     if stored:validate_storage(system)
+    if private:validate_private(system)
     assert 'lock_auth' not in domains
 
 def attach_storage(system, app, mapping, mr, channel):
@@ -137,6 +149,7 @@ def attach_storage(system, app, mapping, mr, channel):
 def validate_storage(system):
     domains={p.get('name'):p for p in system.findall('protection_domain')}
     expected={'map_store_control':'rw','map_store_bytes':'rw','map_disk_regs':'rw','map_disk_dma':'rw'}
+    if system.find("memory_region[@name='map_private_cipher']") is not None:expected['map_private_cipher']='rw'
     assert {m.get('mr'):m.get('perms') for m in domains['map_store'].findall('map')}==expected
     private=set(expected)
     for name,pd in domains.items():
@@ -144,3 +157,24 @@ def validate_storage(system):
     assert [(i.get('irq'),i.get('id')) for i in domains['map_store'].findall('irq')]==[('64','0')]
     links=[(e.get('pd'),e.get('id')) for c in system.findall('channel') for e in c if any(x.get('pd')=='map_store' for x in c)]
     assert sorted(links)==[('map_store','1'),('offline_map','2')]
+
+
+def attach_private(system,app,mapping,mr,channel):
+    mr('map_private_cipher',8192)
+    mapping(app,'map_private_cipher',0x78000000,'rw','map_private_cipher')
+    store=system.find("protection_domain[@name='map_store']")
+    mapping(store,'map_private_cipher',0x76000000,'rw','map_private_cipher')
+    # Dedicated entropy endpoint; no access to another application's data/key.
+    channel('offline_map',3,'entropy_rng',5,True)
+    channel('offline_map',4,'timer_driver',14,True)
+
+
+def validate_private(system):
+    domains={p.get('name'):p for p in system.findall('protection_domain')}
+    owners={n for n,p in domains.items() if p.find("map[@mr='map_private_cipher']") is not None}
+    assert owners=={'offline_map','map_store'}
+    assert all(domains[n].find("map[@mr='map_private_cipher']").get('perms')=='rw' for n in owners)
+    for c in system.findall('channel'):
+        ends=list(c)
+        for i,e in enumerate(ends):
+            if e.get('pp')=='true':assert int(domains[e.get('pd')].get('priority'))<int(domains[ends[1-i].get('pd')].get('priority'))

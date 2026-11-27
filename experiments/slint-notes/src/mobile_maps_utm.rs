@@ -56,9 +56,9 @@ impl Maps {
             if !active {ui.set_maps_frame(slint::Image::default());return;}
         }
         if !active{return;}
-        let rev=Self::revision(self.state);let keyboard=Self::read(unsafe{self.state.add(1)});let searching=Self::read(unsafe{self.state.add(2)});
+        let rev=Self::revision(self.state);let keyboard=Self::read(unsafe{self.state.add(1)});let searching=Self::read(unsafe{self.state.add(2)});let private=Self::read(unsafe{self.state.add(3)});
         fence(Ordering::Acquire);
-        if rev!=0&&rev&1==0&&keyboard<=1&&searching<=1&&rev==Self::revision(self.state){ui.set_maps_keyboard(keyboard!=0);self.searching=searching!=0;}
+        if rev!=0&&rev&1==0&&keyboard<=1&&searching<=1&&private<=1&&rev==Self::revision(self.state){ui.set_maps_keyboard(keyboard!=0);self.searching=searching!=0;ui.set_maps_private_entry(private!=0);}
         let height=(((HEIGHT as f32-(ui.get_top_inset()+80.+if ui.get_maps_keyboard(){268.}else{0.})*SCALE).max(0.) as u32)/3).clamp(320,720);
         if height!=self.height&&self.send(3,1,0,height,0){self.height=height;}
         let r=Self::revision(self.frame);

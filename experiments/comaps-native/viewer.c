@@ -83,6 +83,7 @@ static unsigned label_features[MAP_MAX_LABELS],selected_feature;
 static uint64_t selection_revision;
 static char selection_title[100];
 static struct map_search search;
+#include "private_state.h"
 static bool search_open,search_keyboard,search_shift,search_ctrl;
 static int search_pressed=-1,search_scroll;
 #ifdef MAP_MOBILE
@@ -92,7 +93,7 @@ static void publish_search_state(void){
 #ifdef MAP_MOBILE
     uint32_t *p=(void*)maps_ui_state;uint32_t rev=__atomic_load_n(p,__ATOMIC_RELAXED);
     __atomic_store_n(p,rev+1,__ATOMIC_RELEASE);atomic_thread_fence(memory_order_seq_cst);
-    p[1]=active&&search_open&&search_keyboard;p[2]=search_open;
+    p[1]=active&&((search_open&&search_keyboard)||private_keyboard());p[2]=search_open||private_keyboard();p[3]=private_keyboard();
     __atomic_store_n(p,rev+2,__ATOMIC_RELEASE);
 #endif
 }
@@ -133,6 +134,12 @@ static void profile(uint64_t start,uint64_t *phases,uint64_t rendered,uint64_t n
         unsigned n=720+i*16;const struct map_feature *f=&map.features[search.result[i]];
         p[n]=search.result[i]+1;p[n+1]=f->geometry;p[n+2]=search.rank[i];memcpy((void*)(p+n+3),f->name,96);
     }
+#ifdef MAP_PRIVATE
+    p[848]=0x4e584d5052495631ULL;p[849]=private_mode;p[850]=mp_opened();p[851]=places.count;p[852]=private_busy;p[853]=private_generation;
+    unsigned cleared=1;const uint8_t *pv=(void*)&places;for(unsigned i=0;i<sizeof(places);i++)if(pv[i])cleared=0;
+    for(unsigned i=0;i<sizeof(private_password);i++)if(private_password[i]||private_confirm[i])cleared=0;
+    p[854]=cleared&&mp_cleared();p[855]=private_viewed;p[856]=private_ready;
+#endif
     if(start){unsigned slot=frames%32;uint64_t data[14]={frames,input_events,input_at,start,phases[0],phases[1],phases[2],rendered,notified,zoom_level,(uint64_t)(int64_t)(cx*1e9),(uint64_t)(int64_t)(cy*1e9),(uint64_t)(units*1e12),0};
         for(unsigned i=0;i<14;i++)p[16+slot*14+i]=data[i];}
     atomic_store_explicit(p,revision+2,memory_order_release);
@@ -290,6 +297,9 @@ static void triangle(struct map_point a,struct map_point b,struct map_point c,ui
     }
 }
 static void reset(void) {
+#ifdef MAP_PRIVATE
+    private_viewed=0;
+#endif
     search_close();
     selection_clear();held=false;map_gesture_cancel(&gesture);
     last_layout.count=0;
@@ -317,7 +327,11 @@ static void draw(void) {
     atomic_store_explicit(&h->revision,before+1,memory_order_release);atomic_thread_fence(memory_order_seq_cst);
     fill(0,TOP,W,BOTTOM-TOP,0xe9e5d8);
     unsigned drawn=0,labels=0;
-    if(!search_open){
+    if(!search_open
+#ifdef MAP_PRIVATE
+       &&!private_mode
+#endif
+    ){
     for(unsigned pass=0;pass<3;pass++) { for(unsigned i=0;i<map.feature_count;i++) {
         struct map_feature *f=&map.features[i];if(!visible(f))continue;
         unsigned s=style(f);struct map_point *p=map.points+f->first;
@@ -366,7 +380,14 @@ static void draw(void) {
         double lon=map.origin_x+p.x,lat=atan(sinh((map.origin_y+p.y)*3.141592653589793/180))*180/3.141592653589793;
         char coordinates[80];snprintf(coordinates,sizeof(coordinates),"Map point: %.5f, %.5f",lat,lon);text(18,top+72,13,0x91b5c5,coordinates);
     }
-    }else{last_layout.count=0;phases[0]=phases[1]=phases[2]=us();draw_search();}
+    }else{last_layout.count=0;phases[0]=phases[1]=phases[2]=us();
+#ifdef MAP_PRIVATE
+        if(private_mode)private_draw();else
+#endif
+        draw_search();}
+#ifdef MAP_PRIVATE
+    if(!private_mode&&!search_open)private_card();
+#endif
     fill(0,0,W,TOP,0x0b202d);
 #if defined(MAP_DESKTOP) || defined(MAP_MOBILE)
 #ifdef MAP_STORAGE
@@ -398,11 +419,14 @@ static void draw(void) {
     text(12,H-12,12,0x9cbfc9,"CoMaps Project");
     char status[80];snprintf(status,sizeof(status),"Zoom %u",zoom_level);text(W-75,H-12,14,0x91d9d7,status);
 #elif defined(MAP_DESKTOP)
-    text(12,H-13,13,0x9cbfc9,"© OpenStreetMap contributors · CoMaps Project");
+    text(12,H-13,12,0x9cbfc9,"© OpenStreetMap contributors · CoMaps Project");
     char status[80];snprintf(status,sizeof(status),"Zoom %u",zoom_level);text(W-75,H-13,14,0x91d9d7,status);
 #else
     text(22,785,18,0x9cbfc9,"© OpenStreetMap contributors · ODbL · CoMaps Project / Apache-2.0");
     char status[150];snprintf(status,sizeof(status),"Zoom %u · %u features · drag to pan",zoom_level,drawn);text(895,784,16,0x91d9d7,status);
+#endif
+#ifdef MAP_PRIVATE
+    fill(W-175,H-31,78,27,0x183c4a);text(W-166,H-12,14,0x92e3e0,"SAVED");
 #endif
     h->width=W*SCALE;h->height=H*SCALE;h->stride_bytes=W*SCALE*3;h->format=SLINT_FRAME_FORMAT_RGB8;
     atomic_store_explicit(&h->damage_y,0,memory_order_relaxed);atomic_store_explicit(&h->damage_height,H*SCALE,memory_order_relaxed);
@@ -442,6 +466,9 @@ static void search_accept(unsigned i){
     cx=p.x;cy=p.y-49*units;constrain();last_layout.count=0;selection_set(id);changed=true;
 }
 static void search_character(unsigned cp){
+#ifdef MAP_PRIVATE
+    if(private_keyboard()){private_character(cp);return;}
+#endif
     if(!search_open)return;
     if(cp==10||cp==13){if(search.count)search_accept(search.cursor);else {search_keyboard=false;changed=true;}return;}
     if(map_search_character(&search,cp)){map_search_run(&search,&map);changed=true;}
@@ -453,8 +480,14 @@ static unsigned key_character(unsigned code,bool shift){
     if(code>=2&&code<=11)return (unsigned)(shift?"!@#$%^&*()":"1234567890")[code-2];
     switch(code){case 12:return shift?'_':'-';case 13:return shift?'+':'=';case 39:return shift?':':';';case 40:return shift?'"':'\'';case 51:return shift?'<':',';case 52:return shift?'>':'.';case 53:return shift?'?':'/';case 57:return ' ';default:return 0;}
 }
+#ifdef MAP_PRIVATE
+#include "private.h"
+#endif
 static void map_key(unsigned code,unsigned value) {
     if(code==42||code==54){search_shift=value!=0;return;}if(code==29||code==97){search_ctrl=value!=0;return;}
+#ifdef MAP_PRIVATE
+    private_last_activity=us()/1000;if(private_key(code,value))return;
+#endif
     if(value==0||value>2)return;
     if(search_ctrl&&code==33){search_begin();return;}
     if(search_open){
@@ -474,11 +507,17 @@ static void map_key(unsigned code,unsigned value) {
 }
 static void motion(void) {
     int dx,dy;if(held&&map_gesture_move(&gesture,mx,my,&dx,&dy)){
+#ifdef MAP_PRIVATE
+        if(private_mode==1){private_scroll+=dy;while(private_scroll<=-24){if(private_offset+private_rows()<places.count)private_offset++;private_scroll+=24;}while(private_scroll>=24){if(private_offset)private_offset--;private_scroll-=24;}changed=true;return;}
+#endif
         if(search_open){search_scroll+=dy;while(search_scroll<=-24){if(search.offset+search_rows()<search.count)search.offset++;search_scroll+=24;}while(search_scroll>=24){if(search.offset)search.offset--;search_scroll-=24;}changed=true;return;}
         cx-=dx*units;cy+=dy*units;constrain();last_layout.count=0;changed=true;
     }
 }
 static void map_button(unsigned value) {
+#ifdef MAP_PRIVATE
+    if(private_button(value))return;
+#endif
     if(!value){
         motion();bool tap=map_gesture_end(&gesture);held=false;
         if(search_open){if(tap&&search_pressed>=0&&my>=TOP+82&&my<(int)BOTTOM){unsigned row=(my-TOP-82)/48;if(row<search_rows()&&(unsigned)search_pressed==search.offset+row)search_accept((unsigned)search_pressed);}search_pressed=-1;return;}
@@ -538,22 +577,46 @@ static void input(void) {
     resize();
 #endif
     uint32_t *q=(void*)input_handoff;uint32_t head=__atomic_load_n(q+2,__ATOMIC_ACQUIRE);
-    if(head-input_tail>224){input_tail=head;held=false;active=false;search_keyboard=search_shift=search_ctrl=false;map_gesture_cancel(&gesture);}
+    if(head-input_tail>224){
+#ifdef MAP_PRIVATE
+        private_lock();
+#endif
+        input_tail=head;held=false;active=false;search_keyboard=search_shift=search_ctrl=false;map_gesture_cancel(&gesture);}
     while(input_tail!=head){
-        uint32_t e[4];memcpy(e,q+4+(input_tail++%224)*4,sizeof(e));unsigned device=e[0]&65535,kind=e[0]>>16;
+        uint32_t e[4];uint32_t *slot=q+4+(input_tail++%224)*4;memcpy(e,slot,sizeof(e));
+#ifdef MAP_PRIVATE
+        private_wipe(slot,sizeof(e));
+#endif
+        unsigned device=e[0]&65535,kind=e[0]>>16;
 #ifdef MAP_PROFILE
         input_events++;
 #endif
 #ifdef MAP_MOBILE
         if(device==3){
-            if(kind==0){held=false;active=e[2]!=0;search_keyboard=search_shift=search_ctrl=false;map_gesture_cancel(&gesture);}
+            if(kind==0){held=false;
+#ifdef MAP_PRIVATE
+                if(!e[2]){private_lock();bool was=active;active=true;draw();active=was;}
+#endif
+                active=e[2]!=0;search_keyboard=search_shift=search_ctrl=false;map_gesture_cancel(&gesture);}
             else if(kind==1&&e[2]>=320&&e[2]<=720)set_height(e[2]);
-            else if(active&&kind==2){search_keyboard=false;changed=true;}
-            else if(active&&kind==3&&search_open){search.query[0]=0;map_search_run(&search,&map);changed=true;}
+            else if(active&&kind==2){
+#ifdef MAP_PRIVATE
+                if(private_keyboard())private_lock();
+#endif
+                search_keyboard=false;changed=true;}
+            else if(active&&kind==3){
+#ifdef MAP_PRIVATE
+                if(private_keyboard())private_clear_input();else
+#endif
+                {search.query[0]=0;map_search_run(&search,&map);}changed=true;}
             continue;
         }
 #else
-        if(device==2){held=false;active=e[2]!=0;search_keyboard=search_shift=search_ctrl=false;map_gesture_cancel(&gesture);continue;}
+        if(device==2){held=false;
+#ifdef MAP_PRIVATE
+            if(!e[2]){private_lock();bool was=active;active=true;draw();active=was;}
+#endif
+            active=e[2]!=0;search_keyboard=search_shift=search_ctrl=false;map_gesture_cancel(&gesture);continue;}
 #endif
         if(!active)continue;
         if(device==4&&kind==0){search_character(e[1]);continue;}
@@ -562,7 +625,11 @@ static void input(void) {
         mx=(int16_t)(e[3]&65535)/SCALE;my=(int16_t)(e[3]>>16)/SCALE;
         if(kind==3&&held)motion();
         else if(kind==1&&e[1]==272&&e[2]<=1)map_button(e[2]);
-        else if(kind==2&&e[1]==8){if(search_open){if((int32_t)e[2]<0&&search.offset+search_rows()<search.count)search.offset++;else if((int32_t)e[2]>0&&search.offset)search.offset--;changed=true;}else zoom((int32_t)e[2]>0?1:-1);}
+        else if(kind==2&&e[1]==8){
+#ifdef MAP_PRIVATE
+            if(private_mode){if(private_mode==1){if((int32_t)e[2]<0&&private_offset+private_rows()<places.count)private_offset++;else if((int32_t)e[2]>0&&private_offset)private_offset--;changed=true;}continue;}
+#endif
+            if(search_open){if((int32_t)e[2]<0&&search.offset+search_rows()<search.count)search.offset++;else if((int32_t)e[2]>0&&search.offset)search.offset--;changed=true;}else zoom((int32_t)e[2]>0?1:-1);}
     }
     __atomic_store_n(q+3,input_tail,__ATOMIC_RELEASE);draw();publish_search_state();
 #ifdef MAP_PROFILE
@@ -608,6 +675,9 @@ void init(void) {
 #ifdef MAP_PROFILE
     profile(0,NULL,0,0);
 #endif
+#ifdef MAP_PRIVATE
+    private_tick();
+#endif
     printf("COMAPS|READY|offline|no network\n");
 }
 #ifdef MAP_STORAGE
@@ -633,7 +703,11 @@ static void storage_reply(void) {
             if(recovering&&storage_generation){recovering=false;storage_state=0;changed=true;}
             else {recovering=false;storage_request(MAP_STORE_COMMIT,loaded_region);}
         }
-    }else if(p->command==MAP_STORE_COMMIT){storage_state=0;changed=true;}
+    }else if(p->command==MAP_STORE_COMMIT){storage_state=0;changed=true;
+#ifdef MAP_PRIVATE
+        private_restore();
+#endif
+    }
     draw();
 #ifdef MAP_PROFILE
     profile(0,NULL,0,0);
@@ -643,6 +717,13 @@ static void storage_reply(void) {
 void notified(microkit_channel channel){
     if(channel==1)input();
 #ifdef MAP_STORAGE
-    else if(channel==2)storage_reply();
+    else if(channel==2){
+#ifdef MAP_PRIVATE
+        if(private_busy)private_reply();else
+#endif
+        storage_reply();}
+#ifdef MAP_PRIVATE
+    else if(channel==4)private_tick();
+#endif
 #endif
 }

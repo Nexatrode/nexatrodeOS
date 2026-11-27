@@ -1,0 +1,20 @@
+[package]
+name = "maps-private-crypto"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+aes = { version = "=0.9.3", default-features = false, features = ["zeroize"] }
+aes-gcm-siv = { version = "=0.12.1", default-features = false, features = ["aes"] }
+pbkdf2 = { version = "=0.12.2", default-features = false, features = ["hmac"] }
+sha2 = { version = "=0.10.9", default-features = false }
+zeroize = { version = "=1.9.0", default-features = false }
+
+[profile.release]
+panic = "abort"
+opt-level = 2
