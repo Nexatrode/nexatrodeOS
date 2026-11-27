@@ -5,6 +5,8 @@ from sunfish_tx3_elf_retry_panel_test import function
 ROOT=Path(__file__).resolve().parents[1]
 BASE='0d89a814'
 def without_outcome(path,s):
+ from sunfish_elf_digest_outcome_test import without_digest
+ s=without_digest(path,s)
  s=re.sub(r'/\* READY_OUTCOME_BEGIN \*/\n.*?/\* READY_OUTCOME_END \*/\n','',s,flags=re.S)
  if path=='rust/Cargo.toml':s=s.replace('sunfish-ready-startup-outcome = ["sunfish-registry-ready-handoffs"]\n','')
  return s

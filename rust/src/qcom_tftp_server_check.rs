@@ -60,6 +60,10 @@ fn missing_path(packet: &[u8]) -> Option<u8> {
         b"/readwrite/mcfg.tmp" => 1,
         b"/readwrite/ota_firewall/ruleset" => 2,
         b"/readwrite/modem_efs" => 3,
+/* ELF_DIGEST_BEGIN */
+        #[cfg(feature="sunfish-elf-digest-outcome")]
+        b"/readonly/vendor/mbn/mcfg_hw/mbn_hw.dig" => 4,
+/* ELF_DIGEST_END */
         _ => return None,
     };
     if !parts.next()?.eq_ignore_ascii_case(b"octet") || packet.last() != Some(&0) { return None; }
@@ -391,7 +395,13 @@ impl ServerCheck {
     #[cfg(feature="sunfish-mcfg-missing-close")]
     fn missing_mcfg_close_state(t:&Transfer)->bool{
         // Exact failed-open response for mcfg.tmp, not another absent path or RAM transfer.
-        t.missing_kind==1 && t.mcfg_read.is_none() && t.mcfg_write.is_none()
+/* ELF_DIGEST_BEGIN */
+        #[cfg(feature="sunfish-elf-digest-outcome")]
+        let missing=matches!(t.missing_kind,1|4);
+        #[cfg(not(feature="sunfish-elf-digest-outcome"))]
+        let missing=t.missing_kind==1;
+/* ELF_DIGEST_END */
+        missing && t.mcfg_read.is_none() && t.mcfg_write.is_none()
             && t.len==0 && t.last_len==0 && t.last_block==0 && !t.complete
     }
     #[cfg(feature="sunfish-mcfg-missing-close")]

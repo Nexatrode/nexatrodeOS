@@ -112,4 +112,7 @@ fn startup_prerequisites_owner_early_negative_reply_and_real_completion(){
 
 include!("sunfish_tftp_arrival_order_cases.rs");
 
+
+#[cfg(feature="sunfish-elf-digest-outcome")]
+include!("sunfish_mbn_digest_cases.rs");
 }

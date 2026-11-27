@@ -9,8 +9,16 @@ pub struct StartupRead {
  pub attempts:u32,pub waits:[u32;2],pub client:u32,
  pub received:Option<u64>,pub dispatched:Option<u64>,pub queued:Option<u64>,pub published:Option<u64>,pub done:Option<u64>,pub close:Option<u64>,
 }
+/* ELF_DIGEST_BEGIN */
+#[cfg(not(feature="sunfish-elf-digest-outcome"))]
+/* ELF_DIGEST_END */
 #[derive(Default)]
 pub struct StartupPrerequisites {pub reads:[Option<StartupRead>;4],pub total:[u32;2],pub omitted:[u32;2]}
+/* ELF_DIGEST_BEGIN */
+#[cfg(feature="sunfish-elf-digest-outcome")]
+#[derive(Default)]
+pub struct StartupPrerequisites {pub reads:[Option<StartupRead>;6],pub total:[u32;2],pub omitted:[u32;2],pub digest_total:u32,pub digest_omitted:u32}
+/* ELF_DIGEST_END */
 fn matches_tx(r:&StartupRead,t:&Transmit,local:u32)->bool{
  r.record.is_some()&&r.record==t.reference_flow&&r.slot.is_some()
  &&matches!(t.kind,TxKind::TftpReply{source,destination}if source==Address{node:local,port:r.local_port}&&destination==r.peer)
@@ -26,10 +34,28 @@ impl Session {
   if op!=1||local!=crate::qcom_tftp_server_check::SERVICE_PORT{
    if matches!(op,4|5)&&body.len()>=4{for r in self.startup_prerequisites.reads.iter_mut().flatten().filter(|r|r.peer==peer&&r.local_port==local&&r.flags&128==0){r.flags|=64;r.client=(u32::from(op)<<16)|u32::from(u16::from_be_bytes([body[2],body[3]]));}}return;
   }
-  let path=body[2..].split(|b|*b==0).next();let kind=match path{Some(b"/readwrite/ota_firewall/ruleset")=>1,Some(b"/readwrite/modem_efs")=>2,_=>return};
+  let path=body[2..].split(|b|*b==0).next();
+  let kind=match path{Some(b"/readwrite/ota_firewall/ruleset")=>1,Some(b"/readwrite/modem_efs")=>2,
+/* ELF_DIGEST_BEGIN */
+  #[cfg(feature="sunfish-elf-digest-outcome")]
+  Some(b"/readonly/vendor/mbn/mcfg_hw/mbn_hw.dig")=>3,
+/* ELF_DIGEST_END */
+  _=>return};
   if self.startup_prerequisites.reads.iter().flatten().any(|r|r.handle==handle){return;}
-  let k=kind as usize-1;let at=self.intent_ack_clock.map(|c|c());let opts=McfgOptionIds::read(body,true);let c=&mut self.startup_prerequisites;c.total[k]=c.total[k].saturating_add(1);
-  let i=k*2+usize::from(c.reads[k*2].is_some());if c.reads[i].is_some(){c.omitted[k]=c.omitted[k].saturating_add(1);return;}
+  let k=kind as usize-1;let at=self.intent_ack_clock.map(|c|c());let opts=McfgOptionIds::read(body,true);let c=&mut self.startup_prerequisites;
+/* ELF_DIGEST_BEGIN */
+  #[cfg(feature="sunfish-elf-digest-outcome")]
+  if kind==3{c.digest_total=c.digest_total.saturating_add(1);}else{c.total[k]=c.total[k].saturating_add(1);}
+  #[cfg(not(feature="sunfish-elf-digest-outcome"))]
+/* ELF_DIGEST_END */
+  {c.total[k]=c.total[k].saturating_add(1);}
+  let i=k*2+usize::from(c.reads[k*2].is_some());if c.reads[i].is_some(){
+/* ELF_DIGEST_BEGIN */
+  #[cfg(feature="sunfish-elf-digest-outcome")]
+  if kind==3{c.digest_omitted=c.digest_omitted.saturating_add(1);}else{c.omitted[k]=c.omitted[k].saturating_add(1);}
+  #[cfg(not(feature="sunfish-elf-digest-outcome"))]
+/* ELF_DIGEST_END */
+  {c.omitted[k]=c.omitted[k].saturating_add(1);}return;}
   c.reads[i]=Some(StartupRead{handle,record:None,slot:None,kind,peer,flags:1,request_bytes:body.len()as u32,options_present:opts.present,options_flags:opts.flags,rsize:opts.values[4],result:u32::MAX,opcode:u32::MAX,number:u32::MAX,reply_bytes:0,local_port:u32::MAX,remote_intent:u32::MAX,attempts:0,waits:[0;2],client:u32::MAX,received:at,dispatched:None,queued:None,published:None,done:None,close:None});
  }
  pub(crate) fn observe_startup_dispatch(&mut self,h:&TftpHandle,result:Result<crate::qcom_tftp_server_check::Reply,crate::qcom_tftp_server_check::Error>,bytes:&[u8]){

@@ -1,8 +1,17 @@
 //! Reuse retained traces to connect early admission with settled startup outcomes.
 //! This renderer adds no samples, transport state, or scheduling authority.
 use super::*;
+/* ELF_DIGEST_BEGIN */
+#[cfg(feature="sunfish-elf-digest-outcome")]
+#[path="pixel_mpss_elf_digest_outcome.rs"]
+mod elf_digest_outcome;
+/* ELF_DIGEST_END */
 impl RuntimeDomain {
     pub(super) fn show_ready_startup_outcome(&self, d: &Display, owner: &ModemOwner) {
+/* ELF_DIGEST_BEGIN */
+        #[cfg(feature="sunfish-elf-digest-outcome")]
+        {self.show_elf_digest_outcome(d,owner);return;}
+/* ELF_DIGEST_END */
         for n in 2..=28 { d.replace_line(n, ""); }
         d.replace_line(1, "READY STARTUP OUTCOME");
         let age = |t| self.time_from_us(Some(self.runtime_started), t);

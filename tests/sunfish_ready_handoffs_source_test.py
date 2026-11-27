@@ -2,6 +2,8 @@ from pathlib import Path
 import re,subprocess,unittest
 ROOT=Path(__file__).resolve().parents[1];BASE='8f10d267'
 def without_ready(path,source):
+ from sunfish_elf_digest_outcome_test import without_digest
+ source=without_digest(path,source)
  source=re.sub(r'/\* READY_OUTCOME_BEGIN \*/\n.*?/\* READY_OUTCOME_END \*/\n','',source,flags=re.S)
  if path=='rust/Cargo.toml':source=source.replace('sunfish-ready-startup-outcome = ["sunfish-registry-ready-handoffs"]\n','')
  pat=r'/\* READY_HANDOFF_BEGIN \*/\n.*?/\* READY_HANDOFF_END \*/\n'
