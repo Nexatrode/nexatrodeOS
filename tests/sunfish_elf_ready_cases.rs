@@ -17,7 +17,10 @@ fn elf_publication(s:&Session)->qcom_glink_qmi::RegistryPublication{s.elf_window
  let(mut s,h,_)=first_elf(true,false,4096);let mut blocked=vec![];assert_eq!(s.publish_next(1,|b|{blocked=b.to_vec();Err(WriteError::WouldBlock)}),Err(Error::WouldBlock));assert_eq!(elf_publication(&s).mask&0x180000,0x80000);grant(&mut s);s.ingest(1,&control(7,108)).unwrap();grant(&mut s);let(id,b)=reply(&mut s);assert_eq!(b,blocked);assert_eq!(elf_publication(&s).mask&0x180000,0x80000);assert_eq!(s.ingest(1,&control(14,id)),Ok(Event::ReplyRxDone(h)));
 }
 #[test]fn elf_ready_credit_and_already_advertised_ack_keep_their_turns(){
- let(mut s,_,_)=first_elf(true,true,4096);grant(&mut s);let(_,b)=reply(&mut s);assert_eq!(word(&b,20),7);let _=reply(&mut s);assert_eq!(elf_publication(&s).mask&0x180000,0);
+ #[cfg(not(feature="sunfish-elf-credit-pair-turn"))]
+ {let(mut s,_,_)=first_elf(true,true,4096);grant(&mut s);let(_,b)=reply(&mut s);assert_eq!(word(&b,20),7);let _=reply(&mut s);assert_eq!(elf_publication(&s).mask&0x180000,0);}
+ #[cfg(feature="sunfish-elf-credit-pair-turn")]
+ {let(mut s,_,_)=first_elf(true,true,4096);let(_,b)=reply(&mut s);assert_eq!(word(&b,20),7);let _=reply(&mut s);grant(&mut s);assert_eq!(elf_publication(&s).mask&0x1e0000,0x1e0000);}
  let(mut s,_,_)=first_elf(true,false,16);assert!(matches!(publish(&mut s).unwrap().0,Published::ReceiveIntent(_)));s.ingest(1,&intents(&[(9,4096)])).unwrap();assert_eq!(publish(&mut s).unwrap().0,Published::IntentRequestAck{granted:true});let _=reply(&mut s);assert_eq!(elf_publication(&s).mask&0x180000,0);
 }
 #[test]fn elf_ready_only_first_successful_domain_zero_exact_name_can_bind(){
@@ -35,3 +38,7 @@ fn elf_publication(s:&Session)->qcom_glink_qmi::RegistryPublication{s.elf_window
  let(mut s,_,_)=first_elf(true,false,4096);let e=s.publish_oack_followup(1,qcom_glink_qmi::OackFollowup::Advertise,|_|Ok(())).unwrap();assert!(!matches!(e,Some(Published::Data{..})));assert_eq!(s.elf_window_trace().unwrap().writer.publication.map_or(0,|p|p.mask)&0x180000,0);
  if matches!(e,Some(Published::ReceiveIntent(_))){assert_eq!(publish(&mut s).unwrap().0,Published::IntentRequestAck{granted:true});}let _=reply(&mut s);
 }
+
+#[cfg(feature="sunfish-elf-credit-pair-turn")]
+#[path="sunfish_elf_credit_cases.rs"]
+mod elf_credit_cases;

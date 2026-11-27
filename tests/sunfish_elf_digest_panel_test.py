@@ -46,9 +46,10 @@ impl Read{fn record_sequence(&self)->Option<u64>{self.sequence}}
 }
 '''
   if os.getenv('SUNFISH_ELF_READY_PANEL'):code=code.replace('ELF WRITER DIGEST REPLY','ELF READY GRANT TURN')
+  if os.getenv('SUNFISH_ELF_CREDIT_PANEL'):code=code.replace('ELF READY GRANT TURN','ELF CREDIT PAIR TURN')
   code=code.replace('DISPLAY',json.dumps(str(ROOT/'rust/src/pixel_probe_display.rs'))).replace('CLOCK',function((ROOT/'rust/src/pixel_mpss_runtime.rs').read_text(),'time_from_us')).replace('PACKED',function((ROOT/'rust/src/pixel_mpss_runtime_diagnostic.rs').read_text(),'packed_counts')).replace('PANEL',json.dumps(str(ROOT/'rust/src/pixel_mpss_elf_digest_outcome.rs')))
   with tempfile.TemporaryDirectory()as tmp:
    p=Path(tmp);(p/'panel.rs').write_text(code)
-   subprocess.run(['rustc','+nightly-2026-09-25','--edition=2024',*(['--cfg','feature="sunfish-elf-ready-grant-turn"']if os.getenv('SUNFISH_ELF_READY_PANEL')else []),'--cfg','feature="sunfish-wrq-post-return-callers"','--cfg','feature="sunfish-ipa-registration-reply-headers"','-Adead_code',str(p/'panel.rs'),'-o',str(p/'panel')],check=True)
+   subprocess.run(['rustc','+nightly-2026-09-25','--edition=2024',*(['--cfg','feature="sunfish-elf-credit-pair-turn"']if os.getenv('SUNFISH_ELF_CREDIT_PANEL')else []),*(['--cfg','feature="sunfish-elf-ready-grant-turn"']if os.getenv('SUNFISH_ELF_READY_PANEL')else []),'--cfg','feature="sunfish-wrq-post-return-callers"','--cfg','feature="sunfish-ipa-registration-reply-headers"','-Adead_code',str(p/'panel.rs'),'-o',str(p/'panel')],check=True)
    subprocess.run([str(p/'panel')],check=True)
 if __name__=='__main__':unittest.main()

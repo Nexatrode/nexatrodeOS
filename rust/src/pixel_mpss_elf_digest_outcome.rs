@@ -6,6 +6,10 @@ impl RuntimeDomain {
 /* ELF_READY_BEGIN */
         #[cfg(feature="sunfish-elf-ready-grant-turn")]
         d.replace_line(1,"ELF READY GRANT TURN");
+/* ELF_CREDIT_BEGIN */
+        #[cfg(feature="sunfish-elf-credit-pair-turn")]
+        d.replace_line(1,"ELF CREDIT PAIR TURN");
+/* ELF_CREDIT_END */
 /* ELF_READY_END */
         let age=|t|self.time_from_us(Some(self.runtime_started),t);
         let span=|t|self.time_from_us(Some(0),t);

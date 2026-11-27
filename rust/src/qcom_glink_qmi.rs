@@ -783,6 +783,12 @@ struct Transmit {
 /* READY_HANDOFF_END */
     #[cfg(feature = "sunfish-registry-converted-credit-turn")]
     registry_credit_turn_used: bool,
+/* ELF_CREDIT_BEGIN */
+    #[cfg(feature="sunfish-elf-credit-pair-turn")]
+    elf_ready_credit_target:bool,
+    #[cfg(feature="sunfish-elf-credit-pair-turn")]
+    elf_ready_credit_committed:bool,
+/* ELF_CREDIT_END */
     #[cfg(feature = "sunfish-wlan-elf-publish-trace")]
     registry_publication: RegistryPublication,
     #[cfg(feature = "sunfish-tftp-final-ack-observer")]
@@ -821,6 +827,12 @@ impl Transmit {
 /* READY_HANDOFF_END */
             #[cfg(feature = "sunfish-registry-converted-credit-turn")]
             registry_credit_turn_used: false,
+/* ELF_CREDIT_BEGIN */
+            #[cfg(feature="sunfish-elf-credit-pair-turn")]
+            elf_ready_credit_target:false,
+            #[cfg(feature="sunfish-elf-credit-pair-turn")]
+            elf_ready_credit_committed:false,
+/* ELF_CREDIT_END */
             #[cfg(feature = "sunfish-wlan-elf-publish-trace")]
             registry_publication: RegistryPublication {
                 transaction: 0, bytes: 0, calls: 0, mask: 0,
@@ -7319,6 +7331,10 @@ impl Session {
             // requires its real own return, fit and flow checks at selection.
             self.elf_ready_grant_bound=true;
             self.transmit[index].registry_return_turn_due=true;
+/* ELF_CREDIT_BEGIN */
+            #[cfg(feature="sunfish-elf-credit-pair-turn")]
+            {self.transmit[index].elf_ready_credit_target=true;}
+/* ELF_CREDIT_END */
         }
 /* ELF_READY_END */
         #[cfg(feature = "sunfish-registry-handoff-turn")]
@@ -8047,7 +8063,12 @@ impl Session {
             && self.intent_ack_backing.is_some_and(|id|self.receive[..RX_SLOTS].iter()
                 .any(|r|r.id==id && r.state==RxState::Advertising))
         {self.next_transmit_in_order([3]).filter(|(i,_)|self.transmit[*i].registry_return_turn_due
-                && !self.transmit[*i].registry_grant_turn_used && !self.transmit[*i].registry_credit_turn_used)}else{None};
+                && !self.transmit[*i].registry_grant_turn_used && (!self.transmit[*i].registry_credit_turn_used
+/* ELF_CREDIT_BEGIN */
+                || {#[cfg(feature="sunfish-elf-credit-pair-turn")] {self.elf_ready_credit_can_continue(*i)}
+                    #[cfg(not(feature="sunfish-elf-credit-pair-turn"))] {false}}
+/* ELF_CREDIT_END */
+                ))}else{None};
         #[cfg(feature="sunfish-registry-ready-handoffs")]
         let registry_before_grant=registry_before_grant || ready_registry.is_some();
 /* READY_HANDOFF_END */
@@ -8075,6 +8096,11 @@ impl Session {
 /* READY_HANDOFF_END */
         #[cfg(feature = "sunfish-registry-converted-credit-turn")]
         let converted_credit = self.converted_credit_candidate(registry_candidate, converted_registry);
+/* ELF_CREDIT_BEGIN */
+        #[cfg(feature="sunfish-elf-credit-pair-turn")]
+        let converted_credit=converted_credit.or_else(||ordinary.then(||
+            self.elf_ready_credit_candidate(registry_candidate,ready_registry,converted_registry)).flatten());
+/* ELF_CREDIT_END */
         #[cfg(feature = "sunfish-registry-converted-credit-turn")]
         let prefer_ack = prefer_ack && converted_credit.is_none();
         #[cfg(feature = "sunfish-wlan-registry-turn-gates")]
@@ -8893,6 +8919,11 @@ impl Session {
             // uncertain outcomes. Never lend the same conversion twice.
             self.transmit[registry].registry_credit_turn_used = true;
             self.transmit[registry].registry_publication.mask |= 1 << 17;
+/* ELF_CREDIT_BEGIN */
+            let credit_observer_matches={#[cfg(feature="sunfish-elf-credit-pair-turn")] {!self.transmit[registry].elf_ready_credit_target}
+                #[cfg(not(feature="sunfish-elf-credit-pair-turn"))] {true}};
+            if credit_observer_matches {
+/* ELF_CREDIT_END */
             if let Some(first) = self.registry_window.target.as_mut().and_then(|p| p.conversion.first.as_mut())
                 .filter(|t| t.active)
             {
@@ -8902,6 +8933,9 @@ impl Session {
                 first.credit_nodes = pack(word(bytes, 8), word(bytes, 24));
             }
             self.observe_conversion_exit(5);
+/* ELF_CREDIT_BEGIN */
+            }
+/* ELF_CREDIT_END */
             self.registry_converted_grant = None;
         }
         #[cfg(feature = "sunfish-registry-between-grants")]
@@ -8921,8 +8955,18 @@ impl Session {
         if borrowed_registry_slot.is_some() {
             // Consume before the checked writer, including WouldBlock or an
             // unwind. A different reply cannot inherit this grant opportunity.
+/* ELF_CREDIT_BEGIN */
+            let report_conversion={#[cfg(feature="sunfish-elf-credit-pair-turn")] {
+                borrowed_registry_slot.is_some_and(|i|self.registry_window.target.is_some_and(|p|
+                    matches!(self.transmit[i].kind,TxKind::Reply{receive,..}if p.newer==RequestHandle{owner:self.owner,generation:self.generation,intent:self.receive[receive].id})))}
+                #[cfg(not(feature="sunfish-elf-credit-pair-turn"))] {true}};
+            if report_conversion {
+/* ELF_CREDIT_END */
             #[cfg(feature = "sunfish-registry-conversion-lifetime-trace")]
             self.observe_conversion_exit(1);
+/* ELF_CREDIT_BEGIN */
+            }
+/* ELF_CREDIT_END */
             self.registry_converted_grant = None;
             if let Some(slot) = converted_slot { self.transmit[slot].registry_publication.mask |= 1 << 11; }
         }
@@ -8954,6 +8998,10 @@ impl Session {
         #[cfg(feature = "sunfish-registry-converted-credit-turn")]
         if result.is_ok() && let Some((registry, _, _)) = borrowed_credit {
             self.transmit[registry].registry_publication.mask |= 1 << 18;
+/* ELF_CREDIT_BEGIN */
+            #[cfg(feature="sunfish-elf-credit-pair-turn")]
+            if self.transmit[registry].elf_ready_credit_target {self.transmit[registry].elf_ready_credit_committed=true;}
+/* ELF_CREDIT_END */
         }
         #[cfg(feature = "sunfish-registry-converted-grant-turn")]
         if result.is_ok() && let Some(slot) = converted_slot {
@@ -9930,3 +9978,28 @@ impl Session {
 #[cfg(all(test, feature = "sunfish-first-data-ack-elf-trace"))]
 #[path = "qcom_tftp_completion_test.rs"]
 mod completion_identity_tests;
+
+/* ELF_CREDIT_BEGIN */
+#[cfg(feature="sunfish-elf-credit-pair-turn")]
+impl Session {
+    fn elf_ready_credit_can_continue(&self,index:usize)->bool{
+        let tx=&self.transmit[index];let TxKind::Reply{receive,..}=tx.kind else{return false;};
+        tx.elf_ready_credit_target && tx.elf_ready_credit_committed && self.registry_converted_grant.is_none_or(|(_,h)|
+            h==RequestHandle{owner:self.owner,generation:self.generation,intent:self.receive[receive].id})
+    }
+    fn elf_ready_credit_candidate(&self,registry:Option<(usize,usize)>,ready:Option<(usize,usize)>,converted:Option<(usize,usize)>)->Option<(usize,usize,usize)>{
+        let target=ready.or(converted)?;
+        if registry!=Some(target){return None;}
+        let tx=&self.transmit[target.0];
+        if !tx.elf_ready_credit_target || tx.registry_credit_turn_used || tx.registry_grant_turn_used || tx.elf_ready_credit_committed{return None;}
+        let TxKind::Reply{receive,route,..}=tx.kind else{return None;};
+        if route.service!=Service::ServiceRegistry || route.destination!=(Address{node:0,port:9})
+            || self.receive[receive].done_pending || self.receive[receive].state!=RxState::ReplyQueued{return None;}
+        let h=RequestHandle{owner:self.owner,generation:self.generation,intent:self.receive[receive].id};
+        if self.registry_converted_grant.is_some_and(|(_,bound)|bound!=h){return None;}
+        let(credit,remote)=self.next_transmit_in_order([1])?;
+        let c=&self.transmit[credit];
+        (matches!(c.kind,TxKind::Resume)&&c.sent==0&&c.len==52).then_some((target.0,credit,remote))
+    }
+}
+/* ELF_CREDIT_END */

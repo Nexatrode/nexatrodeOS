@@ -2,6 +2,8 @@ from pathlib import Path
 import re,subprocess,unittest
 ROOT=Path(__file__).resolve().parents[1];BASE='4123cf54'
 def without_elf_ready(path,s):
+ from sunfish_elf_credit_source_test import without_elf_credit
+ s=without_elf_credit(path,s)
  s=re.sub(r'/\* ELF_READY_BEGIN \*/\n.*?/\* ELF_READY_END \*/\n','',s,flags=re.S)
  if path=='rust/Cargo.toml':s=s.replace('sunfish-elf-ready-grant-turn = ["sunfish-elf-digest-outcome"]\n','')
  return s
