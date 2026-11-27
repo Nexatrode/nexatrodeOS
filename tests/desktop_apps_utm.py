@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Build existing mobile backends in two isolated, 2x desktop windows.
+"""Build the shared native apps in the disposable 2x ARM64 desktop.
 
-Public prepared drivers are read-only inputs. Only a new disposable disk may be
-used: this fixture deliberately uses the development vault key, not enrollment
-or the user's installation key. Window close hides; it does not evict services.
+Public prepared drivers are read-only inputs. Default test disks use a development
+key; --wrapped-session uses fresh passphrase enrollment with no installation key.
+Closing windows retains services. A wrapped full-session lock scrubs/restarts them.
 """
 import argparse, copy, hashlib, json, os
 from pathlib import Path
@@ -24,11 +24,18 @@ def main():
     p.add_argument('--virgl',action='store_true',help='experimental isolated retained-texture GPU compositor')
     p.add_argument('--gpu-verify',action='store_true',help='export GPU readback for pixel tests (adds frame overhead)')
     p.add_argument('--desktop-resize',action='store_true',help='native display-only SPICE agent and bounded 2x dynamic viewport')
+    p.add_argument('--wrapped-session',action='store_true',help='disposable passphrase-wrapped three-app restart group; requires its private composer and a fresh disk')
+    p.add_argument('--lock-idle-ms',type=int,default=60000)
     a=p.parse_args()
     if a.desktop_resize and not (a.browser and a.virgl):p.error('--desktop-resize requires --browser --virgl')
+    if a.wrapped_session and not (a.browser and a.virgl and a.desktop_resize):p.error('--wrapped-session requires the full three-app resize profile')
+    if not 10000<=a.lock_idle_ms<=600000:p.error('lock idle must be 10000..600000 ms')
     inputs=a.inputs.resolve(); out=a.output.resolve(); storage=a.storage.resolve(); shellbase=a.shell_base.resolve()
     if (out.exists() and not (a.resume and (out/'.disposable-build').is_file())) or not out.is_relative_to(ROOT/'build') or out.is_relative_to(inputs): p.error('use a fresh worktree build directory')
     out.mkdir(parents=True,exist_ok=a.resume)
+    if (out/'build.json').exists():
+        old=json.loads((out/'build.json').read_text())
+        if bool(old.get('wrapped_session'))!=a.wrapped_session:p.error('use a fresh stage for a different disk/key format')
     (out/'.disposable-build').touch()
     sdk=inputs/'sdk';board=sdk/'board'/BOARD/CONFIG
     env=dict(os.environ,PATH='/opt/homebrew/opt/llvm/bin:/opt/homebrew/bin:'+os.environ['PATH'],
@@ -53,9 +60,19 @@ def main():
     bins=['rust_vault_disk','rust_messages_agent_app','rust_entropy_rng','rust_clock']
     target=cargo('rust/Cargo.toml','storage-test,simplex-agent-vault,utm-slint-input,utm-photo-reader,utm-transcript-worker',bins,'build/desktop-apps-backends')
     for b in bins:shutil.copyfile(target/(b+'.elf'),out/(b+'.elf'))
+    if a.wrapped_session:
+        target=cargo('rust/Cargo.toml','storage-test,utm-simplex-live-test,utm-slint-input',['rust_vault_disk','rust_entropy_rng'],'build/desktop-apps-wrapped-backend')
+        sections=subprocess.check_output(['llvm-readelf','-S',target/'rust_vault_disk.elf'],text=True,env=env)
+        assert '.utm_vault_key' not in sections,'installation key forbidden in disposable lock'
+        shutil.copyfile(target/'rust_vault_disk.elf',out/'rust_vault_disk.elf')
+        # The authenticator's dedicated RNG endpoint (4) is enabled only by
+        # utm-device-lock, inherited through the wrapped-session feature set.
+        shutil.copyfile(target/'rust_entropy_rng.elf',out/'rust_entropy_rng.elf')
+        target=cargo('experiments/slint-notes/Cargo.toml','desktop-trio-lock-auth',['slint_lifecycle_lock'],'build/desktop-trio-auth-cargo')
+        shutil.copyfile(target/'slint_lifecycle_lock.elf',out/'auth.elf')
     target=cargo('rust/Cargo.toml','wallet-https',['rust_scan_worker'],'build/desktop-apps-backends')
     shutil.copyfile(target/'rust_scan_worker.elf',out/'rust_scan_worker.elf')
-    subprocess.run([str(ROOT/'experiments/ghc-microkit/build_wallet_scan_workers.sh'),str(inputs/'sel4-install'),str(out),'--handoff-prime-m1-100'],cwd=ROOT,env=dict(env,CARGO_TARGET_DIR=str(ROOT/'build/desktop-apps-wallet')),check=True)
+    subprocess.run([str(ROOT/'experiments/ghc-microkit/build_wallet_scan_workers.sh'),str(inputs/'sel4-install'),str(out),'--handoff-prime-m1-100',*(['--event-pump'] if a.wrapped_session else [])],cwd=ROOT,env=dict(env,CARGO_TARGET_DIR=str(ROOT/'build/desktop-apps-wallet')),check=True)
     subprocess.run(['cargo','+nightly-2026-09-25','build','--offline','--locked','--manifest-path',str(ROOT/'rust/walletcore-core/Cargo.toml'),'--example','disposable_wallet'],cwd=ROOT,env=dict(env,CARGO_TARGET_DIR=str(ROOT/'build/desktop-apps-host')),check=True)
     if a.browser:
         sys.path.insert(0,str(ROOT/'experiments/desktop-apps'))
@@ -82,7 +99,7 @@ def main():
     # lock fixture's initially-closed network gate. Transport recovery remains.
     for name in ('dhcp_client.o','haskell_tcp_service.o','dhcp_client.elf'):(out/'network'/name).unlink(missing_ok=True)
     # Upgrade the network's wallet receive path.
-    run('make','-C',out/'network','-j4','dhcp_client.elf',f'NET_SRC={ROOT}/tests/net',f'NET_INCLUDE={ROOT}/tests/net/include',f'MICROKIT_SDK={out}/network/sdk','MICROKIT_BOARD=qemu_virt_aarch64',f'MICROKIT_CONFIG={CONFIG}',f'SDDF={inputs.parent}/sddf-personal-os',f'MBEDTLS_DIR={inputs.parent}/mbedtls-3.6.2','EXTRA_CFLAGS=-DDNS_SERVER_PORT=53'+(' -DDESKTOP_BROWSER_NETWORK=1' if a.browser else ''),'NEXAWAL_UTM_WIDE_RX=1','NEXAWAL_UTM_RX_NOTIFY=1','NEXAWAL_UTM_RX_AHEAD=1')
+    run('make','-C',out/'network','-j4','dhcp_client.elf',f'NET_SRC={ROOT}/tests/net',f'NET_INCLUDE={ROOT}/tests/net/include',f'MICROKIT_SDK={out}/network/sdk','MICROKIT_BOARD=qemu_virt_aarch64',f'MICROKIT_CONFIG={CONFIG}',f'SDDF={inputs.parent}/sddf-personal-os',f'MBEDTLS_DIR={inputs.parent}/mbedtls-3.6.2','EXTRA_CFLAGS=-DDNS_SERVER_PORT=53'+(' -DDESKTOP_BROWSER_NETWORK=1 -DDESKTOP_PRIVATE_TCP=1' if a.browser else '')+(' -DSIMPLEX_LOCK_LIFECYCLE=1 -DDESKTOP_LOCK_NETWORK=1' if a.wrapped_session else ''),'NEXAWAL_UTM_WIDE_RX=1','NEXAWAL_UTM_RX_NOTIFY=1','NEXAWAL_UTM_RX_AHEAD=1')
     for section in ('timer_client_config','net_client_config','lib_sddf_lwip_config'):
         run('llvm-objcopy','--update-section',f'.{section}={out}/network/{section}.data',out/'network/dhcp_client.elf')
     shutil.copyfile(out/'network/dhcp_client.elf',out/'dhcp_client.elf')
@@ -117,7 +134,7 @@ def main():
     system.append(copy.deepcopy(shell.find("protection_domain[@name='gpu_client']")))
     def pd(name):return system.find(f"protection_domain[@name='{name}']")
     def mr(name,size,**kw):ET.SubElement(system,'memory_region',name=name,size=hex(size),**kw)
-    def mapping(p,name,addr,perms,symbol):ET.SubElement(p,'map',mr=name,vaddr=hex(addr),perms=perms,cached='true',setvar_vaddr=symbol)
+    def mapping(p,name,addr,perms,symbol):ET.SubElement(p,'map',mr=name,vaddr=hex(addr),perms=perms,cached='true',**({'setvar_vaddr':symbol} if symbol else {}))
     def channel(a,x,b,y,pp=False,notify=True):
         c=ET.SubElement(system,'channel');ea=ET.SubElement(c,'end',pd=a,id=str(x));eb=ET.SubElement(c,'end',pd=b,id=str(y))
         if pp:ea.set('pp','true')
@@ -212,7 +229,7 @@ def main():
         used={m.get('mr') for m in system.iter('map')}
         for r in list(system.findall('memory_region')):
             if r.get('name') not in used:system.remove(r)
-        run(*flags,'-mstrict-align',*(['-DDESKTOP_DYNAMIC'] if a.desktop_resize else []),'-DDESKTOP_APP_COUNT=3','-DDESKTOP_SCALE=2u','-DSLINT_FRAME_WIDTH=2560u','-DSLINT_FRAME_HEIGHT=1600u','-DSLINT_FRAME_REGION_BYTES=0x1000000u',*(['-DDESKTOP_GPU_VERIFY'] if a.gpu_verify else []),'-c',ROOT/'experiments/desktop-gpu/renderer.c','-o',out/'desktop_gpu.o')
+        run(*flags,'-mstrict-align',*(['-DDESKTOP_DYNAMIC'] if a.desktop_resize else []),*(['-DDESKTOP_TRIO_LOCK'] if a.wrapped_session else []),'-DDESKTOP_APP_COUNT=3','-DDESKTOP_SCALE=2u','-DSLINT_FRAME_WIDTH=2560u','-DSLINT_FRAME_HEIGHT=1600u','-DSLINT_FRAME_REGION_BYTES=0x1000000u',*(['-DDESKTOP_GPU_VERIFY'] if a.gpu_verify else []),'-c',ROOT/'experiments/desktop-gpu/renderer.c','-o',out/'desktop_gpu.o')
         run('ld.lld','-L',board/'lib',out/'desktop_gpu.o','-lmicrokit','-T','microkit.ld','-o',out/'desktop_gpu.elf')
     if a.desktop_resize:
         from desktop_resize_agent_build import attach,compile_agent
@@ -225,9 +242,25 @@ def main():
             mapping(pd(name),'desktop_display_mode',addr,perms,'desktop_display_mode')
         mapping(pd('desktop_gpu'),'display_ack',0x7b002000,'rw','display_ack')
     # Retain the original 4-core wallet worker affinities; normal service PDs on CPU0.
+    if a.wrapped_session:
+        import session as desktop_session
+        provenance=json.loads((a.composer.resolve().parents[2]/'provenance.json').read_text())
+        assert provenance.get('desktop_session') and provenance['service_names']==list(desktop_session.NAMES),'wrong managed composer catalog'
+        assert hashlib.sha256(a.composer.read_bytes()).hexdigest()==provenance['composer_sha256']
+        desktop_session.attach(system,out,mapping,channel,mr)
+        run(*flags,'-I',out,'-DDESKTOP_DYNAMIC','-DDESKTOP_VIRGL','-DDESKTOP_TRIO_LOCK',f'-DLOCK_IDLE_MS={a.lock_idle_ms}',
+            *(['-DTRIO_STARTUP_TRACE'] if a.gpu_verify else []),
+            '-DDESKTOP_APP_COUNT=3','-DDESKTOP_SCALE=2u','-DSLINT_FRAME_WIDTH=2560u','-DSLINT_FRAME_HEIGHT=1600u','-DSLINT_FRAME_REGION_BYTES=0x1000000u',
+            '-c',ROOT/'experiments/desktop-apps/manager.c','-o',out/'manager.o')
+        run('ld.lld','-L',board/'lib',out/'manager.o','-lmicrokit','-T','microkit.ld','-o',out/'manager.elf')
+        run(*flags,'-c',ROOT/'experiments/desktop-apps/lock_probe.c','-o',out/'lock_probe.o')
+        run('ld.lld','-L',board/'lib',out/'lock_probe.o','-lmicrokit','-T','microkit.ld','-o',out/'lock_probe.elf')
     ET.indent(system);ET.ElementTree(system).write(out/'desktop-apps.system',encoding='utf-8',xml_declaration=True)
     from desktop_apps_manifest import validate
     validate(out/'desktop-apps.system',out,browser=a.browser)
+    if a.browser:
+        from runtime_manifest import inventory
+        (out/'runtime.json').write_text(json.dumps(inventory(out/'desktop-apps.system'),indent=2)+'\n')
     subprocess.run([str(a.composer.resolve()),str(out/'desktop-apps.system'),'--board',BOARD,'--config',CONFIG,'--search-path',str(out),'-o',str(out/'loader.img'),'-r',str(out/'report.txt')],cwd=ROOT,env=dict(env,MICROKIT_SDK=str(sdk)),check=True)
     sha=lambda x:hashlib.sha256(x.read_bytes()).hexdigest()
     sources=[Path(__file__),*[x for x in (ROOT/'experiments/desktop-apps').glob('*') if x.suffix in {'.c','.h','.rs','.py'}],ROOT/'experiments/slint-notes/ui/desktop_chat.slint',ROOT/'experiments/slint-notes/ui/full_suite.slint',ROOT/'experiments/desktop-shell/compositor.c',ROOT/'experiments/desktop-shell/shell.rs']
@@ -236,9 +269,22 @@ def main():
     sources += [ROOT/'experiments/desktop-shell/protocol.h',ROOT/'experiments/slint-notes/assets/icons/browser.svg',ROOT/'tests/desktop_browser_input.py',ROOT/'tests/desktop_apps_input.py',ROOT/'tests/desktop_apps_run.py',ROOT/'tests/desktop_display_config.py',ROOT/'tests/desktop_display_config_test.py']
     sources += [ROOT/'experiments/desktop-gpu/renderer.c',ROOT/'experiments/desktop-gpu/transport.h',ROOT/'experiments/desktop-gpu/pacing.h',ROOT/'tests/desktop_gpu_pacing_test.c',ROOT/'tests/desktop_gpu_capture.py',ROOT/'tests/desktop_gpu_navigation.py',ROOT/'tests/desktop_gpu_motion.py',ROOT/'tests/desktop_gpu_stall_trace.py',ROOT/'tests/desktop_gpu_stall_trace_test.py',ROOT/'tests/desktop_gpu_transport_test.c',ROOT/'tests/desktop_resize_agent_build.py',ROOT/'tests/desktop_resize_input.py',ROOT/'tests/desktop_resize_test.c',ROOT/'tests/desktop_resize_frame_test.rs',ROOT/'experiments/desktop-gpu/display_protocol.h',ROOT/'experiments/desktop-gpu/display_agent.c']
     sources += [ROOT/'tests'/name for name in ('desktop_boot_ready.py','desktop_boot_ready_test.py','desktop_boot_stress.py','desktop_boot_stress_test.py','utm_vault_key_storage.py')]
+    sources += [ROOT/name for name in ('experiments/desktop-gpu/damage.h','experiments/desktop-gpu/composition.h','experiments/desktop-shell/decor_cache.rs','tests/desktop_gpu_damage_test.c','tests/desktop_decor_cache_test.rs','tests/desktop_damage_input.py','tests/desktop_damage_load.py')]
+    sources += [ROOT/'dev',ROOT/'tools/desktop.py',ROOT/'platforms/utm-desktop.json',ROOT/'tests/desktop_runtime_manifest_test.py',ROOT/'tests/desktop_command_test.py',ROOT/'tests/net/tests/desktop_tcp_isolation_test.c']
     if a.browser:
         sources += [p for p in (ROOT/'experiments/netsurf-native').rglob('*') if p.is_file() and '__pycache__' not in str(p)]
-        sources += [ROOT/'tests/net/dhcp_client.c',ROOT/'tests/net/haskell_tcp_service.c',ROOT/'tests/net/include/haskell_tcp_protocol.h',ROOT/'experiments/guest-https/src/lib.rs',ROOT/'experiments/guest-https/Cargo.toml']
-    (out/'build.json').write_text(json.dumps({'desktop_resize':a.desktop_resize,'resize_bounds':[[1600,1200],[3840,2160]] if a.desktop_resize else None,'virgl':a.virgl,'gpu_verify':a.gpu_verify,'browser':a.browser,'apps':['SimpleX','NexaWal']+(['NetSurf'] if a.browser else []),'scale':2,'resolution':[2560,1600],'vcpus':4,'saved_data_used':False,'development_storage_key':True,'static_services':True,'sources':{str(x.relative_to(ROOT)):sha(x) for x in sources if x.is_file()},'artifacts':{x.name:sha(x) for x in out.glob('*.elf')},'loader_sha256':sha(out/'loader.img')},indent=2)+'\n')
+        sources += [ROOT/'tests/net/dhcp_client.c',ROOT/'tests/net/haskell_tcp_service.c',ROOT/'tests/net/include/haskell_tcp_protocol.h',ROOT/'tests/net/include/desktop_tcp_wire.h',ROOT/'experiments/guest-https/src/lib.rs',ROOT/'experiments/guest-https/Cargo.toml']
+    manifest={'system_sha256':sha(out/'desktop-apps.system'),'runtime_sha256':sha(out/'runtime.json') if a.browser else None,'desktop_resize':a.desktop_resize,'resize_bounds':[[1600,1200],[3840,2160]] if a.desktop_resize else None,'virgl':a.virgl,'gpu_verify':a.gpu_verify,'browser':a.browser,'apps':['SimpleX','NexaWal']+(['NetSurf'] if a.browser else []),'scale':2,'resolution':[2560,1600],'vcpus':4,'saved_data_used':False,'development_storage_key':True,'static_services':True,'sources':{str(x.relative_to(ROOT)):sha(x) for x in sources if x.is_file()},'artifacts':{x.name:sha(x) for x in out.glob('*.elf')},'loader_sha256':sha(out/'loader.img')}
+    manifest.update(wrapped_session=a.wrapped_session,lock_idle_ms=a.lock_idle_ms if a.wrapped_session else None,wallet_event_pump=a.wrapped_session)
+    if a.wrapped_session:
+        manifest['development_storage_key']=False
+        extra=[ROOT/'experiments/desktop-gpu/lock.h',ROOT/'experiments/desktop-lock/auth.rs',ROOT/'experiments/slint-notes/ui/lifecycle_lock.slint',ROOT/'experiments/desktop-simplex/session.h',ROOT/'experiments/desktop-simplex/composer_patch.py',ROOT/'experiments/desktop-integrated/build_composer.py',ROOT/'tests/desktop_trio_lock_input.py',ROOT/'tests/desktop_simplex_session_test.c',ROOT/'tests/desktop_simplex_stub/session_layout.h',ROOT/'tests/net/tests/desktop_network_lock_test.c']
+        extra += [ROOT/'rust/src'/name for name in ('device_lock.rs','vault_disk.rs','vault_lifecycle.rs','vault_key_prototype.rs','wrapped_vault_bootstrap.rs','entropy_rng.rs','vault_protocol.rs','wallet_rpc_pump.rs')]
+        extra += [ROOT/'experiments/ghc-microkit/build_wallet_scan_workers.sh']
+        extra += [ROOT/'rust/Cargo.toml']
+        manifest['sources'].update({str(x.relative_to(ROOT)):sha(x) for x in extra})
+        manifest['session_layout_sha256']=sha(out/'session_layout.h')
+        manifest['composer_sha256']=sha(a.composer.resolve())
+    (out/'build.json').write_text(json.dumps(manifest,indent=2)+'\n')
 
 if __name__=='__main__':main()

@@ -22,6 +22,10 @@ void *memset(void *to, int value, size_t n)
 #undef fault
 #ifdef DESKTOP_DYNAMIC
 #include "../desktop-gpu/display_protocol.h"
+#ifdef DESKTOP_TRIO_LOCK
+static bool trio_is_locked(void);
+static void trio_resized(void);
+#endif
 uintptr_t desktop_display_mode,desktop_display_request;
 static uint32_t resize_serial;
 static void resize_display(bool initial) {
@@ -41,10 +45,21 @@ static void resize_display(bool initial) {
     out->serial=next.serial;out->width=next.width;out->height=next.height;out->scale=2;out->app_height=next.app_height;
     __atomic_store_n(&out->revision,rev+2,__ATOMIC_RELEASE);resize_serial=next.serial;
     if(!initial){
-        if(changed){reset_input();for(unsigned i=0;i<DESKTOP_APP_COUNT;++i)shell_position(&desktop.windows[i],desktop.windows[i].x,desktop.windows[i].y);pointer_x=shell_clamp(pointer_x,0,desktop_width-1);pointer_y=shell_clamp(pointer_y,0,desktop_height-1);}
-        publish_state();microkit_notify(2);for(unsigned i=1;i<=DESKTOP_APP_COUNT;++i)input_notify(i);
+        bool route=true;
+#ifdef DESKTOP_TRIO_LOCK
+        route=!trio_is_locked();
+#endif
+        if(changed){if(route)reset_input();for(unsigned i=0;i<DESKTOP_APP_COUNT;++i)shell_position(&desktop.windows[i],desktop.windows[i].x,desktop.windows[i].y);pointer_x=shell_clamp(pointer_x,0,desktop_width-1);pointer_y=shell_clamp(pointer_y,0,desktop_height-1);}
+        publish_state();microkit_notify(2);if(route)for(unsigned i=1;i<=DESKTOP_APP_COUNT;++i)input_notify(i);
+#ifdef DESKTOP_TRIO_LOCK
+        if(changed)trio_resized();
+#endif
     }
 }
+#endif
+#ifdef DESKTOP_TRIO_LOCK
+uintptr_t desktop_lock_state,lock_display_ack,auth_input;
+#include "lock.h"
 #endif
 static void dynamic_input_notify(void) { microkit_notify(24); }
 static bool dynamic_control(struct input_event_record e) { (void)e; return false; }
@@ -54,6 +69,10 @@ void init(void)
     resize_display(true);
 #endif
     dynamic_active = true; compositor_init();
+#ifdef DESKTOP_TRIO_LOCK
+    desktop.windows[2]=(struct shell_window){340,152,0,0};desktop.reserved=0x321;
+    dynamic_active=false;trio_boot();return;
+#endif
     desktop.windows[0].open = desktop.windows[0].visible = 1;
     desktop.windows[1].open = desktop.windows[1].visible = 1;
     #if DESKTOP_APP_COUNT == 3
@@ -69,10 +88,16 @@ void init(void)
 }
 void notified(microkit_channel channel)
 {
+#ifdef DESKTOP_TRIO_LOCK
+    if(channel==12)trio_tick();
+#endif
 #ifdef DESKTOP_DYNAMIC
     if(channel==31)resize_display(false);
 #endif
     for (unsigned i = 0; i < DESKTOP_APP_COUNT; ++i) {
+#ifdef DESKTOP_TRIO_LOCK
+        if(device_locked)break;
+#endif
         uint32_t *q = (void *)app_input(i+1);
         if (__atomic_exchange_n(&q[1], 0, __ATOMIC_ACQ_REL)) input_notify(i + 1);
     }
@@ -80,6 +105,10 @@ void notified(microkit_channel channel)
 }
 microkit_msginfo protected(microkit_channel channel, microkit_msginfo m)
 {
+#ifdef DESKTOP_TRIO_LOCK
+    if(channel==TRIO_AUTH_CHANNEL||channel==TRIO_PROBE_CHANNEL)return trio_request(channel,m);
+    if(device_locked)return microkit_msginfo_new(1,0);
+#endif
     if (channel != 61 || microkit_msginfo_get_label(m) != SHELL_REQUEST ||
         microkit_msginfo_get_count(m) != 4 || seL4_MessageInfo_get_extraCaps(m)) return microkit_msginfo_new(1, 0);
     uint64_t command = microkit_mr_get(0), id = microkit_mr_get(1);
@@ -98,4 +127,10 @@ microkit_msginfo protected(microkit_channel channel, microkit_msginfo m)
     return microkit_msginfo_new(0, 0);
 }
 seL4_Bool fault(microkit_child child, microkit_msginfo info, microkit_msginfo *reply)
-{ return compositor_fault(child, info, reply); }
+{
+#ifdef DESKTOP_TRIO_LOCK
+    (void)child;(void)info;(void)reply;trio_lock(true);session_failed=vault_failed=true;lock_phase=TRIO_FAILED;trio_publish();return seL4_False;
+#else
+    return compositor_fault(child, info, reply);
+#endif
+}

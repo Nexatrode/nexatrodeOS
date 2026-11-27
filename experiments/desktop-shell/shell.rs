@@ -11,12 +11,12 @@ const APP_COUNT: usize = if cfg!(feature = "desktop-browser-shell") { 3 } else {
 const SCALE: usize = if cfg!(feature = "desktop-shell-2x") { 2 } else { 1 };
 const WIDTH: usize = 1280 * SCALE;
 const HEIGHT: usize = 800 * SCALE;
-const MAX_WIDTH: usize=if cfg!(feature="desktop-resize-shell") {3840} else {WIDTH};
-const MAX_HEIGHT: usize=if cfg!(feature="desktop-resize-shell") {2160} else {HEIGHT};
+#[cfg(feature="desktop-virgl-shell")] #[path="decor_cache.rs"] mod decor_cache;
 type HeapMutex = sel4_microkit::_private::heap::RawOneShotMutex;
 #[global_allocator]
 static HEAP: sel4_dlmalloc::DeferredStaticDlmalloc<HeapMutex> = sel4_dlmalloc::DeferredStaticDlmalloc::new();
 #[repr(C)] struct Header { revision: AtomicU32, width: u32, height: u32, stride: u32 }
+const BACKDROP_HEADER_BYTES:usize=if cfg!(feature="desktop-virgl-shell") {16+8*20} else {16};
 #[repr(C)] #[derive(Clone, Copy, Default)] struct Window { x: i32, y: i32, open: u32, visible: u32 }
 #[repr(C)] struct State { revision: AtomicU32, top: u32, focused: u32, reserved: u32, windows: [Window; APP_COUNT] }
 #[repr(C)] #[derive(Clone, Copy)] struct Event { kind: u32, code: u32, value: u32, x: i32, y: i32 }
@@ -25,7 +25,10 @@ static HEAP: sel4_dlmalloc::DeferredStaticDlmalloc<HeapMutex> = sel4_dlmalloc::D
 const _: () = assert!(core::mem::size_of::<State>() == 16 + 16 * APP_COUNT);
 struct Shell { window: Rc<MinimalSoftwareWindow>, ui: DesktopShell, revision: u32, pointer: Option<LogicalPosition>, model: Rc<VecModel<DesktopWindow>>, focused: u32,
     width:usize,height:usize,app_height:usize,force_full:bool,
-    #[cfg(feature="desktop-virgl-shell")] decor_focus: Option<u32>,
+    #[cfg(feature="desktop-virgl-shell")] decor_focus: Option<(u32,usize)>,
+    #[cfg(feature="desktop-virgl-shell")] decor_window: Rc<MinimalSoftwareWindow>,
+    #[cfg(feature="desktop-virgl-shell")] decor_ui: DesktopShell,
+    #[cfg(feature="desktop-virgl-shell")] decor_model: Rc<VecModel<DesktopWindow>>,
     #[cfg(feature="desktop-virgl-shell")] scratch: Vec<slint::Rgb8Pixel>,
 }
 impl Shell {
@@ -53,7 +56,9 @@ impl Shell {
                     else if i==0 { if top==1 {1} else {0} } else {top as usize-1}
                 });
                 if order.iter().any(|i|*i>=APP_COUNT) || order.iter().enumerate().any(|(i,v)|order[..i].contains(v)) { return; }
-                let windows: Vec<_> = order.into_iter().map(|i| DesktopWindow { id: (i + 1) as i32, left: if cfg!(feature="desktop-virgl-shell") {0} else {wins[i].x}, top: if cfg!(feature="desktop-virgl-shell") {43} else {wins[i].y}, shown: wins[i].visible != 0, active: focused == (i + 1) as u32 }).collect();
+                // In layered mode the main Slint view owns the backdrop/dock
+                // only; focus and stacking must not dirty that render target.
+                let windows: Vec<_> = if cfg!(feature="desktop-virgl-shell") {Vec::new()} else {order.into_iter().map(|i| DesktopWindow { id: (i + 1) as i32, left:wins[i].x, top:wins[i].y, shown: wins[i].visible != 0, active: focused == (i + 1) as u32 }).collect()};
                 for (i, data) in windows.into_iter().enumerate() {
                     if let Some(old)=self.model.row_data(i) {
                         if old.id!=data.id || old.left!=data.left || old.top!=data.top || old.shown!=data.shown || old.active!=data.active {self.model.set_row_data(i,data);}
@@ -82,26 +87,38 @@ impl Shell {
     fn draw(&mut self) {
         self.refresh(); slint::platform::update_timers_and_animations();
         #[cfg(feature="desktop-virgl-shell")]
-        if self.revision!=0 && self.decor_focus!=Some(self.focused) {
+        if self.revision!=0 && self.decor_focus!=Some((self.focused,self.app_height)) {
             const DW: usize=562*SCALE;
             let dh=(self.app_height+44)*SCALE;
             const _: ()=assert!(16+DW*564*SCALE*3<=0x400000);
+            let changed=decor_cache::changed(self.decor_focus,self.focused,self.app_height,APP_COUNT);
+            self.decor_ui.set_app_height(self.app_height as i32);
+            self.decor_window.set_size(PhysicalSize::new(DW as u32,dh as u32));
+            for i in 0..APP_COUNT {
+                if let Some(mut row)=self.decor_model.row_data(i) {
+                    let active=self.focused==(i+1) as u32;
+                    if row.active!=active {row.active=active;self.decor_model.set_row_data(i,row);}
+                }
+            }
             let base=memory_region_symbol!(shell_decorations:*mut u8).as_ptr();
             for id in 1..=APP_COUNT {
-                self.ui.set_layer_window(id as i32);
+                if changed&(1<<(id-1))==0 {continue;}
+                self.decor_ui.set_layer_window(id as i32);
                 let scratch=&mut self.scratch;
-                self.window.draw_if_needed(|renderer| {renderer.render(scratch,self.width);});
+                let mut rendered=false;
+                self.decor_window.draw_if_needed(|renderer| {renderer.render(scratch,DW);rendered=true;});
+                assert!(rendered,"changed decoration rendered into its private adapter");
                 let surface=unsafe {base.add((id-1)*0x400000).cast::<Header>()};
                 let header=unsafe {&*surface};let before=header.revision.load(Ordering::Relaxed);
                 header.revision.store(before.wrapping_add(1),Ordering::Release);fence(Ordering::SeqCst);
                 unsafe {
                     ptr::addr_of_mut!((*surface).width).write(DW as u32);ptr::addr_of_mut!((*surface).height).write(dh as u32);ptr::addr_of_mut!((*surface).stride).write((DW*3) as u32);
                     let dest=surface.add(1).cast::<slint::Rgb8Pixel>();
-                    for row in 0..dh {ptr::copy_nonoverlapping(self.scratch.as_ptr().add(row*self.width),dest.add(row*DW),DW);}
+                    ptr::copy_nonoverlapping(self.scratch.as_ptr(),dest,DW*dh);
                 }
                 header.revision.store(before.wrapping_add(2),Ordering::Release);
             }
-            self.ui.set_layer_window(0);self.decor_focus=Some(self.focused);
+            self.decor_focus=Some((self.focused,self.app_height));
         }
         let surface = memory_region_symbol!(shell_surface: *mut Header).as_ptr();
         let header = unsafe { &*surface };
@@ -111,9 +128,16 @@ impl Shell {
         self.window.draw_if_needed(|renderer| {
             header.revision.store(before.wrapping_add(1), Ordering::Release); fence(Ordering::SeqCst);
             unsafe { ptr::addr_of_mut!((*surface).width).write(self.width as u32); ptr::addr_of_mut!((*surface).height).write(self.height as u32); ptr::addr_of_mut!((*surface).stride).write((self.width * 3) as u32); }
-            let pixels = unsafe { core::slice::from_raw_parts_mut(surface.add(1).cast::<slint::Rgb8Pixel>(), self.width * self.height) };
+            let pixels = unsafe { core::slice::from_raw_parts_mut(surface.cast::<u8>().add(BACKDROP_HEADER_BYTES).cast::<slint::Rgb8Pixel>(), self.width * self.height) };
             if force_full {renderer.set_repaint_buffer_type(RepaintBufferType::NewBuffer);}
-            renderer.render(pixels, self.width);
+            let region=renderer.render(pixels, self.width);
+            #[cfg(feature="desktop-virgl-shell")]
+            unsafe {
+                let origin=region.bounding_box_origin();let size=region.bounding_box_size();
+                let even=before.wrapping_add(2);let slot=(even as usize/2)%8;
+                let entry=surface.cast::<u32>().add(4+slot*5);
+                for (i,value) in [even,origin.x as u32,origin.y as u32,size.width,size.height].into_iter().enumerate(){entry.add(i).write(value);}
+            }
             if force_full {renderer.set_repaint_buffer_type(RepaintBufferType::ReusedBuffer);}
             header.revision.store(before.wrapping_add(2), Ordering::Release);
             changed = true;
@@ -144,7 +168,13 @@ impl Shell {
 #[protection_domain]
 fn init() -> Shell {
     HEAP.set_bounds(sel4_dlmalloc::StaticHeapBounds::new(memory_region_symbol!(shell_heap: *mut u8).as_ptr(), (if cfg!(feature="desktop-resize-shell") {128} else if cfg!(feature="desktop-virgl-shell") {64} else {32}) * 1024 * 1024)).unwrap();
-    let window = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer); guest_platform::install(&window);
+    let window = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
+    #[cfg(feature="desktop-virgl-shell")]
+    let decor_window=MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+    #[cfg(feature="desktop-virgl-shell")]
+    guest_platform::install_with_windows(&window,&[decor_window.clone()]);
+    #[cfg(not(feature="desktop-virgl-shell"))]
+    guest_platform::install(&window);
     window.dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor: SCALE as f32 });
     let ui = DesktopShell::new().unwrap();
     ui.set_browser_enabled(APP_COUNT==3);
@@ -160,9 +190,20 @@ fn init() -> Shell {
     });
     ui.show().unwrap(); window.set_size(PhysicalSize::new(WIDTH as u32, HEIGHT as u32));
     let model = Rc::new(VecModel::from(Vec::<DesktopWindow>::new())); ui.set_windows(ModelRc::from(model.clone()));
+    #[cfg(feature="desktop-virgl-shell")]
+    let (decor_ui,decor_model)={
+        decor_window.dispatch_event(WindowEvent::ScaleFactorChanged{scale_factor:SCALE as f32});
+        let ui=DesktopShell::new().unwrap();ui.set_layer_window(1);ui.set_real_apps(true);ui.set_compositor_layers(true);
+        let rows=(0..APP_COUNT).map(|i|DesktopWindow{id:(i+1) as i32,left:0,top:43,shown:true,active:false}).collect::<Vec<_>>();
+        let model=Rc::new(VecModel::from(rows));ui.set_windows(ModelRc::from(model.clone()));ui.show().unwrap();
+        (ui,model)
+    };
     let mut shell = Shell { window, ui, revision: 0, pointer: None, model, focused:0,width:WIDTH,height:HEIGHT,app_height:520,force_full:true,
         #[cfg(feature="desktop-virgl-shell")] decor_focus:None,
-        #[cfg(feature="desktop-virgl-shell")] scratch:alloc::vec![slint::Rgb8Pixel::new(0,0,0);MAX_WIDTH*MAX_HEIGHT],
+        #[cfg(feature="desktop-virgl-shell")] decor_window,
+        #[cfg(feature="desktop-virgl-shell")] decor_ui,
+        #[cfg(feature="desktop-virgl-shell")] decor_model,
+        #[cfg(feature="desktop-virgl-shell")] scratch:alloc::vec![slint::Rgb8Pixel::new(0,0,0);562*564*SCALE*SCALE],
     }; shell.draw();
     debug_println!("DESKTOP_SHELL|READY|{}x{}|scale={}", WIDTH, HEIGHT, SCALE); shell
 }

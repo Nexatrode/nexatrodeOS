@@ -4679,6 +4679,9 @@ def crypto_unit_test():
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == 'desktop':
+        run([sys.executable, ROOT / 'tools/desktop.py', *sys.argv[2:]])
+        return
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["setup", "build", "run", "test", "test-storage", "test-sqlcipher-vault",
                                              "test-graphics", "test-input", "test-slint-utm", "test-input-net",

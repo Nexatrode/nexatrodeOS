@@ -4,9 +4,50 @@ from pathlib import Path
 from simplex_live_peer import Peer
 from desktop_gpu_capture import capture
 
-def exercise(monitor,trace,temporary,evidence,browser=False,gpu=False):
+def prepare_windows(monitor,temporary,viewport):
+    """Place test windows through real titlebar input after native resizing."""
+    width,height=viewport;w,h=width//2,height//2
+    def state():
+        p=temporary/'prepare-scene.bin'
+        try:
+            monitor.send('pmemsave',{'val':0x5fbb4000,'size':64,'filename':str(p)})
+            s=struct.unpack('<16I',p.read_bytes())
+            return s if s[0] and not s[0]&1 else None
+        finally:p.unlink(missing_ok=True)
+    def until(fn):
+        end=time.monotonic()+15
+        while time.monotonic()<end:
+            value=fn()
+            if value:return value
+            time.sleep(.03)
+        raise RuntimeError('window placement failed: '+str(state()))
+    def pointer(x,y,down=None):
+        events=[{'type':'abs','data':{'axis':a,'value':(v*32767+m-1)//m}} for a,v,m in [('x',x,w-1),('y',y,h-1)]]
+        if down is not None:events.append({'type':'btn','data':{'button':'left','down':down}})
+        monitor.send('input-send-event',{'events':events})
+    def click(x,y):pointer(x,y,True);time.sleep(.05);pointer(x,y,False);time.sleep(.1)
+    try:
+        pointer(0,0,False)
+        for owner,(tx,ty) in enumerate(((68,126),(650,110),(340,min(152,h-520-128))),1):
+            click((w-276)//2+54+84*(owner-1),h-72)
+            s=until(lambda:(s:=state()) and s[2]==owner and s)
+            x,y=s[4+4*(owner-1):6+4*(owner-1)]
+            pointer(x+100,y-22,True);time.sleep(.03);pointer(tx+100,ty-22)
+            # No synthetic keep-awake motion while the drag owns the pointer.
+            until(lambda:(s:=state()) and tuple(s[4+4*(owner-1):6+4*(owner-1)])==(tx,ty))
+            pointer(tx+100,ty-22,False)
+            if owner==3:click(tx+490,ty-22)
+        click((w-276)//2+54,h-72)
+        return until(state)
+    finally:
+        monitor.send('input-send-event',{'events':[{'type':'btn','data':{'button':'left','down':False}}]})
+
+def exercise(monitor,trace,temporary,evidence,browser=False,gpu=False,viewport=(2560,1600),lifecycle=None):
     checks=[];peer=None;samples=[];browser_case=None
-    chat_dock=556 if browser else 596
+    width,height=viewport;w,h=width//2,height//2
+    assert width>=2444 and height>=1560,'live app check needs the full 520px app viewport'
+    if browser:prepare_windows(monitor,temporary,viewport)
+    chat_dock=(w-276)//2+54 if browser else (w-192)//2+52
     def output():
         text=trace.read_text(errors='replace')
         for bad in ('MON|ERROR','panicked at','VMFault','Data Abort','Prefetch Abort','GUEST_AGENT_RESTORE_FAIL','HASKELL_EXIT|','DESKTOP_GPU|FAIL|'):
@@ -15,6 +56,7 @@ def exercise(monitor,trace,temporary,evidence,browser=False,gpu=False):
     def until(predicate,timeout=120):
         end=time.monotonic()+timeout
         while time.monotonic()<end:
+            if lifecycle:lifecycle.activity()
             output();v=predicate()
             if v:return v
             time.sleep(.05)
@@ -28,7 +70,7 @@ def exercise(monitor,trace,temporary,evidence,browser=False,gpu=False):
             result.append((nums,texts))
         return result
     def pointer(x,y,down=None):
-        events=[{'type':'abs','data':{'axis':a,'value':round(v*32767/maximum)}} for a,v,maximum in [('x',x,1279),('y',y,799)]]
+        events=[{'type':'abs','data':{'axis':a,'value':round(v*32767/maximum)}} for a,v,maximum in [('x',x,w-1),('y',y,h-1)]]
         if down is not None:events.append({'type':'btn','data':{'button':'left','down':down}})
         monitor.send('input-send-event',{'events':events})
     def click(x,y):pointer(x,y,True);time.sleep(.05);pointer(x,y,False);time.sleep(.1)
@@ -37,7 +79,7 @@ def exercise(monitor,trace,temporary,evidence,browser=False,gpu=False):
         for c in text:key({' ':'spc','-':'minus',':':'semicolon','.':'dot'}.get(c,c));time.sleep(.012)
     def frame(name):
         path=temporary/(name+'.ppm');capture(monitor,path,gpu);data=path.read_bytes();shutil.copyfile(path,evidence/path.name);h=re.match(rb'P6\s+(\d+)\s+(\d+)\s+255\s',data)
-        assert h and tuple(map(int,h.groups()))==(2560,1600),'desktop must remain 2x'
+        assert h and tuple(map(int,h.groups()))==viewport,'desktop viewport changed during the live check'
         subprocess.run(['magick',str(path),str(evidence/(name+'.png'))],check=True)
         return data[h.end():]
     def received(text):
@@ -54,7 +96,7 @@ def exercise(monitor,trace,temporary,evidence,browser=False,gpu=False):
         until(lambda:ui()[0][0][4]==1)
         if browser:
             from desktop_browser_input import BrowserCase
-            browser_case=BrowserCase(monitor,trace,temporary,evidence,click,until,ui,gpu=gpu)
+            browser_case=BrowserCase(monitor,trace,temporary,evidence,click,until,ui,gpu=gpu,viewport=viewport)
             browser_case.initial()
         frame('desktop-ready');checks.append('both real 2x frontends publish independent surfaces in the landscape shell')
         peer=Peer(temporary/'peer')
@@ -109,6 +151,9 @@ def exercise(monitor,trace,temporary,evidence,browser=False,gpu=False):
         until(lambda:ui()[1][0][8]==0,timeout=180)
         until(lambda:'Scanning block' in ui()[1][1][3] or 'SCAN' in ui()[1][1][2],timeout=180)
         before=ui()[1][1][3]
+        if lifecycle:
+            lifecycle.concurrent(locals())
+            before=ui()[1][1][3]
         peer.command(f'/_send @{cid} text walletbackground')
         concurrent=[{'msgContent':{'type':'image','text':'concurrentphoto','image':'data:image/jpg;base64,'+data}}]
         peer.command(f'/_send @{cid} json '+json.dumps(concurrent))
@@ -116,7 +161,7 @@ def exercise(monitor,trace,temporary,evidence,browser=False,gpu=False):
         # Minimize and restore SimpleX through trusted chrome while the wallet advances.
         click(558,104);click(850,90);word('unowned')
         assert ui()[0][0][5]==0,'hidden chat received wallet-owned keyboard input'
-        time.sleep(.2);click(chat_dock,728)
+        time.sleep(.2);click(chat_dock,height//2-72)
         until(lambda:'walletbackground' in ui()[0][1][1]);send('backgroundreply')
         until(lambda:ui()[1][1][3]!=before,timeout=60)
         after=ui()[1][1][3]
@@ -127,7 +172,7 @@ def exercise(monitor,trace,temporary,evidence,browser=False,gpu=False):
             data=path.read_bytes();h=re.match(rb'P6\s+(\d+)\s+(\d+)\s+255\s',data);assert h
             rgb=data[h.end():]
             # The pointer and dock are outside this wallet-content region.
-            return hashlib.sha256(b''.join(rgb[(y*2560+1340)*3:(y*2560+2360)*3] for y in range(250,650))).digest()
+            return hashlib.sha256(b''.join(rgb[(y*width+1340)*3:(y*width+2360)*3] for y in range(250,650))).digest()
         for _ in range(6):
             for tab,x in ((3,650+490),(0,650+70)):
                 pointer(x,110+486);before_pixels=wallet_picture()
@@ -136,7 +181,7 @@ def exercise(monitor,trace,temporary,evidence,browser=False,gpu=False):
                 samples.append((time.monotonic()-begin)*1000)
         frame('desktop-final')
         # Exit and restore retain the live service; close is not a lock/scrub claim.
-        click(600,104);click(chat_dock,728);send('restoredsend')
+        click(600,104);click(chat_dock,height//2-72);send('restoredsend')
         checks.append('repeated wallet tabs, window focus/minimize/restore and retained SimpleX connection work together')
         until(lambda:'concurrentphoto' in ui()[0][1][1] and ui()[0][0][6]>=2,timeout=120)
         frame('desktop-photos-complete')
@@ -150,7 +195,7 @@ def exercise(monitor,trace,temporary,evidence,browser=False,gpu=False):
         if browser_case:
             browser_case.finish()
             checks.extend(browser_case.checks)
-        report={'checks':checks,'saved_data_used':False,'fresh_peer':True,'photo_presented_pixels':blue,'wallet_node':'rpc.nexawal.com:443','wallet_tip_at_start':tip,'wallet_restore_height':restore_height,'legacy_regression_range':3812148,'wallet_detail_before':before,'wallet_detail_after':after,'tab_observed_ms':samples,'tab_median_ms':statistics.median(samples),'tab_p95_ms':sorted(samples)[math.ceil(len(samples)*.95)-1],'timing_scope':'host QMP mouse press to changed presented wallet-content pixels plus matching tab state; sampled polling, excludes physical host display latency','static_service_lifecycle':True,'lock_integrated':False,'wallet_full_sync_completed':fully_synced,'wallet_terminal_status':terminal,'photo_ready_after_run':ui()[0][0][6]}
+        report={'checks':checks,'saved_data_used':False,'fresh_peer':True,'photo_presented_pixels':blue,'wallet_node':'rpc.nexawal.com:443','wallet_tip_at_start':tip,'wallet_restore_height':restore_height,'legacy_regression_range':3812148,'wallet_detail_before':before,'wallet_detail_after':after,'tab_observed_ms':samples,'tab_median_ms':statistics.median(samples),'tab_p95_ms':sorted(samples)[math.ceil(len(samples)*.95)-1],'timing_scope':'host QMP mouse press to changed presented wallet-content pixels plus matching tab state; sampled polling, excludes physical host display latency','static_service_lifecycle':True,'lock_integrated':lifecycle is not None,'wallet_full_sync_completed':fully_synced,'wallet_terminal_status':terminal,'photo_ready_after_run':ui()[0][0][6]}
         report['gpu_readback_verification']=gpu
         if gpu:
             report['timing_scope']='host QMP mouse press to changed diagnostic GPU-readback pixels plus matching tab state; includes readback/reference verification/polling and excludes physical display latency'
@@ -158,6 +203,7 @@ def exercise(monitor,trace,temporary,evidence,browser=False,gpu=False):
         (evidence/'validation.json').write_text(json.dumps(report,indent=2)+'\n')
         for c in checks:print('CHECK '+c,flush=True)
         assert fully_synced, 'full wallet scan failed: '+terminal
+        if lifecycle:lifecycle.finish(locals())
     finally:
         if peer:
             if 'contact' in locals():

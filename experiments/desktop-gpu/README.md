@@ -385,6 +385,98 @@ evidence of a kernel performance improvement. Results and the correction to
 the earlier CPU-label interpretation are retained in
 `build/desktop-apps/resize-verify/kernel-startup-validation.json`.
 
+## Partial redraw and decoration checkpoint — November 25, 2026
+
+Composition now repairs one conservative rectangle per frame instead of
+repainting the entire render target. Each alternating target keeps its own
+last **completed** scene, source revisions and cursor bounds. Moving/hiding a
+window includes its old and new bounds; stacking changes include changed
+overlaps. Content/decoration changes include their visible window bounds.
+Resize invalidates both target histories. All backdrop, rounded decoration,
+content and cursor blits are clipped to that repair rectangle. A target's
+history advances only after its final successful presentation fence.
+
+The backdrop publishes an eight-generation dirty-rectangle journal under its
+existing seqlock. The renderer unions every intervening update, snapshots only
+that rectangle, and uploads it with the matching stride and byte offset. Each
+target separately accumulates those updates until repaired. Missing, overwritten
+or malformed history falls back to a full snapshot/upload/repair. The protocol
+adds 160 bytes after the existing 16-byte backdrop header only in the VirGL
+shell; CPU shell and decoration headers retain their previous layouts.
+
+Focus no longer repeatedly changes the main fullscreen Slint render target into
+a decoration target. A private, window-sized Slint adapter produces retained
+decorations. Only the previously and newly active decorations are regenerated;
+initialization or changed app height regenerates all three. The old image's
+focus control republished revisions `[10,10,10]` as `[12,12,12]`. In the new live
+checks, all twelve switches in each mode/build changed exactly the two affected
+decorations and left the third revision unchanged. Dock hover/pressed feedback
+still works and uses the backdrop's bounded damage rather than being disabled.
+
+Two diagnostic runs at 2× (windowed 2560×1564, fullscreen 2624×1644) passed GPU
+readback comparison with the CPU scene reference while six bounded CPU workers
+ran. Each exercised twelve focus changes, six completed held-button moves,
+minimize/restore and cursor damage. Independent resize/layout checks also passed
+typing and held dragging in both modes. Native UTM inspection of the normal
+build showed the entire SimpleX body and decoration moved while the QMP button
+was still held. These inputs are QMP-injected; the native screenshot checks
+presentation separately, not physical mouse latency.
+
+The normal, trace-free image then completed 15-second 120 Hz input trials with
+the same six workers and three overlapping apps:
+
+| 2× mode | Completed guest frames/sec | Interval median / p95 / max | Damaged area / full-frame equivalent |
+| --- | ---: | --- | ---: |
+| Windowed, 2624×1564 | 54.99 | 17.64 / 26.11 / 99.52 ms | 31.37% |
+| Fullscreen, 2624×1644 | 54.00 | 17.71 / 28.78 / 69.51 ms | 29.59% |
+
+Both had zero blocking GPU waits, zero watchdog recoveries, a maximum of four
+command leases, and zero frames/IRQs/timer wakes during the final three idle
+seconds. The workers consumed about 106 and 101 child CPU-seconds over 26-second
+trials. Cursor-only checks damaged 0.13% and 0.12% of a full-frame equivalent.
+QMP-observed switch-to-first-completed-scene medians were 89.20 and 83.95 ms;
+updated decorations were observed by 95.22 and 100.02 ms median. Polling and
+command round trips are included, so these are not physical tap-to-photon
+measurements. The diagnostic readback build is excluded from these timings.
+
+This reduces composition area substantially, but the overlapping layers still
+cause overdraw inside that area. Full scanout/host flush is retained: target
+damage and the host's previously presented front-buffer damage are different
+histories. There is no host-vsync feedback yet, and these runs still contain
+70–100 ms interval outliers. Earlier full-redraw runs had different dimensions
+and host load; the recorded frame rates are not a controlled speedup ratio.
+No kernel, Pixel GPU or Wi-Fi change is part of this checkpoint.
+
+Normal loader SHA-256:
+`9bbb82c58de0c6797dfcc28e0b7c43a9f3e6fb474fc90a7e030ad1cf8770d213`.
+Raw manifests/results are in ignored
+`build/desktop-apps/resize-verify/{damage,motion,damage-load}-partial-*.json`,
+with diagnostic/normal build and install logs under `build/desktop-damage-*`.
+The diagnostic checks initially caught excessive backdrop invalidation and an
+input-coordinate rounding error in the new harness; both were corrected before
+the passing runs. Failed attempts remain in those logs.
+
+Reproduce against an already-running **disposable** 2× fixture (normal or
+`--gpu-verify` diagnostic build):
+
+```sh
+python3 tests/desktop_damage_load.py \
+  --guest build/desktop-apps/your-disposable-fixture --label windowed
+# Enter fullscreen through UTM, then:
+python3 tests/desktop_damage_load.py \
+  --guest build/desktop-apps/your-disposable-fixture --label fullscreen
+```
+
+The wrapper starts/reaps only its own six self-terminating load workers, records
+their CPU time, and rejects expired load. Diagnostic builds perform pixel checks;
+normal builds additionally run held-motion timing. It never provisions saved
+data. The production clipping/damage headers also pass ASan/UBSan tests against
+an independent per-pixel scene oracle, including alternate buffers, cursor
+trails, z-order, hide/restore, source changes and resize. Deliberately omitting
+old bounds or using the other target's history must fail that oracle. Focus
+mask, GPU queue/pacing, three-app stacking and resize tests pass; the CPU-only
+desktop shell also compiles with the shared platform-adapter change.
+
 ## Protocol references
 
 - [VirtIO GPU protocol](https://docs.oasis-open.org/virtio/virtio/v1.3/virtio-v1.3.html)

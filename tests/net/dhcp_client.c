@@ -22,6 +22,9 @@
 #include "lwip/pbuf.h"
 #include "lwip/udp.h"
 #include "dhcp_client.h"
+#ifdef DESKTOP_PRIVATE_TCP
+#include "desktop_tcp_wire.h"
+#endif
 
 __attribute__((__section__(".timer_client_config"))) timer_client_config_t timer_config;
 __attribute__((__section__(".net_client_config"))) net_client_config_t net_config;
@@ -201,13 +204,21 @@ void init(void)
         }
     }
     if (haskell_tcp_page != 0) {
+#ifndef DESKTOP_PRIVATE_TCP
         volatile struct haskell_tcp_page *pages =
             (volatile struct haskell_tcp_page *)haskell_tcp_page;
+#endif
         for (unsigned i = 0; i < HASKELL_TCP_SESSIONS; ++i) {
+#ifdef DESKTOP_PRIVATE_TCP
+            volatile struct haskell_tcp_page *io=i<2?(volatile struct haskell_tcp_page *)haskell_tcp_page+i:
+                desktop_tcp_wire(haskell_tcp_page,wallet_tcp_page,browser_tcp_page,i,true);
+            io->magic=HASKELL_TCP_MAGIC;io->request_len=0;io->response_len=0;io->reserved=i;
+#else
             pages[i].magic = HASKELL_TCP_MAGIC;
             pages[i].request_len = 0;
             pages[i].response_len = 0;
             pages[i].reserved = i;
+#endif
         }
     }
 
@@ -253,9 +264,14 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
         microkit_mr_set(2, haskell_simplex_network_cleared());
         return microkit_msginfo_new(SIMPLEX_NET_OK, 3);
     }
+#ifdef DESKTOP_LOCK_NETWORK
+    if (!desktop_tcp_permitted(ch,haskell_simplex_network_active()))
+        return microkit_msginfo_new(HASKELL_TCP_NOT_READY,0);
+#else
     if (ch == HASKELL_TCP_CHANNEL && (!haskell_simplex_network_active() ||
         ((volatile struct haskell_tcp_page *)haskell_tcp_page)[0].reserved >= 2))
         return microkit_msginfo_new(HASKELL_TCP_NOT_READY, 0);
+#endif
 #endif
     if ((ch == HASKELL_TCP_CHANNEL || ch == WALLET_TCP_CHANNEL ||
          ch == SHELL_TCP_CHANNEL || ch == WORKER_TCP_CHANNEL
@@ -272,6 +288,11 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
                              microkit_mr_get(0) == WALLET_RX_WAKE_ONCE;
 #endif
         /* Wallet/worker get dedicated wire pages; agent/shell share page 0. */
+#ifdef DESKTOP_PRIVATE_TCP
+        int selected=desktop_tcp_slot(ch,((volatile struct haskell_tcp_page *)haskell_tcp_page)->reserved);
+        if(selected<0)return microkit_msginfo_new(HASKELL_TCP_ERROR,0);
+        haskell_tcp_select((unsigned)selected,ch==WALLET_TCP_CHANNEL||ch==WORKER_TCP_CHANNEL||ch==BROWSER_TCP_CHANNEL);
+#else
 #ifdef DESKTOP_BROWSER_NETWORK
         if (ch == BROWSER_TCP_CHANNEL) {
             haskell_tcp_select(HASKELL_TCP_BROWSER_SLOT, true);
@@ -288,6 +309,7 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
             if (slot >= HASKELL_TCP_SESSIONS) slot = 0;
             haskell_tcp_select(slot, false);
         }
+#endif
         /* r18/r19: wallet WaitConnect STATUS PPC runs on this PD and can
          * starve notified(RX). Host lsof showed Cake ESTABLISHED while qemu
          * usernet stayed TCP[SYN_RCVD] until Connection aborted — SYN-ACK was
@@ -311,6 +333,10 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
         else if (label == HASKELL_DNS_POLL) result = haskell_dns_poll();
         /* Non-blocking breadcrumb into active wire page so wallet can observe. */
         if (label == HASKELL_TCP_STATUS) {
+#ifdef DESKTOP_PRIVATE_TCP
+            volatile struct haskell_tcp_page *io=haskell_tcp_wire_page();
+            io->response_len=1;io->response[0]=(uint8_t)(result & 0xff);
+#else
             volatile struct haskell_tcp_page *pages =
                 (volatile struct haskell_tcp_page *)haskell_tcp_page;
             uint32_t slot = (ch == WALLET_TCP_CHANNEL) ? HASKELL_TCP_WALLET_SLOT
@@ -330,6 +356,7 @@ microkit_msginfo protected(microkit_channel ch, microkit_msginfo msginfo)
                 pages[0].response_len = 1;
                 pages[0].response[0] = (uint8_t)(result & 0xff);
             }
+#endif
         }
         /* SYN-ACK / data may have arrived during the op; drain again. */
         sddf_lwip_process_rx();

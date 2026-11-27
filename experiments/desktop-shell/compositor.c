@@ -12,6 +12,9 @@ uintptr_t shell_surface, shell_state, shell_input, ui_pointer;
 static bool dynamic_active, focus_dirty;
 static void dynamic_input_notify(void);
 static bool dynamic_control(struct input_event_record);
+#ifdef DESKTOP_TRIO_LOCK
+static bool trio_input(struct input_event_record);
+#endif
 static struct shell_state desktop = {.top = 2, .windows = {{68, 126, 0, 0}, {650, 110, 0, 0}}};
 static uint32_t sent[DESKTOP_SHELL_OWNER], driver_tail, driver_dropped;
 static bool reset_pending[DESKTOP_SHELL_OWNER], input_ready;
@@ -195,6 +198,9 @@ static void input(void)
     while (driver_tail != head) {
         struct input_event_record e = ring->events[driver_tail++ & INPUT_EVENT_MASK];
         if (e.reserved) continue;
+#ifdef DESKTOP_TRIO_LOCK
+        if(trio_input(e))continue;
+#endif
         if (e.device == INPUT_DEVICE_TABLET) {
             if (e.type == 3 && e.code <= 1 && e.value <= 32767) {
                 if (!e.code) pointer_x = e.value * (SHELL_WIDTH - 1) / 32767;

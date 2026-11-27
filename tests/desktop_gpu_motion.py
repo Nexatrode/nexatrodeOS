@@ -10,6 +10,13 @@ from utm_vault_key_storage import QmpPipe
 
 ROOT=Path(__file__).resolve().parents[1]
 
+def host_locked():
+    rows=plistlib.loads(subprocess.check_output(['ioreg','-n','Root','-d','1','-a'],timeout=10))
+    rows=rows if isinstance(rows,list) else [rows]
+    users=[user for row in rows for user in row.get('IOConsoleUsers',[])]
+    assert users,'host screen-lock state unavailable'
+    return any(user.get('CGSSessionScreenIsLocked',False) for user in users)
+
 class MotionQmp(QmpPipe):
     # The generic fixture client polls every 20 ms. Motion needs finer polling
     # to avoid imposing that interval on the input stream being measured.
@@ -40,12 +47,6 @@ def main():
     p.add_argument('--allow-locked-host',action='store_true',help='diagnostic only; a locked Mac is not a visible dragging test')
     a=p.parse_args();assert a.label.replace('-','').isalnum() and 1<=a.seconds<=15 and 10<=a.hz<=120
     assert 0<=a.idle_seconds<=10
-    def host_locked():
-        rows=plistlib.loads(subprocess.check_output(['ioreg','-n','Root','-d','1','-a'],timeout=10))
-        rows=rows if isinstance(rows,list) else [rows]
-        users=[user for row in rows for user in row.get('IOConsoleUsers',[])]
-        assert users,'host screen-lock state unavailable'
-        return any(user.get('CGSSessionScreenIsLocked',False) for user in users)
     locked_before=host_locked()
     assert a.allow_locked_host or not locked_before,'unlock the Mac for a visible dragging measurement'
     guest=a.guest.resolve();assert guest.is_relative_to(ROOT/'build/desktop-apps')
@@ -153,7 +154,16 @@ def main():
             guard()
         locked_after=host_locked()
         assert a.allow_locked_host or not locked_after,'Mac locked during measurement; reject visible-drag result'
-        result={'uuid':session['uuid'],'loader_sha256':session['loader_sha256'],'gpu_verify':False,
+        composition=None
+        if last_stats[31]:
+            u64=lambda v,i:v[i]|(v[i+1]<<32)
+            count=last_stats[2]-initial_stats[2];full=count*mode[2]*mode[3]
+            damaged=u64(last_stats,27)-u64(initial_stats,27)
+            composition={'completed_frames':count,'damaged_pixels':damaged,
+                'full_frame_equivalent_pixels':full,'damaged_fraction':damaged/full,
+                'emitted_blit_pixels':u64(last_stats,29)-u64(initial_stats,29),
+                'emitted_blits':(last_stats[31]-initial_stats[31])&0xffffffff}
+        result={'uuid':session['uuid'],'loader_sha256':session['loader_sha256'],'gpu_verify':False,'composition':composition,
                 'host_screen_locked_before':locked_before,'host_screen_locked_after':locked_after,
                 'locked_host_diagnostic_allowed':a.allow_locked_host,
                 'harness_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),'mode_settled_seconds':2,

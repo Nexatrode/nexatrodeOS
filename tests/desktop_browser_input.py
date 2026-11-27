@@ -9,18 +9,20 @@ from desktop_gpu_capture import capture
 
 class BrowserCase:
     x,y=340,152
-    def __init__(self, monitor, trace, temporary, evidence, click, until, ui,gpu=False):
+    def __init__(self, monitor, trace, temporary, evidence, click, until, ui,gpu=False,viewport=(2560,1600)):
         self.monitor=monitor;self.trace=trace;self.temporary=temporary;self.evidence=evidence
         self.click=click;self.until=until;self.ui=ui;self.checks=[]
         self.gpu=gpu
+        self.dock=((viewport[0]//2-276)//2+222,viewport[1]//2-72)
     def state(self):
         path=self.temporary/'shell-state.bin'
         self.monitor.send('pmemsave',{'val':0x5fbb4000,'size':64,'filename':str(path)})
         state=struct.unpack('<16I',path.read_bytes());path.unlink()
         return state if state[0] and not state[0]&1 else None
     def open(self):
-        self.click(724,728)
-        self.until(lambda:(s:=self.state()) and s[2]==3 and s[15]==1,timeout=15)
+        self.click(*self.dock)
+        s=self.until(lambda:(s:=self.state()) and s[2]==3 and s[15]==1 and s,timeout=15)
+        self.x,self.y=s[12:14]
     def minimize(self):
         self.click(self.x+490,self.y-22)
         self.until(lambda:(s:=self.state()) and s[15]==0,timeout=15)

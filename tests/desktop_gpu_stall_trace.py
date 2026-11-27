@@ -42,7 +42,7 @@ def correlate(commands,runs):
     frames=[]
     for label,run in runs.items():
         for row in run['samples']:
-            if len(row)<20:continue
+            if len(row)<20 or not row[16]:continue
             draw=commands.get(row[16]);flush=commands.get(row[17])
             if not flush or 'done' not in flush:continue
             if draw is None and flush.get('draw_start') is not None:

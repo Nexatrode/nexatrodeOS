@@ -5,7 +5,7 @@ import xml.etree.ElementTree as ET
 
 def validate(path, directory, browser=False):
     system=ET.parse(path).getroot();directory=Path(directory)
-    domains={p.get('name'):p for p in system.findall('protection_domain')}
+    domains={p.get('name'):p for p in system.iter('protection_domain')}
     edges={}
     for channel in system.findall('channel'):
         a,b=list(channel)
@@ -57,8 +57,17 @@ def validate(path, directory, browser=False):
     for offset,suffix in ((8,'storage_info'),(24,'request'),(40,'response'),(64,'data')):
         assert struct.unpack_from('<Q',config,offset)[0]==mapped['blk_client_vault_'+suffix]
     symbols=subprocess.check_output(['/opt/homebrew/opt/llvm/bin/llvm-nm',directory/'dhcp_client.elf'],text=True)
-    assert 'haskell_simplex_network_active' not in symbols,'unlocked fixture accidentally contains the initially-locked network gate'
-    assert 'haskell_simplex_network_transition' not in symbols
+    locked='lock_auth' in domains
+    if locked:
+        assert 'haskell_simplex_network_active' in symbols and 'haskell_simplex_network_transition' in symbols
+        assert edges['desktop_manager',17]==('dhcp_client',7)
+        assert edges['lock_auth',0]==('desktop_manager',60)
+        assert edges['desktop_manager',13]==('vault',12)
+        assert edges['lock_auth',4]==('vault',10)
+        assert 'device_lock_transfer' not in maps('desktop_manager')
+    else:
+        assert 'haskell_simplex_network_active' not in symbols,'unlocked fixture accidentally contains the initially-locked network gate'
+        assert 'haskell_simplex_network_transition' not in symbols
     if browser:
         assert maps('native_browser') == {'browser_frame','browser_heap','browser_input','browser_request','browser_response'} | ({'desktop_display_mode'} if resize else set())
         assert maps('browser_https') & maps('wallet_app') == set()
@@ -69,6 +78,13 @@ def validate(path, directory, browser=False):
         assert edges['browser_https',2]==('entropy_rng',0)
         assert 'browser_tcp_io' in maps('dhcp_client') and 'haskell_tcp_io' not in maps('browser_https')
         assert 'browser_tcp_page' in symbols
+        assert 'wallet_tcp_page' in symbols
+        assert 'haskell_tcp_wire_page' in symbols
+        assert 'wallet_tcp_io' in maps('dhcp_client')
+        assert maps('simplex_agent') & maps('wallet_app') == set()
+        assert maps('simplex_agent') & maps('scan_worker') == set()
+        assert domains['wallet_app'].find("map[@mr='wallet_tcp_io']") is not None
+        assert domains['scan_worker'].find("map[@mr='wallet_tcp_io']") is not None
         assert 'native_reflow_test_arm' not in subprocess.check_output(['/opt/homebrew/opt/llvm/bin/llvm-nm',directory/'browser.elf'],text=True)
     print('PASS desktop frontend authority separation, private mappings, scan affinity, block relocation and unlocked networking')
 

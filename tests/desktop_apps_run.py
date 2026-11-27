@@ -13,7 +13,7 @@ def ctl(*args):return subprocess.run([CTL,*map(str,args)],capture_output=True,te
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--guest',type=Path,required=True);p.add_argument('--template',type=Path,required=True);p.add_argument('--boot-only',action='store_true');p.add_argument('--leave-running',action='store_true');p.add_argument('--gpu-navigation',action='store_true');p.add_argument('--boot-hidden',action='store_true',help='prepare a boot-only disposable VM in the background; interactive checks still need an unlocked Mac');p.add_argument('--native-input-probe',action='store_true',help='display-only agent mouse bypass and host event trace in this disposable VM');p.add_argument('--gpu-command-trace',action='store_true',help='timestamped GPU command/fence diagnostics in this disposable VM; never input events');a=p.parse_args()
     guest=a.guest.resolve();assert guest.is_relative_to(ROOT/'build/desktop-apps')
-    m=json.loads((guest/'build.json').read_text());assert m['saved_data_used'] is False and m['development_storage_key'] is True
+    m=json.loads((guest/'build.json').read_text());assert m['saved_data_used'] is False and m['development_storage_key'] is not bool(m.get('wrapped_session'))
     assert hashlib.sha256((guest/'loader.img').read_bytes()).hexdigest()==m['loader_sha256']
     for path,h in m['sources'].items():assert hashlib.sha256((ROOT/path).read_bytes()).hexdigest()==h,path
     if a.boot_hidden:assert a.boot_only,'hidden boot does not run interactive checks'
@@ -40,6 +40,8 @@ def main():
         elif v.startswith('-netdev user,id=net0'):opts[i]='-netdev user,id=net0'
     configure_display(cfg,opts,m)
     shutil.copyfile(guest/'loader.img',data/'loader.img')
+    shutil.copyfile(guest/'build.json',data/'build-manifest.json')
+    if (guest/'runtime.json').is_file():shutil.copyfile(guest/'runtime.json',data/'runtime.json')
     with (data/'blank.img').open('wb') as f:f.truncate(64*1024*1024)
     subprocess.run(['sgdisk','--clear','--new=1:2048:0','--typecode=1:0700',str(data/'blank.img')],check=True,stdout=subprocess.DEVNULL)
     trace=data/'trace.log';mp=data/'monitor'
@@ -72,7 +74,7 @@ def main():
             if m.get('virgl'):
                 # Debug serial writes from four cores may interleave. A good
                 # rendered boot must not depend on intact text markers.
-                state=gpu_boot_state(monitor,data)
+                state=gpu_boot_state(monitor,data,m.get('wrapped_session',False))
                 if state['ready']:
                     session['boot_readiness']=state
                     break

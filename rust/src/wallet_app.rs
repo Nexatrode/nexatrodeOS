@@ -9,6 +9,8 @@ mod wallet_scan_protocol;
 mod wallet_scan_pool;
 #[cfg(feature = "wallet-scan-workers")]
 mod wallet_scan_mailbox;
+#[cfg(feature = "wallet-event-pump")]
+mod wallet_rpc_pump;
 mod wallet_tcp;
 #[cfg(feature = "wallet-sync-timer")]
 mod wallet_bulk;
@@ -179,6 +181,10 @@ fn init() -> WalletService {
         #[cfg(feature = "wallet-sync-timer")]
         bulk_unsupported: false,
         sync_phase: SyncPhase::Idle,
+        #[cfg(feature = "wallet-event-pump")]
+        rpc_poll_timer: wallet_rpc_pump::PollTimer::new(),
+        #[cfg(feature = "wallet-event-pump")]
+        rpc_connect_deadline: wallet_rpc_pump::ConnectDeadline::new(),
         sync_polls: 0,
         sync_req: [0u8; 16384],
         sync_req_len: 0,
@@ -359,6 +365,10 @@ struct WalletService {
     /// Advanced from notified() so dhcp PPC is not nested under shell Call and
     /// connect-wait does not STATUS-spin (that starved SYN-ACK on B7E4).
     sync_phase: SyncPhase,
+    #[cfg(feature = "wallet-event-pump")]
+    rpc_poll_timer: wallet_rpc_pump::PollTimer,
+    #[cfg(feature = "wallet-event-pump")]
+    rpc_connect_deadline: wallet_rpc_pump::ConnectDeadline,
     sync_polls: u32,
     sync_req: [u8; 16384],
     sync_req_len: usize,
@@ -689,6 +699,32 @@ impl WalletService {
         }
         buf[n..n + dig.len()].copy_from_slice(dig);
         n + dig.len()
+    }
+
+    // Timer-driven RPC handlers return to Microkit instead of exhausting their
+    // scheduling context thousands of times to simulate a delay.
+    fn rpc_poll_yield(count: usize) {
+        #[cfg(not(feature = "wallet-event-pump"))]
+        for _ in 0..count { sel4::r#yield(); }
+        #[cfg(feature = "wallet-event-pump")]
+        let _ = count;
+    }
+    fn rpc_poll_pause(&mut self) {
+        #[cfg(not(feature = "wallet-event-pump"))]
+        self.tcp_mut().pause_poll();
+    }
+
+    fn rpc_connect_expired(&self, count_limit:u32) -> bool {
+        #[cfg(feature = "wallet-event-pump")]
+        { let _=count_limit;self.rpc_connect_deadline.expired(wallet_bulk::monotonic_ms()) }
+        #[cfg(not(feature = "wallet-event-pump"))]
+        { self.sync_polls>=count_limit }
+    }
+    fn rpc_reopen_due(&mut self, every:u32) -> bool {
+        #[cfg(feature = "wallet-event-pump")]
+        { let _=every;self.rpc_connect_deadline.reopen(wallet_bulk::monotonic_ms()) }
+        #[cfg(not(feature = "wallet-event-pump"))]
+        { self.sync_polls>0 && self.sync_polls%every==0 }
     }
 
     fn tcp_mut(&mut self) -> &mut WalletTcp {
@@ -2631,9 +2667,9 @@ impl WalletService {
         if !self.tcp_open_sent {
             if self.sync_polls == 0 {
                 self.sync_polls = 1;
-                for _ in 0..2_000 {
-                    sel4::r#yield();
-                }
+                #[cfg(feature = "wallet-event-pump")]
+                self.rpc_connect_deadline.start(wallet_bulk::monotonic_ms());
+                Self::rpc_poll_yield(2_000);
                 return;
             }
             // publish_bytes so boot GetInfo WAIT NET is visible (not tip-folded).
@@ -2646,14 +2682,14 @@ impl WalletService {
                 Err(()) => {
                     // dhcp NOT_READY — keep trying on later notifies.
                     self.sync_polls = self.sync_polls.saturating_add(1);
-                    if self.sync_polls >= connect_lim {
+                    if self.rpc_connect_expired(connect_lim) {
                         if tip_connect {
                             self.tip_locked = false;
                         }
                         self.sync_fail(b"NEXAWAL | SYNC CONNECT FAIL");
                         return;
                     }
-                    self.tcp_mut().pause_poll();
+                    self.rpc_poll_pause();
                     return;
                 }
             }
@@ -2684,13 +2720,11 @@ impl WalletService {
                 // as agent STATUS polls so dhcp/lwIP timers and RX can run.
                 // Tip-locked paths keep the short yield so tip abandon stays snappy.
                 if !tip_connect && self.sync_rpc == SyncRpcKind::GetInfo {
-                    self.tcp_mut().pause_poll();
+                    self.rpc_poll_pause();
                 } else {
                     // dump222: long pause_poll here starved the shell bounce on TCG
                     // so CONNECTING UI froze and connect_lim never painted FAIL.
-                    for _ in 0..2_000 {
-                        sel4::r#yield();
-                    }
+                    Self::rpc_poll_yield(2_000);
                 }
                 // Stuck SYN (usernet SYN_RCVD, no ESTABLISHED): close+reOPEN so
                 // dhcp/Cake can try a fresh handshake before connect_lim.
@@ -2704,7 +2738,7 @@ impl WalletService {
                 } else {
                     256
                 };
-                if self.sync_polls > 0 && self.sync_polls % reopen_every == 0 {
+                if self.rpc_reopen_due(reopen_every) {
                     debug_println!(
                         "UIAPP|WALLET|TCP|SYN_REOPEN polls={} every={}",
                         self.sync_polls,
@@ -2713,9 +2747,7 @@ impl WalletService {
                     self.tcp_mut().close();
                     self.tcp_open_sent = false;
                     let _ = self.publish_progress(b"NEXAWAL | SYNC WAIT NET");
-                    for _ in 0..8_000 {
-                        sel4::r#yield();
-                    }
+                    Self::rpc_poll_yield(8_000);
                     if self.tcp_mut().open(node_ip, node_port).is_ok() {
                         self.tcp_open_sent = true;
                         debug_println!("UIAPP|WALLET|TCP|OPEN_OK");
@@ -2727,7 +2759,7 @@ impl WalletService {
                     );
                     let _ = self.publish_progress(b"NEXAWAL | SYNC WAIT NET");
                 }
-                if self.sync_polls >= connect_lim {
+                if self.rpc_connect_expired(connect_lim) {
                     if tip_scan_rpc && self.tip_abandon_peers_and_finish() {
                         return;
                     }
@@ -2749,7 +2781,7 @@ impl WalletService {
                 // toward Cake then Connection-aborted — wait much longer between
                 // boot GetInfo re-OPENs so one handshake can finish.
                 self.sync_polls = self.sync_polls.saturating_add(1);
-                if self.sync_polls >= connect_lim {
+                if self.rpc_connect_expired(connect_lim) {
                     if tip_scan_rpc && self.tip_abandon_peers_and_finish() {
                         return;
                     }
@@ -2778,7 +2810,7 @@ impl WalletService {
                         );
                     }
                 }
-                self.tcp_mut().pause_poll();
+                self.rpc_poll_pause();
             }
         }
     }
@@ -2855,7 +2887,7 @@ impl WalletService {
                     }
                 }) {
                     Ok(nexatrode_guest_https::Progress::Pending) => {
-                        for _ in 0..32 { sel4::r#yield(); }
+                        Self::rpc_poll_yield(32);
                     }
                     Ok(nexatrode_guest_https::Progress::Complete(response)) => {
                         self.sync_resp = response;
@@ -2969,7 +3001,7 @@ impl WalletService {
                     self.sync_fail(b"NEXAWAL | TLS TIMEOUT");
                 }
             } else {
-                self.tcp_mut().pause_poll();
+                self.rpc_poll_pause();
             }
             return;
         }
@@ -3015,13 +3047,11 @@ impl WalletService {
                         }
                         // Yield enough for the network PD to refill, without
                         // performing hundreds of yields for every 128 bytes.
-                        for _ in 0..32 {
-                            sel4::r#yield();
-                        }
+                        Self::rpc_poll_yield(32);
                         continue;
                     }
                     idle = idle.saturating_add(1);
-                    self.tcp_mut().pause_poll();
+                    self.rpc_poll_pause();
                     if idle >= idle_lim {
                         break;
                     }
@@ -3237,7 +3267,7 @@ impl WalletService {
                     }
                 }
                 // Let dhcp/ethernet run — shell may re-notify immediately.
-                self.tcp_mut().pause_poll();
+                self.rpc_poll_pause();
                 if self.sync_polls % 50 == 0 {
                     debug_println!(
                         "UIAPP|WALLET|TCP|RECV pending polls={} filled={}",
@@ -3394,7 +3424,7 @@ impl WalletService {
             }
             Err(()) => {
                 // Brief yield then retry — a single ERROR often races dhcp RX.
-                self.tcp_mut().pause_poll();
+                self.rpc_poll_pause();
                 if !self.sync_retry_recv("ERR") {
                     if !self.tip_abandon_peers_and_finish() {
                         self.sync_fail(b"NEXAWAL | SYNC RECV FAIL");
@@ -4688,6 +4718,8 @@ impl Handler for WalletService {
 
     fn notified(&mut self, channels: ChannelSet) -> Result<(), Self::Error> {
         let _ = channels;
+        #[cfg(feature = "wallet-event-pump")]
+        if channels.contains(SYNC_TIMER_CHANNEL) { self.rpc_poll_timer.fired(); }
         #[cfg(feature = "wallet-sync-timer")]
         if self.bulk.is_some() && self.sync_phase != SyncPhase::Range {
             self.cancel_bulk_scan();
@@ -4879,6 +4911,12 @@ impl Handler for WalletService {
             // abandon leave Idle and used to skip this notify, so the shell
             // never re-peeked and the FB froze on SYNC CONNECTING (dump184).
             WALLET_SHELL_CHANNEL.notify();
+        }
+        #[cfg(feature = "wallet-event-pump")]
+        if let Some(delay) = self.rpc_poll_timer.next(!matches!(self.sync_phase,
+            SyncPhase::Idle | SyncPhase::WaitTimer | SyncPhase::Range)) {
+            set_mr(0, delay);
+            let _ = SYNC_TIMER_CHANNEL.pp_call(MessageInfo::new(1, 1));
         }
         Ok(())
     }

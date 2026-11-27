@@ -13,7 +13,7 @@ STRIDE = 0x20000000
 FIRST_CHILD = 32
 
 
-def patch(builder, replace):
+def patch(builder, replace, *, service_names=NAMES, parent_name='runtime_manager', notification_base=8):
     replace(builder, '    address_space: AddressSpace,\n}',
             '    address_space: AddressSpace,\n    writable_frames: Vec<(u64, ObjectId, u64)>,\n}')
     replace(builder, '        let mut frame_sequence = 0; // For object naming purpose only.',
@@ -30,7 +30,7 @@ def patch(builder, replace):
     replace(builder, '                    PageSize::Small.fixed_size_bits(sel4_config) as u8,',
             '                    page_size.fixed_size_bits(sel4_config) as u8,')
     replace(builder, '            address_space,\n        })', '            address_space,\n            writable_frames,\n        })')
-    names = ','.join('"' + name + '"' for name in NAMES)
+    names = ','.join('"' + name + '"' for name in service_names)
     replace(builder, '    let mut pd_stack_bottoms: Vec<u64> = Vec::new();', f'''
     let mut pd_stack_bottoms: Vec<u64> = Vec::new();
     let session_names = [{names}];
@@ -43,7 +43,7 @@ def patch(builder, replace):
             }
         }
         let mut session_frames = pd_elf_spec.writable_frames.clone();
-        let pd_tcb_obj_id = pd_elf_spec.tcb;''')
+        let pd_tcb_obj_id = pd_elf_spec.tcb;'''.replace('"runtime_manager"', '"'+parent_name+'"'))
     replace(builder, '        let ipcbuf_frame_cap =\n',
             '        session_frames.push((0x10000000, ipcbuf_frame_obj_id, 4096));\n        let ipcbuf_frame_cap =\n')
     replace(builder, '            let stack_frame_cap =\n',
@@ -72,4 +72,4 @@ def patch(builder, replace):
                 capdl_util_make_ntfn_cap(child.notification, RIGHTS_NTFN_RECEIVE, 0));
         }
     }
-''')
+'''.replace('"runtime_manager"', '"'+parent_name+'"').replace('8 + i as u32',str(notification_base)+' + i as u32'))
