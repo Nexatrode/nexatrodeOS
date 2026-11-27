@@ -51,6 +51,19 @@ in `build/desktop-apps/maps/maps-final-normal/`, `maps-final-diagnostic/` and
 `e48ac0b0a7bbee1038f620fbc51b6d12242ff9909b53f5138639a6fd164210bb`
 is the tested normal image. Saved wallet/chats and Pixel Wi-Fi were not inputs.
 
+The November 27 shared label update replaces the coarse occupancy grid with
+measured glyph/shadow bounds, padding, duplicate-name suppression and place-first
+ordering. The diagnostic four-app run independently checked 12 overview and
+24 zoomed/panned rectangles: all were in bounds and disjoint. Actual GPU pixels,
+held dragging and four-app navigation still passed. The subsequent normal image
+`b02e0ef4d683f07cfcf193fec450208de9b5ea8ed3d968b05b3406f00190654f`
+passed its loaded-host map/switch checks; guest map publication was 11.789 ms
+median / 21.575 ms maximum in that run. The host/VM workloads differ from the
+earlier timings, so this is not a controlled speed comparison. Evidence is in
+`maps-labels/` and `maps-labels-normal/` under the same disposable build directory.
+The phone adapter shares this reader/renderer and tests the font bounds at 3×;
+see [mobile Maps](../mobile-browser/README.md#optional-offline-maps).
+
 ## Existing app assembly
 
 This opt-in Microkit image runs SimpleX and NexaWal, plus windowed NetSurf with

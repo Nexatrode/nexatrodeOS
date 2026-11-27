@@ -13,6 +13,8 @@ use core::{
 mod skia_guest;
 #[cfg(feature="mobile-netsurf")]
 mod mobile_browser_utm;
+#[cfg(feature="mobile-maps")]
+mod mobile_maps_utm;
 #[cfg(feature = "desktop-real-app")]
 #[path = "../../desktop-apps/input.rs"]
 mod desktop_window;
@@ -303,6 +305,8 @@ struct PhotoTicket {
 mod device_lock_utm;
 
 struct SlintService {
+    #[cfg(feature="mobile-maps")]
+    mobile_maps: Rc<RefCell<mobile_maps_utm::Maps>>,
     #[cfg(feature="mobile-netsurf")]
     mobile_browser: Rc<RefCell<mobile_browser_utm::Browser>>,
     #[cfg(feature = "utm-device-lock")]
@@ -3740,7 +3744,7 @@ impl SlintService {
         // even if a background page changes while the device is locked.
         let locked = self._ui.get_device_lock_screen();
         let (chrome_y, chrome_height) = skia_guest::page_chrome_band(page);
-        if !locked && !(cfg!(feature="mobile-netsurf") && page==18) && (skia_guest::take_chrome_page(page)
+        if !locked && !(cfg!(feature="mobile-netsurf") && page==18) && !(cfg!(feature="mobile-maps") && page==19) && (skia_guest::take_chrome_page(page)
             || full
             || personal_os_slint_notes_spike::frame::bands_intersect(slint_y, slint_bottom, chrome_y, chrome_height))
         {
@@ -3956,6 +3960,8 @@ impl SlintService {
     }
 
     fn publish_frame(&mut self) {
+        #[cfg(feature="mobile-maps")]
+        self.mobile_maps.borrow_mut().poll(&self._ui);
         #[cfg(feature="mobile-netsurf")]
         self.mobile_browser.borrow_mut().poll(&self._ui);
         #[cfg(feature="desktop-resize-app")]
@@ -4181,6 +4187,8 @@ fn init() -> SlintService {
     personal_os_slint_notes_spike::suite::wire(&ui);
     #[cfg(feature="mobile-netsurf")]
     let mobile_browser=mobile_browser_utm::Browser::initialize(&ui);
+    #[cfg(feature="mobile-maps")]
+    let mobile_maps=mobile_maps_utm::Maps::initialize(&ui);
     #[cfg(feature = "simplex-agent-ui")]
     ui.set_show_preview_privacy_controls(false);
     let notes_service = NotesServiceClient {
@@ -5476,6 +5484,8 @@ fn init() -> SlintService {
     let mut service = SlintService {
         #[cfg(feature="mobile-netsurf")]
         mobile_browser,
+        #[cfg(feature="mobile-maps")]
+        mobile_maps,
         #[cfg(feature = "utm-device-lock")]
         device_lock,
         #[cfg(feature = "utm-photo-worker")]
@@ -7164,6 +7174,14 @@ impl SlintService {
                 return Ok(MessageInfo::new(REPLY_SLINT_EVENT_OK, 0));
             }
         }
+        #[cfg(feature="mobile-maps")]
+        {
+            let packed=POSTED_POSITION.load(Ordering::Relaxed);
+            let x=if posted {(packed&65535) as u32} else {unsafe {core::ptr::addr_of!((*self.pointer.as_ptr()).x).read_volatile()}};
+            let y=if posted {(packed>>16) as u32} else {unsafe {core::ptr::addr_of!((*self.pointer.as_ptr()).y).read_volatile()}};
+            let handled=self.mobile_maps.borrow_mut().input(&self._ui,device,event_type,code,value,x,y);
+            if handled {self.publish_frame();SLINT_INPUT.notify();return Ok(MessageInfo::new(REPLY_SLINT_EVENT_OK,0));}
+        }
         #[cfg(feature="mobile-netsurf")]
         {
             let packed=POSTED_POSITION.load(Ordering::Relaxed);
@@ -7423,12 +7441,12 @@ impl SlintService {
                     self._ui.set_edit_target(0);
                     debug_println!("SLINT UTM HOME HIT nexawal");
                 } else if col_w > 0.0 && row(0.34, 0.19).contains(&y) && right.contains(&x) {
-                    self._ui.set_page(10);
+                    self._ui.set_page(if self._ui.get_maps_available() {19} else {10});
                     self._ui.set_edit_target(0);
                     debug_println!("SLINT UTM HOME HIT tools");
                 } else if row(0.55, 0.11).contains(&y) && (8.0..w - 8.0).contains(&x) {
                     self._ui.set_settings_selected(-1);
-                    self._ui.set_page(8);
+                    self._ui.set_page(if self._ui.get_maps_available() && left.contains(&x) {10} else {8});
                     self._ui.set_edit_target(0);
                     debug_println!("SLINT UTM HOME HIT settings");
                 }
@@ -7813,6 +7831,11 @@ impl Handler for SlintService {
         if channels.contains(Channel::new(17)) {
             if self._ui.get_page()==18 {self.publish_frame();SLINT_INPUT.notify();}
             else {self.mobile_browser.borrow_mut().poll(&self._ui);}
+        }
+        #[cfg(feature="mobile-maps")]
+        if channels.contains(Channel::new(19)) {
+            if self._ui.get_page()==19 {self.publish_frame();SLINT_INPUT.notify();}
+            else {self.mobile_maps.borrow_mut().poll(&self._ui);}
         }
         let timer_fired = self.frame_timer.is_some_and(|channel| channels.contains(channel));
         if timer_fired {

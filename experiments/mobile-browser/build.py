@@ -17,6 +17,7 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     for name in ('inputs','storage','composer','output'):p.add_argument('--'+name,type=Path,required=True)
     p.add_argument('--resume',action='store_true');p.add_argument('--observe',action='store_true',help='disposable-only UI observation; never personal data')
+    p.add_argument('--maps',action='store_true',help='add the shared offline map renderer and private phone adapter')
     a=p.parse_args();inputs=a.inputs.resolve();out=a.output.resolve()
     if not out.is_relative_to(ROOT/'build/mobile-browser') or '.utm' in str(out):p.error('use a worktree build/mobile-browser staging directory')
     if out.exists() and any(out.iterdir()) and not (a.resume and (out/'.disposable-build').is_file()):p.error('use a fresh stage or --resume on a marked stage')
@@ -40,7 +41,7 @@ def main():
     # development key. No installed vault ELF or installation.json is inspected.
     for image in {p.get('path') for p in system.iter('program_image')} - {'rust_vault_disk.elf','slint_notes_utm.elf','slint_photo_worker.elf','slint_photo_reader.elf','slint_transcript_worker.elf','rust_messages_agent_app.elf','rust_entropy_rng.elf','rust_clock.elf','input_service.elf'}:
         shutil.copyfile(inputs/'pds'/image,out/image)
-    ui=cargo('experiments/slint-notes/Cargo.toml','mobile-netsurf,simplex-agent-ui,utm-photo-worker,utm-transcript-worker,utm-device-lock'+(',mobile-browser-test' if a.observe else ''),['slint_notes_utm','slint_photo_worker','slint_photo_reader','slint_transcript_worker'],'mobile-browser-cargo')
+    ui=cargo('experiments/slint-notes/Cargo.toml','mobile-netsurf,simplex-agent-ui,utm-photo-worker,utm-transcript-worker,utm-device-lock'+(',mobile-maps' if a.maps else '')+(',mobile-browser-test' if a.observe else ''),['slint_notes_utm','slint_photo_worker','slint_photo_reader','slint_transcript_worker'],'mobile-browser-cargo')
     for name in ('slint_notes_utm','slint_photo_worker','slint_photo_reader','slint_transcript_worker'):shutil.copyfile(ui/(name+'.elf'),out/(name+'.elf'))
     backend=cargo('rust/Cargo.toml','storage-test,simplex-agent-vault,utm-slint-input,utm-photo-reader,utm-transcript-worker,utm-device-lock',['rust_vault_disk','rust_messages_agent_app','rust_entropy_rng','rust_input_service','rust_clock'],'mobile-browser-backends')
     for name in ('rust_vault_disk','rust_messages_agent_app','rust_entropy_rng','rust_clock'):shutil.copyfile(backend/(name+'.elf'),out/(name+'.elf'))
@@ -89,6 +90,12 @@ def main():
         region('mobile_ui_observation',8192,phys_addr='0x5fb92000');mapping(pd('slint_ui'),'mobile_ui_observation',0x91002000,'rw','desktop_test_observation')
     for left,lid,right,rid,pp in [('native_browser',0,'slint_ui',17,False),('native_browser',2,'timer_driver',9,True),('native_browser',3,'browser_https',0,False),('native_browser',4,'browser_https',4,True),('browser_https',1,'dhcp_client',8,True),('browser_https',2,'entropy_rng',0,True),('browser_https',3,'timer_driver',10,True)]:channel(left,lid,right,rid,pp)
     channel('slint_ui',18,'native_browser',1)
+    if a.maps:
+        spec=importlib.util.spec_from_file_location('shared_maps_adapter',ROOT/'experiments/desktop-apps/maps.py')
+        maps=importlib.util.module_from_spec(spec);spec.loader.exec_module(maps)
+        map_pin=maps.build(ROOT,out,inputs,run,mobile=True)
+        maps.attach_mobile(system,pd('slint_ui'),mapping,region,channel)
+        maps.validate_mobile(system)
     validate(system,a.observe)
     ET.indent(system);ET.ElementTree(system).write(out/'mobile.system',encoding='utf-8',xml_declaration=True)
     run(a.composer.resolve(),out/'mobile.system','--board','qemu_virt_aarch64_el1','--config','smp-debug','--search-path',out,'-o',out/'loader.img','-r',out/'report.txt',env=dict(env,MICROKIT_SDK=str(inputs/'sdk')))
@@ -96,7 +103,11 @@ def main():
     sources += [x for x in (ROOT/'experiments/netsurf-native').rglob('*') if x.is_file() and '__pycache__' not in str(x)]
     sources += [ROOT/'experiments/mobile-browser/lab.html',ROOT/'tests/mobile_browser_utm.py',ROOT/'tests/mobile_browser_input.py']
     digest=lambda x:hashlib.sha256(x.read_bytes()).hexdigest()
-    manifest=dict(profile='mobile-netsurf',saved_data_used=False,development_storage_key=True,observation=a.observe,resolution=[1080,2340],browser_css_width=360,browser_scale=3,javascript=True,https=True,certificate_verification=True,private_tcp_slot=4,full_session_lock=False,source_commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),sources={str(x.relative_to(ROOT)):digest(x) for x in sources},artifacts={x.name:digest(x) for x in out.glob('*.elf')},loader_sha256=digest(out/'loader.img'))
+    if a.maps:
+        sources += [x for x in (ROOT/'experiments/comaps-native').rglob('*') if x.is_file() and '__pycache__' not in str(x)]
+        sources += [ROOT/'experiments/desktop-apps/maps.py',ROOT/'experiments/slint-notes/src/mobile_maps_utm.rs',ROOT/'experiments/slint-notes/assets/icons/maps.svg',ROOT/'tests/mobile_maps_input.py',ROOT/'tests/mobile_maps_contract_test.py']
+    manifest=dict(profile='mobile-netsurf-maps' if a.maps else 'mobile-netsurf',maps=a.maps,saved_data_used=False,development_storage_key=True,observation=a.observe,resolution=[1080,2340],browser_css_width=360,browser_scale=3,javascript=True,https=True,certificate_verification=True,private_tcp_slot=4,full_session_lock=False,source_commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),sources={str(x.relative_to(ROOT)):digest(x) for x in sources},artifacts={x.name:digest(x) for x in out.glob('*.elf')},composer_sha256=digest(a.composer.resolve()),loader_sha256=digest(out/'loader.img'))
+    if a.maps:manifest['map_region']=map_pin
     (out/'build.json').write_text(json.dumps(manifest,indent=2)+'\n');print('PASS mobile browser with existing phone apps; disposable development key only',flush=True)
 
 def validate(system,observe=False):

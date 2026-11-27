@@ -16,7 +16,19 @@
 #include "../../tests/input/slint_frame.h"
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
-#ifdef MAP_DESKTOP
+#include "labels.h"
+#ifdef MAP_MOBILE
+static unsigned map_height=720;
+static bool active;
+#define W 360
+#define H map_height
+#define TOP 64
+#define BOTTOM (H-52)
+#define BUTTON_LEFT (W-166)
+#define BUTTON_STEP 54
+#define BUTTON_WIDTH 46
+#define SCALE 3
+#elif defined(MAP_DESKTOP)
 #include "../desktop-gpu/display_protocol.h"
 uintptr_t desktop_display_mode;
 static unsigned map_height=520;
@@ -38,7 +50,9 @@ static bool active=true;
 #define BUTTON_STEP 85
 #define BUTTON_WIDTH 70
 #endif
+#ifndef SCALE
 #define SCALE 2
+#endif
 uintptr_t map_frame, map_heap, input_handoff, ui_focus, ui_pointer;
 extern const unsigned char map_blob[], map_blob_end[], map_font[];
 static struct offline_map map;
@@ -52,12 +66,17 @@ static unsigned zoom_level;
 #ifdef MAP_PROFILE
 uintptr_t map_observation;
 static uint64_t input_events,input_at;
+static struct map_labels last_layout;
 static void profile(uint64_t start,uint64_t *phases,uint64_t rendered,uint64_t notified) {
     _Atomic uint64_t *p=(void*)map_observation;
     uint64_t revision=atomic_load_explicit(p,memory_order_relaxed);
     atomic_store_explicit(p,revision+1,memory_order_release);atomic_thread_fence(memory_order_seq_cst);
     p[1]=0x4e584d4150303031ULL;p[2]=input_events;p[3]=frames;p[4]=active;
     p[5]=(uint64_t)(int64_t)(cx*1e9);p[6]=(uint64_t)(int64_t)(cy*1e9);p[7]=(uint64_t)(units*1e12);p[8]=zoom_level;
+    p[9]=H;p[10]=last_layout.count;
+    _Static_assert(464*8+MAP_MAX_LABELS*4*4<=4096,"bounded label rectangles after timing history");
+    uint32_t *rect=(void*)(p+464);
+    for(unsigned i=0;i<last_layout.count;++i){struct map_label_rect r=last_layout.rect[i];rect[i*4]=r.left;rect[i*4+1]=r.top;rect[i*4+2]=r.right;rect[i*4+3]=r.bottom;}
     if(start){unsigned slot=frames%32;uint64_t data[14]={frames,input_events,input_at,start,phases[0],phases[1],phases[2],rendered,notified,zoom_level,(uint64_t)(int64_t)(cx*1e9),(uint64_t)(int64_t)(cy*1e9),(uint64_t)(units*1e12),0};
         for(unsigned i=0;i<14;i++)p[16+slot*14+i]=data[i];}
     atomic_store_explicit(p,revision+2,memory_order_release);
@@ -87,11 +106,7 @@ static void fill(int x,int y,int width,int height,uint32_t colour) {
 static int text(int x,int y,int size,uint32_t colour,const char *s) {
     float pen=x*SCALE,scale=stbtt_ScaleForPixelHeight(&font,size*SCALE);
     while(*s) {
-        unsigned cp=(unsigned char)*s++;
-        if(cp>=128) {
-            unsigned n=cp<224?1:cp<240?2:3;cp&=(1u<<(6-n))-1;
-            while(n--&&*s)cp=(cp<<6)|((unsigned char)*s++&63);
-        }
+        unsigned cp=map_codepoint(&s);
         struct glyph *g=NULL;
         for(unsigned i=0;i<256;i++)if(glyphs[i].code==(int)cp&&glyphs[i].size==size){g=&glyphs[i];break;}
         if(!g){g=&glyphs[next_glyph++%256];free(g->alpha);g->code=cp;g->size=size;
@@ -173,18 +188,29 @@ static void draw(void) {
         }
     }
     phases[pass]=us();}
-    /* Bounded label occupancy grid; repeated road segments don't repeat names. */
-    bool used[8][12]={0};unsigned labels=0;
-    for(unsigned i=0;i<map.feature_count&&labels<55;i++) {
+    /* Places precede streets. Reserve measured glyph/shadow rectangles with
+     * padding, and suppress repeated names across segmented road features. */
+    struct map_labels layout={0};unsigned labels=0;
+    for(unsigned priority=0;priority<2;++priority)for(unsigned i=0;i<map.feature_count&&layout.count<MAP_MAX_LABELS;i++) {
         struct map_feature *f=&map.features[i];unsigned s=style(f);
-        if(!f->name[0]||!visible(f)||(!((f->geometry==0&&s==8)||(f->geometry==1&&(s==4||s==5)&&zoom_level>=1))))continue;
-        struct map_point p=map.points[f->first+f->count/2];int x=sx(p.x),y=sy(p.y);
-        if(x<25||x>W-190||y<TOP+25||y>BOTTOM-20)continue;
-        unsigned gx=x*12/W,gy=(y-TOP)*8/(BOTTOM-TOP);if(used[gy][gx])continue;used[gy][gx]=true;
-        int size=s==8?21:15;text(x+1,y+1,size,0xffffff,f->name);text(x,y,size,0x334752,f->name);labels++;
+        if(!f->name[0]||!f->count||!visible(f)||!(priority==0?(f->geometry==0&&s==8):(f->geometry==1&&(s==4||s==5)&&zoom_level>=1)))continue;
+        struct map_point p=map.points[f->first+f->count/2];int anchor_x=sx(p.x),anchor_y=sy(p.y);
+        if(anchor_x<0||anchor_x>=W||anchor_y<TOP||anchor_y>=BOTTOM)continue;
+        int size=s==8?21:15;struct map_label_rect glyph;
+        if(!map_text_bounds(&font,size*SCALE,f->name,&glyph))continue;
+        int x=anchor_x-(glyph.right+glyph.left)/(2*SCALE);
+        for(unsigned attempt=0;attempt<3;++attempt){int y=anchor_y+(attempt==0?-4:attempt==1?size+8:-size-12);
+            struct map_label_rect bounds={x*SCALE+glyph.left-3*SCALE,y*SCALE+glyph.top-3*SCALE,x*SCALE+glyph.right+4*SCALE,y*SCALE+glyph.bottom+4*SCALE};
+            if(!map_label_admit(&layout,f->name,bounds,(struct map_label_rect){4*SCALE,(TOP+4)*SCALE,(W-4)*SCALE,(BOTTOM-4)*SCALE}))continue;
+            text(x+1,y+1,size,0xffffff,f->name);text(x,y,size,0x334752,f->name);break;
+        }
     }
+    labels=layout.count;
+#ifdef MAP_PROFILE
+    last_layout=layout;
+#endif
     fill(0,0,W,TOP,0x0b202d);
-#ifdef MAP_DESKTOP
+#if defined(MAP_DESKTOP) || defined(MAP_MOBILE)
     text(16,27,22,0xe9f7fb,"Gibraltar");text(16,51,14,0x91b5c5,"CoMaps · offline");
 #else
     text(28,35,29,0xe9f7fb,"CoMaps data · Gibraltar");text(29,67,18,0x91b5c5,"Offline native experiment");
@@ -192,7 +218,11 @@ static void draw(void) {
     const char *buttons[]={"−","+","Fit"};
     for(unsigned i=0;i<3;i++){int x=BUTTON_LEFT+i*BUTTON_STEP;fill(x,14,BUTTON_WIDTH,42,0x183c4a);text(x+12,44,23,0x92e3e0,buttons[i]);}
     fill(0,BOTTOM,W,H-BOTTOM,0x0b202d);
-#ifdef MAP_DESKTOP
+#ifdef MAP_MOBILE
+    text(12,H-30,12,0x9cbfc9,"© OpenStreetMap contributors");
+    text(12,H-12,12,0x9cbfc9,"CoMaps Project");
+    char status[80];snprintf(status,sizeof(status),"Zoom %u",zoom_level);text(W-75,H-12,14,0x91d9d7,status);
+#elif defined(MAP_DESKTOP)
     text(12,H-13,13,0x9cbfc9,"© OpenStreetMap contributors · CoMaps Project");
     char status[80];snprintf(status,sizeof(status),"Zoom %u",zoom_level);text(W-75,H-13,14,0x91d9d7,status);
 #else
@@ -211,7 +241,7 @@ static void draw(void) {
     printf("COMAPS|FRAME|n=%u|zoom=%u|cx=%.9f|cy=%.9f|units=%.12f|features=%u|labels=%u|us=%llu\n",frames,zoom_level,cx,cy,units,drawn,labels,(unsigned long long)(us()-started));
 }
 static void publish_pointer(void) {
-#ifdef MAP_DESKTOP
+#if defined(MAP_DESKTOP) || defined(MAP_MOBILE)
     return; /* The trusted manager owns the global pointer. */
 #else
     _Atomic uint32_t *p=(void*)ui_pointer;
@@ -229,7 +259,7 @@ static void constrain(void) {
     cx=fmax(map.minx-map.origin_x,fmin(map.maxx-map.origin_x,cx));
     cy=fmax(map.miny-map.origin_y,fmin(map.maxy-map.origin_y,cy));
 }
-#ifdef MAP_DESKTOP
+#if defined(MAP_DESKTOP) || defined(MAP_MOBILE)
 static void map_key(unsigned code,unsigned value) {
     if(value==0||value>2)return;
     if(code==13||code==78)zoom(1);else if(code==12||code==74)zoom(-1);
@@ -244,25 +274,44 @@ static void map_button(unsigned value) {
     if(my>=TOP&&my<(int)BOTTOM){held=true;lastx=mx;lasty=my;}
     else if(my>=14&&my<=56&&mx>=BUTTON_LEFT){if(mx>=BUTTON_LEFT+2*BUTTON_STEP)reset();else if(mx>=BUTTON_LEFT+BUTTON_STEP)zoom(1);else zoom(-1);}
 }
+#if defined(MAP_DESKTOP) || defined(MAP_MOBILE)
+static void set_height(unsigned height) {
+    if(map_height==height)return;
+    map_height=height;initial_units=.066/(BOTTOM-TOP);double factor=1.;
+    for(unsigned i=0;i<zoom_level;i++)factor*=1.5;
+    units=initial_units/factor;changed=true;held=false;
+}
 #ifdef MAP_DESKTOP
 static void resize(void) {
     const struct display_mode *p=(void*)desktop_display_mode;
     uint32_t first=__atomic_load_n(&p->revision,__ATOMIC_ACQUIRE);struct display_mode mode=*p;
     atomic_thread_fence(memory_order_acquire);
-    if(first&&!(first&1)&&first==__atomic_load_n(&p->revision,__ATOMIC_ACQUIRE)&&mode.scale==2&&mode.app_height>=360&&mode.app_height<=520&&map_height!=mode.app_height){map_height=mode.app_height;initial_units=.066/(BOTTOM-TOP);double factor=1.;for(unsigned i=0;i<zoom_level;i++)factor*=1.5;units=initial_units/factor;changed=true;held=false;}
+    if(first&&!(first&1)&&first==__atomic_load_n(&p->revision,__ATOMIC_ACQUIRE)&&mode.scale==2&&mode.app_height>=360&&mode.app_height<=520)set_height(mode.app_height);
 }
+#endif
 static void input(void) {
 #ifdef MAP_PROFILE
     input_at=us();
 #endif
-    resize();uint32_t *q=(void*)input_handoff;uint32_t head=__atomic_load_n(q+2,__ATOMIC_ACQUIRE);
+#ifdef MAP_DESKTOP
+    resize();
+#endif
+    uint32_t *q=(void*)input_handoff;uint32_t head=__atomic_load_n(q+2,__ATOMIC_ACQUIRE);
     if(head-input_tail>224){input_tail=head;held=false;active=false;}
     while(input_tail!=head){
         uint32_t e[4];memcpy(e,q+4+(input_tail++%224)*4,sizeof(e));unsigned device=e[0]&65535,kind=e[0]>>16;
 #ifdef MAP_PROFILE
         input_events++;
 #endif
+#ifdef MAP_MOBILE
+        if(device==3){
+            if(kind==0){held=false;active=e[2]!=0;}
+            else if(kind==1&&e[2]>=320&&e[2]<=720)set_height(e[2]);
+            continue;
+        }
+#else
         if(device==2){held=false;active=e[2]!=0;continue;}
+#endif
         if(!active)continue;
         if(device==0&&kind==1){map_key(e[1],e[2]);continue;}
         if(device!=1)continue;
@@ -310,7 +359,7 @@ void init(void) {
     printf("COMAPS|MAP|region=Gibraltar|records=%u|points=%u|inner=%u|outer=%u|load_us=%llu\n",map.records,map.point_count,map.inner,map.outer,(unsigned long long)(us()-started));
     pixels=(unsigned char*)map_frame+sizeof(slint_frame_header_t);
     if(!stbtt_InitFont(&font,map_font,stbtt_GetFontOffsetForIndex(map_font,0)))__builtin_trap();
-    #ifndef MAP_DESKTOP
+    #if !defined(MAP_DESKTOP) && !defined(MAP_MOBILE)
     *(uint32_t*)ui_focus=1;mx=W/2;my=H/2;publish_pointer();
 #endif
     reset();draw();

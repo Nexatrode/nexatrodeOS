@@ -297,6 +297,8 @@ export component NotesWindow inherits Window {
     min-height: root.desktop-mode ? 360px : 700px;
     in property <bool> desktop-mode: false;
     in property <bool> browser-available: false;
+    in property <bool> maps-available: false;
+    in-out property <image> maps-frame;
     in-out property <image> browser-frame;
     in-out property <bool> browser-keyboard: false;
     callback browser-key(string);
@@ -595,7 +597,7 @@ export component NotesWindow inherits Window {
         if root.page == 0: Text { x: 18px; y: 56px; width: parent.width - 36px;
             text: "NEXATRODE"; color: #edf7fa; font-size: 21px; font-weight: 700; }
         // Standard NexaWal face: no shell HOME chrome (Android has bottom tabs only).
-        if root.page != 0 && root.page != 14 && root.page != 16 && root.page != 18: Rectangle {
+        if root.page != 0 && root.page != 14 && root.page != 16 && root.page != 18 && root.page != 19: Rectangle {
             x: parent.width - 110px; y: 113px; width: 94px; height: 45px;
             background: #123143; border-color: #396d79; border-width: 1px; border-radius: 9px;
             Text { width: parent.width; height: parent.height;
@@ -657,7 +659,7 @@ export component NotesWindow inherits Window {
                 horizontal-alignment: center; vertical-alignment: center; }
             TouchArea { width: parent.width; height: parent.height; clicked => { root.page = 11; } }
         }
-        if root.page != 0 && root.page != 14 && root.page != 16 && root.page != 18: Text {
+        if root.page != 0 && root.page != 14 && root.page != 16 && root.page != 18 && root.page != 19: Text {
             x: 18px; y: 120px;
             width: root.page == 6 ? parent.width - 230px : parent.width - 135px;
             text: root.page == 0 ? "SECURE · PRIVATE · YOURS" :
@@ -694,7 +696,7 @@ export component NotesWindow inherits Window {
             color: #ffffff; font-size: 20px; font-weight: 700;
             horizontal-alignment: center;
         }
-        if root.page != 14 && root.page != 16 && root.page != 18: Rectangle {
+        if root.page != 14 && root.page != 16 && root.page != 18 && root.page != 19: Rectangle {
             x: 17px; y: root.page == 0 ? 100px : 163px;
             width: parent.width - 34px; height: 1px; background: #174452;
             Rectangle { width: 48px; height: 2px; background: #28d8e8; }
@@ -709,8 +711,10 @@ export component NotesWindow inherits Window {
         if root.page == 0: AppCard { x: 17px; y: parent.height * 0.34; width: (parent.width - 44px) / 2; height: parent.height * 0.19;
             label: "NEXAWAL"; detail: root.wallet-available ? "MONERO WALLET" : "UNAVAILABLE"; glyph: "W"; show-open-hint: root.wallet-available; icon: @image-url("../assets/icons/nexawal.svg"); accent: #ff9b68; chosen => { if root.wallet-available { root.page = 16; root.edit-target = 0; } } }
         if root.page == 0: AppCard { x: 27px + (parent.width - 44px) / 2; y: parent.height * 0.34; width: (parent.width - 44px) / 2; height: parent.height * 0.19;
-            label: "TOOLS"; detail: "NOTES · FILES · MORE"; glyph: "+"; show-open-hint: true; icon: @image-url("../assets/icons/tools.svg"); accent: #8fb5cc; chosen => { root.page = 10; } }
-        if root.page == 0: AppCard { x: 17px; y: parent.height * 0.55; width: parent.width - 34px; height: parent.height * 0.11;
+            label: root.maps-available ? "MAPS" : "TOOLS"; detail: root.maps-available ? "OFFLINE MAP" : "NOTES · FILES · MORE"; glyph: "+"; show-open-hint: true; icon: root.maps-available ? @image-url("../assets/icons/maps.svg") : @image-url("../assets/icons/tools.svg"); accent: #8fb5cc; chosen => { root.page = root.maps-available ? 19 : 10; } }
+        if root.page == 0 && root.maps-available: AppCard { x: 17px; y: parent.height * 0.55; width: (parent.width - 44px) / 2; height: parent.height * 0.11;
+            label: "TOOLS"; detail: "NOTES · FILES"; glyph: "+"; icon: @image-url("../assets/icons/tools.svg"); accent: #8fb5cc; chosen => { root.page = 10; } }
+        if root.page == 0: AppCard { x: root.maps-available ? 27px + (parent.width - 44px) / 2 : 17px; y: parent.height * 0.55; width: root.maps-available ? (parent.width - 44px) / 2 : parent.width - 34px; height: parent.height * 0.11;
             label: "SETTINGS"; detail: "PRIVACY · APPEARANCE"; glyph: "S"; icon: @image-url("../assets/icons/settings.svg"); accent: #68ddc2; chosen => {
                 root.settings-selected = -1; root.page = 8;
             } }
@@ -769,6 +773,18 @@ export component NotesWindow inherits Window {
             label: "CONTACTS"; detail: "PEOPLE"; glyph: "C"; icon: @image-url("../assets/icons/contacts.svg"); accent: #b4a0ff; chosen => { root.page = 2; root.contact-detail = false; root.edit-target = 0; } }
 
         // Standard NexaWal (nexawal-android layout): slate/teal, bottom nav.
+        if root.page == 19 && root.maps-available: Rectangle {
+            y: 44px; width: parent.width; height: parent.height - 44px;
+            background: #0b202d;
+            Text { x: 17px; y: 6px; text: "MAPS"; color: #edf7fa; font-size: 18px; font-weight: 700; }
+            Rectangle { x: parent.width - 84px; y: 0px; width: 76px; height: 36px;
+                Text { width: 100%; height: 100%; text: "HOME"; color: #36c7d6; horizontal-alignment: center; vertical-alignment: center; }
+                TouchArea { width: 100%; height: 100%; clicked => { root.system-home(); } }
+            }
+            Rectangle { y: 36px; width: parent.width; height: parent.height - 36px; clip: true;
+                Image { width: parent.width; height: parent.height; source: root.maps-frame; image-fit: fill; }
+            }
+        }
         if root.page == 18 && root.browser-available: Rectangle {
             y: 44px; width: parent.width; height: parent.height - 44px;
             background: #071521;
@@ -2410,7 +2426,7 @@ export component NotesWindow inherits Window {
             x: 17px; y: root.chat-keyboard-top; width: parent.width - 34px; height: 228px;
             typed(k) => { root.key-tapped(k); }
         }
-        if root.page != 6 && root.page != 14 && root.page != 15 && root.page != 16 && root.page != 18 && !root.message-keyboard: Text { x: 18px; y: parent.height - 25px;
+        if root.page != 6 && root.page != 14 && root.page != 15 && root.page != 16 && root.page != 18 && root.page != 19 && !root.message-keyboard: Text { x: 18px; y: parent.height - 25px;
             text: root.perf != "" ? root.perf :
                   root.page == 0 ? "TOUCH INPUT · VOLATILE APPS" :
                   root.page == 3 ? "CALCULATOR RUNS IN THIS IMAGE" :

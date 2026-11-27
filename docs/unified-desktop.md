@@ -103,6 +103,14 @@ Maps has not been added to that lock/cleanup group. The regular three-app profil
 and saved-data VMs are unchanged. Storage-backed map management, search, routing
 and GPS remain later milestones.
 
+The same map reader, rasterizer and glyph-bounds label placement now have an
+opt-in [phone adapter](../experiments/mobile-browser/README.md#optional-offline-maps).
+The disposable phone builder's `--maps` flag adds a Home tile beside the browser,
+wallet and chat apps, with a 3× surface, touch pan/zoom and a trusted HOME row.
+Its private input queue and read-only shell surface follow the desktop boundary;
+it has no vault or network endpoint. This remains outside the wrapped-session
+group and does not change the Pixel hardware image or the normal phone profile.
+
 ## November 25–26, 2026 verification
 
 The diagnostic image passed all nine live three-app checks at 2624×1644, 2×.

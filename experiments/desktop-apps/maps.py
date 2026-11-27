@@ -6,7 +6,7 @@ import subprocess
 import xml.etree.ElementTree as ET
 
 
-def build(root, out, inputs, run):
+def build(root, out, inputs, run, *, mobile=False):
     here=root/'experiments/comaps-native';base=root/'build/comaps'
     spec=importlib.util.spec_from_file_location('comaps_prepare',here/'prepare.py')
     preparation=importlib.util.module_from_spec(spec);spec.loader.exec_module(preparation)
@@ -16,7 +16,10 @@ def build(root, out, inputs, run):
     stb=root/'build/netsurf-native/deps/stb'
     flags=['--target=aarch64-none-elf','-mcpu=cortex-a53','-mstrict-align','-ffreestanding','-fno-stack-protector','-ffunction-sections','-fdata-sections','-O2','-Wall','-Wextra',
         '-I'+str(board/'include'),'-I'+str(sysroot/'include'),'-I'+str(here),'-I'+str(base),'-I'+str(stb),
-        '-DMAP_DESKTOP=1','-DMAP_PROFILE=1','-DSLINT_FRAME_WIDTH=1120u','-DSLINT_FRAME_HEIGHT=1040u','-DSLINT_FRAME_REGION_BYTES=0x400000u']
+        '-DMAP_MOBILE=1' if mobile else '-DMAP_DESKTOP=1','-DMAP_PROFILE=1',
+        '-DSLINT_FRAME_WIDTH=1080u' if mobile else '-DSLINT_FRAME_WIDTH=1120u',
+        '-DSLINT_FRAME_HEIGHT=2160u' if mobile else '-DSLINT_FRAME_HEIGHT=1040u',
+        '-DSLINT_FRAME_REGION_BYTES=0x800000u' if mobile else '-DSLINT_FRAME_REGION_BYTES=0x400000u']
     for unit in ('viewer','mwm'):run('clang',*flags,'-c',here/(unit+'.c'),'-o',out/('maps-'+unit+'.o'))
     font=root/'experiments/slint-notes/assets/fonts/Roboto-Regular.ttf'
     (out/'maps-assets.S').write_text('.section .rodata\n.balign 8\n.global map_blob,map_blob_end,map_font\nmap_blob:\n.incbin "'+str(region)+'"\nmap_blob_end:\n.balign 8\nmap_font:\n.incbin "'+str(font)+'"\n')
@@ -68,3 +71,34 @@ def validate(system):
         assert domains[name].find("map[@mr='map_frame']").get('perms')=='r'
     assert domains['desktop_gpu'].find("map[@mr='map_input']") is None
     assert 'lock_auth' not in domains,'Maps is not part of the curated three-app wrapped lock group'
+
+
+def attach_mobile(system, ui, mapping, mr, channel):
+    mr('mobile_maps_frame',0x800000,page_size='0x200000')
+    mr('mobile_maps_heap',0x1000000,page_size='0x200000')
+    mr('mobile_maps_input',4096)
+    mr('map_observation',4096,phys_addr='0x5fb96000')
+    app=ET.SubElement(system,'protection_domain',name='offline_map',priority='95',budget='8000',period='10000',stack_size='0x100000')
+    ET.SubElement(app,'program_image',path='offline-map.elf')
+    for name,va,symbol in [('mobile_maps_frame',0x60000000,'map_frame'),('mobile_maps_heap',0x64000000,'map_heap'),('mobile_maps_input',0x70000000,'input_handoff'),('map_observation',0x71000000,'map_observation')]:mapping(app,name,va,'rw',symbol)
+    mapping(ui,'mobile_maps_frame',0x92000000,'r','mobile_maps_frame')
+    mapping(ui,'mobile_maps_input',0x93000000,'rw','mobile_maps_input')
+    channel('offline_map',0,'slint_ui',19)
+    channel('slint_ui',20,'offline_map',1)
+
+
+def validate_mobile(system):
+    domains={p.get('name'):p for p in system.findall('protection_domain')}
+    uses=lambda name:{m.get('mr'):m.get('perms') for m in domains[name].findall('map')}
+    assert uses('offline_map')==dict(mobile_maps_frame='rw',mobile_maps_heap='rw',mobile_maps_input='rw',map_observation='rw')
+    assert uses('slint_ui')['mobile_maps_frame']=='r' and uses('slint_ui')['mobile_maps_input']=='rw'
+    private={'mobile_maps_frame','mobile_maps_heap','mobile_maps_input','map_observation'}
+    for name in domains:
+        if name not in ('offline_map','slint_ui'):assert not private&uses(name).keys(),name
+    assert not {'mobile_maps_heap','map_observation'}&uses('slint_ui').keys()
+    links={}
+    for c in system.findall('channel'):
+        a,b=list(c)
+        for x,y in ((a,b),(b,a)):links[x.get('pd'),int(x.get('id'))]=(y.get('pd'),int(y.get('id')))
+    assert {i:peer for (pd,i),peer in links.items() if pd=='offline_map'}=={0:('slint_ui',19),1:('slint_ui',20)}
+    assert 'lock_auth' not in domains

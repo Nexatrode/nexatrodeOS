@@ -9,7 +9,7 @@ def ctl(*args):return subprocess.run([CTL,*map(str,args)],capture_output=True,te
 def stage(path):
     path=path.resolve();assert path.is_relative_to(ROOT/'build/mobile-browser') and (path/'.disposable-build').is_file()
     manifest=json.loads((path/'build.json').read_text())
-    assert manifest['profile']=='mobile-netsurf' and manifest['saved_data_used'] is False and manifest['development_storage_key'] is True
+    assert manifest['profile'] in ('mobile-netsurf','mobile-netsurf-maps') and manifest['saved_data_used'] is False and manifest['development_storage_key'] is True
     digest=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
     assert not (path/'loader.img').is_symlink(),'linked loader forbidden'
     assert digest(path/'loader.img')==manifest['loader_sha256']
@@ -37,7 +37,7 @@ def main():
     else:
         tag=str(uuid.uuid4()).upper();bundle=guest/('Mobile-Browser-'+tag[:8]+'.utm');data=bundle/'Data';data.mkdir(parents=True)
     cfg=old_cfg if a.reuse else plistlib.loads(a.template.read_bytes());assert cfg['System']['CPUCount']==4 and cfg['QEMU']['Hypervisor'] and cfg['Network']==[] and len(cfg['Drive'])==1
-    cfg['Information'].update(UUID=tag,Name='NexatrodeOS Mobile Browser — Disposable '+tag[:8]);cfg['Serial']=[];cfg['Sharing'].update(ClipboardSharing=False,DirectoryShareMode='None');cfg['QEMU']['DebugLog']=False
+    cfg['Information'].update(UUID=tag,Name=('NexatrodeOS Mobile Maps' if m.get('maps') else 'NexatrodeOS Mobile Browser')+' — Disposable '+tag[:8]);cfg['Serial']=[];cfg['Sharing'].update(ClipboardSharing=False,DirectoryShareMode='None');cfg['QEMU']['DebugLog']=False
     old=cfg['Drive'][0]['Identifier'];drive=old if a.reuse else str(uuid.uuid4()).upper();cfg['Drive'][0].update(Identifier=drive,ImageName='blank.img')
     opts=cfg['QEMU']['AdditionalArguments']
     if a.reuse:opts[:]=[x for x in opts if not x.startswith(('-spice agent-mouse=off','-serial file:','-qmp pipe:'))]
@@ -48,6 +48,7 @@ def main():
         elif x.startswith('-device virtio-blk-device,'):opts[i]=x.replace(old,drive)
         elif x.startswith('-netdev user,id=net0'):opts[i]='-netdev user,id=net0'
     shutil.copyfile(guest/'loader.img',data/'loader.img')
+    shutil.copyfile(guest/'build.json',data/'build-manifest.json')
     if not a.reuse:
         with (data/'blank.img').open('wb') as f:f.truncate(64*1024*1024)
         subprocess.run(['sgdisk','--clear','--new=1:2048:0','--typecode=1:0700',str(data/'blank.img')],stdout=subprocess.DEVNULL,check=True)
@@ -69,15 +70,18 @@ def main():
         while time.monotonic()<end:
             text=(data/'trace.log').read_text(errors='replace') if (data/'trace.log').exists() else ''
             assert not any(x in text for x in ('VMFault','panicked at','MON|ERROR','Data Abort')),text[-3500:]
-            if 'SLINT FIRST FRAME' in text and 'NETSURF|BOOT|' in text:break
+            if 'SLINT FIRST FRAME' in text and 'NETSURF|BOOT|' in text and (not m.get('maps') or 'COMAPS|READY|' in text):break
             time.sleep(.2)
         else:raise RuntimeError('mobile boot timeout: '+text[-3500:])
         if not a.boot_only:
             assert m['observation'],'use the disposable --observe build for the input test'
-            from mobile_browser_input import exercise
+            if m.get('maps'):
+                from mobile_maps_input import exercise
+            else:
+                from mobile_browser_input import exercise
             evidence=guest/'interaction';evidence.mkdir(exist_ok=True);exercise(q,data,evidence)
         passed=True
-        state.update(test_passed=True,scope='boot only' if a.boot_only else 'phone launcher, forms, keyboard, touch scrolling, images, JavaScript, HTTPS and app routing')
+        state.update(test_passed=True,scope='boot only' if a.boot_only else 'phone Maps, touch pan/zoom, labels, Home and four-app private routing' if m.get('maps') else 'phone launcher, forms, keyboard, touch scrolling, images, JavaScript, HTTPS and app routing')
         (guest/'session.json').write_text(json.dumps(state,indent=2)+'\n');print('PASS disposable mobile browser',tag,flush=True)
     finally:
         if not (a.leave_running and passed):

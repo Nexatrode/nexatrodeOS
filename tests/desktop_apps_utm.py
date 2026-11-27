@@ -289,7 +289,7 @@ def main():
         manifest['map_region']=map_pin
         manifest['composer_sha256']=sha(a.composer.resolve())
         extra=[x for x in (ROOT/'experiments/comaps-native').rglob('*') if x.is_file() and '__pycache__' not in str(x)]
-        extra += [ROOT/'experiments/slint-notes/assets/icons/maps.svg',ROOT/'tests/desktop_maps_input.py',ROOT/'tests/desktop_maps_contract_test.py',ROOT/'tests/comaps_raster_test.c']
+        extra += [ROOT/'experiments/slint-notes/assets/icons/maps.svg',ROOT/'tests/desktop_maps_input.py',ROOT/'tests/desktop_maps_contract_test.py',ROOT/'tests/comaps_raster_test.c',ROOT/'tests/comaps_labels_test.c']
         manifest['sources'].update({str(x.relative_to(ROOT)):sha(x) for x in extra})
     manifest.update(wrapped_session=a.wrapped_session,lock_idle_ms=a.lock_idle_ms if a.wrapped_session else None,wallet_event_pump=a.wrapped_session)
     if a.wrapped_session:

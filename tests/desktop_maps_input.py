@@ -79,6 +79,15 @@ def exercise(q, data, evidence, *, gpu=True, functional=True, load=False):
             time.sleep(.2)
         raise RuntimeError('four-app pixels missing '+str(words)+': '+text)
     def map_tap(x,y):a=window(4);tap(a[0]+x,a[1]+y)
+    label_frames=[]
+    def labels(name):
+        s=map_state();count=s[10];assert 0<count<=24
+        raw=b''.join(struct.pack('<Q',v) for v in s[464:])
+        boxes=[struct.unpack_from('<4I',raw,i*16) for i in range(count)]
+        for i,(l,t,r,b) in enumerate(boxes):
+            assert 0<=l<r<=1120 and 64*2<=t<b<=(s[9]-36)*2,(name,boxes[i],s[9])
+            for ll,tt,rr,bb in boxes[:i]:assert not (l<rr and ll<r and t<bb and tt<b),(name,boxes[i],(ll,tt,rr,bb))
+        label_frames.append(dict(name=name,frame=s[3],zoom=s[8],rectangles=boxes))
     until(lambda:map_state() and map_state()[1]==0x4e584d4150303031)
     settled();dock(4);stable();initial=map_state()
     if functional:
@@ -89,12 +98,12 @@ def exercise(q, data, evidence, *, gpu=True, functional=True, load=False):
         x,y,_,_=window(4);region=p[(y+64)*2:(y+mode()[5]-36)*2,x*2:(x+560)*2]
         counts={n:int(np.sum(np.all(region==c,axis=2))) for n,c in {'water':(155,203,214),'green':(182,211,171),'building':(185,179,171),'street':(255,255,255)}.items()}
         assert min(counts.values())>200,counts
-        initial=map_state()
-        map_tap(470,35);until(lambda:map_state()[8]==1);screen('maps-zoomed',['Gibraltar','Zoom 1'])
+        initial=map_state();labels('overview')
+        map_tap(470,35);until(lambda:map_state()[8]==1);screen('maps-zoomed',['Gibraltar','Zoom 1']);labels('zoom')
         before=map_state();a=window(4);pointer(a[0]+200,a[1]+220,True)
         for i in range(1,13):pointer(a[0]+200+8*i,a[1]+220+2*i);time.sleep(.03)
         pointer(a[0]+296,a[1]+244,False)
-        until(lambda:map_state()[5]!=before[5] and map_state()[6]!=before[6]);screen('maps-panned',['Gibraltar'])
+        until(lambda:map_state()[5]!=before[5] and map_state()[6]!=before[6]);screen('maps-panned',['Gibraltar']);labels('pan')
         # Hidden Maps receives neither browser typing nor wallet shortcuts.
         dock(3);screen('browser-opens',['NetSurf','Explore'])
         old=map_state()[2:4];key('equal');key('right');time.sleep(.4);assert map_state()[2:4]==old
@@ -145,5 +154,5 @@ def exercise(q, data, evidence, *, gpu=True, functional=True, load=False):
     manifest=json.loads((data/'build-manifest.json').read_text())
     result=dict(passed=True,loader_sha256=manifest['loader_sha256'],mode=list(test_mode),apps=['SimpleX','NexaWal','NetSurf','Maps'],saved_data_used=False,pixel_wifi_touched=False,gpu_readback=gpu,functional=functional,host_cpu_workers=4 if load else 0,
         checks=['map pixels render through GPU composition','private input/focus and all four app switches','map pan/zoom, retained minimize/restore and held dragging','bounded map phase profiling and four-app switches under host load'] if functional else ['normal compositor map timing and four-app switches under host load'],
-        profile_ms={n:stats(v) for n,v in timings.items()},host_injection_to_observed_gpu_completion_ms=stats(completion),host_injection_to_observed_switch_completion_ms=stats(switches),samples=[list(r) for r in held],scope='guest map handler/drawing/publication, not physical touch latency; QMP observations include polling/host scheduling; diagnostic readback timings are separate from normal composition')
+        label_frames=label_frames,profile_ms={n:stats(v) for n,v in timings.items()},host_injection_to_observed_gpu_completion_ms=stats(completion),host_injection_to_observed_switch_completion_ms=stats(switches),samples=[list(r) for r in held],scope='guest map handler/drawing/publication, not physical touch latency; QMP observations include polling/host scheduling; diagnostic readback timings are separate from normal composition')
     (evidence/'validation.json').write_text(json.dumps(result,indent=2)+'\n');print(json.dumps({k:v for k,v in result.items() if k!='samples'},indent=2),flush=True)
