@@ -981,6 +981,10 @@ pub struct RegistryPrearmTrace {
 /// plus bookkeeping. A native integration must budget this storage and its
 /// construction/reset stack separately from peer-visible memory pools.
 pub struct Session {
+/* ELF_READY_BEGIN */
+    #[cfg(feature="sunfish-elf-ready-grant-turn")]
+    elf_ready_grant_bound:bool,
+/* ELF_READY_END */
     #[cfg(feature = "sunfish-registry-window-trace")]
     registry_window: RegistryWindowTrace,
     #[cfg(feature = "sunfish-ipa-before-first-oack")]
@@ -1989,6 +1993,10 @@ impl Session {
             registry_pressure: None,
             #[cfg(feature = "sunfish-registry-window-trace")]
             registry_window: RegistryWindowTrace::default(),
+/* ELF_READY_BEGIN */
+            #[cfg(feature="sunfish-elf-ready-grant-turn")]
+            elf_ready_grant_bound:false,
+/* ELF_READY_END */
             #[cfg(feature = "sunfish-wlan-elf-exchange-trace")]
             elf_exchange: None,
             #[cfg(feature="sunfish-post-elf-mcfg-trace")]
@@ -7131,6 +7139,15 @@ impl Session {
                 .as_ref()
                 .ok_or(Error::InvalidHandle)?,
         )?;
+/* ELF_READY_BEGIN */
+        #[cfg(feature="sunfish-elf-ready-grant-turn")]
+        let elf_ready_reply=!self.elf_ready_grant_bound && route.service==Service::ServiceRegistry
+            && route.source.port==crate::qcom_servreg::LOCAL_PORT
+            && route.destination==(Address{node:0,port:9}) && matches!(&reply,Reply::Success{..})
+            && self.request_qmi(handle).ok().is_some_and(|(_,b)|Message::decode(b).ok()
+                .is_some_and(|m|crate::qcom_servreg::decode(&m).is_ok_and(|q|
+                    q.service_name==b"kernel/elf_loader" && q.domain_offset==0)));
+/* ELF_READY_END */
         #[cfg(feature = "sunfish-linux-ipa-qmi")]
         if self.linux_ipa.is_some() && route.service == Service::IpaServer {
             return Err(Error::InvalidReply);
@@ -7295,6 +7312,15 @@ impl Session {
             };
         }
         self.receive[receive].state = RxState::ReplyQueued;
+/* ELF_READY_BEGIN */
+        #[cfg(feature="sunfish-elf-ready-grant-turn")]
+        if elf_ready_reply {
+            // Bind only a successfully admitted original response. Class3 still
+            // requires its real own return, fit and flow checks at selection.
+            self.elf_ready_grant_bound=true;
+            self.transmit[index].registry_return_turn_due=true;
+        }
+/* ELF_READY_END */
         #[cfg(feature = "sunfish-registry-handoff-turn")]
         if self.registry_window.predecessor.is_none() && route.service == Service::ServiceRegistry
             && route.transaction == 3 && route.destination == (Address { node: 0, port: 9 })

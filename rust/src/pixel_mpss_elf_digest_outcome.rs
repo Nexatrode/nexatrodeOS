@@ -3,6 +3,10 @@ use super::*;
 impl RuntimeDomain {
     pub(super) fn show_elf_digest_outcome(&self,d:&Display,owner:&ModemOwner){
         for n in 2..=28{d.replace_line(n,"");}d.replace_line(1,"ELF WRITER DIGEST REPLY");
+/* ELF_READY_BEGIN */
+        #[cfg(feature="sunfish-elf-ready-grant-turn")]
+        d.replace_line(1,"ELF READY GRANT TURN");
+/* ELF_READY_END */
         let age=|t|self.time_from_us(Some(self.runtime_started),t);
         let span=|t|self.time_from_us(Some(0),t);
         let row=|n,label,v:&[u32]|{d.header_label(n,label);let mut f=[(0,8);6];for(i,v)in v.iter().enumerate(){f[i]=(*v,8);}d.header_row(n,true,&f[..v.len()]);};

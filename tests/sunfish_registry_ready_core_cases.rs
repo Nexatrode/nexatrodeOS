@@ -29,3 +29,7 @@ fn reply(s:&mut Session)->(u32,Vec<u8>){let(e,b)=publish(s).unwrap();let Publish
 #[test]fn ready_dependency_getter_uses_live_unpublished_handles_not_trace(){
  let mut s=session();s.register(1,Service::ServiceRegistry,qcom_servreg::LOCAL_PORT).unwrap();s.prepare_service_available(1,Service::ServiceRegistry).unwrap();s.ingest(1,&intents(&[(7,4096),(8,4096)])).unwrap();let a=offer(&mut s);let b=offer(&mut s);let h=registry_turn_request(&mut s,a,9,4);assert_eq!(publish(&mut s).unwrap().0,Published::ReceiveDone(a));s.queue_reply(&h,Reply::Failure{error:3}).unwrap();let w=registry_turn_request(&mut s,b,9,5);assert_eq!(s.registry_unpublished_blocker(&w),Some(h));let _=publish_until_data(&mut s);assert_eq!(s.registry_unpublished_blocker(&w),None);s.reset_after_transport_reset(2).unwrap();assert_eq!(s.registry_unpublished_blocker(&w),None);
 }
+
+#[cfg(feature="sunfish-elf-ready-grant-turn")]
+#[path="sunfish_elf_ready_cases.rs"]
+mod elf_ready_cases;
