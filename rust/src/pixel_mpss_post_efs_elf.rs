@@ -1,7 +1,16 @@
 //! Read-only projection of existing post-EFS/ELF writer and startup records.
 use super::*;
+/* ELF_PREQUEUE_PANEL_BEGIN */
+#[cfg(feature="sunfish-elf-prequeue-owners")]
+#[path="pixel_mpss_elf_prequeue_owners.rs"]
+mod prequeue_owners;
+/* ELF_PREQUEUE_PANEL_END */
 impl RuntimeDomain {
     pub(super) fn show_post_efs_elf(&self,d:&Display,owner:&ModemOwner){
+/* ELF_PREQUEUE_PANEL_BEGIN */
+#[cfg(feature="sunfish-elf-prequeue-owners")]
+        {self.show_elf_prequeue_owners(d,owner);return;}
+/* ELF_PREQUEUE_PANEL_END */
         for n in 2..=28{d.replace_line(n,"");}
         d.replace_line(1,"POST EFS ELF WRITER");
         let age=|t|self.time_from_us(Some(self.runtime_started),t);
