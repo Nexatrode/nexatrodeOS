@@ -11,6 +11,7 @@ def without_retry(path,source):
   assert all('#[cfg(feature="sunfish-tx3-elf-retry")]'in b for b in blocks)
   source=re.sub(pat,'',source,flags=re.S)
  if path=='rust/Cargo.toml':
+  source=source.replace('sunfish-startup-pressure = ["sunfish-elf-pool-release"]\n','')
   source=source.replace('sunfish-elf-pool-release = ["sunfish-tx3-elf-retry"]\n','')
   source=source.replace('sunfish-tx3-elf-retry = ["sunfish-elf-prequeue-owners"]\n','')
  return source
