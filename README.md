@@ -159,6 +159,7 @@ with either one.
 | `./dev run --disk restored.img` | Boot QEMU from a selected raw disk image |
 | `./dev utm` | Build and create/update the UTM bundle |
 | `./dev utm-accelerated` | Rebuild the regular four-vCPU NexatrodeOS image and stage its UTM configuration using the pinned [handoff-prime-m1-100 profile](experiments/hvf-smp/README.md#regular-accelerated-vm). |
+| `./dev desktop --help` | Build, inspect, install and check the [disposable three-app ARM64 desktop](docs/unified-desktop.md), using one 2× VirGL/resize profile. Does not install in the regular wallet/chat VM. |
 | `python3 tests/negative_controls.py` | Verify broken isolation and an unrelated fault are rejected |
 
 This initial bootstrap supports **Apple Silicon macOS**, Python 3.12+, Rustup/Cargo,

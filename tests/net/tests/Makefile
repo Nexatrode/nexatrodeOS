@@ -28,6 +28,12 @@ test:
 	$(HOST_CC) $(CPPFLAGS) $(HOST_CFLAGS) $(CFLAGS) -UNDEBUG simplex_network_lock_test.c \
 	    $(LWIP)/core/pbuf.c $(LDFLAGS) $(HOST_LDFLAGS) -o "$(BUILD_DIR)/simplex_network_lock_test"
 	"$(BUILD_DIR)/simplex_network_lock_test"
+	$(HOST_CC) $(CPPFLAGS) $(HOST_CFLAGS) $(CFLAGS) -UNDEBUG desktop_tcp_isolation_test.c \
+	    $(LWIP)/core/pbuf.c $(LDFLAGS) $(HOST_LDFLAGS) -o "$(BUILD_DIR)/desktop_tcp_isolation_test"
+	"$(BUILD_DIR)/desktop_tcp_isolation_test"
+	$(HOST_CC) $(CPPFLAGS) $(HOST_CFLAGS) $(CFLAGS) -UNDEBUG desktop_network_lock_test.c \
+	    $(LWIP)/core/pbuf.c $(LDFLAGS) $(HOST_LDFLAGS) -o "$(BUILD_DIR)/desktop_network_lock_test"
+	"$(BUILD_DIR)/desktop_network_lock_test"
 	$(HOST_RUSTC) --edition=2021 --cfg 'feature="wallet-https"' wallet_tcp_compat_test.rs -o "$(BUILD_DIR)/wallet_tcp_legacy_test"
 	"$(BUILD_DIR)/wallet_tcp_legacy_test"
 	$(HOST_RUSTC) --edition=2021 --cfg 'feature="wallet-https"' --cfg 'feature="wallet-wide-rx"' wallet_tcp_compat_test.rs -o "$(BUILD_DIR)/wallet_tcp_wide_test"

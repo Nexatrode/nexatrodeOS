@@ -81,6 +81,10 @@ static uintptr_t dns_generations[DNS_SLOT_COUNT];
 #ifdef DESKTOP_BROWSER_NETWORK
 /* Mapped only by this server and its browser broker, never the legacy clients. */
 uintptr_t browser_tcp_page;
+#ifdef DESKTOP_PRIVATE_TCP
+uintptr_t wallet_tcp_page;
+#include "desktop_tcp_wire.h"
+#endif
 #endif
 static uint32_t active_slot;
 static bool wire_is_slot_local;
@@ -92,6 +96,9 @@ static volatile struct haskell_tcp_page *pages_base(void)
 
 static volatile struct haskell_tcp_page *page(void)
 {
+#ifdef DESKTOP_PRIVATE_TCP
+    return desktop_tcp_wire(haskell_tcp_page, wallet_tcp_page, browser_tcp_page, active_slot, wire_is_slot_local);
+#else
 #ifdef DESKTOP_BROWSER_NETWORK
     if (wire_is_slot_local && active_slot == HASKELL_TCP_BROWSER_SLOT)
         return (volatile struct haskell_tcp_page *)browser_tcp_page;
@@ -99,7 +106,11 @@ static volatile struct haskell_tcp_page *page(void)
     if (wire_is_slot_local)
         return pages_base() + active_slot;
     return pages_base();
+#endif
 }
+#ifdef DESKTOP_PRIVATE_TCP
+volatile struct haskell_tcp_page *haskell_tcp_wire_page(void) { return page(); }
+#endif
 
 void haskell_tcp_select(uint32_t slot, bool slot_local_wire)
 {
@@ -489,7 +500,13 @@ unsigned haskell_tcp_recv_wide(void)
     _Static_assert(sizeof(struct haskell_tcp_page) == 280, "keep legacy stride");
     _Static_assert(sizeof(struct haskell_tcp_page)*HASKELL_TCP_SESSIONS <= WALLET_WIDE_RX_OFFSET, "legacy page range");
     _Static_assert(WALLET_WIDE_RX_OFFSET + WALLET_WIDE_RX_BYTES <= 4096, "wallet receive buffer must fit mapped page");
-    return recv_into((volatile uint8_t *)(haskell_tcp_page + WALLET_WIDE_RX_OFFSET), WALLET_WIDE_RX_BYTES);
+    return recv_into((volatile uint8_t *)(
+#ifdef DESKTOP_PRIVATE_TCP
+        wallet_tcp_page
+#else
+        haskell_tcp_page
+#endif
+        + WALLET_WIDE_RX_OFFSET), WALLET_WIDE_RX_BYTES);
 }
 
 #endif
@@ -559,6 +576,11 @@ unsigned haskell_tcp_cancel(void)
 }
 
 #ifdef SIMPLEX_LOCK_LIFECYCLE
+#ifdef DESKTOP_LOCK_NETWORK
+#define LOCK_SLOT_COUNT HASKELL_TCP_SESSIONS
+#else
+#define LOCK_SLOT_COUNT 2u
+#endif
 bool haskell_simplex_network_active(void) { return simplex_network_active; }
 uint64_t haskell_simplex_network_epoch(void) { return simplex_network_epoch; }
 static void simplex_wipe(volatile uint8_t *bytes, size_t size)
@@ -567,11 +589,11 @@ static void simplex_wipe(volatile uint8_t *bytes, size_t size)
 }
 bool haskell_simplex_network_cleared(void)
 {
-    for (unsigned slot = 0; slot < 2; ++slot) {
+    for (unsigned slot = 0; slot < LOCK_SLOT_COUNT; ++slot) {
         if (sessions[slot].pcb || sessions[slot].state != IDLE || sessions[slot].rx_length ||
             dns_slots.slots[slot].state != DNS_SLOT_IDLE) return false;
         const volatile uint8_t *bytes = rx_buffer(&sessions[slot]);
-        for (size_t n = 0; n < RX_CAPACITY; ++n) if (bytes[n]) return false;
+        for (size_t n = 0; n < RX_CAPACITY+ahead_limit(&sessions[slot]); ++n) if (bytes[n]) return false;
         bytes = (void *)&dns_slots.slots[slot];
         for (size_t n = 0; n < sizeof(dns_slots.slots[slot]); ++n) if (bytes[n]) return false;
     }
@@ -582,22 +604,36 @@ bool haskell_simplex_network_transition(bool unlock, uint64_t epoch)
     if (!epoch || epoch < simplex_network_epoch || (unlock &&
         (epoch != simplex_network_epoch || simplex_network_active))) return false;
     simplex_network_active = false;
-    for (unsigned slot = 0; slot < 2; ++slot) {
+    for (unsigned slot = 0; slot < LOCK_SLOT_COUNT; ++slot) {
         haskell_tcp_select(slot, false);
         haskell_tcp_cancel();
-        simplex_wipe(rx_buffer(&sessions[slot]), RX_CAPACITY);
+        simplex_wipe(rx_buffer(&sessions[slot]), RX_CAPACITY+ahead_limit(&sessions[slot]));
+#ifdef DESKTOP_LOCK_NETWORK
+        /* Also discard ring positions, deferred receive wakes and padding. */
+        simplex_wipe((void*)&sessions[slot],sizeof(sessions[slot]));
+#endif
         simplex_wipe((void *)&dns_slots.slots[slot], sizeof(dns_slots.slots[slot]));
         /* A late DNS completion from the old session cannot satisfy a new lookup. */
         if (dns_generations[slot] == (UINTPTR_MAX >> 3)) return false;
         ++dns_generations[slot];
     }
     simplex_wipe((void *)pages_base(), 4096);
+#ifdef DESKTOP_LOCK_NETWORK
+    simplex_wipe((void*)wallet_tcp_page,4096);
+    simplex_wipe((void*)browser_tcp_page,4096);
+#endif
     simplex_network_epoch = epoch;
     if (!haskell_simplex_network_cleared()) return false;
     if (unlock) {
         for (unsigned slot = 0; slot < HASKELL_TCP_SESSIONS; ++slot) {
+#ifdef DESKTOP_LOCK_NETWORK
+            volatile struct haskell_tcp_page *io=slot<2?pages_base()+slot:
+                desktop_tcp_wire(haskell_tcp_page,wallet_tcp_page,browser_tcp_page,slot,true);
+            io->magic=HASKELL_TCP_MAGIC;io->reserved=slot;
+#else
             pages_base()[slot].magic = HASKELL_TCP_MAGIC;
             pages_base()[slot].reserved = slot;
+#endif
         }
         simplex_network_active = true;
     }

@@ -37,6 +37,9 @@ fn main() {
     };
     let mut ui_config = slint_build::CompilerConfiguration::new()
         .embed_resources(slint_build::EmbedResourcesKind::EmbedForSoftwareRenderer);
+    if std::env::var_os("CARGO_FEATURE_DESKTOP_TRIO_LOCK_AUTH").is_some() {
+        ui_config=ui_config.with_scale_factor(2.0);
+    }
     if std::env::var_os("CARGO_FEATURE_DESKTOP_SHELL_UI").is_some()
         || std::env::var_os("CARGO_FEATURE_DESKTOP_SHELL_APP").is_some()
         || std::env::var_os("CARGO_FEATURE_DESKTOP_REAL_APP").is_some()

@@ -2,7 +2,7 @@
 # Build both wallet scan PDs against the same Microkit kernel configuration.
 set -euo pipefail
 if [[ $# -lt 2 ]]; then
-    echo "usage: $0 SEL4_INSTALL OUTPUT_DIR [--handoff-prime-m1-100 | --generic | experimental flags: --utm-74 --benchmark --healthy-ms=50|100|250 --profile --utm-m1-tune]" >&2
+    echo "usage: $0 SEL4_INSTALL OUTPUT_DIR [--handoff-prime-m1-100 | --generic | experimental flags: --utm-74 --benchmark --healthy-ms=50|100|250 --profile --utm-m1-tune] [--event-pump]" >&2
     exit 2
 fi
 export SEL4_PREFIX
@@ -13,9 +13,10 @@ shift 2
 features=wallet-scan-workers
 healthy_ms=
 tune_m1=false
-if [[ $# -eq 0 || ( $# -eq 1 && $1 == --handoff-prime-m1-100 ) ]]; then
+if [[ $# -eq 0 || $1 == --handoff-prime-m1-100 ]]; then
     features+=,wallet-handoff-prime
-    set -- --utm-74 --benchmark --healthy-ms=100 --utm-m1-tune
+    if [[ $# -gt 0 ]]; then shift; fi
+    set -- --utm-74 --benchmark --healthy-ms=100 --utm-m1-tune "$@"
 elif [[ $# -eq 1 && $1 == --generic ]]; then
     shift
 fi
@@ -25,6 +26,7 @@ for option in "$@"; do
         --benchmark) features+=,wallet-scan-benchmark ;;
         --healthy-ms=50|--healthy-ms=100|--healthy-ms=250) healthy_ms=${option#*=} ;;
         --profile) features+=,wallet-range-profile ;;
+        --event-pump) features+=,wallet-event-pump ;;
         --utm-m1-tune) tune_m1=true ;;
         *) echo "unknown option: $option" >&2; exit 2 ;;
     esac

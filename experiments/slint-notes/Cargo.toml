@@ -41,6 +41,7 @@ desktop-simplex-frontend = ["utm-pd", "full-suite-ui", "utm-photo-worker", "utm-
 desktop-simplex-live-test = ["utm-pd", "utm-photo-worker", "utm-transcript-worker"]
 desktop-lock-ui = ["utm-pd", "utm-device-lock"]
 desktop-wrapped-lock-ui = ["desktop-lock-ui", "personal-os-rust-server/utm-dynamic-vault-lock"]
+desktop-trio-lock-auth = ["desktop-wrapped-lock-ui"]
 utm-device-lock = ["personal-os-rust-server/utm-device-lock"]
 utm-wrapped-vault-experiment = ["utm-device-lock", "personal-os-rust-server/utm-wrapped-vault-experiment"]
 utm-nexawal-rpc-bridge = []

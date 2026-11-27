@@ -3,6 +3,12 @@
  * heap and shared queue is erased before lock completion. Fixed service caps
  * remain in their curated CSpaces; this is not dynamic authority revocation. */
 #include "session_layout.h"
+#ifndef SESSION_NOTIFICATION_CAP_BASE
+#define SESSION_NOTIFICATION_CAP_BASE 8UL
+#endif
+#ifndef SESSION_BOOT_RANGE_COUNT
+#define SESSION_BOOT_RANGE_COUNT SESSION_RANGE_COUNT
+#endif
 #define SESSION_SNAPSHOT_BYTES (16 * 1024 * 1024)
 #define SESSION_MAX_BOOT_PAGES 4096
 static uint8_t session_boot_bytes[SESSION_SNAPSHOT_BYTES];
@@ -67,10 +73,17 @@ static void simplex_session_scrub(void)
     size_t total = 0;
     for (unsigned i = 0; i < SESSION_RANGE_COUNT; ++i) {
         const struct session_range *range = &session_ranges[i];
-        volatile uint8_t *p = (void *)range->address;
-        for (size_t n = 0; n < range->bytes; ++n) p[n] = 0;
+        if ((range->address | range->bytes) & 7) fail("unaligned session scrub range", 0);
+        /* All generated ranges are page aligned/multiples. Word accesses are
+         * also safe on uncached shared pages and avoid millions of byte stores. */
+        volatile uint64_t *words = (void *)range->address;
+        for (size_t n = 0; n < range->bytes / sizeof(*words); ++n) words[n] = 0;
+#ifdef SESSION_TEST_ERASURE_FAULT
+        /* Host-only negative control: verification must reject retained bytes. */
+        SESSION_TEST_ERASURE_FAULT((volatile uint8_t *)words);
+#endif
         session_clean(range, true);
-        for (size_t n = 0; n < range->bytes; ++n) if (p[n]) {
+        for (size_t n = 0; n < range->bytes / sizeof(*words); ++n) if (words[n]) {
             session_failed = true;
             print("SIMPLEX_SESSION|ERASURE_FAILED\n");
             return;
@@ -82,7 +95,7 @@ static void simplex_session_scrub(void)
      * payloads exists outside this stopped group in the offline fixture. */
     for (unsigned i = 0; i < SESSION_CHILD_COUNT; ++i) {
         seL4_Word badge;
-        (void)seL4_Poll((8UL + i) << 58, &badge);
+        (void)seL4_Poll((SESSION_NOTIFICATION_CAP_BASE + i) << 58, &badge);
         seL4_UserContext context = {0};
         check(seL4_TCB_WriteRegisters(BASE_TCB_CAP + SESSION_FIRST_CHILD + i, false,
               0, sizeof(context) / sizeof(seL4_Word), &context), "SimpleX clear registers");
@@ -95,7 +108,7 @@ static void simplex_session_boot(void)
 {
     /* The composer starts all six children suspended. Capture only nonzero
      * image pages: patched addresses/configuration, never a running heap. */
-    for (unsigned i = 0; i < SESSION_RANGE_COUNT; ++i) {
+    for (unsigned i = 0; i < SESSION_BOOT_RANGE_COUNT; ++i) {
         const struct session_range *range = &session_ranges[i];
         for (size_t n = 0; n < range->bytes; n += 4096) {
             uintptr_t address = range->address + n;
@@ -128,7 +141,7 @@ static bool simplex_session_start(void)
         check(seL4_TCB_WriteRegisters(BASE_TCB_CAP + SESSION_FIRST_CHILD + i, false,
               0, sizeof(context) / sizeof(seL4_Word), &context), "SimpleX restart context");
         check(seL4_TCB_BindNotification(BASE_TCB_CAP + SESSION_FIRST_CHILD + i,
-              (8UL + i) << 58), "SimpleX bind wake");
+              (SESSION_NOTIFICATION_CAP_BASE + i) << 58), "SimpleX bind wake");
     }
     session_notifications_bound = true;
     for (unsigned i = 0; i < SESSION_CHILD_COUNT; ++i)

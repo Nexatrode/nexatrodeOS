@@ -20,8 +20,9 @@ const RECORD_SIZE: usize = personal_os_rust_server::device_lock::SETTINGS_SIZE;
 const ROOT: Channel = Channel::new(0);
 const VAULT: Channel = Channel::new(4);
 const ENTROPY: Channel = Channel::new(3);
-const WIDTH: usize = 1080;
-const HEIGHT: usize = 2340;
+const WIDTH: usize = if cfg!(feature="desktop-trio-lock-auth") {2560} else {1080};
+const HEIGHT: usize = if cfg!(feature="desktop-trio-lock-auth") {1600} else {2340};
+const SCALE:f32=if cfg!(feature="desktop-trio-lock-auth") {2.} else {3.};
 type HeapMutex = sel4_microkit::_private::heap::RawOneShotMutex;
 #[global_allocator]
 static HEAP: sel4_dlmalloc::DeferredStaticDlmalloc<HeapMutex> = sel4_dlmalloc::DeferredStaticDlmalloc::new();
@@ -255,7 +256,7 @@ impl Auth {
             match event.kind {
                 1 if event.value <= 2 => {
                     #[cfg(feature = "desktop-wrapped-lock-ui")]
-                    if event.code == 66 && event.value == 1 && self.locked { self.abandon_next = true; }
+                    if event.code == 66 && event.value == 1 && self.locked && !cfg!(feature="desktop-trio-lock-auth") { self.abandon_next = true; }
                     if event.code == 42 || event.code == 54 { self.shift = event.value != 0; }
                     else if event.value != 0 && self.locked {
                         if event.code == 28 { self.form.borrow_mut().submit = true; }
@@ -275,7 +276,7 @@ impl Auth {
                     }
                 }
                 2 if event.value <= 2 => {
-                    let position = LogicalPosition::new(event.x as f32 / 3., event.y as f32 / 3.);
+                    let position = LogicalPosition::new(event.x as f32 / SCALE, event.y as f32 / SCALE);
                     self.window.dispatch_event(match event.value {
                         0 => { self.pointer = None; WindowEvent::PointerReleased { position, button: PointerEventButton::Left } }
                         1 => { self.pointer = Some(position); WindowEvent::PointerPressed { position, button: PointerEventButton::Left } }
@@ -296,7 +297,7 @@ fn init() -> Auth {
     let window = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
     guest_platform::install(&window);
     let ui = LockWindow::new().unwrap(); ui.show().unwrap();
-    window.dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor: 3. });
+    window.dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor: SCALE });
     window.set_size(PhysicalSize::new(WIDTH as u32, HEIGHT as u32));
     let form = Rc::new(RefCell::new(Form::new()));
     let f = form.clone(); ui.on_key(move |key| f.borrow_mut().key(key.as_str()));

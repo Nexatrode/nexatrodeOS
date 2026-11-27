@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "name": "utm-desktop-arm64",
+  "architecture": "aarch64",
+  "vcpus": 4,
+  "scale": 2,
+  "apps": ["simplex", "nexawal", "netsurf"],
+  "build_flags": ["--browser", "--virgl", "--desktop-resize"],
+  "wallet_profile": "handoff-prime-m1-100",
+  "storage": "disposable-development-key",
+  "runtime": "seL4/Microkit",
+  "full_session_lock": false,
+  "dynamic_installation": false
+}

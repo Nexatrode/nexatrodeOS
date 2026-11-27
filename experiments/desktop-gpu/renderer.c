@@ -239,10 +239,20 @@ static bool read_mode(void) {
     mode_revision=revision;mode_serial=copy.serial;return true;
 }
 #endif
+#ifdef DESKTOP_TRIO_LOCK
+#include "lock.h"
+#endif
 static void prepare_frame(void) {
     while(work.snapshot_index<7){
         if(pending_commands==GPU_BATCH_SLOTS){wait_for_batch(FRAME_UPLOADS);return;}
         unsigned i=work.snapshot_index++;
+#ifdef DESKTOP_TRIO_LOCK
+        if(lock_active){
+            if(!i)work.dirty|=lock_backdrop();
+            else if(lock_stage==1){if(!lock_private_surface(i))return;work.dirty=true;}
+            continue;
+        }
+#endif
         if(i==0)work.dirty|=snapshot(0,shell_surface,W,H);
         else if(i<=3){uintptr_t source=i==1?surface_a:i==2?surface_b:surface_c;work.dirty|=snapshot(i,source,AW,AH);}
         else work.dirty|=snapshot(i,shell_decorations+(i-4)*0x400000,DW,DH);
@@ -257,6 +267,9 @@ static void prepare_frame(void) {
     if(!work.dirty||!revisions[0]||!scene_revision||failed){phase=FRAME_IDLE;return;}
     work.snapshot_end=ticks();
     target=7+(frames&1);words=0;
+#ifdef DESKTOP_TRIO_LOCK
+    if(lock_active)for(unsigned i=0;i<DESKTOP_APP_COUNT;++i)scene.windows[i].visible=0;
+#endif
     work.stamp=(struct gpu_stamp){.valid=true,.cursor=pointer_ok&&visible,.width=W,.height=H,.app_height=APP_HEIGHT,.px=px,.py=py,.scene=scene};
     work.stamp.backdrop_damage=backdrop_pending[target-7];
     for(unsigned i=0;i<7;++i)work.stamp.revisions[i]=revisions[i];
@@ -317,6 +330,9 @@ static void complete_frame(unsigned source) {
 #endif
     __atomic_thread_fence(__ATOMIC_RELEASE);stats[0]=generation+2;
     phase=FRAME_IDLE;
+#ifdef DESKTOP_TRIO_LOCK
+    lock_completed_frame();
+#endif
     if(frames<=5 || frames%60==0){field("DESKTOP_GPU|frame=",frames);field("DESKTOP_GPU|uploads=",uploads-old_uploads);field("DESKTOP_GPU|frame_us=",(ticks()-begin)*1000000/frequency());}
 }
 static void drive(unsigned source) {
@@ -348,6 +364,9 @@ static void drive(unsigned source) {
 #ifdef DESKTOP_DYNAMIC
         work.dirty|=read_mode();
         if(targets_dirty&&!resize_targets())return;
+#endif
+#ifdef DESKTOP_TRIO_LOCK
+        work.dirty|=lock_begin_frame();
 #endif
         work.dirty|=read_scene();prepare_frame();
         if(phase==FRAME_UPLOADS||phase==FRAME_PRESENT)arm_timer(watchdog_next);

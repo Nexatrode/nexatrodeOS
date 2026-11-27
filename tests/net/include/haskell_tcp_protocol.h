@@ -15,6 +15,10 @@
 #define BROWSER_TCP_CHANNEL 8
 #define HASKELL_TCP_BROWSER_SLOT 4u
 extern uintptr_t browser_tcp_page;
+#ifdef DESKTOP_PRIVATE_TCP
+extern uintptr_t wallet_tcp_page;
+volatile struct haskell_tcp_page *haskell_tcp_wire_page(void);
+#endif
 #else
 #define HASKELL_TCP_SESSIONS 4
 #endif

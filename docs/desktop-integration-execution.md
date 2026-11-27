@@ -5,6 +5,13 @@ between phone and desktop; full privacy lock pauses protected apps and evicts
 keys. Baseline: the tested three-app desktop at e91f8994. All experiments use
 disposable UTM data. Saved wallets/chats and Pixel Wi-Fi work are excluded.
 
+The current reproducible three-app entry point is `./dev desktop`; its profile,
+service inventory, private TCP-page separation and explicit lifecycle limits
+are documented in [the consolidation record](unified-desktop.md). This common
+build keeps the development-key profile separate from an opt-in `--locked`
+profile that integrates the passphrase-wrapped key and curated service cleanup.
+See that record for the tested scope and remaining security limits.
+
 ## Delivery order and status
 
 1. **GPU feasibility — in progress.** The native diskless probe now discovers

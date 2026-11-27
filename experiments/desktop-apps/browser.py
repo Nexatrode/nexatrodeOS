@@ -49,6 +49,13 @@ def attach(system, manager, inputs, channel, mapping, mr):
     mapping(manager,'browser_frame',0x64000000,'r','surface_c')
     mapping(manager,'browser_input',0x66004000,'rw','input_c')
     mapping(pd('dhcp_client'),'browser_tcp_io',0x49001000,'rw','browser_tcp_page')
+    # Slot numbers within one mapped page are not a memory boundary. Wallet
+    # and scan-worker retain their wire offsets, but their physical page is
+    # now separate from the agent's and browser's pages.
+    mr('wallet_tcp_io',4096)
+    mapping(pd('dhcp_client'),'wallet_tcp_io',0x49002000,'rw','wallet_tcp_page')
+    for name in ('wallet_app','scan_worker'):
+        pd(name).find("map[@mr='haskell_tcp_io']").set('mr','wallet_tcp_io')
     for a,x,b,y,pp in [('native_browser',0,'desktop_manager',27,False),('native_browser',1,'desktop_manager',26,False),('native_browser',2,'timer_driver',9,True),
                        ('native_browser',3,'browser_https',0,False),('native_browser',4,'browser_https',4,True),
                        ('browser_https',1,'dhcp_client',8,True),('browser_https',2,'entropy_rng',0,True),
