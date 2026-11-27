@@ -15,7 +15,9 @@ Copyright 2026 NexatrodeOS contributors
 Licensed under Apache-2.0; see licenses/CoMaps-LICENSE and CoMaps-NOTICE.
 
 Generated type styles derive from CoMaps data/mapcss-mapping.csv at that revision.
-The downloaded Gibraltar map remains an ignored build input, not repository data.
+The downloaded Gibraltar and San Marino maps remain ignored build inputs, not
+repository data. sources.json and regions.json pin their distributor, series,
+version, sizes and SHA-256 hashes.
 Map data: © OpenStreetMap contributors, Open Database License (ODbL).
 https://www.openstreetmap.org/copyright
 https://opendatacommons.org/licenses/odbl/1-0/

@@ -37,6 +37,21 @@ class CommandGuards(unittest.TestCase):
     def test_matching_disposable_session(self):
         self.assertEqual(desktop.session(self.guest)[3]['uuid'],'TEST')
 
+    def map_disk(self):
+        self.manifest.update(maps=True,map_storage=True)
+        self.config['Drive'].append(dict(ImageName='maps.img'))
+        (self.data/'maps.img').write_bytes(b'public map fixture')
+        self.save();(self.data/'build-manifest.json').write_text(json.dumps(self.manifest))
+
+    def test_public_map_disk_is_separate_and_explicit(self):
+        self.map_disk();self.assertEqual(desktop.session(self.guest)[3]['uuid'],'TEST')
+        self.config['Drive'][1]['ImageName']='wallet-backup.img';self.save()
+        with self.assertRaisesRegex(ValueError,'public maps.img'):desktop.session(self.guest)
+
+    def test_public_map_disk_cannot_be_a_link(self):
+        self.map_disk();(self.data/'maps.img').unlink();(self.data/'maps.img').symlink_to(self.root/'saved.img')
+        with self.assertRaisesRegex(ValueError,'symbolic links'):desktop.session(self.guest)
+
     def test_wrapped_profile_requires_no_development_key(self):
         self.manifest['wrapped_session']=True;self.save()
         with self.assertRaisesRegex(ValueError,'profile'):desktop.built(self.guest)

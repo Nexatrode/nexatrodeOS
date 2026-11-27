@@ -21,6 +21,7 @@ def main():
     p.add_argument('--output',type=Path,required=True)
     p.add_argument('--resume',action='store_true')
     p.add_argument('--maps',action='store_true',help='opt-in fourth offline CoMaps-data window; current GPU/resize profile only')
+    p.add_argument('--map-storage',action='store_true',help='two pinned public regions on a separate disposable disk')
     p.add_argument('--browser',action='store_true',help='add windowed NetSurf with its own HTTPS session')
     p.add_argument('--virgl',action='store_true',help='experimental isolated retained-texture GPU compositor')
     p.add_argument('--gpu-verify',action='store_true',help='export GPU readback for pixel tests (adds frame overhead)')
@@ -28,6 +29,7 @@ def main():
     p.add_argument('--wrapped-session',action='store_true',help='disposable passphrase-wrapped three-app restart group; requires its private composer and a fresh disk')
     p.add_argument('--lock-idle-ms',type=int,default=60000)
     a=p.parse_args()
+    if a.map_storage and not a.maps:p.error('--map-storage requires --maps')
     if a.maps and (not (a.browser and a.virgl and a.desktop_resize) or a.wrapped_session):p.error('--maps requires --browser --virgl --desktop-resize and its unlocked disposable profile')
     app_count=4 if a.maps else 3 if a.browser else 2
     if a.desktop_resize and not (a.browser and a.virgl):p.error('--desktop-resize requires --browser --virgl')
@@ -83,7 +85,7 @@ def main():
         desktop_browser.build(ROOT,out,inputs,ROOT/'build/netsurf-native',resize=a.desktop_resize)
     if a.maps:
         import maps as desktop_maps
-        map_pin=desktop_maps.build(ROOT,out,inputs,run)
+        map_pin=desktop_maps.build(ROOT,out,inputs,run,storage=a.map_storage)
     # Only the public agent code/config is imported. Never the vault ELF.
     shutil.copyfile(inputs/'pds/agentstore_probe.elf',out/'agentstore_probe.elf')
     for b in ('blk_driver.elf','blk_virt.elf'):shutil.copyfile(storage/b,out/b)
@@ -206,7 +208,7 @@ def main():
             if old is None:raise ValueError('unknown region '+name)
             m=copy.deepcopy(old);m.set('name',name);m.attrib.pop('phys_addr',None);system.append(m)
     if a.browser:desktop_browser.attach(system,manager,inputs,channel,mapping,mr)
-    if a.maps:desktop_maps.attach(system,manager,mapping,mr,channel)
+    if a.maps:desktop_maps.attach(system,manager,mapping,mr,channel,storage=a.map_storage)
     if a.virgl:
         gpu_irq=copy.deepcopy(pd('gpu_driver').find('irq'));gpu_irq.set('id','1')
         for name in ('gpu_client','gpu_driver','gpu_virt'):system.remove(pd(name))
@@ -286,7 +288,11 @@ def main():
         sources += [ROOT/'tests/net/dhcp_client.c',ROOT/'tests/net/haskell_tcp_service.c',ROOT/'tests/net/include/haskell_tcp_protocol.h',ROOT/'tests/net/include/desktop_tcp_wire.h',ROOT/'experiments/guest-https/src/lib.rs',ROOT/'experiments/guest-https/Cargo.toml']
     manifest={'system_sha256':sha(out/'desktop-apps.system'),'runtime_sha256':sha(out/'runtime.json') if a.browser else None,'desktop_resize':a.desktop_resize,'resize_bounds':[[1600,1200],[3840,2160]] if a.desktop_resize else None,'virgl':a.virgl,'gpu_verify':a.gpu_verify,'browser':a.browser,'maps':a.maps,'apps':['SimpleX','NexaWal']+(['NetSurf'] if a.browser else [])+(['Maps'] if a.maps else []),'scale':2,'resolution':[2560,1600],'vcpus':4,'saved_data_used':False,'development_storage_key':True,'static_services':True,'sources':{str(x.relative_to(ROOT)):sha(x) for x in sources if x.is_file()},'artifacts':{x.name:sha(x) for x in out.glob('*.elf')},'loader_sha256':sha(out/'loader.img')}
     if a.maps:
+        manifest['map_storage']=a.map_storage
         manifest['map_region']=map_pin
+        if a.map_storage:
+            manifest['map_pack_sha256']=sha(out/'maps.img')
+            manifest['sources']['tests/map_storage_fixture.py']=sha(ROOT/'tests/map_storage_fixture.py')
         manifest['composer_sha256']=sha(a.composer.resolve())
         extra=[x for x in (ROOT/'experiments/comaps-native').rglob('*') if x.is_file() and '__pycache__' not in str(x)]
         extra += [ROOT/'experiments/slint-notes/assets/icons/maps.svg',ROOT/'tests/desktop_maps_input.py',ROOT/'tests/desktop_maps_contract_test.py',ROOT/'tests/comaps_raster_test.c',ROOT/'tests/comaps_labels_test.c']

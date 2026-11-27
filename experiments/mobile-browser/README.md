@@ -117,6 +117,16 @@ The normal phone profile is unchanged; this is an opt-in UTM assembly with a
 fresh development-key disk. There is no GPS, offline place search, routing or
 region downloading yet. Pixel hardware and Wi-Fi remain separate work.
 
+For two regions loaded from a separate disposable disk, add `--map-storage` to
+the above `--maps --observe` build and use a fresh stage such as
+`build/mobile-browser/maps-storage`. Tap the region name to choose Gibraltar or
+San Marino. The same runner adds only that fixture's public `maps.img` drive;
+`--reuse` preserves its last successful selection. Use `--boot-only
+--leave-running`, then run `tests/map_storage_utm.py --guest
+build/mobile-browser/maps-storage --mobile --regression` for the guarded
+switch/restart/corruption checks. See the [shared storage experiment](../comaps-native/README.md#two-storage-backed-regions-disposable-utm-only)
+for the bounded map-pack format, recovery policy and authority limits.
+
 ### Maps verification — November 27, 2026
 
 The disposable four-app phone passed real scanout colour landmarks, touch

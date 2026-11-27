@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Fetch a pinned public CoMaps source and authenticated-by-hash offline region."""
 import csv, hashlib, json, subprocess, urllib.request
+from urllib.parse import quote
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
@@ -48,6 +49,32 @@ def prepare(base):
     (base/'styles.h').write_text('/* Generated from pinned CoMaps mapcss-mapping.csv. */\n'
         +f'static const unsigned char map_styles[{count}]={{'+','.join(map(str,values))+'};\n')
     return pin,src,region
+
+def prepare_storage(base, out):
+    """Produce a new public-map pack; never open an installed VM disk."""
+    base,out=base.resolve(),out.resolve()
+    assert base.is_relative_to(ROOT/'build/comaps') and out.is_relative_to(ROOT/'build')
+    assert (out/'.disposable-build').is_file() and not any(p.suffix=='.utm' for p in (out,*out.parents))
+    catalog=json.loads((HERE/'regions.json').read_text());regions=catalog['regions']
+    assert len(regions)==2 and all(16<r['bytes']<=8*1024*1024 for r in regions)
+    paths=[]
+    for r in regions:
+        path=base/(r['name']+'.mwm')
+        if not path.exists():
+            with urllib.request.urlopen(catalog['base_url']+quote(r['name'])+'.mwm',timeout=60) as response:raw=response.read(r['bytes']+1)
+            assert len(raw)==r['bytes'] and hashlib.sha256(raw).hexdigest()==r['sha256'];path.write_bytes(raw)
+        assert path.stat().st_size==r['bytes'] and hashlib.sha256(path.read_bytes()).hexdigest()==r['sha256']
+        paths.append(path)
+    header='/* Generated from pinned public regions.json. */\nstruct map_region_pin { const char *name; unsigned length; unsigned char digest[32]; };\nstatic const struct map_region_pin map_regions[2]={\n'
+    for r in regions:header+='{'+json.dumps(r['name'])+','+str(r['bytes'])+',{'+','.join('0x'+r['sha256'][i:i+2] for i in range(0,64,2))+'}},\n'
+    (out/'regions_generated.h').write_text(header+'};\n')
+    pack=out/'maps.img';assert not pack.is_symlink()
+    with pack.open('wb') as disk:
+        disk.truncate(32*1024*1024)
+        for i,path in enumerate(paths):disk.seek((i+1)*8*1024*1024);disk.write(path.read_bytes())
+    catalog['pack_sha256']=hashlib.sha256(pack.read_bytes()).hexdigest()
+    (out/'map-pack.json').write_text(json.dumps(catalog,indent=2)+'\n')
+    return catalog
 
 if __name__ == '__main__':
     pin,src,region=prepare(ROOT/'build/comaps')

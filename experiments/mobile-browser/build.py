@@ -18,7 +18,9 @@ def main():
     for name in ('inputs','storage','composer','output'):p.add_argument('--'+name,type=Path,required=True)
     p.add_argument('--resume',action='store_true');p.add_argument('--observe',action='store_true',help='disposable-only UI observation; never personal data')
     p.add_argument('--maps',action='store_true',help='add the shared offline map renderer and private phone adapter')
+    p.add_argument('--map-storage',action='store_true',help='two pinned public regions on a separate disposable disk')
     a=p.parse_args();inputs=a.inputs.resolve();out=a.output.resolve()
+    if a.map_storage and not a.maps:p.error('--map-storage requires --maps')
     if not out.is_relative_to(ROOT/'build/mobile-browser') or '.utm' in str(out):p.error('use a worktree build/mobile-browser staging directory')
     if out.exists() and any(out.iterdir()) and not (a.resume and (out/'.disposable-build').is_file()):p.error('use a fresh stage or --resume on a marked stage')
     out.mkdir(parents=True,exist_ok=True);(out/'.disposable-build').touch()
@@ -93,8 +95,8 @@ def main():
     if a.maps:
         spec=importlib.util.spec_from_file_location('shared_maps_adapter',ROOT/'experiments/desktop-apps/maps.py')
         maps=importlib.util.module_from_spec(spec);spec.loader.exec_module(maps)
-        map_pin=maps.build(ROOT,out,inputs,run,mobile=True)
-        maps.attach_mobile(system,pd('slint_ui'),mapping,region,channel)
+        map_pin=maps.build(ROOT,out,inputs,run,mobile=True,storage=a.map_storage)
+        maps.attach_mobile(system,pd('slint_ui'),mapping,region,channel,storage=a.map_storage)
         maps.validate_mobile(system)
     validate(system,a.observe)
     ET.indent(system);ET.ElementTree(system).write(out/'mobile.system',encoding='utf-8',xml_declaration=True)
@@ -108,6 +110,9 @@ def main():
         sources += [ROOT/'experiments/desktop-apps/maps.py',ROOT/'experiments/slint-notes/src/mobile_maps_utm.rs',ROOT/'experiments/slint-notes/assets/icons/maps.svg',ROOT/'tests/mobile_maps_input.py',ROOT/'tests/mobile_maps_contract_test.py']
     manifest=dict(profile='mobile-netsurf-maps' if a.maps else 'mobile-netsurf',maps=a.maps,saved_data_used=False,development_storage_key=True,observation=a.observe,resolution=[1080,2340],browser_css_width=360,browser_scale=3,javascript=True,https=True,certificate_verification=True,private_tcp_slot=4,full_session_lock=False,source_commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),sources={str(x.relative_to(ROOT)):digest(x) for x in sources},artifacts={x.name:digest(x) for x in out.glob('*.elf')},composer_sha256=digest(a.composer.resolve()),loader_sha256=digest(out/'loader.img'))
     if a.maps:manifest['map_region']=map_pin
+    if a.map_storage:
+        manifest['map_storage']=True;manifest['map_pack_sha256']=digest(out/'maps.img')
+        manifest['sources']['tests/map_storage_fixture.py']=digest(ROOT/'tests/map_storage_fixture.py')
     (out/'build.json').write_text(json.dumps(manifest,indent=2)+'\n');print('PASS mobile browser with existing phone apps; disposable development key only',flush=True)
 
 def validate(system,observe=False):

@@ -44,6 +44,9 @@ def main():
     if (guest/'runtime.json').is_file():shutil.copyfile(guest/'runtime.json',data/'runtime.json')
     with (data/'blank.img').open('wb') as f:f.truncate(64*1024*1024)
     subprocess.run(['sgdisk','--clear','--new=1:2048:0','--typecode=1:0700',str(data/'blank.img')],check=True,stdout=subprocess.DEVNULL)
+    if m.get('map_storage'):
+        from map_storage_fixture import configure
+        configure(guest,data,cfg,m)
     trace=data/'trace.log';mp=data/'monitor'
     for suffix in ('.in','.out'):os.mkfifo(str(mp)+suffix,0o600)
     opts.extend(['-serial file:'+str(trace),'-qmp pipe:'+str(mp)])

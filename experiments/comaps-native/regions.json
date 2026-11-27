@@ -1,0 +1,9 @@
+{
+  "regions": [
+    {"name": "Gibraltar", "bytes": 1272536, "sha256": "9b97bbdea3692d8a4e9d5049a7c625c437fc026baabd31b89d757bde1b50c640"},
+    {"name": "San Marino", "bytes": 1980495, "sha256": "15c5ed38e32970b155deceda3f5ed02c27613d0231df149080f40a710a84e95f"}
+  ],
+  "map_series": "2026.10.27",
+  "map_version": 261105,
+  "base_url": "https://mapgen-fi-1.comaps.app/maps/2026.10.27/261105/"
+}

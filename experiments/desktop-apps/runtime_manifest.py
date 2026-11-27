@@ -30,7 +30,7 @@ def inventory(path, *, browser=True, maps=False):
     if len(domains) != len(list(system.iter('protection_domain'))):
         raise ValueError('duplicate domain')
     apps = {k: v for k, v in APPS.items() if browser or k != 'netsurf'}
-    if maps: apps['maps'] = dict(frontend='offline_map', services=())
+    if maps: apps['maps'] = dict(frontend='offline_map', services=('map_store',) if 'map_store' in domains else ())
     if maps and 'lock_auth' in domains: raise ValueError('Maps is outside the curated three-app lock group')
     owner = {name: app for app, spec in apps.items()
              for name in (spec['frontend'], *spec['services'])}

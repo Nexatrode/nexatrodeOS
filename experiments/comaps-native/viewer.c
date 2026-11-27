@@ -17,6 +17,21 @@
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
 #include "labels.h"
+#ifdef MAP_STORAGE
+#include "storage_format.h"
+#include "regions_generated.h"
+uintptr_t map_store_control,map_store_bytes;
+static unsigned loaded_region=2,requested_region,storage_state=1,storage_error;
+static uint64_t storage_sequence,storage_generation;
+static bool region_picker;
+static bool recovering=true;
+static struct offline_map maps[2],*current_map=&maps[0],*candidate=&maps[1];
+#define map (*current_map)
+static void storage_request(unsigned,unsigned);
+static void storage_reply(void);
+#else
+static struct offline_map map;
+#endif
 #ifdef MAP_MOBILE
 static unsigned map_height=720;
 static bool active;
@@ -55,7 +70,6 @@ static bool active=true;
 #endif
 uintptr_t map_frame, map_heap, input_handoff, ui_focus, ui_pointer;
 extern const unsigned char map_blob[], map_blob_end[], map_font[];
-static struct offline_map map;
 static unsigned char *pixels;
 static stbtt_fontinfo font;
 static uint32_t input_tail,dropped,frames;
@@ -74,6 +88,10 @@ static void profile(uint64_t start,uint64_t *phases,uint64_t rendered,uint64_t n
     p[1]=0x4e584d4150303031ULL;p[2]=input_events;p[3]=frames;p[4]=active;
     p[5]=(uint64_t)(int64_t)(cx*1e9);p[6]=(uint64_t)(int64_t)(cy*1e9);p[7]=(uint64_t)(units*1e12);p[8]=zoom_level;
     p[9]=H;p[10]=last_layout.count;
+#ifdef MAP_STORAGE
+    p[11]=loaded_region<2?loaded_region+1:0;p[12]=requested_region+1;
+    p[13]=storage_state;p[14]=storage_error;p[15]=storage_generation;
+#endif
     _Static_assert(464*8+MAP_MAX_LABELS*4*4<=4096,"bounded label rectangles after timing history");
     uint32_t *rect=(void*)(p+464);
     for(unsigned i=0;i<last_layout.count;++i){struct map_label_rect r=last_layout.rect[i];rect[i*4]=r.left;rect[i*4+1]=r.top;rect[i*4+2]=r.right;rect[i*4+3]=r.bottom;}
@@ -157,9 +175,16 @@ static void triangle(struct map_point a,struct map_point b,struct map_point c,ui
     }
 }
 static void reset(void) {
+#ifdef MAP_STORAGE
+    if(loaded_region==1){cx=0;cy=0;initial_units=fmax((map.maxx-map.minx)/W,(map.maxy-map.miny)/(BOTTOM-TOP))*1.05;}
+    else
+#endif
+    {
     cx=-5.346-map.origin_x;
     cy=38.797-map.origin_y;
-    initial_units=.066/(BOTTOM-TOP);units=initial_units;zoom_level=0;changed=true;
+    initial_units=.066/(BOTTOM-TOP);
+    }
+    units=initial_units;zoom_level=0;changed=true;
 }
 static void zoom(int direction) {
     if(direction>0&&zoom_level<6){units/=1.5;zoom_level++;}
@@ -211,9 +236,23 @@ static void draw(void) {
 #endif
     fill(0,0,W,TOP,0x0b202d);
 #if defined(MAP_DESKTOP) || defined(MAP_MOBILE)
+#ifdef MAP_STORAGE
+    text(12,27,20,0xe9f7fb,map_regions[loaded_region<2?loaded_region:requested_region].name);
+    text(12,51,13,0x91b5c5,storage_state==1?"Loading…":storage_state==3?"Saving selection…":storage_state==2?"Load failed · tap region":"Offline · change region");
+#else
     text(16,27,22,0xe9f7fb,"Gibraltar");text(16,51,14,0x91b5c5,"CoMaps · offline");
+#endif
 #else
     text(28,35,29,0xe9f7fb,"CoMaps data · Gibraltar");text(29,67,18,0x91b5c5,"Offline native experiment");
+#endif
+#ifdef MAP_STORAGE
+    if(region_picker){
+        for(unsigned i=0;i<2;i++){fill(6,TOP+6+(int)i*48,W-12,44,0x183c4a);text(16,TOP+35+(int)i*48,20,0xe9f7fb,map_regions[i].name);}
+    }else if(storage_state==2){
+        fill(6,TOP+6,W-12,54,0x472b32);
+        text(14,TOP+28,16,0xffa6ad,"Region unavailable or damaged");
+        text(14,TOP+49,13,0xe9f7fb,loaded_region<2?"Choose a region to retry. Current map retained.":"Choose another offline region to continue.");
+    }
 #endif
     const char *buttons[]={"−","+","Fit"};
     for(unsigned i=0;i<3;i++){int x=BUTTON_LEFT+i*BUTTON_STEP;fill(x,14,BUTTON_WIDTH,42,0x183c4a);text(x+12,44,23,0x92e3e0,buttons[i]);}
@@ -271,13 +310,28 @@ static void map_key(unsigned code,unsigned value) {
 #endif
 static void map_button(unsigned value) {
     if(!value){held=false;return;}
+#ifdef MAP_STORAGE
+    if(my>=0&&my<TOP&&mx<BUTTON_LEFT){region_picker=!region_picker;changed=true;return;}
+    if(region_picker){
+        if(my>=TOP+6&&my<TOP+102&&storage_state!=1&&storage_state!=3){
+            unsigned region=(unsigned)(my-TOP-6)/48;region_picker=false;held=false;
+            recovering=false;storage_request(MAP_STORE_LOAD,region);return;
+        }
+        region_picker=false;changed=true;return;
+    }
+    if(loaded_region==2)return;
+#endif
     if(my>=TOP&&my<(int)BOTTOM){held=true;lastx=mx;lasty=my;}
     else if(my>=14&&my<=56&&mx>=BUTTON_LEFT){if(mx>=BUTTON_LEFT+2*BUTTON_STEP)reset();else if(mx>=BUTTON_LEFT+BUTTON_STEP)zoom(1);else zoom(-1);}
 }
 #if defined(MAP_DESKTOP) || defined(MAP_MOBILE)
 static void set_height(unsigned height) {
     if(map_height==height)return;
-    map_height=height;initial_units=.066/(BOTTOM-TOP);double factor=1.;
+    map_height=height;initial_units=.066/(BOTTOM-TOP);
+#ifdef MAP_STORAGE
+    if(loaded_region==1)initial_units=fmax((map.maxx-map.minx)/W,(map.maxy-map.miny)/(BOTTOM-TOP))*1.05;
+#endif
+    double factor=1.;
     for(unsigned i=0;i<zoom_level;i++)factor*=1.5;
     units=initial_units/factor;changed=true;held=false;
 }
@@ -355,17 +409,59 @@ static void input(void) {
 #endif
 void init(void) {
     uint64_t started=us();
+#ifndef MAP_STORAGE
     if(!map_load(&map,map_blob,(size_t)(map_blob_end-map_blob))){printf("COMAPS|FAIL|map=%s|record=%u\n",map.error,map.records);__builtin_trap();}
     printf("COMAPS|MAP|region=Gibraltar|records=%u|points=%u|inner=%u|outer=%u|load_us=%llu\n",map.records,map.point_count,map.inner,map.outer,(unsigned long long)(us()-started));
+#else
+    (void)started;
+#endif
     pixels=(unsigned char*)map_frame+sizeof(slint_frame_header_t);
     if(!stbtt_InitFont(&font,map_font,stbtt_GetFontOffsetForIndex(map_font,0)))__builtin_trap();
     #if !defined(MAP_DESKTOP) && !defined(MAP_MOBILE)
     *(uint32_t*)ui_focus=1;mx=W/2;my=H/2;publish_pointer();
 #endif
-    reset();draw();
+    reset();
+#ifdef MAP_STORAGE
+    storage_request(MAP_STORE_BOOT,0);
+#endif
+    draw();
 #ifdef MAP_PROFILE
     profile(0,NULL,0,0);
 #endif
-    printf("COMAPS|READY|offline|no storage|no network\n");
+    printf("COMAPS|READY|offline|no network\n");
 }
-void notified(microkit_channel channel){if(channel==1)input();}
+#ifdef MAP_STORAGE
+static void storage_request(unsigned command,unsigned region) {
+    struct map_store_page *p=(void*)map_store_control;
+    requested_region=region;storage_error=0;storage_state=command==MAP_STORE_COMMIT?3:1;held=false;
+    p->command=command;p->region=region;p->length=0;
+    __atomic_store_n(&p->sequence,++storage_sequence,__ATOMIC_RELEASE);microkit_notify(2);changed=true;
+}
+static void storage_reply(void) {
+    struct map_store_page *p=(void*)map_store_control;
+    if(__atomic_load_n(&p->complete,__ATOMIC_ACQUIRE)!=storage_sequence)return;
+    storage_generation=p->generation;
+    if(p->result||p->region>1){storage_error=p->result?p->result:MAP_STORE_INVALID;storage_state=2;changed=true;}
+    else if(p->command==MAP_STORE_BOOT){storage_request(MAP_STORE_LOAD,(unsigned)p->region);}
+    else if(p->command==MAP_STORE_LOAD){
+        if(p->region!=requested_region||p->length!=map_regions[requested_region].length||p->length>MAP_FILE_LIMIT||!map_load(candidate,(void*)map_store_bytes,p->length)){
+            storage_state=2;storage_error=MAP_STORE_CORRUPT;changed=true;
+        }else{
+            struct offline_map *old=current_map;current_map=candidate;candidate=old;loaded_region=requested_region;reset();
+            printf("COMAPS|LOADED|region=%s|records=%u|points=%u\n",map_regions[loaded_region].name,map.records,map.point_count);
+            if(recovering&&storage_generation){recovering=false;storage_state=0;changed=true;}
+            else {recovering=false;storage_request(MAP_STORE_COMMIT,loaded_region);}
+        }
+    }else if(p->command==MAP_STORE_COMMIT){storage_state=0;changed=true;}
+    draw();
+#ifdef MAP_PROFILE
+    profile(0,NULL,0,0);
+#endif
+}
+#endif
+void notified(microkit_channel channel){
+    if(channel==1)input();
+#ifdef MAP_STORAGE
+    else if(channel==2)storage_reply();
+#endif
+}

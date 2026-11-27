@@ -6,25 +6,31 @@ import subprocess
 import xml.etree.ElementTree as ET
 
 
-def build(root, out, inputs, run, *, mobile=False):
+def build(root, out, inputs, run, *, mobile=False, storage=False):
     here=root/'experiments/comaps-native';base=root/'build/comaps'
     spec=importlib.util.spec_from_file_location('comaps_prepare',here/'prepare.py')
     preparation=importlib.util.module_from_spec(spec);spec.loader.exec_module(preparation)
     pin,src,region=preparation.prepare(base)
+    if storage:pin=dict(pin,storage_regions=preparation.prepare_storage(base,out))
     board=inputs/'sdk/board/qemu_virt_aarch64_el1/smp-debug'
     sysroot=root/'build/netsurf-native/sysroot'
     stb=root/'build/netsurf-native/deps/stb'
     flags=['--target=aarch64-none-elf','-mcpu=cortex-a53','-mstrict-align','-ffreestanding','-fno-stack-protector','-ffunction-sections','-fdata-sections','-O2','-Wall','-Wextra',
-        '-I'+str(board/'include'),'-I'+str(sysroot/'include'),'-I'+str(here),'-I'+str(base),'-I'+str(stb),
+        '-I'+str(board/'include'),'-I'+str(sysroot/'include'),'-I'+str(here),'-I'+str(base),'-I'+str(stb),'-I'+str(out),
         '-DMAP_MOBILE=1' if mobile else '-DMAP_DESKTOP=1','-DMAP_PROFILE=1',
         '-DSLINT_FRAME_WIDTH=1080u' if mobile else '-DSLINT_FRAME_WIDTH=1120u',
         '-DSLINT_FRAME_HEIGHT=2160u' if mobile else '-DSLINT_FRAME_HEIGHT=1040u',
         '-DSLINT_FRAME_REGION_BYTES=0x800000u' if mobile else '-DSLINT_FRAME_REGION_BYTES=0x400000u']
+    if storage:flags+=['-DMAP_STORAGE=1']
     for unit in ('viewer','mwm'):run('clang',*flags,'-c',here/(unit+'.c'),'-o',out/('maps-'+unit+'.o'))
     font=root/'experiments/slint-notes/assets/fonts/Roboto-Regular.ttf'
-    (out/'maps-assets.S').write_text('.section .rodata\n.balign 8\n.global map_blob,map_blob_end,map_font\nmap_blob:\n.incbin "'+str(region)+'"\nmap_blob_end:\n.balign 8\nmap_font:\n.incbin "'+str(font)+'"\n')
+    blob='' if storage else 'map_blob:\n.incbin "'+str(region)+'"\nmap_blob_end:\n'
+    (out/'maps-assets.S').write_text('.section .rodata\n.balign 8\n.global map_blob,map_blob_end,map_font\n'+blob+'.balign 8\nmap_font:\n.incbin "'+str(font)+'"\n')
     run('clang','--target=aarch64-none-elf','-c',out/'maps-assets.S','-o',out/'maps-assets.o')
     run('ld.lld','--gc-sections','-L',board/'lib','-L',sysroot/'lib','-T',board/'lib/microkit.ld',out/'maps-viewer.o',out/'maps-mwm.o',out/'maps-assets.o','--start-group','-lmicrokit','-lc','-lm','--end-group','-o',out/'offline-map.elf')
+    if storage:
+        for unit in ('store','hash'):run('clang',*flags,'-c',here/(unit+'.c'),'-o',out/('maps-'+unit+'.o'))
+        run('ld.lld','--gc-sections','-L',board/'lib','-L',sysroot/'lib','-T',board/'lib/microkit.ld',out/'maps-store.o',out/'maps-hash.o','--start-group','-lmicrokit','-lc','--end-group','-o',out/'map-store.elf')
     notices=out/'licenses/maps';notices.mkdir(parents=True,exist_ok=True)
     for name in ('LICENSE','NOTICE'):shutil.copyfile(src/name,notices/('CoMaps-'+name))
     shutil.copyfile(here/'NOTICE',notices/'NexatrodeOS-NOTICE')
@@ -33,7 +39,7 @@ def build(root, out, inputs, run, *, mobile=False):
     return pin
 
 
-def attach(system, manager, mapping, mr, channel):
+def attach(system, manager, mapping, mr, channel, *, storage=False):
     mr('map_frame',0x400000,page_size='0x200000')
     mr('map_heap',0x1000000,page_size='0x200000')
     mr('map_input',4096)
@@ -50,6 +56,7 @@ def attach(system, manager, mapping, mr, channel):
     mapping(manager,'map_input',0x66006000,'rw','input_d')
     channel('offline_map',0,'desktop_manager',29)
     channel('offline_map',1,'desktop_manager',28)
+    if storage:attach_storage(system,app,mapping,mr,channel)
 
 
 def validate(system):
@@ -58,13 +65,15 @@ def validate(system):
     for (start,size,name),(next_start,_,next_name) in zip(physical,physical[1:]):
         assert start+size<=next_start,('overlapping physical regions',name,next_name)
     app=domains['offline_map']
-    assert {m.get('mr'):m.get('perms') for m in app.findall('map')}=={
-        'map_frame':'rw','map_heap':'rw','map_input':'rw','map_observation':'rw','desktop_display_mode':'r'}
+    stored='map_store' in domains
+    assert {m.get('mr'):m.get('perms') for m in app.findall('map')}==dict({
+        'map_frame':'rw','map_heap':'rw','map_input':'rw','map_observation':'rw','desktop_display_mode':'r'},**({'map_store_control':'rw','map_store_bytes':'r'} if stored else {}))
     links={}
     for c in system.findall('channel'):
         a,b=list(c)
         for x,y in ((a,b),(b,a)):links[x.get('pd'),int(x.get('id'))]=(y.get('pd'),int(y.get('id')))
-    assert {i:peer for (pd,i),peer in links.items() if pd=='offline_map'}=={0:('desktop_manager',29),1:('desktop_manager',28)}
+    assert {i:peer for (pd,i),peer in links.items() if pd=='offline_map'}==({0:('desktop_manager',29),1:('desktop_manager',28)}|({2:('map_store',1)} if stored else {}))
+    if stored:validate_storage(system)
     for name in ('chat_ui','wallet_ui','native_browser','wallet_app','simplex_agent','vault'):
         assert not {'map_frame','map_heap','map_input','map_observation'} & {m.get('mr') for m in domains[name].findall('map')}
     for name in ('desktop_manager','desktop_gpu'):
@@ -73,7 +82,7 @@ def validate(system):
     assert 'lock_auth' not in domains,'Maps is not part of the curated three-app wrapped lock group'
 
 
-def attach_mobile(system, ui, mapping, mr, channel):
+def attach_mobile(system, ui, mapping, mr, channel, *, storage=False):
     mr('mobile_maps_frame',0x800000,page_size='0x200000')
     mr('mobile_maps_heap',0x1000000,page_size='0x200000')
     mr('mobile_maps_input',4096)
@@ -85,12 +94,14 @@ def attach_mobile(system, ui, mapping, mr, channel):
     mapping(ui,'mobile_maps_input',0x93000000,'rw','mobile_maps_input')
     channel('offline_map',0,'slint_ui',19)
     channel('slint_ui',20,'offline_map',1)
+    if storage:attach_storage(system,app,mapping,mr,channel)
 
 
 def validate_mobile(system):
     domains={p.get('name'):p for p in system.findall('protection_domain')}
     uses=lambda name:{m.get('mr'):m.get('perms') for m in domains[name].findall('map')}
-    assert uses('offline_map')==dict(mobile_maps_frame='rw',mobile_maps_heap='rw',mobile_maps_input='rw',map_observation='rw')
+    stored='map_store' in domains
+    assert uses('offline_map')==dict(mobile_maps_frame='rw',mobile_maps_heap='rw',mobile_maps_input='rw',map_observation='rw',**({'map_store_control':'rw','map_store_bytes':'r'} if stored else {}))
     assert uses('slint_ui')['mobile_maps_frame']=='r' and uses('slint_ui')['mobile_maps_input']=='rw'
     private={'mobile_maps_frame','mobile_maps_heap','mobile_maps_input','map_observation'}
     for name in domains:
@@ -100,5 +111,32 @@ def validate_mobile(system):
     for c in system.findall('channel'):
         a,b=list(c)
         for x,y in ((a,b),(b,a)):links[x.get('pd'),int(x.get('id'))]=(y.get('pd'),int(y.get('id')))
-    assert {i:peer for (pd,i),peer in links.items() if pd=='offline_map'}=={0:('slint_ui',19),1:('slint_ui',20)}
+    assert {i:peer for (pd,i),peer in links.items() if pd=='offline_map'}==({0:('slint_ui',19),1:('slint_ui',20)}|({2:('map_store',1)} if stored else {}))
+    if stored:validate_storage(system)
     assert 'lock_auth' not in domains
+
+def attach_storage(system, app, mapping, mr, channel):
+    mr('map_store_control',4096)
+    mr('map_store_bytes',0x800000,page_size='0x200000')
+    mr('map_disk_regs',4096,phys_addr='0x0a002000')
+    mr('map_disk_dma',0x20000,phys_addr='0x5f880000')
+    mapping(app,'map_store_control',0x72000000,'rw','map_store_control')
+    mapping(app,'map_store_bytes',0x76000000,'r','map_store_bytes')
+    store=ET.SubElement(system,'protection_domain',name='map_store',priority='96',budget='3000',period='10000',stack_size='0x4000')
+    ET.SubElement(store,'program_image',path='map-store.elf')
+    for name,va,perms in [('map_store_control',0x72000000,'rw'),('map_store_bytes',0x73000000,'rw'),('map_disk_regs',0x74000000,'rw'),('map_disk_dma',0x75000000,'rw')]:
+        mapping(store,name,va,perms,name)
+        if name in ('map_disk_regs','map_disk_dma'):store.findall('map')[-1].set('cached','false')
+    ET.SubElement(store,'irq',irq='64',id='0',trigger='edge')
+    channel('offline_map',2,'map_store',1)
+
+def validate_storage(system):
+    domains={p.get('name'):p for p in system.findall('protection_domain')}
+    expected={'map_store_control':'rw','map_store_bytes':'rw','map_disk_regs':'rw','map_disk_dma':'rw'}
+    assert {m.get('mr'):m.get('perms') for m in domains['map_store'].findall('map')}==expected
+    private=set(expected)
+    for name,pd in domains.items():
+        if name not in ('offline_map','map_store'):assert not private&{m.get('mr') for m in pd.findall('map')},name
+    assert [(i.get('irq'),i.get('id')) for i in domains['map_store'].findall('irq')]==[('64','0')]
+    links=[(e.get('pd'),e.get('id')) for c in system.findall('channel') for e in c if any(x.get('pd')=='map_store' for x in c)]
+    assert sorted(links)==[('map_store','1'),('offline_map','2')]

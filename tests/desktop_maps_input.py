@@ -117,7 +117,9 @@ def exercise(q, data, evidence, *, gpu=True, functional=True, load=False):
         # Move the retained window while held; app content must not rerasterize.
         a=window(4);old=map_state()[3];dx=-24 if a[0]>48 else 24
         pointer(a[0]+180,a[1]-22,True);pointer(a[0]+180+dx,a[1]-22)
-        until(lambda:window(4)[0]==a[0]+dx);stable()
+        # Absolute QMP coordinates round through the current native mode.
+        # Permit one logical pixel of quantization, while requiring movement.
+        until(lambda:window(4)[0]!=a[0] and abs(window(4)[0]-(a[0]+dx))<=1);stable()
         screen('maps-held-drag',['Gibraltar','CoMaps','Maps'],held=True)
         pointer(a[0]+180+dx,a[1]-22,False);assert map_state()[3]==old
     def presented_map(frame):

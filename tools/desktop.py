@@ -62,17 +62,19 @@ def session(guest, *, installed=True):
     if state['saved_data_used'] or bundle.parent != guest or not bundle.name.startswith('Desktop-Apps-'):
         raise ValueError('not this build directory\'s disposable VM')
     config = plistlib.loads((bundle / 'config.plist').read_bytes())
-    if config['Information']['UUID'] != state['uuid'] or len(config['Drive']) != 1:
+    if config['Information']['UUID'] != state['uuid'] or len(config['Drive']) != (2 if manifest.get('map_storage') else 1):
         raise ValueError('VM identity or drive count changed')
     if config['Drive'][0].get('ImageName') != 'blank.img':
         raise ValueError('only the fixture blank.img drive is allowed')
+    if manifest.get('map_storage') and (not manifest.get('maps') or config['Drive'][1].get('ImageName')!='maps.img'):
+        raise ValueError('the extra disposable drive must be the public maps.img')
     # Never follow a disk/image link out into an installation or another VM.
     data = bundle / 'Data'
     if (data/'build-manifest.json').is_file() and bool(json.loads((data/'build-manifest.json').read_text()).get('wrapped_session'))!=bool(manifest.get('wrapped_session')):
         raise ValueError('use a fresh disposable VM for a different vault/key format')
     if not data.resolve().is_relative_to(bundle):
         raise ValueError('disposable VM data directory must stay inside its bundle')
-    if any((data / n).is_symlink() for n in ('blank.img', 'loader.img')):
+    if any((data / n).is_symlink() for n in ('blank.img', 'loader.img', *(['maps.img'] if manifest.get('map_storage') else []))):
         raise ValueError('disposable drive/loader must not be symbolic links')
     if config['System']['CPUCount'] != 4 or not config['QEMU']['Hypervisor']:
         raise ValueError('expected four-vCPU accelerated UTM')
@@ -147,6 +149,7 @@ def main():
     for name in ('inputs', 'storage', 'shell-base', 'composer', 'output'):
         b.add_argument('--'+name, type=Path, required=True)
     b.add_argument('--maps',action='store_true',help='opt-in fourth offline Maps window; separate unlocked disposable profile')
+    b.add_argument('--map-storage',action='store_true',help='two public offline regions on a separate disposable Maps disk')
     b.add_argument('--resume', action='store_true', help='rebuild a marked disposable staging directory; no VM/disk changes')
     b.add_argument('--diagnostic', action='store_true', help='GPU readback/pixel checks; slower than the normal image')
     b.add_argument('--locked',action='store_true',help='fresh disposable passphrase-wrapped session; requires the managed desktop composer')
@@ -173,6 +176,9 @@ def main():
         if a.maps:
             if a.locked:raise ValueError('Maps is not in the curated three-app lock group')
             command.append('--maps')
+        if a.map_storage:
+            if not a.maps:raise ValueError('--map-storage requires --maps')
+            command.append('--map-storage')
         if a.resume:
             command.append('--resume')
         if a.diagnostic:

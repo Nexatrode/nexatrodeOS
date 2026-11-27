@@ -83,10 +83,69 @@ filesystem access are not implemented. The initial camera is a fixed public
 Gibraltar view, not an inferred user location. The prototype is tested against
 one pinned map; other region/version combinations remain unverified.
 
-The next useful milestone is bounded storage-backed map reads. A full CoMaps port
+The opt-in storage-backed experiment below adds two pinned regions. A full CoMaps port
 would additionally need its C++ runtime/platform services, Drape graphics backend,
 task/thread lifecycle, map management, search and routing. Existing VirGL blit
 composition does not supply the full graphics API that Drape expects.
+
+## Two storage-backed regions (disposable UTM only)
+
+Add `--map-storage` to either the desktop or mobile `--maps` builder. This keeps
+the existing embedded-region mode available, and creates a new 32 MiB public-map
+pack with Gibraltar (1,272,536 bytes) and San Marino (1,980,495 bytes), pinned in
+[regions.json](regions.json). Region bytes are absent from the storage-profile
+app ELF. The runner copies the pack into a separate `maps.img` disk in its own
+generated disposable VM; the fresh app-service `blank.img` remains separate.
+No regular VM disk, wallet, chats, installation key or Pixel checkout is read.
+
+Tap the region name at the upper left, then choose either region. Both layouts
+share the loader and decoder. The current map remains usable while an isolated
+`map_store` protection domain reads bounded 64 KiB chunks through an
+interrupt-driven VirtIO block queue. The public file buffer is read-only in the
+renderer; the shell, wallet, chat and browser receive no mappings or channels to
+the storage service. Map parsing and checksum work run below the interactive
+frontends' priorities. A candidate decoded map replaces the current one only
+after the whole pinned SHA-256 and bounded decoder checks pass.
+
+This is a small map-pack format with two fixed public-file extents, **not a
+general filesystem**. Each file is limited to 8 MiB; the existing 32,768-feature,
+524,288-point and 32,768-per-geometry limits remain. San Marino decodes 32,619
+records and 383,542 points. Both regions were compared point for point with the
+unmodified pinned CoMaps geometry decoder (6,674 / 18,389 blocks), and tested
+under address/undefined-behavior sanitizers. Other regions/formats and larger
+files are not automatically supported. There are no runtime map downloads.
+
+After a successful load, the service writes the last selected region to the
+older of two checksummed 4 KiB selection records, then requires a VirtIO FLUSH
+before acknowledging the save. Cold boot chooses the newest intact record and
+revalidates the selected region; it does not rewrite an unchanged selection.
+A torn newest record falls back to the older record. A corrupt region displays
+an error and never replaces a valid current map. If the selected region is
+damaged at boot, another region can be chosen. A truncated pack is rejected by
+capacity validation. Restoring valid public payloads allows recovery after a
+restart. These checksums protect against damage, not malicious rollback of a
+public region preference. There are no private bookmarks or camera-history
+records, and this profile is still outside the wrapped-key lock lifecycle.
+
+Run the dedicated checks after creating a boot-only, keep-running fixture:
+
+```sh
+python3 -m unittest discover -s tests -p 'map_storage_*test.py'
+python3 tests/map_storage_utm.py --guest build/desktop-apps/maps-storage --regression
+python3 tests/map_storage_utm.py --guest build/mobile-browser/maps-storage --mobile --regression
+```
+
+The guarded test modifies only that fixture's `maps.img` while its recorded UUID
+is stopped. It exercises repeated switching, both real scanouts, cold restart,
+an artificially torn selection, corrupted selected/unselected files, an
+incomplete payload, a physically truncated pack and restoration. Optional
+regressions exercise the existing four-app checks, phone browser groups and
+loaded-host pan/switch checks. Evidence is under each stage's
+`storage-verification/`; screenshots distinguish renderer state from actual
+scanout. The first San Marino UTM trial exposed an unaligned libc tail read from
+the uncached DMA mapping; explicit volatile byte copies fixed it. This remains
+a QEMU experiment: device hot-unplug, missing completion interrupts, arbitrary
+filesystem access and physical Pixel storage are outside its verification.
 
 ## Optional GPU desktop integration
 

@@ -24,7 +24,7 @@ def main():
         old_state=json.loads((guest/'session.json').read_text());tag=old_state['uuid'];bundle=Path(old_state['bundle']).resolve();data=bundle/'Data'
         assert not old_state['saved_data_used'] and bundle.parent==guest and bundle.name=='Mobile-Browser-'+tag[:8]+'.utm'
         old_cfg=plistlib.loads((bundle/'config.plist').read_bytes())
-        assert old_cfg['Information']['UUID']==tag and len(old_cfg['Drive'])==1 and old_cfg['Drive'][0]['ImageName']=='blank.img'
+        assert old_cfg['Information']['UUID']==tag and len(old_cfg['Drive'])==(2 if m.get('map_storage') else 1) and old_cfg['Drive'][0]['ImageName']=='blank.img'
         assert data.resolve()==data and not any((data/n).is_symlink() for n in ('blank.img','loader.img'))
         subprocess.run(['open','-g','-a','UTM',str(bundle)],check=True)
         end=time.monotonic()+45
@@ -36,13 +36,13 @@ def main():
         else:raise RuntimeError('cannot confirm the disposable VM stopped; loader unchanged')
     else:
         tag=str(uuid.uuid4()).upper();bundle=guest/('Mobile-Browser-'+tag[:8]+'.utm');data=bundle/'Data';data.mkdir(parents=True)
-    cfg=old_cfg if a.reuse else plistlib.loads(a.template.read_bytes());assert cfg['System']['CPUCount']==4 and cfg['QEMU']['Hypervisor'] and cfg['Network']==[] and len(cfg['Drive'])==1
+    cfg=old_cfg if a.reuse else plistlib.loads(a.template.read_bytes());assert cfg['System']['CPUCount']==4 and cfg['QEMU']['Hypervisor'] and cfg['Network']==[] and len(cfg['Drive'])==(2 if a.reuse and m.get('map_storage') else 1)
     cfg['Information'].update(UUID=tag,Name=('NexatrodeOS Mobile Maps' if m.get('maps') else 'NexatrodeOS Mobile Browser')+' — Disposable '+tag[:8]);cfg['Serial']=[];cfg['Sharing'].update(ClipboardSharing=False,DirectoryShareMode='None');cfg['QEMU']['DebugLog']=False
     old=cfg['Drive'][0]['Identifier'];drive=old if a.reuse else str(uuid.uuid4()).upper();cfg['Drive'][0].update(Identifier=drive,ImageName='blank.img')
     opts=cfg['QEMU']['AdditionalArguments']
     if a.reuse:opts[:]=[x for x in opts if not x.startswith(('-spice agent-mouse=off','-serial file:','-qmp pipe:'))]
     assert all(x.startswith(('-global virtio-','-device loader,','-device virtio-','-netdev user,id=net0')) for x in opts)
-    assert sum(x.startswith('-device loader,') for x in opts)==1 and sum(x.startswith('-device virtio-blk-device,') for x in opts)==1
+    assert sum(x.startswith('-device loader,') for x in opts)==1 and sum(x.startswith('-device virtio-blk-device,') for x in opts)==(2 if a.reuse and m.get('map_storage') else 1)
     for i,x in enumerate(opts):
         if x.startswith('-device loader,'):opts[i]=f'-device loader,file={data}/loader.img,addr=0x70000000,cpu-num=0'
         elif x.startswith('-device virtio-blk-device,'):opts[i]=x.replace(old,drive)
@@ -52,6 +52,9 @@ def main():
     if not a.reuse:
         with (data/'blank.img').open('wb') as f:f.truncate(64*1024*1024)
         subprocess.run(['sgdisk','--clear','--new=1:2048:0','--typecode=1:0700',str(data/'blank.img')],stdout=subprocess.DEVNULL,check=True)
+    if m.get('map_storage'):
+        from map_storage_fixture import configure
+        configure(guest,data,cfg,m,reuse=a.reuse)
     for suffix in ('.in','.out'):
         if not Path(str(data/'monitor')+suffix).exists():os.mkfifo(str(data/'monitor')+suffix,0o600)
     opts+=['-spice agent-mouse=off','-serial file:'+str(data/'trace.log'),'-qmp pipe:'+str(data/'monitor')]

@@ -38,6 +38,18 @@ wallet or chats are inputs. The default profile remains three apps. See the
 [map experiment](../comaps-native/README.md) for region provenance, notices and
 the deliberately limited renderer; search, routing and map downloads are absent.
 
+`./dev desktop build --maps --map-storage --diagnostic` opts into two
+storage-backed public regions, Gibraltar and San Marino, in a fresh stage such
+as `build/desktop-apps/maps-storage`. The runner creates a dedicated `maps.img`
+beside the blank app-service disk. Tap the region name to switch. Install and
+session guards recognize only this explicit second fixture drive and continue
+rejecting saved-data or linked disks. After a boot-only keep-running run,
+`python3 tests/map_storage_utm.py --guest build/desktop-apps/maps-storage
+--regression` checks switching, cold restart, corrupt files and recovery. The
+[shared map storage notes](../comaps-native/README.md#two-storage-backed-regions-disposable-utm-only)
+describe the public map-pack format and its limits; it is not a general
+filesystem or an extension of the private vault.
+
 The final normal four-app run at 2560×1564, 2×, passed 16 acknowledged map pans
 and 12 four-app switches with four bounded host CPU workers. Map handler to
 frame publication was 5.059 ms median / 6.193 ms maximum in that run. Earlier
