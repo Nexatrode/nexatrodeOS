@@ -2,6 +2,8 @@ from pathlib import Path
 import re,subprocess,unittest
 ROOT=Path(__file__).resolve().parents[1];BASE='98a3b4b3'
 def without_elf_credit(path,s):
+ from sunfish_registry_elf_pressure_source_test import without_pressure
+ s=without_pressure(path,s)
  s=re.sub(r'/\* ELF_CREDIT_BEGIN \*/\n.*?/\* ELF_CREDIT_END \*/\n','',s,flags=re.S)
  if path=='rust/Cargo.toml':s=s.replace('sunfish-elf-credit-pair-turn = ["sunfish-elf-ready-grant-turn"]\n','')
  if path=='rust/src/qcom_glink_qmi.rs':s=s.replace('&& (!self.transmit[*i].registry_credit_turn_used\n                ))}else{None};','&& !self.transmit[*i].registry_credit_turn_used)}else{None};').rstrip()+'\n'

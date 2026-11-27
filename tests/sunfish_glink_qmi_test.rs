@@ -4009,12 +4009,19 @@ fn replay_registry_move_entry_occupied() {
     let older_id = offer(&mut s);
     for _ in 1..qcom_glink_qmi::RX_SLOTS { offer(&mut s); }
     let older = registry_turn_request(&mut s, older_id, 9, 3);
-    // This fixture needs an unpublished predecessor; queue after its return
-    // under the new turn so that it is not an own-return handoff candidate.
+    // Keep an unpublished predecessor for the FlowBusy/reused-slot replay.
+    // The queue-order-independent child now arms this order too; spend its
+    // one-shot with a blocked write, then exercise the normal grant fallback.
     if cfg!(feature="sunfish-registry-ready-handoffs"){assert_eq!(publish(&mut s).unwrap().0,Published::ReceiveDone(older_id));}
     s.queue_reply(&older, Reply::Failure { error: 3 }).unwrap();
     if !cfg!(feature="sunfish-registry-ready-handoffs"){assert_eq!(publish(&mut s).unwrap().0,Published::ReceiveDone(older_id));}
     assert_eq!(s.ingest(1, &control(7, 56)), Ok(Event::ReceiveIntentRequest { granted: true }));
+    #[cfg(feature="sunfish-registry-elf-pressure")]
+    assert_eq!(s.publish_next(1, |b| {
+        assert_eq!(word(b, 0) & 0xffff, 9);
+        assert_eq!(&b[49..51], &3u16.to_le_bytes());
+        Err(WriteError::WouldBlock)
+    }), Err(Error::WouldBlock));
     let Published::ReceiveIntent(id) = publish(&mut s).unwrap().0 else { panic!() };
     assert_eq!(publish(&mut s).unwrap().0, Published::IntentRequestAck { granted: true });
     let original = registry_turn_request(&mut s, id, 9, 4);
@@ -4024,7 +4031,8 @@ fn replay_registry_move_entry_occupied() {
     assert_eq!(s.offer_receive(1), Err(Error::NoCapacity));
     assert_eq!(publish(&mut s).unwrap().0, Published::ReceiveDone(id));
 
-    let early_older = if cfg!(feature = "sunfish-registry-converted-grant-turn") {
+    let early_older = if cfg!(feature = "sunfish-registry-converted-grant-turn")
+        && !cfg!(feature = "sunfish-registry-elf-pressure") {
         let (Published::Data { remote_intent, .. }, b) = publish(&mut s).unwrap() else { panic!("converted grant reply expected") };
         assert_eq!(&b[49..51], &3u16.to_le_bytes()); Some(remote_intent)
     } else { None };

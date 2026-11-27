@@ -7324,6 +7324,17 @@ impl Session {
             };
         }
         self.receive[receive].state = RxState::ReplyQueued;
+/* REGISTRY_ELF_BEGIN */
+        #[cfg(feature="sunfish-registry-elf-pressure")]
+        if route.service == Service::ServiceRegistry && route.transaction == 3
+            && route.source.port == crate::qcom_servreg::LOCAL_PORT
+            && route.destination == (Address { node: 0, port: 9 })
+        {
+            // The real RX_DONE may precede reply admission. Bind the existing
+            // one-shot here too; selection still checks the actual own return.
+            self.transmit[index].registry_return_turn_due = true;
+        }
+/* REGISTRY_ELF_END */
 /* ELF_READY_BEGIN */
         #[cfg(feature="sunfish-elf-ready-grant-turn")]
         if elf_ready_reply {

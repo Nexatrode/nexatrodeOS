@@ -42,3 +42,8 @@ fn elf_publication(s:&Session)->qcom_glink_qmi::RegistryPublication{s.elf_window
 #[cfg(feature="sunfish-elf-credit-pair-turn")]
 #[path="sunfish_elf_credit_cases.rs"]
 mod elf_credit_cases;
+
+#[cfg(feature="sunfish-registry-elf-pressure")]
+pub(super) fn queue_before_return_test_setup()->(Session,RequestHandle,u32){queue_order_test_setup(false,3,4096,true)}
+#[cfg(feature="sunfish-registry-elf-pressure")]
+pub(super) fn queue_order_test_setup(confirm:bool,txn:u16,capacity:u32,returned:bool)->(Session,RequestHandle,u32){queued_elf(true,confirm,txn,b"other/service",0,capacity,true,returned)}

@@ -1,7 +1,16 @@
 //! Existing exact ELF writer observations beside two identity-bound digest replies.
 use super::*;
+/* REGISTRY_ELF_BEGIN */
+#[cfg(feature="sunfish-registry-elf-pressure")]
+#[path="pixel_mpss_registry_elf_pressure.rs"]
+mod registry_elf_pressure;
+/* REGISTRY_ELF_END */
 impl RuntimeDomain {
     pub(super) fn show_elf_digest_outcome(&self,d:&Display,owner:&ModemOwner){
+/* REGISTRY_ELF_BEGIN */
+        #[cfg(feature="sunfish-registry-elf-pressure")]
+        {self.show_registry_elf_pressure(d,owner);return;}
+/* REGISTRY_ELF_END */
         for n in 2..=28{d.replace_line(n,"");}d.replace_line(1,"ELF WRITER DIGEST REPLY");
 /* ELF_READY_BEGIN */
         #[cfg(feature="sunfish-elf-ready-grant-turn")]

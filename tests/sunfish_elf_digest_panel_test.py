@@ -3,8 +3,7 @@ from pathlib import Path
 import ast,json,os,subprocess,tempfile,unittest
 from sunfish_tx3_elf_retry_panel_test import function
 ROOT=Path(__file__).resolve().parents[1]
-class Panel(unittest.TestCase):
- def test_actual_physical_panel(self):
+def fixture_code():
   tree=ast.parse((ROOT/'tests/sunfish_ready_startup_outcome_test.py').read_text())
   base=next(n.value for n in ast.walk(tree)if isinstance(n,ast.Constant)and isinstance(n.value,str)and'fn main(){'in n.value)
   code=base[:base.index(' let values=|n|')]
@@ -45,6 +44,11 @@ impl Read{fn record_sequence(&self)->Option<u64>{self.sequence}}
  println!("Actual ELF/digest panel passed: full gates, first/latest bounded writer records, gap/active/missing clocks, distinct published/canceled digest identities, both physical buffers");
 }
 '''
+  return code
+
+class Panel(unittest.TestCase):
+ def test_actual_physical_panel(self):
+  code=fixture_code()
   if os.getenv('SUNFISH_ELF_READY_PANEL'):code=code.replace('ELF WRITER DIGEST REPLY','ELF READY GRANT TURN')
   if os.getenv('SUNFISH_ELF_CREDIT_PANEL'):code=code.replace('ELF READY GRANT TURN','ELF CREDIT PAIR TURN')
   code=code.replace('DISPLAY',json.dumps(str(ROOT/'rust/src/pixel_probe_display.rs'))).replace('CLOCK',function((ROOT/'rust/src/pixel_mpss_runtime.rs').read_text(),'time_from_us')).replace('PACKED',function((ROOT/'rust/src/pixel_mpss_runtime_diagnostic.rs').read_text(),'packed_counts')).replace('PANEL',json.dumps(str(ROOT/'rust/src/pixel_mpss_elf_digest_outcome.rs')))

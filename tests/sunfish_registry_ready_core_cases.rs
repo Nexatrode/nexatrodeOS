@@ -33,3 +33,7 @@ fn reply(s:&mut Session)->(u32,Vec<u8>){let(e,b)=publish(s).unwrap();let Publish
 #[cfg(feature="sunfish-elf-ready-grant-turn")]
 #[path="sunfish_elf_ready_cases.rs"]
 mod elf_ready_cases;
+
+#[cfg(feature="sunfish-registry-elf-pressure")]
+#[path="sunfish_registry_queue_ready_cases.rs"]
+mod registry_queue_ready_cases;
