@@ -136,7 +136,14 @@ Evidence, source/loader hashes and the browser regression result are under
 `build/mobile-browser/phone-maps/interaction/`. An initial missing HOME position
 was fixed; a subsequent full-page OCR miss was resolved with an independent
 focused header check. Failed observations remain separately recorded.
-Native UTM inspection confirmed the rendered screen, but native pointer
-automation was inconclusive. It is recorded separately in
-`interaction/native-input-observation.json`, not counted as a native mouse pass.
-The VM was returned to its normal window with cursor capture released.
+Native mouse verification subsequently passed with the user's physical mouse
+in the disposable UTM window. Mouse-only QEMU tracing recorded the + clicks,
+a held diagonal drag and Fit; guest frame logs confirmed zoom levels 1 and 2,
+camera movement in both axes, and exact recovery of the original camera and
+zoom. The final real scanout showed the overview and cyan cursor over Fit.
+No QMP input was injected during this native phase, and no fatal guest faults
+were recorded. The separate report is
+`interaction/native-input-observation.json`; temporary tracing was disabled
+afterward. Native automation remained unavailable because the computer-use tool
+reported a locked Mac despite macOS reporting it unlocked. This manual test
+verifies UTM mouse input, not physical Pixel touch, wheel or pinch gestures.
