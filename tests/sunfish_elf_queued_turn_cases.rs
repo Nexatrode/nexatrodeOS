@@ -57,7 +57,12 @@ fn elf_queued_turn_preserves_backing_ad_before_grant_ack_and_credit_before_reply
  let(p,mut o,mut r)=queued_elf_setup(16,true);p.push(&control(7,2,108));r.capture(1<<4).unwrap();assert!(r.dispatch_queued_elf_reply(&mut o).unwrap());let bytes=p.take_tx();let mut at=0;let mut ad=None;let mut ack=None;let mut reply=None;let mut credit=None;
  while at<bytes.len(){let cmd=u16::from_le_bytes([bytes[at],bytes[at+1]]);let n=match cmd{5=>8+owner_word(&bytes,at+4)as usize*8,9=>{let n=owner_word(&bytes,at+8)as usize;16+((n+7)&!7)},_=>8};
  if cmd==5{ad=Some(at);}if cmd==8{ack=Some(at);}if cmd==9{let q=&bytes[at+16..];if owner_word(q,4)==7{credit=Some(at);}if owner_word(q,4)==1&&owner_word(q,12)==qcom_servreg::LOCAL_PORT{reply=Some(at);}}at+=n;}
- assert!(ad.unwrap()<ack.unwrap());assert!(ack.unwrap()<reply.unwrap());assert!(credit.expect("confirmed ELF request must emit QRTR RESUME before its reply")<reply.unwrap());assert_eq!(o.elf_queued_turn_trace().flags,31);
+ assert!(ad.unwrap()<ack.unwrap());
+ #[cfg(not(feature="sunfish-elf-ready-grant-turn"))]
+ assert!(ack.unwrap()<reply.unwrap());
+ #[cfg(feature="sunfish-elf-ready-grant-turn")]
+ {assert!(reply.unwrap()<ad.unwrap(),"first live ELF loan follows credit and precedes fresh backing advertisement");assert_eq!(o.elf_window_trace().unwrap().writer.publication.unwrap().mask&0x180000,0x180000);}
+ assert!(credit.expect("confirmed ELF request must emit QRTR RESUME before its reply")<reply.unwrap());assert_eq!(o.elf_queued_turn_trace().flags,31);
 }
 
 #[test]
