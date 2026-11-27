@@ -33,4 +33,10 @@ class Contracts(unittest.TestCase):
     def test_shell_cannot_read_map_heap(self):
         ET.SubElement(self.ui,'map',mr='mobile_maps_heap',perms='r')
         with self.assertRaises(AssertionError):maps.validate_mobile(self.s)
+    def test_shell_cannot_write_keyboard_status(self):
+        self.ui.find("map[@mr='mobile_maps_state']").set('perms','rw')
+        with self.assertRaises(AssertionError):maps.validate_mobile(self.s)
+    def test_browser_cannot_read_map_keyboard_status(self):
+        ET.SubElement(self.domain('native_browser'),'map',mr='mobile_maps_state',perms='r')
+        with self.assertRaises(AssertionError):maps.validate_mobile(self.s)
 if __name__=='__main__':unittest.main()

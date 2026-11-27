@@ -109,6 +109,7 @@ def main():
         sources += [x for x in (ROOT/'experiments/comaps-native').rglob('*') if x.is_file() and '__pycache__' not in str(x)]
         sources += [ROOT/'experiments/desktop-apps/maps.py',ROOT/'experiments/slint-notes/src/mobile_maps_utm.rs',ROOT/'experiments/slint-notes/assets/icons/maps.svg',ROOT/'tests/mobile_maps_input.py',ROOT/'tests/mobile_maps_contract_test.py']
         sources += [ROOT/'tests/comaps_details_utm.py',ROOT/'tests/comaps_interaction_test.c']
+        sources += [ROOT/'tests/comaps_search_utm.py',ROOT/'tests/comaps_search_test.c']
     manifest=dict(profile='mobile-netsurf-maps' if a.maps else 'mobile-netsurf',maps=a.maps,saved_data_used=False,development_storage_key=True,observation=a.observe,resolution=[1080,2340],browser_css_width=360,browser_scale=3,javascript=True,https=True,certificate_verification=True,private_tcp_slot=4,full_session_lock=False,source_commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),sources={str(x.relative_to(ROOT)):digest(x) for x in sources},artifacts={x.name:digest(x) for x in out.glob('*.elf')},composer_sha256=digest(a.composer.resolve()),loader_sha256=digest(out/'loader.img'))
     if a.maps:manifest['map_region']=map_pin
     if a.map_storage:

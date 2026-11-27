@@ -299,6 +299,9 @@ export component NotesWindow inherits Window {
     in property <bool> browser-available: false;
     in property <bool> maps-available: false;
     in-out property <image> maps-frame;
+    in-out property <bool> maps-keyboard: false;
+    callback maps-key(string);
+    callback maps-hide-keyboard();
     in-out property <image> browser-frame;
     in-out property <bool> browser-keyboard: false;
     callback browser-key(string);
@@ -781,8 +784,17 @@ export component NotesWindow inherits Window {
                 Text { width: 100%; height: 100%; text: "HOME"; color: #36c7d6; horizontal-alignment: center; vertical-alignment: center; }
                 TouchArea { width: 100%; height: 100%; clicked => { root.system-home(); } }
             }
-            Rectangle { y: 36px; width: parent.width; height: parent.height - 36px; clip: true;
+            Rectangle { y: 36px; width: parent.width; height: parent.height - 36px - (root.maps-keyboard ? 268px : 0px); clip: true;
                 Image { width: parent.width; height: parent.height; source: root.maps-frame; image-fit: fill; }
+            }
+            if root.maps-keyboard: Rectangle { y: parent.height - 268px; width: parent.width; height: 40px; background: #123143;
+                Text { x: 0px; width: parent.width / 2; height: 100%; text: "SHOW RESULTS"; color: #7ee7f2; horizontal-alignment: center; vertical-alignment: center; }
+                TouchArea { x: 0px; width: parent.width / 2; height: 100%; clicked => { root.maps-hide-keyboard(); } }
+                Text { x: parent.width / 2; width: parent.width / 2; height: 100%; text: "OPEN FIRST"; color: #7ee7f2; horizontal-alignment: center; vertical-alignment: center; }
+                TouchArea { x: parent.width / 2; width: parent.width / 2; height: 100%; clicked => { root.maps-key("ENTER"); } }
+            }
+            if root.maps-keyboard: InvitationKeyboard { y: parent.height - 228px; width: parent.width; height: 228px;
+                typed(k) => { root.maps-key(k); }
             }
         }
         if root.page == 18 && root.browser-available: Rectangle {

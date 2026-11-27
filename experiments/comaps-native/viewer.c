@@ -18,6 +18,7 @@
 #include "stb_truetype.h"
 #include "labels.h"
 #include "interaction.h"
+#include "search.h"
 #ifdef MAP_STORAGE
 #include "storage_format.h"
 #include "regions_generated.h"
@@ -81,6 +82,20 @@ static struct map_labels last_layout;
 static unsigned label_features[MAP_MAX_LABELS],selected_feature;
 static uint64_t selection_revision;
 static char selection_title[100];
+static struct map_search search;
+static bool search_open,search_keyboard,search_shift,search_ctrl;
+static int search_pressed=-1,search_scroll;
+#ifdef MAP_MOBILE
+uintptr_t maps_ui_state;
+#endif
+static void publish_search_state(void){
+#ifdef MAP_MOBILE
+    uint32_t *p=(void*)maps_ui_state;uint32_t rev=__atomic_load_n(p,__ATOMIC_RELAXED);
+    __atomic_store_n(p,rev+1,__ATOMIC_RELEASE);atomic_thread_fence(memory_order_seq_cst);
+    p[1]=active&&search_open&&search_keyboard;p[2]=search_open;
+    __atomic_store_n(p,rev+2,__ATOMIC_RELEASE);
+#endif
+}
 static double cx,cy,units,initial_units;
 static unsigned zoom_level;
 #ifdef MAP_PROFILE
@@ -109,6 +124,14 @@ static void profile(uint64_t start,uint64_t *phases,uint64_t rendered,uint64_t n
         struct map_label_rect r=last_layout.rect[i];unsigned n=536+i*6;
         p[n]=label_features[i]+1;p[n+1]=r.left;p[n+2]=r.top;p[n+3]=r.right;p[n+4]=r.bottom;
         p[n+5]=map.features[label_features[i]].geometry;
+    }
+    _Static_assert(720+MAP_SEARCH_RESULTS*16<=1024,"bounded public search observations");
+    p[704]=0x4e584d5345413031ULL;p[705]=search_open;p[706]=search_keyboard;p[707]=search.count;
+    p[708]=search.cursor;p[709]=search.offset;p[710]=search.indexed;p[711]=search.more;
+    memset((void*)(p+712),0,56);memcpy((void*)(p+712),search.query,sizeof(search.query));
+    for(unsigned i=0;i<search.count;i++){
+        unsigned n=720+i*16;const struct map_feature *f=&map.features[search.result[i]];
+        p[n]=search.result[i]+1;p[n+1]=f->geometry;p[n+2]=search.rank[i];memcpy((void*)(p+n+3),f->name,96);
     }
     if(start){unsigned slot=frames%32;uint64_t data[14]={frames,input_events,input_at,start,phases[0],phases[1],phases[2],rendered,notified,zoom_level,(uint64_t)(int64_t)(cx*1e9),(uint64_t)(int64_t)(cy*1e9),(uint64_t)(units*1e12),0};
         for(unsigned i=0;i<14;i++)p[16+slot*14+i]=data[i];}
@@ -183,13 +206,59 @@ static void select_at(int x,int y) {
 static double sx(double x){return W/2+(x-cx)/units;}
 static double sy(double y){return (TOP+BOTTOM)/2-(y-cy)/units;}
 static bool visible(struct map_feature *f){return sx(f->maxx)>=0&&sx(f->minx)<W&&sy(f->miny)>=TOP&&sy(f->maxy)<BOTTOM;}
-static unsigned style(struct map_feature *f) {
+static unsigned style(const struct map_feature *f) {
     unsigned result=0;
     for(unsigned i=0;i<f->type_count;i++) {
         unsigned t=f->types[i];unsigned s=t<sizeof(map_styles)?map_styles[t]:0;
         if(!result||s==1||s==3||s==5)result=s;
     }
     return result;
+}
+static bool search_eligible(const struct map_feature *f){unsigned s=style(f);return (f->geometry==0&&s==8)||(f->geometry==1&&(s==4||s==5));}
+static void search_rebuild(void){map_search_build(&search,&map,search_eligible);}
+static unsigned search_rows(void){int rows=((int)BOTTOM-(TOP+82))/48;return rows<1?1:rows>MAP_SEARCH_RESULTS?MAP_SEARCH_RESULTS:(unsigned)rows;}
+static void search_clamp(void){
+    unsigned rows=search_rows(),max=search.count>rows?search.count-rows:0;if(search.offset>max)search.offset=max;
+    if(search.cursor<search.offset)search.cursor=search.offset;
+    if(search.cursor>=search.offset+rows)search.cursor=search.offset+rows-1;
+}
+static void search_close(void){search_open=search_keyboard=false;search_shift=search_ctrl=false;search_pressed=-1;held=false;map_gesture_cancel(&gesture);changed=true;}
+static void search_begin(void){
+    if(!map.feature_count)return;
+    if(!search_open){selection_clear();search.query[0]=0;map_search_run(&search,&map);}
+    search_open=search_keyboard=true;held=false;map_gesture_cancel(&gesture);search_pressed=-1;
+#ifdef MAP_STORAGE
+    region_picker=false;
+#endif
+    changed=true;
+}
+static void clipped_text(int x,int y,int size,uint32_t colour,const char *source,int width,bool tail){
+    char display[104];size_t start=0,keep=strlen(source);bool ellipsis=false;
+    for(;;){
+        snprintf(display,sizeof(display),"%s%.*s%s",ellipsis&&tail?"…":"",(int)keep,source+start,ellipsis&&!tail?"…":"");
+        struct map_label_rect r;
+        if(!map_text_bounds(&font,size*SCALE,display,&r)||r.right-r.left<=width*SCALE||!keep)break;
+        if(tail){start++;while(source[start]&&((unsigned char)source[start]&192)==128)start++;keep=strlen(source+start);}
+        else {keep--;while(keep&&((unsigned char)source[keep]&192)==128)keep--;}
+        ellipsis=true;
+    }
+    text(x,y,size,colour,display);
+}
+static void draw_search(void){
+    fill(0,TOP,W,BOTTOM-TOP,0x071521);fill(8,TOP+8,W-64,42,0x123143);fill(8,TOP+48,W-64,2,0x34cddd);
+    clipped_text(16,TOP+35,17,search.query[0]?0xe9f7fb:0x91b5c5,search.query[0]?search.query:"Place or road name",W-86,true);
+    fill(W-48,TOP+8,40,42,0x183c4a);text(W-38,TOP+37,25,0x92e3e0,"×");
+    const char *status=!search.query[0]?"Search this region offline":!search.count?"No matches in this region":search.more?"First 8 matches · choose a result":"Choose a result";
+    text(12,TOP+71,13,0x91b5c5,status);search_clamp();
+    for(unsigned row=0;row<search_rows()&&row+search.offset<search.count;row++){
+        unsigned i=row+search.offset;const struct map_feature *f=&map.features[search.result[i]];int y=TOP+82+row*48;
+        fill(8,y,W-16,44,i==search.cursor?0x183c4a:0x102433);
+        clipped_text(18,y+22,18,0xe9f7fb,f->name,W-44,false);text(18,y+39,12,0x91b5c5,f->geometry==0?"Place":"Road");
+    }
+    if(search.count>search_rows()){
+        int track=BOTTOM-(TOP+82)-6,thumb=track*search_rows()/search.count;
+        fill(W-5,TOP+82,2,track,0x183c4a);fill(W-5,TOP+82+track*search.offset/search.count,2,thumb,0x34cddd);
+    }
 }
 /* Clip in double precision before converting large world coordinates to int. */
 static void line(double x1,double y1,double x2,double y2,unsigned width,uint32_t colour) {
@@ -221,6 +290,7 @@ static void triangle(struct map_point a,struct map_point b,struct map_point c,ui
     }
 }
 static void reset(void) {
+    search_close();
     selection_clear();held=false;map_gesture_cancel(&gesture);
     last_layout.count=0;
 #ifdef MAP_STORAGE
@@ -241,11 +311,13 @@ static void zoom(int direction) {
 }
 static void draw(void) {
     if(!changed||!active)return;changed=false;uint64_t started=us(),phases[3];
+    publish_search_state();
     slint_frame_header_t *h=(void*)map_frame;
     unsigned before=atomic_load_explicit(&h->revision,memory_order_relaxed);
     atomic_store_explicit(&h->revision,before+1,memory_order_release);atomic_thread_fence(memory_order_seq_cst);
     fill(0,TOP,W,BOTTOM-TOP,0xe9e5d8);
-    unsigned drawn=0;
+    unsigned drawn=0,labels=0;
+    if(!search_open){
     for(unsigned pass=0;pass<3;pass++) { for(unsigned i=0;i<map.feature_count;i++) {
         struct map_feature *f=&map.features[i];if(!visible(f))continue;
         unsigned s=style(f);struct map_point *p=map.points+f->first;
@@ -263,7 +335,7 @@ static void draw(void) {
     phases[pass]=us();}
     /* Places precede streets. Reserve measured glyph/shadow rectangles with
      * padding, and suppress repeated names across segmented road features. */
-    struct map_labels layout={0};unsigned labels=0;
+    struct map_labels layout={0};
     for(unsigned priority=0;priority<2;++priority)for(unsigned i=0;i<map.feature_count&&layout.count<MAP_MAX_LABELS;i++) {
         struct map_feature *f=&map.features[i];unsigned s=style(f);
         if(!f->name[0]||!f->count||!visible(f)||!(priority==0?(f->geometry==0&&s==8):(f->geometry==1&&(s==4||s==5)&&zoom_level>=1)))continue;
@@ -294,11 +366,12 @@ static void draw(void) {
         double lon=map.origin_x+p.x,lat=atan(sinh((map.origin_y+p.y)*3.141592653589793/180))*180/3.141592653589793;
         char coordinates[80];snprintf(coordinates,sizeof(coordinates),"Map point: %.5f, %.5f",lat,lon);text(18,top+72,13,0x91b5c5,coordinates);
     }
+    }else{last_layout.count=0;phases[0]=phases[1]=phases[2]=us();draw_search();}
     fill(0,0,W,TOP,0x0b202d);
 #if defined(MAP_DESKTOP) || defined(MAP_MOBILE)
 #ifdef MAP_STORAGE
     text(12,27,20,0xe9f7fb,map_regions[loaded_region<2?loaded_region:requested_region].name);
-    text(12,51,13,0x91b5c5,storage_state==1?"Loading…":storage_state==3?"Saving selection…":storage_state==2?"Load failed · tap region":"Offline · change region");
+    text(12,51,13,0x91b5c5,storage_state==1?"Loading…":storage_state==3?"Saving selection…":storage_state==2?"Load failed · tap region":"Offline · regions");
 #else
     text(16,27,22,0xe9f7fb,"Gibraltar");text(16,51,14,0x91b5c5,"CoMaps · offline");
 #endif
@@ -306,14 +379,17 @@ static void draw(void) {
     text(28,35,29,0xe9f7fb,"CoMaps data · Gibraltar");text(29,67,18,0x91b5c5,"Offline native experiment");
 #endif
 #ifdef MAP_STORAGE
-    if(region_picker){
+    if(region_picker&&!search_open){
         for(unsigned i=0;i<2;i++){fill(6,TOP+6+(int)i*48,W-12,44,0x183c4a);text(16,TOP+35+(int)i*48,20,0xe9f7fb,map_regions[i].name);}
-    }else if(storage_state==2){
+    }else if(storage_state==2&&!search_open){
         fill(6,TOP+6,W-12,54,0x472b32);
         text(14,TOP+28,16,0xffa6ad,"Region unavailable or damaged");
         text(14,TOP+49,13,0xe9f7fb,loaded_region<2?"Choose a region to retry. Current map retained.":"Choose another offline region to continue.");
     }
 #endif
+    int search_x=BUTTON_LEFT-46;fill(search_x,14,42,42,0x183c4a);
+    for(int yy=-7;yy<=7;yy++)for(int xx=-7;xx<=7;xx++)if(xx*xx+yy*yy>=36&&xx*xx+yy*yy<=49)fill(search_x+17+xx,30+yy,1,1,0x92e3e0);
+    for(int i=0;i<7;i++)fill(search_x+22+i,35+i,2,2,0x92e3e0);
     const char *buttons[]={"−","+","Fit"};
     for(unsigned i=0;i<3;i++){int x=BUTTON_LEFT+i*BUTTON_STEP;fill(x,14,BUTTON_WIDTH,42,0x183c4a);text(x+12,44,23,0x92e3e0,buttons[i]);}
     fill(0,BOTTOM,W,H-BOTTOM,0x0b202d);
@@ -358,9 +434,37 @@ static void constrain(void) {
     cx=fmax(map.minx-map.origin_x,fmin(map.maxx-map.origin_x,cx));
     cy=fmax(map.miny-map.origin_y,fmin(map.maxy-map.origin_y,cy));
 }
-#if defined(MAP_DESKTOP) || defined(MAP_MOBILE)
+static void search_accept(unsigned i){
+    if(i>=search.count)return;unsigned id=search.result[i];if(id>=map.feature_count)return;
+    const struct map_feature *f=&map.features[id];struct map_point p=map.points[f->first+f->count/2];
+    search_close();unsigned level=f->geometry==0?2:3;if(zoom_level<level)zoom_level=level;
+    units=initial_units;for(unsigned n=0;n<zoom_level;n++)units/=1.5;
+    cx=p.x;cy=p.y-49*units;constrain();last_layout.count=0;selection_set(id);changed=true;
+}
+static void search_character(unsigned cp){
+    if(!search_open)return;
+    if(cp==10||cp==13){if(search.count)search_accept(search.cursor);else {search_keyboard=false;changed=true;}return;}
+    if(map_search_character(&search,cp)){map_search_run(&search,&map);changed=true;}
+}
+static unsigned key_character(unsigned code,bool shift){
+    static const char letters[]="qwertyuiopasdfghjklzxcvbnm";
+    unsigned at=code>=16&&code<=25?code-16:code>=30&&code<=38?code-30+10:code>=44&&code<=50?code-44+19:99;
+    if(at<26)return (unsigned)letters[at]-(shift?32:0);
+    if(code>=2&&code<=11)return (unsigned)(shift?"!@#$%^&*()":"1234567890")[code-2];
+    switch(code){case 12:return shift?'_':'-';case 13:return shift?'+':'=';case 39:return shift?':':';';case 40:return shift?'"':'\'';case 51:return shift?'<':',';case 52:return shift?'>':'.';case 53:return shift?'?':'/';case 57:return ' ';default:return 0;}
+}
 static void map_key(unsigned code,unsigned value) {
+    if(code==42||code==54){search_shift=value!=0;return;}if(code==29||code==97){search_ctrl=value!=0;return;}
     if(value==0||value>2)return;
+    if(search_ctrl&&code==33){search_begin();return;}
+    if(search_open){
+        if(code==1){search_close();return;}
+        if(search_ctrl){if(code==22){search.query[0]=0;map_search_run(&search,&map);changed=true;}return;}
+        if(code==14||code==111){search_character(8);return;}if(code==28){search_character(10);return;}
+        if(code==103||code==108){if(search.count){if(code==103&&search.cursor)search.cursor--;else if(code==108&&search.cursor+1<search.count)search.cursor++;unsigned rows=search_rows();if(search.cursor<search.offset)search.offset=search.cursor;if(search.cursor>=search.offset+rows)search.offset=search.cursor-rows+1;changed=true;}return;}
+        unsigned cp=key_character(code,search_shift);if(cp)search_character(cp);return;
+    }
+    if(code==31||code==53){search_begin();return;}
     if(code==1){selection_clear();held=false;map_gesture_cancel(&gesture);}
     else if(code==13||code==78)zoom(1);else if(code==12||code==74)zoom(-1);
     else if(code==35||code==102)reset();
@@ -368,21 +472,23 @@ static void map_key(unsigned code,unsigned value) {
     else if(code==103){cy+=80*units;changed=true;}else if(code==108){cy-=80*units;changed=true;}
     constrain();if(code==103||code==105||code==106||code==108)last_layout.count=0;
 }
-#endif
 static void motion(void) {
     int dx,dy;if(held&&map_gesture_move(&gesture,mx,my,&dx,&dy)){
+        if(search_open){search_scroll+=dy;while(search_scroll<=-24){if(search.offset+search_rows()<search.count)search.offset++;search_scroll+=24;}while(search_scroll>=24){if(search.offset)search.offset--;search_scroll-=24;}changed=true;return;}
         cx-=dx*units;cy+=dy*units;constrain();last_layout.count=0;changed=true;
     }
 }
 static void map_button(unsigned value) {
     if(!value){
         motion();bool tap=map_gesture_end(&gesture);held=false;
+        if(search_open){if(tap&&search_pressed>=0&&my>=TOP+82&&my<(int)BOTTOM){unsigned row=(my-TOP-82)/48;if(row<search_rows()&&(unsigned)search_pressed==search.offset+row)search_accept((unsigned)search_pressed);}search_pressed=-1;return;}
         if(tap&&my>=TOP&&my<(int)BOTTOM)select_at(mx,my);
         return;
     }
     held=false;map_gesture_cancel(&gesture);
+    if(my>=14&&my<=56&&mx>=BUTTON_LEFT-46&&mx<BUTTON_LEFT){search_begin();return;}
 #ifdef MAP_STORAGE
-    if(my>=0&&my<TOP&&mx<BUTTON_LEFT){region_picker=!region_picker;changed=true;return;}
+    if(my>=0&&my<TOP&&mx<BUTTON_LEFT){search_close();region_picker=!region_picker;changed=true;return;}
     if(region_picker){
         if(my>=TOP+6&&my<TOP+102&&storage_state!=1&&storage_state!=3){
             unsigned region=(unsigned)(my-TOP-6)/48;region_picker=false;held=false;
@@ -391,8 +497,14 @@ static void map_button(unsigned value) {
         region_picker=false;changed=true;return;
     }
     if(loaded_region==2)return;
-    if(storage_state==2&&my>=TOP+6&&my<TOP+60)return;
+    if(storage_state==2&&!search_open&&my>=TOP+6&&my<TOP+60)return;
 #endif
+    if(search_open&&my>=(int)TOP&&my<(int)BOTTOM){
+        search_pressed=-1;
+        if(my<TOP+58){if(mx>=W-52)search_close();else{search_keyboard=true;changed=true;}return;}
+        if(my>=TOP+82){unsigned row=(my-TOP-82)/48;if(row<search_rows()&&search.offset+row<search.count){search_pressed=(int)(search.offset+row);search_scroll=0;held=true;map_gesture_begin(&gesture,mx,my);}}
+        return;
+    }
     if(selected_feature&&my>=(int)BOTTOM-94&&my<(int)BOTTOM-6){
         if(mx>=W-56&&my<(int)BOTTOM-50)selection_clear();return;
     }
@@ -426,7 +538,7 @@ static void input(void) {
     resize();
 #endif
     uint32_t *q=(void*)input_handoff;uint32_t head=__atomic_load_n(q+2,__ATOMIC_ACQUIRE);
-    if(head-input_tail>224){input_tail=head;held=false;active=false;map_gesture_cancel(&gesture);}
+    if(head-input_tail>224){input_tail=head;held=false;active=false;search_keyboard=search_shift=search_ctrl=false;map_gesture_cancel(&gesture);}
     while(input_tail!=head){
         uint32_t e[4];memcpy(e,q+4+(input_tail++%224)*4,sizeof(e));unsigned device=e[0]&65535,kind=e[0]>>16;
 #ifdef MAP_PROFILE
@@ -434,22 +546,25 @@ static void input(void) {
 #endif
 #ifdef MAP_MOBILE
         if(device==3){
-            if(kind==0){held=false;active=e[2]!=0;map_gesture_cancel(&gesture);}
+            if(kind==0){held=false;active=e[2]!=0;search_keyboard=search_shift=search_ctrl=false;map_gesture_cancel(&gesture);}
             else if(kind==1&&e[2]>=320&&e[2]<=720)set_height(e[2]);
+            else if(active&&kind==2){search_keyboard=false;changed=true;}
+            else if(active&&kind==3&&search_open){search.query[0]=0;map_search_run(&search,&map);changed=true;}
             continue;
         }
 #else
-        if(device==2){held=false;active=e[2]!=0;map_gesture_cancel(&gesture);continue;}
+        if(device==2){held=false;active=e[2]!=0;search_keyboard=search_shift=search_ctrl=false;map_gesture_cancel(&gesture);continue;}
 #endif
         if(!active)continue;
+        if(device==4&&kind==0){search_character(e[1]);continue;}
         if(device==0&&kind==1){map_key(e[1],e[2]);continue;}
         if(device!=1)continue;
         mx=(int16_t)(e[3]&65535)/SCALE;my=(int16_t)(e[3]>>16)/SCALE;
         if(kind==3&&held)motion();
         else if(kind==1&&e[1]==272&&e[2]<=1)map_button(e[2]);
-        else if(kind==2&&e[1]==8)zoom((int32_t)e[2]>0?1:-1);
+        else if(kind==2&&e[1]==8){if(search_open){if((int32_t)e[2]<0&&search.offset+search_rows()<search.count)search.offset++;else if((int32_t)e[2]>0&&search.offset)search.offset--;changed=true;}else zoom((int32_t)e[2]>0?1:-1);}
     }
-    __atomic_store_n(q+3,input_tail,__ATOMIC_RELEASE);draw();
+    __atomic_store_n(q+3,input_tail,__ATOMIC_RELEASE);draw();publish_search_state();
 #ifdef MAP_PROFILE
     profile(0,NULL,0,0);
 #endif
@@ -466,14 +581,7 @@ static void input(void) {
             if((e.type==0||e.type==3)&&held)motion();
             if(e.type==1&&e.code==272&&e.value<=1)map_button(e.value);
             if(e.type==2&&e.code==8)zoom((int32_t)e.value>0?1:-1);
-        } else if(e.device==INPUT_DEVICE_KEYBOARD&&e.type==1&&e.value==1) {
-            if(e.code==13||e.code==78)zoom(1);else if(e.code==12||e.code==74)zoom(-1);
-            else if(e.code==35||e.code==102)reset();
-            else if(e.code==105){cx-=80*units;changed=true;}else if(e.code==106){cx+=80*units;changed=true;}
-            else if(e.code==103){cy+=80*units;changed=true;}else if(e.code==108){cy-=80*units;changed=true;}
-            constrain();
-            if(e.code==103||e.code==105||e.code==106||e.code==108)last_layout.count=0;
-        }
+        } else if(e.device==INPUT_DEVICE_KEYBOARD&&e.type==1&&e.value<=2)map_key(e.code,e.value);
     }
     __atomic_store_n(&q->tail,input_tail,__ATOMIC_RELEASE);publish_pointer();draw();
 }
@@ -482,6 +590,7 @@ void init(void) {
     uint64_t started=us();
 #ifndef MAP_STORAGE
     if(!map_load(&map,map_blob,(size_t)(map_blob_end-map_blob))){printf("COMAPS|FAIL|map=%s|record=%u\n",map.error,map.records);__builtin_trap();}
+    search_rebuild();
     printf("COMAPS|MAP|region=Gibraltar|records=%u|points=%u|inner=%u|outer=%u|load_us=%llu\n",map.records,map.point_count,map.inner,map.outer,(unsigned long long)(us()-started));
 #else
     (void)started;
@@ -505,7 +614,7 @@ void init(void) {
 static void storage_request(unsigned command,unsigned region) {
     struct map_store_page *p=(void*)map_store_control;
     requested_region=region;storage_error=0;storage_state=command==MAP_STORE_COMMIT?3:1;held=false;
-    map_gesture_cancel(&gesture);if(command!=MAP_STORE_COMMIT)selection_clear();
+    map_gesture_cancel(&gesture);if(command!=MAP_STORE_COMMIT){selection_clear();search_close();search.query[0]=0;map_search_run(&search,&map);}
     p->command=command;p->region=region;p->length=0;
     __atomic_store_n(&p->sequence,++storage_sequence,__ATOMIC_RELEASE);microkit_notify(2);changed=true;
 }
@@ -519,7 +628,7 @@ static void storage_reply(void) {
         if(p->region!=requested_region||p->length!=map_regions[requested_region].length||p->length>MAP_FILE_LIMIT||!map_load(candidate,(void*)map_store_bytes,p->length)){
             storage_state=2;storage_error=MAP_STORE_CORRUPT;changed=true;
         }else{
-            struct offline_map *old=current_map;current_map=candidate;candidate=old;loaded_region=requested_region;reset();
+            struct offline_map *old=current_map;current_map=candidate;candidate=old;loaded_region=requested_region;search_rebuild();reset();
             printf("COMAPS|LOADED|region=%s|records=%u|points=%u\n",map_regions[loaded_region].name,map.records,map.point_count);
             if(recovering&&storage_generation){recovering=false;storage_state=0;changed=true;}
             else {recovering=false;storage_request(MAP_STORE_COMMIT,loaded_region);}

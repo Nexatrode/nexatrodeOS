@@ -87,11 +87,14 @@ def attach_mobile(system, ui, mapping, mr, channel, *, storage=False):
     mr('mobile_maps_heap',0x1000000,page_size='0x200000')
     mr('mobile_maps_input',4096)
     mr('map_observation',8192,phys_addr='0x5fb96000')
+    mr('mobile_maps_state',4096)
     app=ET.SubElement(system,'protection_domain',name='offline_map',priority='95',budget='8000',period='10000',stack_size='0x100000')
     ET.SubElement(app,'program_image',path='offline-map.elf')
     for name,va,symbol in [('mobile_maps_frame',0x60000000,'map_frame'),('mobile_maps_heap',0x64000000,'map_heap'),('mobile_maps_input',0x70000000,'input_handoff'),('map_observation',0x71000000,'map_observation')]:mapping(app,name,va,'rw',symbol)
+    mapping(app,'mobile_maps_state',0x77000000,'rw','maps_ui_state')
     mapping(ui,'mobile_maps_frame',0x92000000,'r','mobile_maps_frame')
     mapping(ui,'mobile_maps_input',0x93000000,'rw','mobile_maps_input')
+    mapping(ui,'mobile_maps_state',0x93001000,'r','mobile_maps_state')
     channel('offline_map',0,'slint_ui',19)
     channel('slint_ui',20,'offline_map',1)
     if storage:attach_storage(system,app,mapping,mr,channel)
@@ -101,9 +104,10 @@ def validate_mobile(system):
     domains={p.get('name'):p for p in system.findall('protection_domain')}
     uses=lambda name:{m.get('mr'):m.get('perms') for m in domains[name].findall('map')}
     stored='map_store' in domains
-    assert uses('offline_map')==dict(mobile_maps_frame='rw',mobile_maps_heap='rw',mobile_maps_input='rw',map_observation='rw',**({'map_store_control':'rw','map_store_bytes':'r'} if stored else {}))
+    assert uses('offline_map')==dict(mobile_maps_frame='rw',mobile_maps_heap='rw',mobile_maps_input='rw',map_observation='rw',mobile_maps_state='rw',**({'map_store_control':'rw','map_store_bytes':'r'} if stored else {}))
     assert uses('slint_ui')['mobile_maps_frame']=='r' and uses('slint_ui')['mobile_maps_input']=='rw'
-    private={'mobile_maps_frame','mobile_maps_heap','mobile_maps_input','map_observation'}
+    assert uses('slint_ui')['mobile_maps_state']=='r'
+    private={'mobile_maps_frame','mobile_maps_heap','mobile_maps_input','map_observation','mobile_maps_state'}
     for name in domains:
         if name not in ('offline_map','slint_ui'):assert not private&uses(name).keys(),name
     assert not {'mobile_maps_heap','map_observation'}&uses('slint_ui').keys()

@@ -90,6 +90,31 @@ composition does not supply the full graphics API that Drape expects.
 
 ## Two storage-backed regions (disposable UTM only)
 
+The magnifying-glass button opens offline **name search in the loaded region**.
+Desktop also accepts S, / or Ctrl+F. Type a place/road name, use arrows and Enter
+or tap a result to center it and open its details. Matching folds ASCII case and
+repeated spaces; exact and prefix matches precede other substrings. Repeated
+named road segments share a result. The first eight matches are shown in a
+scrollable list; dragging that list does not pan the map. Escape or × cancels.
+On mobile, the existing on-screen keyboard edits the query; SHOW RESULTS hides
+it, and OPEN FIRST opens the first result. Tap the query field to show it again.
+
+Search uses a fixed-capacity list of eligible named decoded features, with a
+48-byte UTF-8 query and eight result slots. It adds no network or vault access.
+Only two read-only keyboard/search visibility flags are shared with the phone
+shell. Hidden Maps receives no typing; its keyboard is dismissed on focus loss.
+Changing regions rebuilds the index and clears query/results. Queries are not
+written to disk. This is not CoMaps' full search engine: address/POI metadata,
+search across unloaded regions and Unicode case/diacritic folding are absent.
+Non-ASCII name bytes remain visible and match literally when entered.
+
+`tests/comaps_search_test.c` checks the bounded engine under sanitizers.
+`tests/comaps_search_utm.py --guest <stage> [--mobile]` disconnects only that
+disposable VM's `net0` link, exercises place/road search, the real on-screen or
+hardware keyboard, clear/backspace, list scrolling, result selection, capacity,
+focus isolation and both region indexes, and restores the link afterward.
+Results and composed screenshots are stored under `search-verification/`.
+
 Named place labels and visible road labels can be tapped to open a details card.
 The card shows the offline name, feature kind and the map geometry's anchor
 coordinates (not a GPS fix or a guaranteed entrance/address). A cyan marker
