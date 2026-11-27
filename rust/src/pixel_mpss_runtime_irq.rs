@@ -302,6 +302,17 @@ impl<K: Kernel> Router<K> {
         self.dispatch(owner).map(|_| true)
     }
 
+/* READY_HANDOFF_BEGIN */
+    #[cfg(feature="sunfish-registry-ready-handoffs")]
+    pub fn service_ready_blocker<I:Io>(&mut self,owner:&mut Owner<I>)->Result<Option<modem::ServiceProgress>,Error>{
+        if let Err(e)=self.live(){owner.fault();return Err(e);}
+        if !self.continuation || self.other!=0{return Ok(None);}
+        if owner.generation()!=self.generation || self.identity.is_some_and(|id|id!=owner.identity()){
+            owner.fault();return Err(self.fail(Error::Identity));
+        }
+        owner.dispatch_ready_blocker(self).map_err(|e|self.fail(Error::Owner(e)))
+    }
+/* READY_HANDOFF_END */
     /// One normal registry service attempt before TFTP may refill a released slot.
     #[cfg(feature="sunfish-elf-capacity-retry")]
     pub fn service_elf_capacity_retry<I:Io>(&mut self,owner:&mut Owner<I>)

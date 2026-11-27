@@ -39,6 +39,13 @@ mod linux_ipa_owner;
 #[cfg(feature = "sunfish-linux-rmtfs")]
 #[path = "sunfish_linux_rmtfs_owner.rs"]
 mod linux_rmtfs_owner;
+/* READY_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-registry-ready-handoffs")]
+#[path="qcom_owner_ready_handoff.rs"]
+mod ready_handoff;
+#[cfg(feature="sunfish-registry-ready-handoffs")]
+pub use ready_handoff::ReadyHandoffTrace;
+/* READY_HANDOFF_END */
 use crate::qcom_glink_fifo::{self as fifo, Adapter, Io, Receive, Transmit};
 use crate::qcom_glink_qmi::{Event, MAX_REQUESTS, Reply, RequestHandle, TftpHandle};
 use crate::qcom_modem_handlers::{self as actions, Backend, Handlers};
@@ -1116,6 +1123,10 @@ pub struct Owner<I> {
     elf_lookup_handle: Option<RequestHandle>,
     #[cfg(feature="sunfish-elf-first-slot-turn")]
     elf_slot_turn_taken:bool,
+/* READY_HANDOFF_BEGIN */
+    #[cfg(feature="sunfish-registry-ready-handoffs")]
+    elf_ready_handoff:ready_handoff::ReadyHandoff,
+/* READY_HANDOFF_END */
 /* ELF_RETRY_OBSERVER_BEGIN */
 #[cfg(feature="sunfish-tx3-elf-retry")]
     elf_retry:ElfRetryTrace,
@@ -1433,6 +1444,10 @@ impl<I: Io> Owner<I> {
             elf_lookup_handle: None,
             #[cfg(feature="sunfish-elf-first-slot-turn")]
             elf_slot_turn_taken:false,
+/* READY_HANDOFF_BEGIN */
+            #[cfg(feature="sunfish-registry-ready-handoffs")]
+            elf_ready_handoff:ready_handoff::ReadyHandoff::default(),
+/* READY_HANDOFF_END */
 /* ELF_RETRY_OBSERVER_BEGIN */
 #[cfg(feature="sunfish-tx3-elf-retry")]
             elf_retry:ElfRetryTrace::default(),
@@ -2150,9 +2165,19 @@ impl<I: Io> Owner<I> {
         service: Service,
     ) -> Result<Option<RequestHandle>, Error> {
         self.check()?;
+/* READY_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-registry-ready-handoffs")]
+        let ready_callback_stopped=self.stopped;
+#[cfg(feature="sunfish-registry-ready-handoffs")]
+        {self.stopped=true;}
+/* READY_HANDOFF_END */
         if let Err(error) = self.adapter.revalidate(self.generation) {
             return Err(self.stop(error.into()));
         }
+/* READY_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-registry-ready-handoffs")]
+        {self.stopped=ready_callback_stopped;}
+/* READY_HANDOFF_END */
         self.stopped = true;
         let result: Result<Option<RequestHandle>, fifo::Error> = (|| {
             for handle in self.requests.iter().flatten().copied() {
@@ -3093,7 +3118,17 @@ impl<I: Io> Owner<I> {
                 || cfg!(feature = "sunfish-wlan-elf-registry-turns"))
             && let Some(clock) = self.rmtfs_event_clock
         {
+/* READY_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-registry-ready-handoffs")]
+        let ready_callback_stopped=self.stopped;
+#[cfg(feature="sunfish-registry-ready-handoffs")]
+        {self.stopped=true;}
+/* READY_HANDOFF_END */
             let now = clock();
+/* READY_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-registry-ready-handoffs")]
+        {self.stopped=ready_callback_stopped;}
+/* READY_HANDOFF_END */
             elf.dispatch.registry_entered.get_or_insert(now);
             #[cfg(feature = "sunfish-wlan-elf-registry-turns")]
             elf.dispatch.turns.enter(now);
@@ -3110,7 +3145,17 @@ impl<I: Io> Owner<I> {
             && let Some(elf) = self.service_registry_trace.elf.as_mut()
             && elf.dispatch.selected.is_none()
         {
+/* READY_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-registry-ready-handoffs")]
+        let ready_callback_stopped=self.stopped;
+#[cfg(feature="sunfish-registry-ready-handoffs")]
+        {self.stopped=true;}
+/* READY_HANDOFF_END */
             elf.dispatch.selected = self.rmtfs_event_clock.map(|clock| clock());
+/* READY_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-registry-ready-handoffs")]
+        {self.stopped=ready_callback_stopped;}
+/* READY_HANDOFF_END */
         }
         self.stopped = true;
         let decoded = self
@@ -3152,6 +3197,10 @@ impl<I: Io> Owner<I> {
             },
             interrupts,
         );
+/* READY_HANDOFF_BEGIN */
+        #[cfg(feature="sunfish-registry-ready-handoffs")]
+        self.bind_ready_blocker(handle,&queue_result);
+/* READY_HANDOFF_END */
         #[cfg(feature="sunfish-elf-capacity-retry")]
         if matches!(&queue_result,Err(Error::Transport(fifo::Error::Session(crate::qcom_glink_qmi::Error::NoCapacity)))) {
             self.arm_elf_capacity_turn(handle);
@@ -3166,7 +3215,17 @@ impl<I: Io> Owner<I> {
                 Err(Error::Transport(fifo::Error::Session(crate::qcom_glink_qmi::Error::NoCapacity))) => 3,
                 Err(_) => 4,
             };
+/* READY_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-registry-ready-handoffs")]
+        let ready_callback_stopped=self.stopped;
+#[cfg(feature="sunfish-registry-ready-handoffs")]
+        {self.stopped=true;}
+/* READY_HANDOFF_END */
             elf.dispatch.turns.record(transaction, name_code, outcome, self.rmtfs_event_clock.map(|clock| clock()));
+/* READY_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-registry-ready-handoffs")]
+        {self.stopped=ready_callback_stopped;}
+/* READY_HANDOFF_END */
         }
         #[cfg(feature = "sunfish-registry-handoff-turn")]
         { self.registry_last_dispatch = Some((handle, queue_result.is_ok())); }
@@ -3194,7 +3253,17 @@ impl<I: Io> Owner<I> {
                     if let Some(elf) = self.service_registry_trace.elf.as_mut() {
                         elf.total_domains = Some(response.total_domains());
                         elf.returned_rows = Some(response.domain_list_tlv().and_then(|list| list.first().copied()).unwrap_or(0));
+/* READY_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-registry-ready-handoffs")]
+        let ready_callback_stopped=self.stopped;
+#[cfg(feature="sunfish-registry-ready-handoffs")]
+        {self.stopped=true;}
+/* READY_HANDOFF_END */
                         elf.queued = self.rmtfs_event_clock.map(|clock| clock());
+/* READY_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-registry-ready-handoffs")]
+        {self.stopped=ready_callback_stopped;}
+/* READY_HANDOFF_END */
                         #[cfg(feature="sunfish-elf-queued-handoff")]
                         {self.elf_queued_turn_trace.armed_at=elf.queued;}
                         #[cfg(feature = "sunfish-wlan-elf-phase-io")]
@@ -3205,14 +3274,34 @@ impl<I: Io> Owner<I> {
                 if self.registry_txn4_handle == Some(handle)
                     && let Some(timing) = self.service_registry_trace.txn4.as_mut()
                 {
+/* READY_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-registry-ready-handoffs")]
+        let ready_callback_stopped=self.stopped;
+#[cfg(feature="sunfish-registry-ready-handoffs")]
+        {self.stopped=true;}
+/* READY_HANDOFF_END */
                     timing.queued = self.rmtfs_event_clock.map(|clock| clock());
+/* READY_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-registry-ready-handoffs")]
+        {self.stopped=ready_callback_stopped;}
+/* READY_HANDOFF_END */
                 }
                 self.service_registry_trace.record_reply_queued(name_code);
                 Ok(ServiceProgress::ReplyQueued)
             }
             Err(Error::Transport(fifo::Error::Session(crate::qcom_glink_qmi::Error::FlowBusy))) => {
+/* READY_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-registry-ready-handoffs")]
+        let ready_callback_stopped=self.stopped;
+#[cfg(feature="sunfish-registry-ready-handoffs")]
+        {self.stopped=true;}
+/* READY_HANDOFF_END */
                 #[cfg(feature = "sunfish-wlan-elf-queue-trace")]
                 self.record_registry_queue_wait(&handle);
+/* READY_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-registry-ready-handoffs")]
+        {self.stopped=ready_callback_stopped;}
+/* READY_HANDOFF_END */
                 self.service_registry_trace.record_reply_wait(name_code);
                 self.service_registry_trace.reply_flow_busy = self
                     .service_registry_trace
@@ -3223,8 +3312,18 @@ impl<I: Io> Owner<I> {
             Err(Error::Transport(fifo::Error::Session(
                 crate::qcom_glink_qmi::Error::NoCapacity,
             ))) => {
+/* READY_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-registry-ready-handoffs")]
+        let ready_callback_stopped=self.stopped;
+#[cfg(feature="sunfish-registry-ready-handoffs")]
+        {self.stopped=true;}
+/* READY_HANDOFF_END */
                 #[cfg(feature = "sunfish-wlan-elf-queue-trace")]
                 self.record_registry_queue_wait(&handle);
+/* READY_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-registry-ready-handoffs")]
+        {self.stopped=ready_callback_stopped;}
+/* READY_HANDOFF_END */
                 self.service_registry_trace.record_reply_wait(name_code);
                 self.service_registry_trace.reply_no_capacity = self
                     .service_registry_trace
@@ -3411,15 +3510,35 @@ impl<I: Io> Owner<I> {
         interrupts: &mut impl Interrupts,
     ) -> Result<(), Error> {
         self.check()?;
+/* READY_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-registry-ready-handoffs")]
+        let ready_callback_stopped=self.stopped;
+#[cfg(feature="sunfish-registry-ready-handoffs")]
+        {self.stopped=true;}
+/* READY_HANDOFF_END */
         if let Err(error) = self.adapter.revalidate(self.generation) {
             return Err(self.stop(error.into()));
         }
+/* READY_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-registry-ready-handoffs")]
+        {self.stopped=ready_callback_stopped;}
+/* READY_HANDOFF_END */
+/* READY_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-registry-ready-handoffs")]
+        let ready_callback_stopped=self.stopped;
+#[cfg(feature="sunfish-registry-ready-handoffs")]
+        {self.stopped=true;}
+/* READY_HANDOFF_END */
         #[cfg(feature="sunfish-elf-third-reply")]
         let result=if self.elf_lookup_handle==Some(*handle){
             self.adapter.queue_elf_third_reply(self.generation,handle,reply)
         }else{self.adapter.queue_reply(self.generation,handle,reply)};
         #[cfg(not(feature="sunfish-elf-third-reply"))]
         let result=self.adapter.queue_reply(self.generation, handle, reply);
+/* READY_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-registry-ready-handoffs")]
+        {self.stopped=ready_callback_stopped;}
+/* READY_HANDOFF_END */
         match result {
             Ok(()) => {}
             Err(
@@ -4135,6 +4254,12 @@ impl<I: Io> Owner<I> {
             {
                 break;
             }
+/* READY_HANDOFF_BEGIN */
+            #[cfg(feature="sunfish-registry-ready-handoffs")]
+            if let Receive::Session(Event::ReplyRxDone(h))=rx
+                && self.take_ready_blocker_receipt(h)
+            {break;}
+/* READY_HANDOFF_END */
             // Let the regular service pass try ELF after the exact blocking
             // reply completes. Finish this checked iteration and keep the
             // continuation and any IRQ ownership, just as on budget expiry.

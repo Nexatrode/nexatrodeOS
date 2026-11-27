@@ -4,6 +4,8 @@ import re,subprocess,unittest
 ROOT=Path(__file__).resolve().parents[1];BASE='0e7fca41'
 COUNTS={'rust/src/qcom_modem_owner.rs':8,'rust/src/sunfish_ipa_linux_qmi_owner.rs':1,'rust/src/pixel_mpss_elf_prequeue_owners.rs':2}
 def without_retry(path,source):
+ from sunfish_ready_handoffs_source_test import without_ready
+ source=without_ready(path,source)
  for name in ['ELF_RETRY_OBSERVER','TX3_RETRY_PANEL']:
   pat=r'/\* '+name+r'_BEGIN \*/\n.*?/\* '+name+r'_END \*/\n';blocks=re.findall(pat,source,re.S)
   expected=COUNTS.get(path,0)if (name=='ELF_RETRY_OBSERVER' and path in ['rust/src/qcom_modem_owner.rs','rust/src/sunfish_ipa_linux_qmi_owner.rs']) or (name=='TX3_RETRY_PANEL' and path=='rust/src/pixel_mpss_elf_prequeue_owners.rs') else 0

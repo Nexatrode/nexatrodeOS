@@ -32,6 +32,11 @@ pub(crate) use mcfg_close::McfgCloseOutcome;
 #[cfg(feature="sunfish-elf-window-trace")]
 #[path="qcom_elf_window.rs"]
 mod elf_window;
+/* READY_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-registry-ready-handoffs")]
+#[path="qcom_registry_ready_handoff.rs"]
+mod ready_handoff;
+/* READY_HANDOFF_END */
 #[cfg(feature="sunfish-elf-first-slot-turn")]
 #[path="qcom_elf_slot_turn.rs"]
 mod elf_slot_turn;
@@ -772,6 +777,10 @@ struct Transmit {
     sent: usize,
     #[cfg(feature = "sunfish-registry-between-grants")]
     registry_grant_turn_used: bool,
+/* READY_HANDOFF_BEGIN */
+    #[cfg(feature="sunfish-registry-ready-handoffs")]
+    registry_return_turn_due:bool,
+/* READY_HANDOFF_END */
     #[cfg(feature = "sunfish-registry-converted-credit-turn")]
     registry_credit_turn_used: bool,
     #[cfg(feature = "sunfish-wlan-elf-publish-trace")]
@@ -806,6 +815,10 @@ impl Transmit {
             sent: 0,
             #[cfg(feature = "sunfish-registry-between-grants")]
             registry_grant_turn_used: false,
+/* READY_HANDOFF_BEGIN */
+            #[cfg(feature="sunfish-registry-ready-handoffs")]
+            registry_return_turn_due:false,
+/* READY_HANDOFF_END */
             #[cfg(feature = "sunfish-registry-converted-credit-turn")]
             registry_credit_turn_used: false,
             #[cfg(feature = "sunfish-wlan-elf-publish-trace")]
@@ -7416,7 +7429,12 @@ impl Session {
                                 intent: self.receive[receive].id })) }
                     #[cfg(not(feature = "sunfish-registry-converted-grant-turn"))]
                     { true }
-                } { 3 }
+                }
+/* READY_HANDOFF_BEGIN */
+                && { #[cfg(feature="sunfish-registry-ready-handoffs")] {candidate!=Some(index)}
+                     #[cfg(not(feature="sunfish-registry-ready-handoffs"))] {true} }
+/* READY_HANDOFF_END */
+                { 3 }
                 else if self.registry_turn_used { 4 }
                 else if tftp_ready { 5 }
                 else if wrq_return { 6 }
@@ -7995,6 +8013,18 @@ impl Session {
         let registry_before_grant = false;
         #[cfg(feature = "sunfish-registry-converted-grant-turn")]
         let registry_before_grant = registry_before_grant || converted_registry.is_some();
+/* READY_HANDOFF_BEGIN */
+        #[cfg(feature="sunfish-registry-ready-handoffs")]
+        let ready_registry = if ordinary && !registry_before_grant && !self.registry_turn_used
+            && !conversion_wrq_return && !conversion_tftp
+            && self.intent_request_ack==Some(true)
+            && self.intent_ack_backing.is_some_and(|id|self.receive[..RX_SLOTS].iter()
+                .any(|r|r.id==id && r.state==RxState::Advertising))
+        {self.next_transmit_in_order([3]).filter(|(i,_)|self.transmit[*i].registry_return_turn_due
+                && !self.transmit[*i].registry_grant_turn_used && !self.transmit[*i].registry_credit_turn_used)}else{None};
+        #[cfg(feature="sunfish-registry-ready-handoffs")]
+        let registry_before_grant=registry_before_grant || ready_registry.is_some();
+/* READY_HANDOFF_END */
         #[cfg(feature = "sunfish-wlan-registry-tx-turn")]
         let registry_candidate = if !self.registry_turn_used && priority_tftp.is_none()
             && (self.intent_request_ack.is_none() || registry_before_grant)
@@ -8013,6 +8043,10 @@ impl Session {
         let priority_registry = registry_candidate.filter(|_| self.next_transmit_in_order([1]).is_none());
         #[cfg(feature = "sunfish-registry-converted-grant-turn")]
         let prefer_ack = prefer_ack && !(converted_registry.is_some() && priority_registry == converted_registry);
+/* READY_HANDOFF_BEGIN */
+        #[cfg(feature="sunfish-registry-ready-handoffs")]
+        let prefer_ack=prefer_ack && !(ready_registry.is_some() && priority_registry==ready_registry);
+/* READY_HANDOFF_END */
         #[cfg(feature = "sunfish-registry-converted-credit-turn")]
         let converted_credit = self.converted_credit_candidate(registry_candidate, converted_registry);
         #[cfg(feature = "sunfish-registry-converted-credit-turn")]
@@ -8870,7 +8904,19 @@ impl Session {
         self.observe_conversion_callback(conversion_choice);
         #[cfg(feature = "sunfish-registry-prearm-io-trace")]
         self.observe_prearm_result(prearm_choice, 4);
+/* READY_HANDOFF_BEGIN */
+        #[cfg(feature="sunfish-registry-ready-handoffs")]
+        if let Some((i,_))=ready_registry.filter(|(i,_)|borrowed_registry_slot==Some(*i)){
+            self.transmit[i].registry_publication.mask|=1<<19;
+        }
+/* READY_HANDOFF_END */
         let result = writer(&record[..size]);
+/* READY_HANDOFF_BEGIN */
+        #[cfg(feature="sunfish-registry-ready-handoffs")]
+        if result.is_ok() && let Some((i,_))=ready_registry.filter(|(i,_)|borrowed_registry_slot==Some(*i)){
+            self.transmit[i].registry_publication.mask|=1<<20;
+        }
+/* READY_HANDOFF_END */
         #[cfg(feature="sunfish-elf-writer-trace")]
         self.elf_writer_header(&record[..size],result);
         #[cfg(feature = "sunfish-registry-prearm-io-trace")]
@@ -9115,6 +9161,15 @@ impl Session {
                 { self.intent_ack_started = None; }
             },
             Commit::Done(index) => {
+/* READY_HANDOFF_BEGIN */
+                #[cfg(feature="sunfish-registry-ready-handoffs")]
+                for tx in &mut self.transmit {
+                    if tx.len!=0 && tx.sent==0 && matches!(tx.kind,TxKind::Reply{receive,route,..}
+                        if receive==index && route.service==Service::ServiceRegistry && route.transaction==3
+                            && route.source.port==crate::qcom_servreg::LOCAL_PORT
+                            && route.destination==(Address{node:0,port:9})) {tx.registry_return_turn_due=true;}
+                }
+/* READY_HANDOFF_END */
                 #[cfg(feature = "sunfish-registry-prearm-io-trace")]
                 if let Some(pair) = self.registry_window.target.as_mut()
                     && !pair.prearm.own_done_seen
