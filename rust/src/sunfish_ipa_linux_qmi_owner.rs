@@ -816,6 +816,28 @@ impl<I: Io> Owner<I> {
             scheduled: false,
             requests: [None; MAX_REQUESTS],
             tftp_requests: [None; MAX_REQUESTS],
+/* EFS_SERVICE_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-efs-service-handoff")]
+            efs_service_enabled: false,
+#[cfg(feature="sunfish-efs-service-handoff")]
+            efs_service_used: false,
+#[cfg(feature="sunfish-efs-service-handoff")]
+            efs_ruleset_request: None,
+#[cfg(feature="sunfish-efs-service-handoff")]
+            efs_ruleset_queued: false,
+#[cfg(feature="sunfish-efs-service-handoff")]
+            efs_service_trace: EfsServiceTrace::default(),
+/* EFS_SERVICE_HANDOFF_END */
+/* EFS_EARLY_TURN_BEGIN */
+#[cfg(feature="sunfish-efs-early-error-turn")]
+            efs_error_turn_enabled: false,
+#[cfg(feature="sunfish-efs-early-error-turn")]
+            efs_error_turn_used: false,
+#[cfg(feature="sunfish-efs-early-error-turn")]
+            first_efs_error_request: None,
+#[cfg(feature="sunfish-efs-early-error-turn")]
+            first_efs_error_closed: false,
+/* EFS_EARLY_TURN_END */
             #[cfg(feature = "sunfish-tftp-rx-yield-experiment")]
             tftp_yield_debt: false,
             #[cfg(feature = "sunfish-ipa-registration-rx-first")]

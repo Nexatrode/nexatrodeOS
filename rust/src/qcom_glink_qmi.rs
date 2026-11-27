@@ -15,6 +15,13 @@
 //! drivers/rpmsg/qcom_glink_native.c and net/qrtr/qrtr.c. This deliberately
 //! supports a narrower profile than the complete Linux transports.
 #![forbid(unsafe_code)]
+/* EFS_REPLY_OVERLAP_BEGIN */
+#[cfg(feature="sunfish-efs-reply-overlap")]
+#[path="qcom_efs_overlap.rs"]
+mod efs_overlap;
+#[cfg(feature="sunfish-efs-reply-overlap")]
+pub use efs_overlap::EfsOverlapTrace;
+/* EFS_REPLY_OVERLAP_END */
 
 #[cfg(feature="sunfish-mcfg-close-cleanup")]
 #[path="qcom_mcfg_close.rs"]
@@ -1025,6 +1032,10 @@ pub struct Session {
     #[cfg(feature = "sunfish-tftp-oack-reserve")]
     reserved_oack: Option<ReservedOack>,
     qrtr_flows: [Option<QrtrFlow>; TX_STORAGE_SLOTS],
+/* EFS_REPLY_OVERLAP_BEGIN */
+#[cfg(feature="sunfish-efs-reply-overlap")]
+    efs_overlap: efs_overlap::EfsOverlap,
+/* EFS_REPLY_OVERLAP_END */
     #[cfg(feature = "sunfish-qrtr-rmtfs-flow-experiment")]
     rmtfs_reference_flows: crate::qcom_qrtr_flow::Table<64>,
     #[cfg(feature = "sunfish-qrtr-rmtfs-flow-experiment")]
@@ -1927,6 +1938,10 @@ impl Session {
             #[cfg(feature = "sunfish-tftp-oack-reserve")]
             reserved_oack: None,
             qrtr_flows: [None; TX_STORAGE_SLOTS],
+/* EFS_REPLY_OVERLAP_BEGIN */
+#[cfg(feature="sunfish-efs-reply-overlap")]
+            efs_overlap: efs_overlap::EfsOverlap::EMPTY,
+/* EFS_REPLY_OVERLAP_END */
             #[cfg(feature = "sunfish-qrtr-rmtfs-flow-experiment")]
             rmtfs_reference_flows: crate::qcom_qrtr_flow::Table::new(generation).map_err(|_| Error::IdExhausted)?,
             #[cfg(feature = "sunfish-qrtr-rmtfs-flow-experiment")]
@@ -2958,6 +2973,10 @@ impl Session {
         #[cfg(feature = "sunfish-registry-window-trace")]
         { self.registry_window = RegistryWindowTrace::default(); }
         self.qrtr_flows = [None; TX_STORAGE_SLOTS];
+/* EFS_REPLY_OVERLAP_BEGIN */
+#[cfg(feature="sunfish-efs-reply-overlap")]
+        { self.efs_overlap=efs_overlap::EfsOverlap::EMPTY; }
+/* EFS_REPLY_OVERLAP_END */
         #[cfg(feature = "sunfish-qrtr-rmtfs-flow-experiment")]
         { self.rmtfs_reference_flows = new_reference_flows; self.rmtfs_flow_destinations = [None; 64]; }
         self.retired_rmtfs_peers = [None; 64];
@@ -3852,6 +3871,10 @@ impl Session {
         });
         #[cfg(not(feature = "sunfish-wlan-first-server-check-retry"))]
         let overlap = None;
+/* EFS_REPLY_OVERLAP_BEGIN */
+#[cfg(feature="sunfish-efs-reply-overlap")]
+        let overlap=overlap.or_else(||self.efs_overlap_candidate(handle,route,packet));
+/* EFS_REPLY_OVERLAP_END */
         #[cfg(feature = "sunfish-tftp-oack-reserve")]
         let reserve = self.reserved_oack.is_none()
             && packet == crate::qcom_tftp_server_check::OACK
@@ -3868,6 +3891,10 @@ impl Session {
 #[cfg(feature="sunfish-startup-prerequisites")]
         self.observe_startup_queue(handle,route,result);
 /* STARTUP_PREREQ_END */
+/* EFS_REPLY_OVERLAP_BEGIN */
+#[cfg(feature="sunfish-efs-reply-overlap")]
+        self.bind_efs_overlap_queue(handle,route,packet,result,overlap);
+/* EFS_REPLY_OVERLAP_END */
         #[cfg(feature = "sunfish-tftp-oack-reserve")]
         if result == Ok(TX_SLOTS) {
             self.reserved_oack = Some(ReservedOack {
@@ -5133,6 +5160,10 @@ impl Session {
 #[cfg(feature="sunfish-startup-prerequisites")]
                 self.observe_startup_read(index,handle);
 /* STARTUP_PREREQ_END */
+/* EFS_REPLY_OVERLAP_BEGIN */
+#[cfg(feature="sunfish-efs-reply-overlap")]
+                self.capture_efs_overlap_request(index,handle);
+/* EFS_REPLY_OVERLAP_END */
                 return Ok(Event::TftpRequest(handle));
             }
             let observation =
@@ -5489,6 +5520,10 @@ impl Session {
 
     fn receive_control(&mut self, index: usize, len: usize) -> Result<Event, Error> {
         let command = self.control.decode(&self.receive[index].bytes[..len])?;
+/* EFS_REPLY_OVERLAP_BEGIN */
+#[cfg(feature="sunfish-efs-reply-overlap")]
+        if let control::Command::DelClient(port)=command { self.close_efs_overlap(port); }
+/* EFS_REPLY_OVERLAP_END */
         #[cfg(feature="sunfish-post-elf-mcfg-trace")]
         if let control::Command::DelClient(port)=command {self.observe_post_mcfg_close(port);}
 /* STARTUP_PREREQ_BEGIN */

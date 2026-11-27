@@ -4,6 +4,8 @@ ROOT=Path(__file__).resolve().parents[1]
 PATTERN=r'/\* EFS_REPLY_FIFO_BEGIN \*/\n.*?/\* EFS_REPLY_FIFO_END \*/\n'
 COUNTS={'rust/src/qcom_glink_fifo.rs':10,'rust/src/sunfish_mpss_linux_transport.rs':1,'rust/src/qcom_modem_owner.rs':1}
 def without_efs_fifo(path,source):
+ from sunfish_efs_early_source_test import without_early
+ source=without_early(path,source)
  blocks=re.findall(PATTERN,source,re.S)
  if path in COUNTS:assert len(blocks)==COUNTS[path],(path,len(blocks));assert all('#[cfg(feature="sunfish-efs-reply-fifo")]'in b for b in blocks)
  else:assert not blocks,path

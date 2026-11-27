@@ -56,3 +56,7 @@ fn efs_reply_fifo_owner_tail_close_foreign_receipt_and_exact_done(){
  mc_close(&p,&mut o,&mut i,0x22);assert!(o.efs_reply_fifo().unwrap().unread_at_close.is_some());assert!(!o.efs_reply_fifo().unwrap().fifo.finished);
  acknowledge_outgoing_glink(&p,&mut o,&mut i,&wire);let w=o.efs_reply_fifo().unwrap();assert!(w.fifo.finished);assert!(w.fifo.completion.is_some());assert_eq!(w.fifo.completion.unwrap().visible_at_close,Some(false));assert_eq!(o.startup_prerequisites().reads[2].unwrap().flags,0xbf);assert!(o.error().is_none());
 }
+
+include!("sunfish_efs_early_cases.rs");
+include!("sunfish_efs_service_cases.rs");
+include!("sunfish_efs_overlap_cases.rs");

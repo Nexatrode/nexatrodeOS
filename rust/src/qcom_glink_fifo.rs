@@ -5,6 +5,11 @@
 //! peer TX tail, AP TX head, AP RX tail, peer RX head, four reserved words.
 //! No allocation, FIFO initialization, channel negotiation, or IRQ registration.
 #![forbid(unsafe_code)]
+/* EFS_REPLY_OVERLAP_BEGIN */
+#[cfg(feature="sunfish-efs-reply-overlap")]
+#[path="qcom_fifo_efs_overlap.rs"]
+mod efs_overlap;
+/* EFS_REPLY_OVERLAP_END */
 
 /* MCFG_IDLE_DETAIL_BEGIN */
 #[cfg(feature="sunfish-mcfg-idle-detail")]
@@ -68,6 +73,13 @@ use crate::qcom_qmi_router::Context;
 mod efs_reply;
 #[cfg(feature="sunfish-efs-reply-fifo")]
 pub use efs_reply::EfsReplyFifo;
+/* EFS_EARLY_TURN_BEGIN */
+#[cfg(feature="sunfish-efs-early-error-turn")]
+#[path="qcom_fifo_efs_early.rs"]
+mod efs_early;
+#[cfg(feature="sunfish-efs-early-error-turn")]
+pub use efs_early::EfsErrorTurnTrace;
+/* EFS_EARLY_TURN_END */
 /* EFS_REPLY_FIFO_END */
 
 pub const FIFO_BYTES: usize = 0x4000;
@@ -1504,6 +1516,10 @@ struct Ring<I> {
 /* EFS_REPLY_FIFO_BEGIN */
 #[cfg(feature="sunfish-efs-reply-fifo")]
     efs_reply: Option<efs_reply::EfsReplyWatch>,
+/* EFS_EARLY_TURN_BEGIN */
+#[cfg(feature="sunfish-efs-early-error-turn")]
+    efs_error_turn: EfsErrorTurnTrace,
+/* EFS_EARLY_TURN_END */
 /* EFS_REPLY_FIFO_END */
     #[cfg(feature="sunfish-registry-tx3-wire-headers")]
     registry_wire: Option<RegistryWireTrace>,
@@ -2304,6 +2320,10 @@ impl<I: Io> Adapter<I> {
 /* EFS_REPLY_FIFO_BEGIN */
 #[cfg(feature="sunfish-efs-reply-fifo")]
                 efs_reply: None,
+/* EFS_EARLY_TURN_BEGIN */
+#[cfg(feature="sunfish-efs-early-error-turn")]
+                efs_error_turn: EfsErrorTurnTrace::default(),
+/* EFS_EARLY_TURN_END */
 /* EFS_REPLY_FIFO_END */
                 #[cfg(feature="sunfish-registry-tx3-wire-headers")]
                 registry_wire: None,
@@ -3344,7 +3364,7 @@ impl<I: Io> Adapter<I> {
         let notification = self.ring.record[0] == 13;
 /* EFS_REPLY_FIFO_BEGIN */
 #[cfg(feature="sunfish-efs-reply-fifo")]
-        let efs_before=self.session.startup_prerequisites().reads[2].map(|r|(r.record_sequence(),r.flags));
+        let efs_before=self.session.startup_prerequisites().reads[efs_reply::watched_index(&self.session)].map(|r|(r.record_sequence(),r.flags));
 /* EFS_REPLY_FIFO_END */
         #[cfg(feature = "sunfish-wlan-first-oack-rx-fifo")]
         let before = self.ring.server_check_rx.as_ref()
@@ -3987,7 +4007,7 @@ impl<I: Io> Adapter<I> {
         let mut failure = None;
 /* EFS_REPLY_FIFO_BEGIN */
 #[cfg(feature="sunfish-efs-reply-fifo")]
-        let efs_waiting=self.ring.efs_reply.is_none()&&self.session.startup_prerequisites().reads[2].is_some_and(|r|r.flags&24==8&&r.record_sequence().is_some());
+        let efs_waiting=self.ring.efs_reply.is_none()&&self.session.startup_prerequisites().reads[efs_reply::watched_index(&self.session)].is_some_and(|r|r.flags&24==8&&r.record_sequence().is_some());
 /* EFS_REPLY_FIFO_END */
         #[cfg(feature = "sunfish-ipa-registration-reply-headers")]
         let mut opening_header = None;
@@ -4612,6 +4632,10 @@ impl<I: Io> Adapter<I> {
 /* EFS_REPLY_FIFO_BEGIN */
 #[cfg(feature="sunfish-efs-reply-fifo")]
         {self.ring.efs_reply=None;}
+/* EFS_EARLY_TURN_BEGIN */
+#[cfg(feature="sunfish-efs-early-error-turn")]
+        {self.ring.efs_error_turn=EfsErrorTurnTrace::default();}
+/* EFS_EARLY_TURN_END */
 /* EFS_REPLY_FIFO_END */
         #[cfg(feature="sunfish-registry-tx3-wire-headers")]
         { self.ring.registry_wire=None; }
