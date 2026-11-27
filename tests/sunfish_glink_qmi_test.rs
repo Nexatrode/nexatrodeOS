@@ -4009,8 +4009,11 @@ fn replay_registry_move_entry_occupied() {
     let older_id = offer(&mut s);
     for _ in 1..qcom_glink_qmi::RX_SLOTS { offer(&mut s); }
     let older = registry_turn_request(&mut s, older_id, 9, 3);
+    // This fixture needs an unpublished predecessor; queue after its return
+    // under the new turn so that it is not an own-return handoff candidate.
+    if cfg!(feature="sunfish-registry-ready-handoffs"){assert_eq!(publish(&mut s).unwrap().0,Published::ReceiveDone(older_id));}
     s.queue_reply(&older, Reply::Failure { error: 3 }).unwrap();
-    assert_eq!(publish(&mut s).unwrap().0, Published::ReceiveDone(older_id));
+    if !cfg!(feature="sunfish-registry-ready-handoffs"){assert_eq!(publish(&mut s).unwrap().0,Published::ReceiveDone(older_id));}
     assert_eq!(s.ingest(1, &control(7, 56)), Ok(Event::ReceiveIntentRequest { granted: true }));
     let Published::ReceiveIntent(id) = publish(&mut s).unwrap().0 else { panic!() };
     assert_eq!(publish(&mut s).unwrap().0, Published::IntentRequestAck { granted: true });
@@ -4366,10 +4369,11 @@ mod registry_between_grants {
         for confirm in [false,true]{
             let(mut s,request)=prepared(false,confirm,4096);
             assert!(matches!(publish(&mut s).unwrap().0,Published::ReceiveDone(_)));
+            let early=if cfg!(feature="sunfish-registry-ready-handoffs") && !confirm {Some(reply(&mut s))}else{None};
             grant(&mut s);
             if confirm {let(e,b)=publish(&mut s).unwrap();assert!(matches!(e,Published::Data{..}));assert_eq!(word(&b,20),7);}
-            let(id,_)=reply(&mut s);
-            assert_eq!(s.registry_window_trace().predecessor.unwrap().publication.unwrap().mask&0x300,0);
+            let(id,_)=early.unwrap_or_else(||reply(&mut s));
+            assert_eq!(s.registry_window_trace().predecessor.unwrap().publication.unwrap().mask&0x300,if cfg!(feature="sunfish-registry-ready-handoffs")&&!confirm{0x300}else{0});
             assert_eq!(s.ingest(1,&control(14,id)),Ok(Event::ReplyRxDone(request)));
         }
     }
@@ -4433,7 +4437,7 @@ mod registry_between_grants {
         for mode in 0..3 {
             let(mut s,request)=prepared(mode!=0,false,4096);
             let expected=match mode {
-                0 => { assert!(matches!(publish(&mut s).unwrap().0,Published::ReceiveDone(_)));grant(&mut s);reply(&mut s);[1,0,1,1,0,0,0,1,0,0,0,0] },
+                0 => { assert!(matches!(publish(&mut s).unwrap().0,Published::ReceiveDone(_)));if cfg!(feature="sunfish-registry-ready-handoffs"){reply(&mut s);grant(&mut s);[0,0,0,0,0,0,0,1,0,0,0,1]}else{grant(&mut s);reply(&mut s);[1,0,1,1,0,0,0,1,0,0,0,0]} },
                 1 => {reply(&mut s);[0,0,0,0,0,0,0,0,0,0,0,1]},
                 _ => {assert_eq!(s.publish_next(1,|_|Err(WriteError::WouldBlock)),Err(Error::WouldBlock));grant(&mut s);reply(&mut s);[1,0,1,0,0,0,0,0,1,0,0,1]},
             };
@@ -4721,3 +4725,7 @@ mod announcement_reuse;
 
 #[cfg(feature="sunfish-elf-queued-handoff")]
 mod elf_window_cases {include!("sunfish_elf_window_cases.rs");}
+
+#[cfg(feature="sunfish-registry-ready-handoffs")]
+#[path="sunfish_registry_ready_core_cases.rs"]
+mod registry_ready_core_cases;

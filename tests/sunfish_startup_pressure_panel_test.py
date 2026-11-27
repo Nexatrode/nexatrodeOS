@@ -30,10 +30,16 @@ class Panel(unittest.TestCase):
   code=code.replace('struct Display{real:physical::Display,','struct Display{title:RefCell<Option<String>>,real:physical::Display,').replace('fn replace_line(&self,n:usize,s:&str){','fn replace_line(&self,n:usize,s:&str){if n==1{*self.title.borrow_mut()=Some(s.to_owned());}').replace('let d=Display{real:','let d=Display{title:RefCell::new(None),real:')
   code=code.replace('message:u16,source:Address','message:u16,qrtr_type:u32,source:Address').replace('message:0xffff,source:Address','message:0xffff,qrtr_type:1,source:Address')
   code=code.replace('struct Capacity{flags:u32,result:u8}','struct Capacity{flags:u32,result:u8,armed:Option<u64>,entered:Option<u64>,ended:Option<u64>,free_slot:Option<u8>,arms:u32,full_skips:u32}').replace('Capacity{flags:15,result:1}','Capacity{flags:15,result:1,armed:Some(160),entered:Some(185),ended:Some(190),free_slot:Some(1),arms:1,full_skips:2}')
+  ready=bool(os.getenv('SUNFISH_READY_HANDOFF_PANEL'))
+  if ready:
+   code=code.replace('.iter().find(|(row,second,_)|','.iter().rev().find(|(row,second,_)|')
+   code+='\nstruct ReadyHandoff{flags:u32,arms:u32,receipts:u32,services:u32,result:u32}\nimpl ModemOwner{fn ready_handoff_trace(&self)->ReadyHandoff{ReadyHandoff{flags:31,arms:1,receipts:1,services:1,result:1}}}\n'
+   code=code.replace('STARTUP REPLY PRESSURE','REGISTRY READY HANDOFF').replace('STARTUP POOL PRESSURE','READY HANDOFF POOL')
+   code=code.replace('assert_eq!(values(13),[0x1ff,4,610,3,6]);','assert_eq!(values(26),[31,1,1,1,1]);assert_eq!(values(13),[0x1ff,4,610,3,6]);')
   runtime=(ROOT/'rust/src/pixel_mpss_runtime.rs').read_text()
   code=code.replace('#[path=DISPLAY]','#[path='+json.dumps(str(ROOT/'rust/src/pixel_probe_display.rs'))+']').replace('PACKED',function((ROOT/'rust/src/pixel_mpss_runtime_diagnostic.rs').read_text(),'packed_counts')).replace('CLOCK',function(runtime,'time_from_us')).replace('#[path=PANEL]','#[path='+json.dumps(str(ROOT/'rust/src/pixel_mpss_tx3_elf_retry.rs'))+']')
   with tempfile.TemporaryDirectory()as tmp:
    p=Path(tmp);(p/'panel.rs').write_text(code)
-   subprocess.run(['rustc','+nightly-2026-09-25','--edition=2024',*[x for f in ['sunfish-startup-pressure','sunfish-elf-pool-release','sunfish-wrq-post-return-callers','sunfish-ipa-registration-reply-headers']for x in ['--cfg',f'feature="{f}"']],'-Adead_code','-Aunreachable_code',str(p/'panel.rs'),'-o',str(p/'panel')],check=True)
+   subprocess.run(['rustc','+nightly-2026-09-25','--edition=2024',*[x for f in (['sunfish-registry-ready-handoffs']if ready else [])+['sunfish-startup-pressure','sunfish-elf-pool-release','sunfish-wrq-post-return-callers','sunfish-ipa-registration-reply-headers']for x in ['--cfg',f'feature="{f}"']],'-Adead_code','-Aunreachable_code',str(p/'panel.rs'),'-o',str(p/'panel')],check=True)
    subprocess.run([str(p/'panel')],check=True)
 if __name__=='__main__':unittest.main()

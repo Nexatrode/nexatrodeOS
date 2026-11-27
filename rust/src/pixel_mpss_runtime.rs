@@ -490,6 +490,12 @@ impl RuntimeDomain {
         };
         #[cfg(feature="sunfish-mcfg-close-cleanup")]
         if owner.pending_mcfg_close().is_some(){owner.resolve_mcfg_close(&mut self.server_check).map_err(|_|0x64u32)?;}
+/* READY_HANDOFF_BEGIN */
+        #[cfg(feature="sunfish-registry-ready-handoffs")]
+        if matches!(self.router.service_ready_blocker(owner).map_err(|_|0x61u32)?,Some(qcom_modem_owner::ServiceProgress::ReplyQueued)){
+            self.router.dispatch_queued_elf_reply(owner).map_err(|_|0x61u32)?;
+        }
+/* READY_HANDOFF_END */
         let server = (&mut *self.boot).server().map_err(|_| 0x51u32)?;
         // Both configurations call the same bounded handler once per pass.
         // The opt-in ordering gives it the first turn without skipping the

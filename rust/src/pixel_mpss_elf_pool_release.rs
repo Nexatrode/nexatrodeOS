@@ -27,5 +27,9 @@ impl RuntimeDomain {
 #[cfg(feature="sunfish-startup-pressure")]
         d.replace_line(1,"STARTUP POOL PRESSURE");
 /* STARTUP_PRESSURE_PANEL_END */
+/* READY_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-registry-ready-handoffs")]
+        {let h=owner.ready_handoff_trace();row(26,"HANDOFF FLAGS ARMS RECEIPTS SERVICES RESULT",&[h.flags,h.arms,h.receipts,h.services,h.result]);d.replace_line(1,"READY HANDOFF POOL");}
+/* READY_HANDOFF_END */
     }
 }

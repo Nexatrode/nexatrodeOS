@@ -904,6 +904,10 @@ impl<I: Io> Owner<I> {
             elf_lookup_handle: None,
             #[cfg(feature="sunfish-elf-first-slot-turn")]
             elf_slot_turn_taken:false,
+/* READY_HANDOFF_BEGIN */
+            #[cfg(feature="sunfish-registry-ready-handoffs")]
+            elf_ready_handoff:ready_handoff::ReadyHandoff::default(),
+/* READY_HANDOFF_END */
 /* ELF_RETRY_OBSERVER_BEGIN */
 #[cfg(feature="sunfish-tx3-elf-retry")]
             elf_retry:ElfRetryTrace::default(),

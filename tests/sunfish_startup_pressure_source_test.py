@@ -4,6 +4,8 @@ import re,subprocess,unittest
 ROOT=Path(__file__).resolve().parents[1];BASE='ca12cc96'
 COUNTS={'rust/src/pixel_mpss_tx3_elf_retry.rs':3,'rust/src/pixel_mpss_elf_pool_release.rs':1}
 def without_startup(path,source):
+ from sunfish_ready_handoffs_source_test import without_ready
+ source=without_ready(path,source)
  pat=r'/\* STARTUP_PRESSURE_PANEL_BEGIN \*/\n.*?/\* STARTUP_PRESSURE_PANEL_END \*/\n';blocks=re.findall(pat,source,re.S)
  assert len(blocks)==COUNTS.get(path,0),(path,len(blocks))
  assert all('feature="sunfish-startup-pressure"'in b for b in blocks)

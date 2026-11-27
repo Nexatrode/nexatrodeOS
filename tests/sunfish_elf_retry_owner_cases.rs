@@ -1,8 +1,11 @@
 // Actual Owner/FIFO schedule. Its clock ticks are synthetic, not Pixel deadlines.
 use super::*;
 fn retry_owner_setup(clock:bool)->LoRig{
+ retry_owner_setup_rig(LoRig::new(),clock)
+}
+fn retry_owner_setup_rig(mut r:LoRig,clock:bool)->LoRig{
  use core::sync::atomic::{AtomicU64,Ordering::Relaxed};static CLOCK:AtomicU64=AtomicU64::new(1000);
- let mut r=LoRig::new();let _ipa=r.next();r.hold_host=true;if clock{r.owner.set_rmtfs_event_clock(||CLOCK.fetch_add(1,Relaxed));}
+ let _ipa=r.next();r.hold_host=true;if clock{r.owner.set_rmtfs_event_clock(||CLOCK.fetch_add(1,Relaxed));}
  let query=|txn,name:&[u8]|lo_packet(1,9,qcom_servreg::LOCAL_PORT,true,&lo_message(0,0x21,txn,&[(1,name),(0x10,&0u32.to_le_bytes())]));
  r.input(&query(3,b"avs/audio")).unwrap();assert_eq!(r.held_host.len(),1);
  r.enqueue(&query(4,b"tms/servreg"));r.enqueue(&query(5,b"kernel/elf_loader"));r.owner.notified(8,&mut r.irqs).unwrap();r.drain();
@@ -39,7 +42,9 @@ fn elf_retry_owner_unrelated_input_does_not_latch_receipt(){let mut r=retry_owne
 fn elf_retry_owner_fresh_owner_starts_empty(){let mut r=retry_owner_setup(false);retry_owner_finish(&mut r);assert_ne!(r.owner.elf_retry_trace().flags,0);let fresh=LoRig::new();assert_eq!(fresh.owner.elf_retry_trace(),qcom_modem_owner::ElfRetryTrace::default());}
 #[cfg(feature="sunfish-tx3-elf-retry")]
 #[test]
-fn elf_retry_owner_fault_after_receipt_keeps_return_unknown(){let mut r=retry_owner_setup(true);let four=r.held_host.remove(0);r.peer.push(&control(6,2,four.0));r.peer.push(&control(6,2,0xffff));assert!(r.owner.notified(8,&mut r.irqs).is_err());let t=r.owner.elf_retry_trace();assert_eq!(t.flags&2,2);assert_eq!(t.flags&4,0);assert_eq!(t.work_returned_at,None);assert_eq!(t.registry_entry_at,None);assert!(r.owner.error().is_some());}
+fn elf_retry_owner_fault_after_receipt_keeps_return_unknown(){let mut r=retry_owner_setup(true);let four=r.held_host.remove(0);r.peer.push(&control(6,2,four.0));r.peer.push(&control(6,2,0xffff));
+ #[cfg(feature="sunfish-registry-ready-handoffs")] {r.owner.notified(8,&mut r.irqs).unwrap();assert_eq!(r.owner.elf_retry_trace().flags&6,6);assert!(r.owner.notified(8,&mut r.irqs).is_err());assert!(r.owner.dispatch_ready_blocker(&mut r.irqs).is_err());}
+ #[cfg(not(feature="sunfish-registry-ready-handoffs"))] {assert!(r.owner.notified(8,&mut r.irqs).is_err());let t=r.owner.elf_retry_trace();assert_eq!(t.flags&2,2);assert_eq!(t.flags&4,0);assert_eq!(t.work_returned_at,None);assert_eq!(t.registry_entry_at,None);}assert!(r.owner.error().is_some());}
 #[cfg(feature="sunfish-tx3-elf-retry")]
 #[test]
 fn elf_retry_owner_clock_unwind_preserves_stopped_and_unknown_return(){
@@ -58,3 +63,6 @@ fn elf_retry_owner_registry_clock_unwind_preserves_stopped(){
  let mut reference=prepared();N.store(0,Relaxed);AT.store(u64::MAX,Relaxed);reference.owner.set_rmtfs_event_clock(clock);reference.owner.dispatch_service_registry_step(&mut reference.irqs).unwrap();let original=reference.owner.elf_retry_trace();let points=[original.registry_entry_at.unwrap(),original.registry_selected_at.unwrap()];assert!(points[1]>points[0]);
  for point in points{let mut r=prepared();N.store(0,Relaxed);AT.store(point,Relaxed);r.owner.set_rmtfs_event_clock(clock);let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||r.owner.dispatch_service_registry_step(&mut r.irqs)));assert!(result.is_err());let t=r.owner.elf_retry_trace();if point==points[1]{assert_eq!(t.flags&8,8);}assert_eq!(t.flags&16,0);assert!(r.owner.notified(8,&mut r.irqs).is_err());}
 }
+
+#[cfg(feature="sunfish-registry-ready-handoffs")]
+mod ready_handoff_cases {use super::*;include!("sunfish_ready_handoff_owner_cases.rs");}

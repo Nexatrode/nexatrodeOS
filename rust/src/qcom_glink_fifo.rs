@@ -2455,6 +2455,10 @@ impl<I: Io> Adapter<I> {
     { self.session.registry_handoff_pair(older, waiting) }
     #[cfg(feature = "sunfish-registry-window-trace")]
     pub fn registry_window_trace(&self) -> core::RegistryWindowTrace { self.session.registry_window_trace() }
+/* READY_HANDOFF_BEGIN */
+    #[cfg(feature="sunfish-registry-ready-handoffs")]
+    pub(crate) fn registry_unpublished_blocker(&self,h:&RequestHandle)->Option<RequestHandle>{self.session.registry_unpublished_blocker(h)}
+/* READY_HANDOFF_END */
     #[cfg(feature="sunfish-elf-first-slot-turn")]
     pub(crate) fn take_elf_slot_turn(&mut self,completed:&RequestHandle,waiting:&RequestHandle)->bool {
         self.session.take_elf_slot_turn(completed,waiting)
