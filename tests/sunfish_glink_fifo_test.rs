@@ -1530,3 +1530,7 @@ fn registry_wire_adapter_scopes_committed_headers_to_exact_predecessor_and_reset
 #[cfg(feature = "sunfish-glink-announcement-reuse")]
 #[path = "sunfish_announcement_fixture.rs"]
 mod announcement_fixture;
+
+#[cfg(feature="sunfish-registry-receipt-fifo")]
+#[path="sunfish_elf_receipt_fifo_cases.rs"]
+mod elf_receipt_fifo_cases;

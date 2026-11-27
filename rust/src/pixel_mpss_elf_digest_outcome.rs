@@ -1,4 +1,9 @@
 //! Existing exact ELF writer observations beside two identity-bound digest replies.
+/* RECEIPT_FIFO_BEGIN */
+#[cfg(feature="sunfish-registry-receipt-fifo")]
+#[path="pixel_mpss_registry_receipt_fifo.rs"]
+mod receipt_fifo;
+/* RECEIPT_FIFO_END */
 use super::*;
 /* REGISTRY_ELF_BEGIN */
 #[cfg(feature="sunfish-registry-elf-pressure")]
@@ -7,6 +12,10 @@ mod registry_elf_pressure;
 /* REGISTRY_ELF_END */
 impl RuntimeDomain {
     pub(super) fn show_elf_digest_outcome(&self,d:&Display,owner:&ModemOwner){
+/* RECEIPT_FIFO_BEGIN */
+        #[cfg(feature="sunfish-registry-receipt-fifo")]
+        { self.show_registry_receipt_fifo(d,owner); return; }
+/* RECEIPT_FIFO_END */
 /* REGISTRY_ELF_BEGIN */
         #[cfg(feature="sunfish-registry-elf-pressure")]
         {self.show_registry_elf_pressure(d,owner);return;}

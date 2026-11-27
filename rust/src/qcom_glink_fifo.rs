@@ -5,6 +5,13 @@
 //! peer TX tail, AP TX head, AP RX tail, peer RX head, four reserved words.
 //! No allocation, FIFO initialization, channel negotiation, or IRQ registration.
 #![forbid(unsafe_code)]
+/* RECEIPT_FIFO_BEGIN */
+#[cfg(feature="sunfish-registry-receipt-fifo")]
+#[path="qcom_fifo_elf_receipt.rs"]
+mod elf_receipt;
+#[cfg(feature="sunfish-registry-receipt-fifo")]
+pub use elf_receipt::ElfReplyFifo;
+/* RECEIPT_FIFO_END */
 /* EFS_REPLY_OVERLAP_BEGIN */
 #[cfg(feature="sunfish-efs-reply-overlap")]
 #[path="qcom_fifo_efs_overlap.rs"]
@@ -1513,6 +1520,10 @@ struct Ring<I> {
     registration_reply_rx: Option<ServerCheckRxWindow>,
     #[cfg(feature = "sunfish-registry-post-reply-trace")]
     registry_reply: Option<RegistryReplyWindow>,
+/* RECEIPT_FIFO_BEGIN */
+    #[cfg(feature="sunfish-registry-receipt-fifo")]
+    elf_reply: Option<elf_receipt::ElfReplyWatch>,
+/* RECEIPT_FIFO_END */
 /* EFS_REPLY_FIFO_BEGIN */
 #[cfg(feature="sunfish-efs-reply-fifo")]
     efs_reply: Option<efs_reply::EfsReplyWatch>,
@@ -1650,6 +1661,11 @@ impl<I: Io> Ring<I> {
 
     #[cfg_attr(feature="sunfish-wrq-post-return-callers",track_caller)]
     fn sample(&mut self) -> Result<(), Error> {
+/* RECEIPT_FIFO_BEGIN */
+        #[cfg(feature="sunfish-registry-receipt-fifo")]
+        let elf_reply_start = self.elf_reply.as_ref().filter(|w| !w.window.trace.finished)
+            .and(self.first_server_check_clock).map(|clock| clock());
+/* RECEIPT_FIFO_END */
 /* EFS_REPLY_FIFO_BEGIN */
 #[cfg(feature="sunfish-efs-reply-fifo")]
         let efs_sample_start=self.efs_reply.as_ref().filter(|w|!w.window.trace.finished).and(self.first_server_check_clock).map(|c|c());
@@ -1799,6 +1815,16 @@ impl<I: Io> Ring<I> {
             w.window.sample(consumed,ring_distance(old_rx_head,new[3],length),ring_distance(new[2],new[3],length),efs_sample_start,self.first_server_check_clock.map(|c|c()));
         }
 /* EFS_REPLY_FIFO_END */
+/* RECEIPT_FIFO_BEGIN */
+        #[cfg(feature="sunfish-registry-receipt-fifo")]
+        if let Some(w) = self.elf_reply.as_mut().filter(|w| !w.window.trace.finished)
+            && let Some(length) = rx
+        {
+            w.window.sample(consumed, ring_distance(old_rx_head, new[3], length),
+                ring_distance(new[2], new[3], length), elf_reply_start,
+                self.first_server_check_clock.map(|clock| clock()));
+        }
+/* RECEIPT_FIFO_END */
         #[cfg(feature = "sunfish-ipa-registration-rx-visibility")]
         if let Some(start) = registration_start && let Some(length) = rx
         {
@@ -2317,6 +2343,10 @@ impl<I: Io> Adapter<I> {
                 registration_reply_rx: None,
                 #[cfg(feature = "sunfish-registry-post-reply-trace")]
                 registry_reply: None,
+/* RECEIPT_FIFO_BEGIN */
+                #[cfg(feature="sunfish-registry-receipt-fifo")]
+                elf_reply: None,
+/* RECEIPT_FIFO_END */
 /* EFS_REPLY_FIFO_BEGIN */
 #[cfg(feature="sunfish-efs-reply-fifo")]
                 efs_reply: None,
@@ -3534,6 +3564,10 @@ impl<I: Io> Adapter<I> {
             // the window, before advancing the RX tail through that record.
             window.finish(ring_distance(self.ring.words[2], self.ring.words[3], length), size);
         }
+/* RECEIPT_FIFO_BEGIN */
+        #[cfg(feature="sunfish-registry-receipt-fifo")]
+        self.observe_elf_reply_receipt(&event, size);
+/* RECEIPT_FIFO_END */
         #[cfg(feature = "sunfish-ipa-registration-reply-headers")]
         self.ring.capture_registration_rx(size,
             self.session.ipa_registration_trace().is_some_and(|reg| reg.completed_at.is_some()), &event);
@@ -4222,6 +4256,10 @@ impl<I: Io> Adapter<I> {
 #[cfg(feature="sunfish-efs-reply-fifo")]
         if efs_waiting{self.arm_efs_reply_fifo();}
 /* EFS_REPLY_FIFO_END */
+/* RECEIPT_FIFO_BEGIN */
+        #[cfg(feature="sunfish-registry-receipt-fifo")]
+        self.arm_elf_reply_fifo(result);
+/* RECEIPT_FIFO_END */
         #[cfg(feature = "sunfish-registry-post-reply-trace")]
         if self.ring.registry_reply.is_none()
             && self.session.registry_window_trace().predecessor.is_some_and(|p| p.publication_frozen)
@@ -4633,6 +4671,10 @@ impl<I: Io> Adapter<I> {
         { self.ring.registration_reply_rx = None; }
         #[cfg(feature = "sunfish-registry-post-reply-trace")]
         { self.ring.registry_reply = None; }
+/* RECEIPT_FIFO_BEGIN */
+        #[cfg(feature="sunfish-registry-receipt-fifo")]
+        { self.ring.elf_reply = None; }
+/* RECEIPT_FIFO_END */
 /* EFS_REPLY_FIFO_BEGIN */
 #[cfg(feature="sunfish-efs-reply-fifo")]
         {self.ring.efs_reply=None;}

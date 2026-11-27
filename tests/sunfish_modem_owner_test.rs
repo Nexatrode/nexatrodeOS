@@ -1930,7 +1930,10 @@ fn owner_announces_servreg_and_returns_bounded_domain_map_through_fifo() {
             {
                 // Optional observation clock calls advance this synthetic counter;
                 // neither clock values nor this trace participate in protocol policy.
-                let clocks = if cfg!(feature="sunfish-elf-writer-trace") {
+                let clocks = if cfg!(feature="sunfish-registry-receipt-fifo") {
+                    // One arm sample and active ELF FIFO interval observations.
+                    (Some(110), Some(160), Some(210), Some(390))
+                } else if cfg!(feature="sunfish-elf-writer-trace") {
                     // Exact writer start/end add two optional clock observations.
                     (Some(110), Some(160), Some(200), Some(240))
                 } else if cfg!(feature="sunfish-elf-window-trace") {

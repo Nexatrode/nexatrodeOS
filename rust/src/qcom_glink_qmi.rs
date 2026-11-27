@@ -3354,6 +3354,15 @@ impl Session {
         self.elf_exchange
     }
 
+/* RECEIPT_FIFO_BEGIN */
+    #[cfg(feature="sunfish-registry-receipt-fifo")]
+    pub(crate) fn elf_reply_fifo_target(&self) -> Option<(RequestHandle, Option<u64>)> {
+        let exchange = self.elf_exchange.as_ref().filter(|e| !e.completed)?;
+        let window = self.elf_window.as_ref()?;
+        if !window.writer.finished || !self.elf_window_request_matches(exchange.request) { return None; }
+        Some((exchange.request, window.writer.last))
+    }
+/* RECEIPT_FIFO_END */
     /// Inspect the already-queued reply for the owner's exact first ELF request.
     #[cfg(feature = "sunfish-wlan-elf-exchange-trace")]
     pub(crate) fn observe_elf_reply(&mut self, handle: &RequestHandle) {

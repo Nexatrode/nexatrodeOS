@@ -2,6 +2,8 @@ from pathlib import Path
 import re,subprocess,unittest
 ROOT=Path(__file__).resolve().parents[1];BASE='fb930674'
 def without_pressure(path,s):
+ from sunfish_registry_receipt_fifo_source_test import without_receipt,without_maps_delta
+ s=without_maps_delta(path,without_receipt(path,s))
  s=re.sub(r'/\* REGISTRY_ELF_BEGIN \*/\n.*?/\* REGISTRY_ELF_END \*/\n','',s,flags=re.S)
  if path=='rust/Cargo.toml':s=s.replace('sunfish-registry-elf-pressure = ["sunfish-elf-credit-pair-turn"]\n','')
  return s

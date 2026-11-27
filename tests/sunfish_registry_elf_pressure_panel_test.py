@@ -4,8 +4,7 @@ import json,os,subprocess,tempfile,unittest
 from sunfish_elf_digest_panel_test import fixture_code
 from sunfish_tx3_elf_retry_panel_test import function
 ROOT=Path(__file__).resolve().parents[1]
-class Panel(unittest.TestCase):
- def test_actual_unified_panel(self):
+def pressure_fixture_code():
   code=fixture_code();code=code[:code.index(' let values=|n|')]
   code=code.replace('waits_by_reason:[u32;6]}','waits_by_reason:[u32;6],dispatch:Dispatch}').replace('waits_by_reason:[0,1,2,3,4,5]}','waits_by_reason:[0,1,2,3,4,5],..Timed::default()}')
   code=code.replace('struct Trace{elf:','struct Trace{queued_names:u32,completed_names:u32,elf:')
@@ -23,6 +22,11 @@ class Panel(unittest.TestCase):
 struct Capacity{flags:u32,result:u8}struct Pair{flags:u32,admitted:u32,offers:u32}
 #[path=PANEL]mod panel;
 ''')
+  return code
+
+class Panel(unittest.TestCase):
+ def test_actual_unified_panel(self):
+  code=pressure_fixture_code()
   code+=r'''
  o.trace.queued_names=0x75;o.trace.completed_names=0x75;
  {let p=o.window.predecessor.as_mut().unwrap().publication.as_mut().unwrap();p.calls=128;p.mask=0xe0ac;p.turn_gates=[0,9,105,13,0,0,0,1];p.grant_gates=[19,36,37,36,0,0,0,0,0,0,0,0];p.ack=PubAck{sent:37,blocked:0,done_ahead:32,ads_ahead:36};}

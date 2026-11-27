@@ -2214,6 +2214,10 @@ impl<I: Io> Owner<I> {
     pub fn registry_reply_fifo(&self) -> Option<crate::qcom_glink_fifo::RegistryReplyFifo> {
         self.adapter.registry_reply_fifo()
     }
+/* RECEIPT_FIFO_BEGIN */
+    #[cfg(feature="sunfish-registry-receipt-fifo")]
+    pub fn elf_reply_fifo(&self) -> Option<fifo::ElfReplyFifo> { self.adapter.elf_reply_fifo() }
+/* RECEIPT_FIFO_END */
     #[cfg(feature = "sunfish-registry-prearm-io-trace")]
     pub fn registry_prearm_io(&self) -> Option<fifo::RegistryPrearmIo> { self.adapter.registry_prearm_io() }
     pub fn service_registry_trace(&self) -> ServiceRegistryTrace {
