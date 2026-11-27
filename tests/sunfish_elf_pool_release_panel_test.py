@@ -7,6 +7,8 @@ BASE='6f1d64bc'
 
 def without_pool(path,source):
  import re
+ from sunfish_startup_pressure_source_test import without_startup
+ source=without_startup(path,source)
  if path=='rust/src/pixel_mpss_tx3_elf_retry.rs':
   pat=r'/\* ELF_POOL_PANEL_BEGIN \*/\n.*?/\* ELF_POOL_PANEL_END \*/\n'
   blocks=re.findall(pat,source,re.S);assert len(blocks)==2

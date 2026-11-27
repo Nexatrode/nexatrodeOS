@@ -23,5 +23,9 @@ impl RuntimeDomain {
         row(27,"TX3 SNAP CALLS MASK TX4 SNAP CALLS MASK",&[p.map_or(0,|p|if p.publication_frozen{2}else{1}),a.map_or(u32::MAX,|p|p.calls),a.map_or(u32::MAX,|p|p.mask),w.target.map_or(0,|p|if p.publication_frozen{2}else{1}),b.map_or(u32::MAX,|p|p.calls),b.map_or(u32::MAX,|p|p.mask)]);
         let q=self.wlan_query.snapshot(owner);let pair=owner.efs_overlap_trace();
         row(28,"IPA PD WLAN WLFW ACK PAIR",&[u32::from(self.ipa_complete_seen),q[1],owner.tftp_wire_counts()[2],q[7],age(owner.original_tftp_write_trace().and_then(|w|w.ack.done_at)),(pair.flags&255)|((pair.admitted&255)<<8)|((pair.offers&65535)<<16)]);
+/* STARTUP_PRESSURE_PANEL_BEGIN */
+#[cfg(feature="sunfish-startup-pressure")]
+        d.replace_line(1,"STARTUP POOL PRESSURE");
+/* STARTUP_PRESSURE_PANEL_END */
     }
 }

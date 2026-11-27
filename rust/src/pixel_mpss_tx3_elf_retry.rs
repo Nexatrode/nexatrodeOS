@@ -7,8 +7,15 @@ mod elf_pool_release;
 /* ELF_POOL_PANEL_END */
 impl RuntimeDomain {
     pub(super) fn show_tx3_elf_retry(&self,d:&Display,owner:&ModemOwner){
+/* STARTUP_PRESSURE_PANEL_BEGIN */
+#[cfg(feature="sunfish-startup-pressure")]
+        if owner.elf_tx_slots().is_some(){self.show_elf_pool_release(d,owner);return;}
+/* STARTUP_PRESSURE_PANEL_END */
 /* ELF_POOL_PANEL_BEGIN */
 #[cfg(feature="sunfish-elf-pool-release")]
+/* STARTUP_PRESSURE_PANEL_BEGIN */
+#[cfg(not(feature="sunfish-startup-pressure"))]
+/* STARTUP_PRESSURE_PANEL_END */
         {self.show_elf_pool_release(d,owner);return;}
 /* ELF_POOL_PANEL_END */
         for n in 2..=28{d.replace_line(n,"");}d.replace_line(1,"TX3 AND ELF RETRY");
@@ -40,5 +47,9 @@ impl RuntimeDomain {
         let pair=w.target;let p=pair.and_then(|p|p.publication);row(26,"TX4 SNAP CALLS MASK TXN BYTES",&[pair.map_or(0,|p|if p.publication_frozen{2}else{1}),p.map_or(u32::MAX,|p|p.calls),p.map_or(u32::MAX,|p|p.mask),p.map_or(u32::MAX,|p|u32::from(p.transaction)),p.map_or(u32::MAX,|p|u32::from(p.bytes))]);
         let reads=owner.read_sequence();row(27,"ORIG ACK READ MASK LOC Q DONE",&[age(owner.original_tftp_write_trace().and_then(|w|w.ack.done_at)),diagnostic::packed_counts(reads.total,reads.kinds),s.queued_names,s.completed_names]);
         let q=self.wlan_query.snapshot(owner);let pair=owner.efs_overlap_trace();row(28,"IPA PD WLAN WLFW PAIR",&[u32::from(self.ipa_complete_seen),q[1],owner.tftp_wire_counts()[2],q[7],(pair.flags&255)|((pair.admitted&255)<<8)|((pair.offers&65535)<<16)]);
+/* STARTUP_PRESSURE_PANEL_BEGIN */
+#[cfg(feature="sunfish-startup-pressure")]
+        d.replace_line(1,"STARTUP REPLY PRESSURE");
+/* STARTUP_PRESSURE_PANEL_END */
     }
 }
