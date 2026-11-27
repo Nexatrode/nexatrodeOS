@@ -91,6 +91,14 @@ support and Mac mini hardware drivers remain later work. The common app/service
 code remains shared; layouts, hardware transports and platform build descriptions
 are adapters.
 
+A separate, diskless [CoMaps-data experiment](../experiments/comaps-native/README.md)
+reads a pinned Gibraltar `.mwm` in a native ARM64 protection domain and renders
+roads, areas and labels with pan/zoom at 2× in disposable UTM. It is a bounded
+reader and CPU viewer, not the full CoMaps/Drape application, and is not part of
+the three-app desktop or shared lock group. It has no storage, networking or GPS
+services. Its private-input shell integration and storage-backed map management
+remain later milestones.
+
 ## November 25–26, 2026 verification
 
 The diagnostic image passed all nine live three-app checks at 2624×1644, 2×.

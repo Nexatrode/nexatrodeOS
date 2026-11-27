@@ -1,0 +1,27 @@
+NexatrodeOS offline CoMaps-data experiment, November 2026.
+
+mwm.c and mwm.h adapt the data format and decoding algorithms in CoMaps:
+  libs/indexer/feature.cpp, data_header.cpp, dat_section_header.hpp,
+  libs/coding/geometry_coding.cpp, geometry_coding.hpp, point_coding.cpp,
+  libs/coding/files_container.cpp, and libs/base/bits.hpp.
+Pinned revision: 019e445829e959dd3d5a2e6fd1b3166c100025a0
+Source: https://github.com/comaps/comaps
+Modified: bounded C reader, fixed capacities, explicit input validation, no
+filesystem, threads, Drape, routing or search. This is not the full CoMaps app.
+Copyright 2020 My.com B.V. (Mail.Ru Group)
+Copyright 2025 Organic Maps Contributors
+Copyright 2026 CoMaps Contributors
+Copyright 2026 NexatrodeOS contributors
+Licensed under Apache-2.0; see licenses/CoMaps-LICENSE and CoMaps-NOTICE.
+
+Generated type styles derive from CoMaps data/mapcss-mapping.csv at that revision.
+The downloaded Gibraltar map remains an ignored build input, not repository data.
+Map data: © OpenStreetMap contributors, Open Database License (ODbL).
+https://www.openstreetmap.org/copyright
+https://opendatacommons.org/licenses/odbl/1-0/
+Map distributor: CoMaps Project, https://www.comaps.app/
+
+Font: Roboto, SIL Open Font License; see generated licenses/Roboto-OFL.txt.
+Text rasterization: stb_truetype (MIT or public domain); its license is copied
+with the build. Existing NetSurf/Microkit driver code is reused under its own
+checked-in notices; no NetSurf GPL renderer is linked into this experiment.

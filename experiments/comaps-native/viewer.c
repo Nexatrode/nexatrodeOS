@@ -1,0 +1,215 @@
+/* SPDX-License-Identifier: Apache-2.0
+ * Diskless CoMaps-data bring-up viewer. All pixels and input run in the guest.
+ * No CoMaps Drape renderer, routing, search, location or host map service.
+ */
+#include <microkit.h>
+#include <stdatomic.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>
+#include <math.h>
+#include "mwm.h"
+#include "styles.h"
+#include "../../tests/input/input_handoff.h"
+#include "../../tests/input/slint_frame.h"
+#define STB_TRUETYPE_IMPLEMENTATION
+#include "stb_truetype.h"
+#define W 1280
+#define H 800
+#define TOP 92
+#define BOTTOM 756
+#define SCALE 2
+uintptr_t map_frame, map_heap, input_handoff, ui_focus, ui_pointer;
+extern const unsigned char map_blob[], map_blob_end[], map_font[];
+static struct offline_map map;
+static unsigned char *pixels;
+static stbtt_fontinfo font;
+static uint32_t input_tail,dropped,frames;
+static int mx,my,lastx,lasty;
+static bool held,changed;
+static double cx,cy,units,initial_units;
+static unsigned zoom_level;
+static size_t heap_used;
+struct glyph { int code,size,w,h,x,y;unsigned char *alpha; };
+static struct glyph glyphs[256];static unsigned next_glyph;
+void *sbrk(ptrdiff_t amount) {
+    if(amount<0||(size_t)amount>16*1024*1024-heap_used){errno=ENOMEM;return (void*)-1;}
+    void *p=(void*)(map_heap+heap_used);heap_used+=amount;return p;
+}
+static int serial_put(char c,FILE *f){(void)f;microkit_dbg_putc(c);return 0;}
+static int serial_get(FILE *f){(void)f;return _FDEV_EOF;}
+static FILE console=FDEV_SETUP_STREAM(serial_put,serial_get,NULL,_FDEV_SETUP_RW);
+FILE *const stdin=&console,*const stdout=&console,*const stderr=&console;
+void _exit(int code){printf("COMAPS|FAIL|exit=%d\n",code);__builtin_trap();}
+static uint64_t us(void){uint64_t t,f;__asm__ volatile("mrs %0,cntpct_el0":"=r"(t));__asm__ volatile("mrs %0,cntfrq_el0":"=r"(f));return t/f*1000000+(t%f)*1000000/f;}
+static void pixel(int x,int y,uint32_t colour,unsigned alpha) {
+    if(x<0||y<0||x>=W*SCALE||y>=H*SCALE)return;
+    unsigned char *p=pixels+((size_t)y*W*SCALE+x)*3;
+    for(unsigned i=0;i<3;i++)p[i]=(p[i]*(255-alpha)+((colour>>(16-8*i))&255)*alpha+127)/255;
+}
+static void fill(int x,int y,int width,int height,uint32_t colour) {
+    int right=(x+width)*SCALE,bottom=(y+height)*SCALE;x*=SCALE;y*=SCALE;
+    if(x<0)x=0;if(y<0)y=0;if(right>W*SCALE)right=W*SCALE;if(bottom>H*SCALE)bottom=H*SCALE;
+    for(int yy=y;yy<bottom;yy++)for(int xx=x;xx<right;xx++)pixel(xx,yy,colour,255);
+}
+static int text(int x,int y,int size,uint32_t colour,const char *s) {
+    float pen=x*SCALE,scale=stbtt_ScaleForPixelHeight(&font,size*SCALE);
+    while(*s) {
+        unsigned cp=(unsigned char)*s++;
+        if(cp>=128) {
+            unsigned n=cp<224?1:cp<240?2:3;cp&=(1u<<(6-n))-1;
+            while(n--&&*s)cp=(cp<<6)|((unsigned char)*s++&63);
+        }
+        struct glyph *g=NULL;
+        for(unsigned i=0;i<256;i++)if(glyphs[i].code==(int)cp&&glyphs[i].size==size){g=&glyphs[i];break;}
+        if(!g){g=&glyphs[next_glyph++%256];free(g->alpha);g->code=cp;g->size=size;
+            g->alpha=stbtt_GetCodepointBitmap(&font,scale,scale,cp,&g->w,&g->h,&g->x,&g->y);}
+        if(g->alpha)for(int yy=0;yy<g->h;yy++)for(int xx=0;xx<g->w;xx++)pixel((int)pen+g->x+xx,y*SCALE+g->y+yy,colour,g->alpha[yy*g->w+xx]);
+        int advance,bearing;stbtt_GetCodepointHMetrics(&font,cp,&advance,&bearing);pen+=advance*scale;
+    }
+    return (int)(pen/SCALE)-x;
+}
+static double sx(double x){return W/2+(x-cx)/units;}
+static double sy(double y){return (TOP+BOTTOM)/2-(y-cy)/units;}
+static bool visible(struct map_feature *f){return sx(f->maxx)>=0&&sx(f->minx)<W&&sy(f->miny)>=TOP&&sy(f->maxy)<BOTTOM;}
+static unsigned style(struct map_feature *f) {
+    unsigned result=0;
+    for(unsigned i=0;i<f->type_count;i++) {
+        unsigned t=f->types[i];unsigned s=t<sizeof(map_styles)?map_styles[t]:0;
+        if(!result||s==1||s==3||s==5)result=s;
+    }
+    return result;
+}
+/* Clip in double precision before converting large world coordinates to int. */
+static void line(double x1,double y1,double x2,double y2,unsigned width,uint32_t colour) {
+    double dx=x2-x1,dy=y2-y1,t0=0,t1=1,p[4]={-dx,dx,-dy,dy},q[4]={x1,W-x1,y1-TOP,BOTTOM-1-y1};
+    for(unsigned i=0;i<4;i++) {
+        if(p[i]==0){if(q[i]<0)return;continue;}
+        double t=q[i]/p[i];if(p[i]<0){if(t>t1)return;if(t>t0)t0=t;}else{if(t<t0)return;if(t<t1)t1=t;}
+    }
+    double ax=(x1+t0*dx)*SCALE,ay=(y1+t0*dy)*SCALE;
+    dx=(t1-t0)*dx*SCALE;dy=(t1-t0)*dy*SCALE;
+    int steps=(int)fmax(fabs(dx),fabs(dy))+1;
+    for(int i=0;i<=steps;i++) {
+        int x=(int)(ax+dx*i/steps),y=(int)(ay+dy*i/steps);
+        for(int yy=y-(int)width;yy<=y+(int)width;yy++)for(int xx=x-(int)width;xx<=x+(int)width;xx++)
+            if(yy>=TOP*SCALE&&yy<BOTTOM*SCALE)pixel(xx,yy,colour,255);
+    }
+}
+static void triangle(struct map_point a,struct map_point b,struct map_point c,uint32_t colour) {
+    double x[3]={sx(a.x),sx(b.x),sx(c.x)},y[3]={sy(a.y),sy(b.y),sy(c.y)};
+    double min=fmin(y[0],fmin(y[1],y[2])),max=fmax(y[0],fmax(y[1],y[2]));
+    int begin=(int)fmax(TOP,ceil(min)),end=(int)fmin(BOTTOM-1,floor(max));
+    for(int row=begin;row<=end;row++) {
+        double left=W,right=0;unsigned hits=0;
+        for(unsigned i=0;i<3;i++){unsigned j=(i+1)%3;
+            if((y[i]<=row&&y[j]>row)||(y[j]<=row&&y[i]>row)){
+                double at=x[i]+(x[j]-x[i])*(row-y[i])/(y[j]-y[i]);left=fmin(left,at);right=fmax(right,at);hits++;
+            }}
+        if(hits>=2){int l=(int)fmax(0,ceil(left)),r=(int)fmin(W-1,floor(right));if(r>=l)fill(l,row,r-l+1,1,colour);}
+    }
+}
+static void reset(void) {
+    cx=-5.346-map.origin_x;
+    cy=38.797-map.origin_y;
+    initial_units=.066/(BOTTOM-TOP);units=initial_units;zoom_level=0;changed=true;
+}
+static void zoom(int direction) {
+    if(direction>0&&zoom_level<6){units/=1.5;zoom_level++;}
+    if(direction<0&&zoom_level>0){units*=1.5;zoom_level--;}
+    changed=true;
+}
+static void draw(void) {
+    if(!changed)return;changed=false;uint64_t started=us();
+    slint_frame_header_t *h=(void*)map_frame;
+    unsigned before=atomic_load_explicit(&h->revision,memory_order_relaxed);
+    atomic_store_explicit(&h->revision,before+1,memory_order_release);atomic_thread_fence(memory_order_seq_cst);
+    fill(0,TOP,W,BOTTOM-TOP,0xe9e5d8);
+    unsigned drawn=0;
+    for(unsigned pass=0;pass<3;pass++)for(unsigned i=0;i<map.feature_count;i++) {
+        struct map_feature *f=&map.features[i];if(!visible(f))continue;
+        unsigned s=style(f);struct map_point *p=map.points+f->first;
+        if(f->geometry==2 && pass==0) {
+            if(s!=1&&s!=2&&s!=9&&s!=7)continue;
+            uint32_t colour=(s==1||s==7)?0x9bcbd6:s==2?0xb6d3ab:0xd4d1b8;
+            for(unsigned n=0;n+2<f->count;n+=3)triangle(p[n],p[n+1],p[n+2],colour);drawn++;
+        } else if(f->geometry==2&&pass==1&&s==3) {
+            for(unsigned n=0;n+2<f->count;n+=3)triangle(p[n],p[n+1],p[n+2],0xb9b3ab);drawn++;
+        } else if(f->geometry==1&&pass==2&&s>=4&&s<=7) {
+            unsigned width=s==5?3:s==4?1:1;uint32_t colour=s==5?0xd19d62:s==4?0xffffff:s==6?0x657174:0x47889c;
+            for(unsigned n=1;n<f->count;n++)line(sx(p[n-1].x),sy(p[n-1].y),sx(p[n].x),sy(p[n].y),width,colour);drawn++;
+        }
+    }
+    /* Bounded label occupancy grid; repeated road segments don't repeat names. */
+    bool used[8][12]={0};unsigned labels=0;
+    for(unsigned i=0;i<map.feature_count&&labels<55;i++) {
+        struct map_feature *f=&map.features[i];unsigned s=style(f);
+        if(!f->name[0]||!visible(f)||(!((f->geometry==0&&s==8)||(f->geometry==1&&(s==4||s==5)&&zoom_level>=1))))continue;
+        struct map_point p=map.points[f->first+f->count/2];int x=sx(p.x),y=sy(p.y);
+        if(x<25||x>W-190||y<TOP+25||y>BOTTOM-20)continue;
+        unsigned gx=x*12/W,gy=(y-TOP)*8/(BOTTOM-TOP);if(used[gy][gx])continue;used[gy][gx]=true;
+        int size=s==8?21:15;text(x+1,y+1,size,0xffffff,f->name);text(x,y,size,0x334752,f->name);labels++;
+    }
+    fill(0,0,W,TOP,0x0b202d);text(28,35,29,0xe9f7fb,"CoMaps data · Gibraltar");
+    text(29,67,18,0x91b5c5,"Offline native experiment");
+    const char *buttons[]={"−","+","Fit"};
+    for(unsigned i=0;i<3;i++){int x=1000+i*85;fill(x,19,70,48,0x183c4a);text(x+21,51,27,0x92e3e0,buttons[i]);}
+    fill(0,BOTTOM,W,H-BOTTOM,0x0b202d);
+    text(22,785,18,0x9cbfc9,"© OpenStreetMap contributors · ODbL · CoMaps Project / Apache-2.0");
+    char status[150];snprintf(status,sizeof(status),"Zoom %u · %u features · drag to pan",zoom_level,drawn);text(895,784,16,0x91d9d7,status);
+    h->width=W*SCALE;h->height=H*SCALE;h->stride_bytes=W*SCALE*3;h->format=SLINT_FRAME_FORMAT_RGB8;
+    atomic_store_explicit(&h->damage_y,0,memory_order_relaxed);atomic_store_explicit(&h->damage_height,H*SCALE,memory_order_relaxed);
+    atomic_store_explicit(&h->revision,before+2,memory_order_release);microkit_notify(0);
+    printf("COMAPS|FRAME|n=%u|zoom=%u|cx=%.9f|cy=%.9f|units=%.12f|features=%u|labels=%u|us=%llu\n",++frames,zoom_level,cx,cy,units,drawn,labels,(unsigned long long)(us()-started));
+}
+static void publish_pointer(void) {
+    _Atomic uint32_t *p=(void*)ui_pointer;
+    uint32_t revision=atomic_load_explicit(p,memory_order_relaxed);
+    atomic_store_explicit(p,revision+1,memory_order_release);
+    atomic_thread_fence(memory_order_seq_cst);
+    atomic_store_explicit(p+1,mx*SCALE,memory_order_relaxed);
+    atomic_store_explicit(p+2,my*SCALE,memory_order_relaxed);
+    atomic_store_explicit(p+3,1,memory_order_relaxed);
+    atomic_store_explicit(p,revision+2,memory_order_release);
+    microkit_notify(0);
+}
+static void constrain(void) {
+    cx=fmax(map.minx-map.origin_x,fmin(map.maxx-map.origin_x,cx));
+    cy=fmax(map.miny-map.origin_y,fmin(map.maxy-map.origin_y,cy));
+}
+static void input(void) {
+    struct input_event_ring *q=(void*)input_handoff;
+    uint32_t head=__atomic_load_n(&q->head,__ATOMIC_ACQUIRE),lost=__atomic_load_n(&q->dropped,__ATOMIC_ACQUIRE);
+    if(head-input_tail>INPUT_EVENT_CAPACITY||lost!=dropped){input_tail=head;dropped=lost;held=false;}
+    while(input_tail!=head) {
+        struct input_event_record e=q->events[input_tail++&INPUT_EVENT_MASK];if(e.reserved)continue;
+        if(e.device==INPUT_DEVICE_TABLET) {
+            if(e.type==3&&e.code<=1&&e.value<=32767){if(e.code==0)mx=e.value*(W-1)/32767;else my=e.value*(H-1)/32767;}
+            if((e.type==0||e.type==3)&&held){cx-=(mx-lastx)*units;cy+=(my-lasty)*units;lastx=mx;lasty=my;constrain();changed=true;}
+            if(e.type==1&&e.code==272&&e.value<=1) {
+                if(e.value){
+                    if(my>=TOP&&my<BOTTOM){held=true;lastx=mx;lasty=my;}
+                    else if(my>=19&&my<=67){if(mx>=1170)reset();else if(mx>=1085)zoom(1);else if(mx>=1000)zoom(-1);}
+                } else held=false;
+            }
+            if(e.type==2&&e.code==8)zoom((int32_t)e.value>0?1:-1);
+        } else if(e.device==INPUT_DEVICE_KEYBOARD&&e.type==1&&e.value==1) {
+            if(e.code==13||e.code==78)zoom(1);else if(e.code==12||e.code==74)zoom(-1);
+            else if(e.code==35||e.code==102)reset();
+            else if(e.code==105){cx-=80*units;changed=true;}else if(e.code==106){cx+=80*units;changed=true;}
+            else if(e.code==103){cy+=80*units;changed=true;}else if(e.code==108){cy-=80*units;changed=true;}
+            constrain();
+        }
+    }
+    __atomic_store_n(&q->tail,input_tail,__ATOMIC_RELEASE);publish_pointer();draw();
+}
+void init(void) {
+    uint64_t started=us();
+    if(!map_load(&map,map_blob,(size_t)(map_blob_end-map_blob))){printf("COMAPS|FAIL|map=%s|record=%u\n",map.error,map.records);__builtin_trap();}
+    printf("COMAPS|MAP|region=Gibraltar|records=%u|points=%u|inner=%u|outer=%u|load_us=%llu\n",map.records,map.point_count,map.inner,map.outer,(unsigned long long)(us()-started));
+    pixels=(unsigned char*)map_frame+sizeof(slint_frame_header_t);
+    if(!stbtt_InitFont(&font,map_font,stbtt_GetFontOffsetForIndex(map_font,0)))__builtin_trap();
+    *(uint32_t*)ui_focus=1;mx=W/2;my=H/2;publish_pointer();reset();draw();printf("COMAPS|READY|offline|no storage|no network\n");
+}
+void notified(microkit_channel channel){if(channel==1)input();}

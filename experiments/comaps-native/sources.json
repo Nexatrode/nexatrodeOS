@@ -1,0 +1,11 @@
+{
+  "project": "CoMaps",
+  "repository": "https://github.com/comaps/comaps.git",
+  "revision": "019e445829e959dd3d5a2e6fd1b3166c100025a0",
+  "region": "Gibraltar",
+  "map_series": "2026.10.27",
+  "map_version": 261105,
+  "map_url": "https://mapgen-fi-1.comaps.app/maps/2026.10.27/261105/Gibraltar.mwm",
+  "map_bytes": 1272536,
+  "map_sha256": "9b97bbdea3692d8a4e9d5049a7c625c437fc026baabd31b89d757bde1b50c640"
+}
