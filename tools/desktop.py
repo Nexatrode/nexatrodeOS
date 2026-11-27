@@ -49,7 +49,7 @@ def built(guest):
         if digest(ROOT / path) != expected:
             raise ValueError('source changed since build: '+path)
     from runtime_manifest import inventory
-    actual = inventory(guest / 'desktop-apps.system')
+    actual = inventory(guest / 'desktop-apps.system', maps=manifest.get('maps',False))
     if actual != json.loads((guest / 'runtime.json').read_text()):
         raise ValueError('runtime inventory differs from the assembled system')
     return guest, manifest, actual
@@ -146,6 +146,7 @@ def main():
     b = sub.add_parser('build', help='build the canonical 2x three-app GPU/resize profile')
     for name in ('inputs', 'storage', 'shell-base', 'composer', 'output'):
         b.add_argument('--'+name, type=Path, required=True)
+    b.add_argument('--maps',action='store_true',help='opt-in fourth offline Maps window; separate unlocked disposable profile')
     b.add_argument('--resume', action='store_true', help='rebuild a marked disposable staging directory; no VM/disk changes')
     b.add_argument('--diagnostic', action='store_true', help='GPU readback/pixel checks; slower than the normal image')
     b.add_argument('--locked',action='store_true',help='fresh disposable passphrase-wrapped session; requires the managed desktop composer')
@@ -169,6 +170,9 @@ def main():
         command = [sys.executable, ROOT/'tests/desktop_apps_utm.py', *profile['build_flags']]
         for name in ('inputs', 'storage', 'shell_base', 'composer', 'output'):
             command += ['--'+name.replace('_', '-'), getattr(a, name)]
+        if a.maps:
+            if a.locked:raise ValueError('Maps is not in the curated three-app lock group')
+            command.append('--maps')
         if a.resume:
             command.append('--resume')
         if a.diagnostic:
@@ -180,6 +184,7 @@ def main():
     elif a.action == 'inspect':
         _, manifest, runtime = built(a.guest)
         profile=json.loads(PROFILE.read_text());profile['full_session_lock']=bool(manifest.get('wrapped_session'))
+        if manifest.get('maps'):profile['apps']=[*profile['apps'],'maps']
         if profile['full_session_lock']:profile['storage']='disposable-passphrase-wrapped-key'
         print(json.dumps(dict(profile=profile,
             loader_sha256=manifest['loader_sha256'], runtime=runtime), indent=2))
@@ -193,7 +198,22 @@ def main():
             raise ValueError('use a short alphanumeric/hyphen test label')
         state.update(test_passed=False,validation_scope='desktop checks in progress')
         (guest / 'session.json').write_text(json.dumps(state, indent=2)+'\n')
-        if a.live or a.lock_cycle:
+        if manifest.get('maps'):
+            if a.live or a.lock_cycle:raise ValueError('the Maps fixture uses its own four-app checks; live relay/lock-cycle checks remain three-app only')
+            from desktop_gpu_motion import MotionQmp,host_locked
+            if host_locked():raise ValueError('unlock the Mac for four-app input checks')
+            from desktop_maps_input import exercise
+            q=MotionQmp(data/'monitor')
+            try:
+                q.input=os.open(str(q.path)+'.in',os.O_WRONLY|os.O_NONBLOCK)
+                try:q.send('query-status')
+                except RuntimeError as error:
+                    if 'Expecting capabilities negotiation' not in str(error):raise
+                    q.send('qmp_capabilities')
+                exercise(q,data,guest/('maps-'+a.label),gpu=manifest['gpu_verify'],functional=manifest['gpu_verify'],load=True)
+            finally:q.close()
+            scope='disposable four-app Maps input/GPU-pixel checks and bounded map profiling' if manifest['gpu_verify'] else 'disposable four-app normal GPU map profiling; no readback or lock guarantee'
+        elif a.live or a.lock_cycle:
             if not manifest['gpu_verify']:
                 raise ValueError('live app pixel checks require a --diagnostic build')
             if a.lock_cycle and not manifest.get('wrapped_session'):

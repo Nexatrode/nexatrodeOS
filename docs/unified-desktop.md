@@ -91,13 +91,17 @@ support and Mac mini hardware drivers remain later work. The common app/service
 code remains shared; layouts, hardware transports and platform build descriptions
 are adapters.
 
-A separate, diskless [CoMaps-data experiment](../experiments/comaps-native/README.md)
-reads a pinned Gibraltar `.mwm` in a native ARM64 protection domain and renders
-roads, areas and labels with pan/zoom at 2× in disposable UTM. It is a bounded
-reader and CPU viewer, not the full CoMaps/Drape application, and is not part of
-the three-app desktop or shared lock group. It has no storage, networking or GPS
-services. Its private-input shell integration and storage-backed map management
-remain later milestones.
+The [CoMaps-data experiment](../experiments/comaps-native/README.md) reads a pinned
+Gibraltar `.mwm` in a native ARM64 protection domain and renders roads, areas and
+labels with pan/zoom at 2×. In addition to its diskless standalone fixture,
+`./dev desktop build --maps` now adds an optional fourth dock/window to the GPU
+desktop. Maps receives a private input queue through the trusted manager; it has
+no network endpoint, vault access, other app's memory, or raw global input.
+The renderer remains a bounded CPU viewer, not the full CoMaps/Drape application.
+The four-app profile deliberately rejects the three-app wrapped-session option:
+Maps has not been added to that lock/cleanup group. The regular three-app profile
+and saved-data VMs are unchanged. Storage-backed map management, search, routing
+and GPS remain later milestones.
 
 ## November 25–26, 2026 verification
 

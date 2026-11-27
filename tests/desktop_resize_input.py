@@ -20,6 +20,8 @@ def main():
     manifest=json.loads((deployed if deployed.is_file() else guest/'build.json').read_text())
     if session.get('loader_sha256'):assert manifest['loader_sha256']==session['loader_sha256'],'manifest does not describe the running image'
     assert manifest['desktop_resize'] and manifest['gpu_verify'] and not manifest['saved_data_used'] and not session['saved_data_used']
+    app_count=4 if manifest.get('maps') else 3
+    dock_width=24+84*app_count
     monitor=QmpPipe(data/'monitor')
     monitor.input=os.open(str(data/'monitor.in'),os.O_WRONLY|os.O_NONBLOCK)
     try:monitor.send('query-status') # Usually negotiated by the runner.
@@ -59,7 +61,7 @@ def main():
         mode,request,ack,stats=until(ready);lw,lh=mode[2]//2,mode[3]//2
         if a.exercise or a.type_search:
             monitor.send('input-send-event',{'events':[{'type':'btn','data':{'button':'left','down':False}}]})
-        def state():return stable(0x5fbb4000,16)
+        def state():return stable(0x5fbb4000,4+4*app_count)
         def completed():
             s=stable(0x5fba0000,13);return s[1] if s else 0
         def pointer(x,y,down=None):
@@ -68,8 +70,8 @@ def main():
             monitor.send('input-send-event',{'events':events})
         def click(x,y):pointer(x,y,True);pointer(x,y,False)
         if a.exercise:
-            for owner in (1,2,3,1):
-                click((lw-276)//2+54+84*(owner-1),lh-65)
+            for owner in (*range(1,app_count+1),1):
+                click((lw-dock_width)//2+54+84*(owner-1),lh-65)
                 s=until(lambda:(s:=state()) and s[2]==owner and s)
                 until(lambda:completed()>=s[0])
             s=until(state);x,y=s[4:6];dx=-16 if x>40 else 16
@@ -85,7 +87,7 @@ def main():
                 monitor.send('input-send-event',{'events':[key(letter,True),key(letter,False)]});time.sleep(.04)
             time.sleep(.5)
         s=until(state)
-        for i in range(3):
+        for i in range(app_count):
             x,y,opened,visible=s[4+4*i:8+4*i]
             if visible:assert 12<=x<=lw-572 and 92<=y<=lh-mode[5]-128,(i,s,mode)
         frame=data/('resize-'+a.label+'.ppm');capture(monitor,frame,True)

@@ -58,6 +58,7 @@ static void resize_display(bool initial) {
 }
 #endif
 #ifdef DESKTOP_TRIO_LOCK
+_Static_assert(DESKTOP_APP_COUNT==3,"curated lock group is three apps");
 uintptr_t desktop_lock_state,lock_display_ack,auth_input;
 #include "lock.h"
 #endif
@@ -75,12 +76,18 @@ void init(void)
 #endif
     desktop.windows[0].open = desktop.windows[0].visible = 1;
     desktop.windows[1].open = desktop.windows[1].visible = 1;
-    #if DESKTOP_APP_COUNT == 3
+    #if DESKTOP_APP_COUNT >= 3
     desktop.windows[2]=(struct shell_window){340,152,0,0};
     desktop.reserved=0x321;
 #endif
+#if DESKTOP_APP_COUNT == 4
+    desktop.windows[3]=(struct shell_window){460,148,0,0};
+    desktop.reserved=0x4321;
+#endif
     focus(1);
-    #if DESKTOP_APP_COUNT == 3
+    #if DESKTOP_APP_COUNT == 4
+    microkit_dbg_puts("DESKTOP_APPS|READY|SimpleX+NexaWal+NetSurf+Maps|static-disposable\n");
+#elif DESKTOP_APP_COUNT == 3
     microkit_dbg_puts("DESKTOP_APPS|READY|SimpleX+NexaWal+NetSurf|static-disposable\n");
 #else
     microkit_dbg_puts("DESKTOP_APPS|READY|SimpleX+NexaWal|static-disposable\n");

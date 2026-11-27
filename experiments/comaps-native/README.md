@@ -44,8 +44,8 @@ network adapter, shared folder or clipboard. Building alone changes no VM.
 
 The map reader runs in its own protection domain with only its frame, heap,
 input ring, pointer and focus pages. Raw input access is confined to this single-app test
-VM; a future desktop/mobile integration should use the trusted shell's private
-input routing. This image has no wallet, SimpleX, vault, GPS or network services.
+VM; the desktop adapter below instead uses the trusted shell's private
+input routing. This standalone image has no wallet, SimpleX, vault, GPS or network services.
 It is not a lock-screen or private-storage test.
 
 ## Verification
@@ -83,11 +83,69 @@ filesystem access are not implemented. The initial camera is a fixed public
 Gibraltar view, not an inferred user location. The prototype is tested against
 one pinned map; other region/version combinations remain unverified.
 
-The next useful milestone is integrating this surface and private input with
-the shell, followed by bounded storage-backed map reads. A full CoMaps port
+The next useful milestone is bounded storage-backed map reads. A full CoMaps port
 would additionally need its C++ runtime/platform services, Drape graphics backend,
 task/thread lifecycle, map management, search and routing. Existing VirGL blit
 composition does not supply the full graphics API that Drape expects.
+
+## Optional GPU desktop integration
+
+The existing desktop builder now accepts `--maps` alongside
+`--browser --virgl --desktop-resize`; `./dev desktop build --maps` supplies those
+base flags. See the [desktop instructions](../desktop-apps/README.md) for the
+large-page composer prerequisite and disposable build/run/check commands.
+This adds a fourth dock item and retained 1120-pixel-wide RGB8 surface. Its height
+tracks the bounded desktop mode at 2×. Map drawing remains CPU based; the trusted
+VirGL compositor uploads and positions the retained texture and decorations.
+Moving a window does not ask Maps to draw its contents again.
+
+The Maps PD gets only its frame, 16 MiB heap, private input ring, timing page and
+read-only display mode. The manager owns global pointer/focus and translates
+events to local coordinates. Maps has no vault/network endpoint or other app
+memory. Hidden Maps does not process other apps' keys or publish frames. Unlike
+the diskless fixture, the four-app desktop has a fresh development-key disk for
+the existing app services. It rejects the three-app wrapped-session lock option
+until Maps is included in that lifecycle; do not use it with personal data.
+
+`tests/desktop_maps_input.py` checks actual diagnostic GPU pixels, all four dock
+actions, focus isolation, pan/zoom, retained minimize/restore and held window
+movement. The normal build measures handler-to-publication phases and completed
+GPU texture generations without expensive readback. Both use four bounded host
+CPU workers. Phase times include preemption; QMP injection-to-observed completion
+also includes polling and host scheduling, not physical display latency.
+
+Profiling identified opaque area/triangle fills and reservation replenishment
+as useful targets. Solid RGB rectangles now rasterize one clipped row and reuse
+it, while text retains alpha blending. `tests/comaps_raster_test.c` compares
+10,000 rectangles against the old pixel oracle under sanitizers. Maps keeps a
+bounded 8/10 ms CPU reservation below the interactive frontends' priorities,
+allowing typical frames to complete without the former 4/10 ms mid-frame wait.
+This is a local experiment, not a consistent 60 Hz or full CoMaps performance
+claim. Region parsing, attribution and the default three-app profile are shared
+with the earlier experiment and unchanged in scope.
+
+In the November 26, 2026 four-vCPU normal-compositor runs, the same 16 alternating
+keyboard pans at 2560×1564 (1120×1040 map surface) with four bounded host CPU
+workers recorded these handler-to-publication times:
+
+| Configuration | Median | p95 / maximum (16 samples) |
+| --- | ---: | ---: |
+| Original fills, 4/10 ms reservation | 13.142 ms | 20.368 ms |
+| Reusable RGB rows, 8/10 ms reservation | 6.728 ms | 26.344 ms |
+
+The median improved, but the tail did not; host/guest preemption remains visible.
+This was not a controlled idle-host experiment. Intervening runs with other
+viewport heights are retained as separate observations and excluded from this
+comparison. The final diagnostic run also passed map colours, pan/zoom, focus
+isolation, minimize/restore, held-window pixels and 12 four-app switches under
+load. It is kept separate from normal-compositor timings.
+
+Evidence is in `build/desktop-apps/maps/maps-normal-before/`,
+`maps-normal-budget/` and `maps-final-diagnostic/`, including the recorded build
+manifests and traces. `resize-observations.json` records independent layout,
+four-app dock, held-drag and typing checks after native UTM/SPICE windowed,
+2624×1644 full-screen and restored-window changes. Native full-screen dock/zoom
+input was also observed separately through UTM; automated measurements use QMP.
 
 Upstream revision and the map's URL, version, size and SHA-256 are pinned in
 [sources.json](sources.json). See [NOTICE](NOTICE) and [licenses](licenses) for

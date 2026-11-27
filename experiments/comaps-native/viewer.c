@@ -10,15 +10,34 @@
 #include <errno.h>
 #include <math.h>
 #include "mwm.h"
+#include "raster.h"
 #include "styles.h"
 #include "../../tests/input/input_handoff.h"
 #include "../../tests/input/slint_frame.h"
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
+#ifdef MAP_DESKTOP
+#include "../desktop-gpu/display_protocol.h"
+uintptr_t desktop_display_mode;
+static unsigned map_height=520;
+static bool active;
+#define W 560
+#define H map_height
+#define TOP 64
+#define BOTTOM (H-36)
+#define BUTTON_LEFT (W-166)
+#define BUTTON_STEP 54
+#define BUTTON_WIDTH 46
+#else
+static bool active=true;
 #define W 1280
 #define H 800
 #define TOP 92
 #define BOTTOM 756
+#define BUTTON_LEFT 1000
+#define BUTTON_STEP 85
+#define BUTTON_WIDTH 70
+#endif
 #define SCALE 2
 uintptr_t map_frame, map_heap, input_handoff, ui_focus, ui_pointer;
 extern const unsigned char map_blob[], map_blob_end[], map_font[];
@@ -30,6 +49,20 @@ static int mx,my,lastx,lasty;
 static bool held,changed;
 static double cx,cy,units,initial_units;
 static unsigned zoom_level;
+#ifdef MAP_PROFILE
+uintptr_t map_observation;
+static uint64_t input_events,input_at;
+static void profile(uint64_t start,uint64_t *phases,uint64_t rendered,uint64_t notified) {
+    _Atomic uint64_t *p=(void*)map_observation;
+    uint64_t revision=atomic_load_explicit(p,memory_order_relaxed);
+    atomic_store_explicit(p,revision+1,memory_order_release);atomic_thread_fence(memory_order_seq_cst);
+    p[1]=0x4e584d4150303031ULL;p[2]=input_events;p[3]=frames;p[4]=active;
+    p[5]=(uint64_t)(int64_t)(cx*1e9);p[6]=(uint64_t)(int64_t)(cy*1e9);p[7]=(uint64_t)(units*1e12);p[8]=zoom_level;
+    if(start){unsigned slot=frames%32;uint64_t data[14]={frames,input_events,input_at,start,phases[0],phases[1],phases[2],rendered,notified,zoom_level,(uint64_t)(int64_t)(cx*1e9),(uint64_t)(int64_t)(cy*1e9),(uint64_t)(units*1e12),0};
+        for(unsigned i=0;i<14;i++)p[16+slot*14+i]=data[i];}
+    atomic_store_explicit(p,revision+2,memory_order_release);
+}
+#endif
 static size_t heap_used;
 struct glyph { int code,size,w,h,x,y;unsigned char *alpha; };
 static struct glyph glyphs[256];static unsigned next_glyph;
@@ -49,9 +82,7 @@ static void pixel(int x,int y,uint32_t colour,unsigned alpha) {
     for(unsigned i=0;i<3;i++)p[i]=(p[i]*(255-alpha)+((colour>>(16-8*i))&255)*alpha+127)/255;
 }
 static void fill(int x,int y,int width,int height,uint32_t colour) {
-    int right=(x+width)*SCALE,bottom=(y+height)*SCALE;x*=SCALE;y*=SCALE;
-    if(x<0)x=0;if(y<0)y=0;if(right>W*SCALE)right=W*SCALE;if(bottom>H*SCALE)bottom=H*SCALE;
-    for(int yy=y;yy<bottom;yy++)for(int xx=x;xx<right;xx++)pixel(xx,yy,colour,255);
+    map_fill_rgb(pixels,W*SCALE,H*SCALE,x*SCALE,y*SCALE,(x+width)*SCALE,(y+height)*SCALE,colour);
 }
 static int text(int x,int y,int size,uint32_t colour,const char *s) {
     float pen=x*SCALE,scale=stbtt_ScaleForPixelHeight(&font,size*SCALE);
@@ -121,13 +152,13 @@ static void zoom(int direction) {
     changed=true;
 }
 static void draw(void) {
-    if(!changed)return;changed=false;uint64_t started=us();
+    if(!changed||!active)return;changed=false;uint64_t started=us(),phases[3];
     slint_frame_header_t *h=(void*)map_frame;
     unsigned before=atomic_load_explicit(&h->revision,memory_order_relaxed);
     atomic_store_explicit(&h->revision,before+1,memory_order_release);atomic_thread_fence(memory_order_seq_cst);
     fill(0,TOP,W,BOTTOM-TOP,0xe9e5d8);
     unsigned drawn=0;
-    for(unsigned pass=0;pass<3;pass++)for(unsigned i=0;i<map.feature_count;i++) {
+    for(unsigned pass=0;pass<3;pass++) { for(unsigned i=0;i<map.feature_count;i++) {
         struct map_feature *f=&map.features[i];if(!visible(f))continue;
         unsigned s=style(f);struct map_point *p=map.points+f->first;
         if(f->geometry==2 && pass==0) {
@@ -141,6 +172,7 @@ static void draw(void) {
             for(unsigned n=1;n<f->count;n++)line(sx(p[n-1].x),sy(p[n-1].y),sx(p[n].x),sy(p[n].y),width,colour);drawn++;
         }
     }
+    phases[pass]=us();}
     /* Bounded label occupancy grid; repeated road segments don't repeat names. */
     bool used[8][12]={0};unsigned labels=0;
     for(unsigned i=0;i<map.feature_count&&labels<55;i++) {
@@ -151,19 +183,37 @@ static void draw(void) {
         unsigned gx=x*12/W,gy=(y-TOP)*8/(BOTTOM-TOP);if(used[gy][gx])continue;used[gy][gx]=true;
         int size=s==8?21:15;text(x+1,y+1,size,0xffffff,f->name);text(x,y,size,0x334752,f->name);labels++;
     }
-    fill(0,0,W,TOP,0x0b202d);text(28,35,29,0xe9f7fb,"CoMaps data · Gibraltar");
-    text(29,67,18,0x91b5c5,"Offline native experiment");
+    fill(0,0,W,TOP,0x0b202d);
+#ifdef MAP_DESKTOP
+    text(16,27,22,0xe9f7fb,"Gibraltar");text(16,51,14,0x91b5c5,"CoMaps · offline");
+#else
+    text(28,35,29,0xe9f7fb,"CoMaps data · Gibraltar");text(29,67,18,0x91b5c5,"Offline native experiment");
+#endif
     const char *buttons[]={"−","+","Fit"};
-    for(unsigned i=0;i<3;i++){int x=1000+i*85;fill(x,19,70,48,0x183c4a);text(x+21,51,27,0x92e3e0,buttons[i]);}
+    for(unsigned i=0;i<3;i++){int x=BUTTON_LEFT+i*BUTTON_STEP;fill(x,14,BUTTON_WIDTH,42,0x183c4a);text(x+12,44,23,0x92e3e0,buttons[i]);}
     fill(0,BOTTOM,W,H-BOTTOM,0x0b202d);
+#ifdef MAP_DESKTOP
+    text(12,H-13,13,0x9cbfc9,"© OpenStreetMap contributors · CoMaps Project");
+    char status[80];snprintf(status,sizeof(status),"Zoom %u",zoom_level);text(W-75,H-13,14,0x91d9d7,status);
+#else
     text(22,785,18,0x9cbfc9,"© OpenStreetMap contributors · ODbL · CoMaps Project / Apache-2.0");
     char status[150];snprintf(status,sizeof(status),"Zoom %u · %u features · drag to pan",zoom_level,drawn);text(895,784,16,0x91d9d7,status);
+#endif
     h->width=W*SCALE;h->height=H*SCALE;h->stride_bytes=W*SCALE*3;h->format=SLINT_FRAME_FORMAT_RGB8;
     atomic_store_explicit(&h->damage_y,0,memory_order_relaxed);atomic_store_explicit(&h->damage_height,H*SCALE,memory_order_relaxed);
-    atomic_store_explicit(&h->revision,before+2,memory_order_release);microkit_notify(0);
-    printf("COMAPS|FRAME|n=%u|zoom=%u|cx=%.9f|cy=%.9f|units=%.12f|features=%u|labels=%u|us=%llu\n",++frames,zoom_level,cx,cy,units,drawn,labels,(unsigned long long)(us()-started));
+    atomic_store_explicit(&h->revision,before+2,memory_order_release);
+    uint64_t rendered=us();microkit_notify(0);uint64_t notified=us();frames++;
+#ifdef MAP_PROFILE
+    profile(started,phases,rendered,notified);
+#else
+    (void)phases;(void)rendered;(void)notified;
+#endif
+    printf("COMAPS|FRAME|n=%u|zoom=%u|cx=%.9f|cy=%.9f|units=%.12f|features=%u|labels=%u|us=%llu\n",frames,zoom_level,cx,cy,units,drawn,labels,(unsigned long long)(us()-started));
 }
 static void publish_pointer(void) {
+#ifdef MAP_DESKTOP
+    return; /* The trusted manager owns the global pointer. */
+#else
     _Atomic uint32_t *p=(void*)ui_pointer;
     uint32_t revision=atomic_load_explicit(p,memory_order_relaxed);
     atomic_store_explicit(p,revision+1,memory_order_release);
@@ -173,11 +223,60 @@ static void publish_pointer(void) {
     atomic_store_explicit(p+3,1,memory_order_relaxed);
     atomic_store_explicit(p,revision+2,memory_order_release);
     microkit_notify(0);
+#endif
 }
 static void constrain(void) {
     cx=fmax(map.minx-map.origin_x,fmin(map.maxx-map.origin_x,cx));
     cy=fmax(map.miny-map.origin_y,fmin(map.maxy-map.origin_y,cy));
 }
+#ifdef MAP_DESKTOP
+static void map_key(unsigned code,unsigned value) {
+    if(value==0||value>2)return;
+    if(code==13||code==78)zoom(1);else if(code==12||code==74)zoom(-1);
+    else if(code==35||code==102)reset();
+    else if(code==105){cx-=80*units;changed=true;}else if(code==106){cx+=80*units;changed=true;}
+    else if(code==103){cy+=80*units;changed=true;}else if(code==108){cy-=80*units;changed=true;}
+    constrain();
+}
+#endif
+static void map_button(unsigned value) {
+    if(!value){held=false;return;}
+    if(my>=TOP&&my<(int)BOTTOM){held=true;lastx=mx;lasty=my;}
+    else if(my>=14&&my<=56&&mx>=BUTTON_LEFT){if(mx>=BUTTON_LEFT+2*BUTTON_STEP)reset();else if(mx>=BUTTON_LEFT+BUTTON_STEP)zoom(1);else zoom(-1);}
+}
+#ifdef MAP_DESKTOP
+static void resize(void) {
+    const struct display_mode *p=(void*)desktop_display_mode;
+    uint32_t first=__atomic_load_n(&p->revision,__ATOMIC_ACQUIRE);struct display_mode mode=*p;
+    atomic_thread_fence(memory_order_acquire);
+    if(first&&!(first&1)&&first==__atomic_load_n(&p->revision,__ATOMIC_ACQUIRE)&&mode.scale==2&&mode.app_height>=360&&mode.app_height<=520&&map_height!=mode.app_height){map_height=mode.app_height;initial_units=.066/(BOTTOM-TOP);double factor=1.;for(unsigned i=0;i<zoom_level;i++)factor*=1.5;units=initial_units/factor;changed=true;held=false;}
+}
+static void input(void) {
+#ifdef MAP_PROFILE
+    input_at=us();
+#endif
+    resize();uint32_t *q=(void*)input_handoff;uint32_t head=__atomic_load_n(q+2,__ATOMIC_ACQUIRE);
+    if(head-input_tail>224){input_tail=head;held=false;active=false;}
+    while(input_tail!=head){
+        uint32_t e[4];memcpy(e,q+4+(input_tail++%224)*4,sizeof(e));unsigned device=e[0]&65535,kind=e[0]>>16;
+#ifdef MAP_PROFILE
+        input_events++;
+#endif
+        if(device==2){held=false;active=e[2]!=0;continue;}
+        if(!active)continue;
+        if(device==0&&kind==1){map_key(e[1],e[2]);continue;}
+        if(device!=1)continue;
+        mx=(int16_t)(e[3]&65535)/SCALE;my=(int16_t)(e[3]>>16)/SCALE;
+        if(kind==3&&held){cx-=(mx-lastx)*units;cy+=(my-lasty)*units;lastx=mx;lasty=my;constrain();changed=true;}
+        else if(kind==1&&e[1]==272&&e[2]<=1)map_button(e[2]);
+        else if(kind==2&&e[1]==8)zoom((int32_t)e[2]>0?1:-1);
+    }
+    __atomic_store_n(q+3,input_tail,__ATOMIC_RELEASE);draw();
+#ifdef MAP_PROFILE
+    profile(0,NULL,0,0);
+#endif
+}
+#else
 static void input(void) {
     struct input_event_ring *q=(void*)input_handoff;
     uint32_t head=__atomic_load_n(&q->head,__ATOMIC_ACQUIRE),lost=__atomic_load_n(&q->dropped,__ATOMIC_ACQUIRE);
@@ -190,7 +289,7 @@ static void input(void) {
             if(e.type==1&&e.code==272&&e.value<=1) {
                 if(e.value){
                     if(my>=TOP&&my<BOTTOM){held=true;lastx=mx;lasty=my;}
-                    else if(my>=19&&my<=67){if(mx>=1170)reset();else if(mx>=1085)zoom(1);else if(mx>=1000)zoom(-1);}
+                    else map_button(1);
                 } else held=false;
             }
             if(e.type==2&&e.code==8)zoom((int32_t)e.value>0?1:-1);
@@ -204,12 +303,20 @@ static void input(void) {
     }
     __atomic_store_n(&q->tail,input_tail,__ATOMIC_RELEASE);publish_pointer();draw();
 }
+#endif
 void init(void) {
     uint64_t started=us();
     if(!map_load(&map,map_blob,(size_t)(map_blob_end-map_blob))){printf("COMAPS|FAIL|map=%s|record=%u\n",map.error,map.records);__builtin_trap();}
     printf("COMAPS|MAP|region=Gibraltar|records=%u|points=%u|inner=%u|outer=%u|load_us=%llu\n",map.records,map.point_count,map.inner,map.outer,(unsigned long long)(us()-started));
     pixels=(unsigned char*)map_frame+sizeof(slint_frame_header_t);
     if(!stbtt_InitFont(&font,map_font,stbtt_GetFontOffsetForIndex(map_font,0)))__builtin_trap();
-    *(uint32_t*)ui_focus=1;mx=W/2;my=H/2;publish_pointer();reset();draw();printf("COMAPS|READY|offline|no storage|no network\n");
+    #ifndef MAP_DESKTOP
+    *(uint32_t*)ui_focus=1;mx=W/2;my=H/2;publish_pointer();
+#endif
+    reset();draw();
+#ifdef MAP_PROFILE
+    profile(0,NULL,0,0);
+#endif
+    printf("COMAPS|READY|offline|no storage|no network\n");
 }
 void notified(microkit_channel channel){if(channel==1)input();}

@@ -24,12 +24,14 @@ INFRASTRUCTURE = frozenset((
 PUBLIC_APP_REGIONS = frozenset(('clock_view', 'desktop_display_mode', 'rtc'))
 
 
-def inventory(path, *, browser=True):
+def inventory(path, *, browser=True, maps=False):
     system = ET.parse(path).getroot()
     domains = {p.get('name'): p for p in system.iter('protection_domain')}
     if len(domains) != len(list(system.iter('protection_domain'))):
         raise ValueError('duplicate domain')
     apps = {k: v for k, v in APPS.items() if browser or k != 'netsurf'}
+    if maps: apps['maps'] = dict(frontend='offline_map', services=())
+    if maps and 'lock_auth' in domains: raise ValueError('Maps is outside the curated three-app lock group')
     owner = {name: app for app, spec in apps.items()
              for name in (spec['frontend'], *spec['services'])}
     missing = set(owner) - domains.keys()

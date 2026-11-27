@@ -1,5 +1,58 @@
 # SimpleX, NexaWal and NetSurf desktop experiment
 
+## Optional fourth offline Maps window
+
+`--maps` adds the bounded native Gibraltar CoMaps-data viewer to the existing
+2× GPU desktop, with a fourth dock item, retained surface, titlebar and private
+input queue. Use the large-page composer; the smaller packager exceeds its root
+object limit for this assembly. For example, with the public prerequisites
+already prepared:
+
+```sh
+./dev desktop build --maps --diagnostic \
+  --inputs /path/to/public/utm-accelerated \
+  --storage build/utm-vault-key-storage \
+  --shell-base build/desktop-shell/retina-ready-2x \
+  --composer build/desktop-simplex/composer-large/target/release/microkit \
+  --output build/desktop-apps/maps
+./dev desktop run --guest build/desktop-apps/maps \
+  --template /path/to/public/template.plist --keep-running
+./dev desktop check --guest build/desktop-apps/maps --label maps
+```
+
+Build without `--diagnostic` for normal GPU composition; the reference/readback
+path is deliberately expensive. Rebuild with `--resume` and use `./dev desktop
+install --guest ...` to update only the recorded disposable VM, preserving its
+blank fixture disk rather than creating additional VMs. The Maps checker covers
+all four dock actions, actual GPU pixels, private focus, pan/zoom, retained
+minimize/restore and held-window movement in diagnostic mode. Its normal mode
+records map drawing/publication phases and GPU completion under four bounded
+host CPU workers. QMP-observed completion includes host polling and scheduling;
+it does not measure physical touch-to-display latency.
+
+Maps cannot read other app memory, the network or the fixture vault. It receives
+no raw/global input. The optional four-app profile has a development-key disk
+for the existing services; it rejects `--locked`/`--wrapped-session` because
+Maps is not yet part of the curated lock and memory-cleanup group. No saved
+wallet or chats are inputs. The default profile remains three apps. See the
+[map experiment](../comaps-native/README.md) for region provenance, notices and
+the deliberately limited renderer; search, routing and map downloads are absent.
+
+The final normal four-app run at 2560×1564, 2×, passed 16 acknowledged map pans
+and 12 four-app switches with four bounded host CPU workers. Map handler to
+frame publication was 5.059 ms median / 6.193 ms maximum in that run. Earlier
+optimized runs retained 26 ms outliers; this does not establish steady 60 Hz or
+physical input latency. The diagnostic counterpart passed actual map colours,
+zoom/pan, retained held-drag pixels and independent resize/dock/typing checks in
+windowed, 2624×1644 full-screen and restored-window modes. Native UTM full-screen
+dock and map zoom input also worked. Evidence and exact source/loader hashes are
+in `build/desktop-apps/maps/maps-final-normal/`, `maps-final-diagnostic/` and
+`resize-observations.json`; loader
+`e48ac0b0a7bbee1038f620fbc51b6d12242ff9909b53f5138639a6fd164210bb`
+is the tested normal image. Saved wallet/chats and Pixel Wi-Fi were not inputs.
+
+## Existing app assembly
+
 This opt-in Microkit image runs SimpleX and NexaWal, plus windowed NetSurf with
 `--browser`. Each app has a 560×520 logical-pixel desktop window, rendered at
 1120×1040 physical pixels. The trusted landscape shell and compositor own

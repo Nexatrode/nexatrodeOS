@@ -13,14 +13,14 @@ static bool gpu_compose(const struct gpu_stamp *s,struct gpu_rect clip,gpu_emit 
     static const unsigned inset[14]={11,8,6,5,4,3,2,2,1,1,1,0,0,0},corner[10]={0,0,0,1,1,2,3,4,6,9};
     unsigned order[DESKTOP_APP_COUNT];shell_order(&s->scene,order);
     for(unsigned i=0;i<DESKTOP_APP_COUNT;++i){unsigned id=order[i];const struct shell_window *w=&s->scene.windows[id-1];
-        if(!w->visible||!s->revisions[id+3])continue;
+        if(!w->visible||!s->revisions[id+DESKTOP_APP_COUNT])continue;
         int x=w->x*(int)scale,y=w->y*(int)scale,dx=x-(int)scale,dy=y-43*(int)scale;
         unsigned edge=0;while(edge<14&&inset[edge])++edge;
-        if(!gpu_clip_blit(emit,clip,13+id,0,edge*scale,dx,dy+edge*(int)scale,dw,dh-2*edge*scale))return false;
+        if(!gpu_clip_blit(emit,clip,10+DESKTOP_APP_COUNT+id,0,edge*scale,dx,dy+edge*(int)scale,dw,dh-2*edge*scale))return false;
         for(unsigned r=0;r<edge;){unsigned n=1;while(r+n<edge&&inset[r+n]==inset[r])++n;
             unsigned left=inset[r]*scale,row=dh-(r+n)*scale;
-            if(!gpu_clip_blit(emit,clip,13+id,left,r*scale,dx+left,dy+r*(int)scale,dw-2*left,n*scale)||
-               !gpu_clip_blit(emit,clip,13+id,left,row,dx+left,dy+row,dw-2*left,n*scale))return false;
+            if(!gpu_clip_blit(emit,clip,10+DESKTOP_APP_COUNT+id,left,r*scale,dx+left,dy+r*(int)scale,dw-2*left,n*scale)||
+               !gpu_clip_blit(emit,clip,10+DESKTOP_APP_COUNT+id,left,row,dx+left,dy+row,dw-2*left,n*scale))return false;
             r+=n;}
         if(!s->revisions[id])continue;
         unsigned first=0;while(first<10&&!corner[first])++first;

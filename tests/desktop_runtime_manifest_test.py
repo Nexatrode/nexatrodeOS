@@ -18,11 +18,11 @@ class InventoryTest(unittest.TestCase):
                 ET.SubElement(pd, 'map', mr=app, perms='rw')
         ET.SubElement(self.system, 'protection_domain', name='vault')
 
-    def result(self):
+    def result(self,maps=False):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / 'system.xml'
             ET.ElementTree(self.system).write(p)
-            return inventory(p)
+            return inventory(p,maps=maps)
 
     def test_complete_groups_do_not_claim_lock_or_teardown(self):
         r = self.result()
@@ -42,6 +42,21 @@ class InventoryTest(unittest.TestCase):
         ET.SubElement(pd, 'map', mr='nexawal', perms='r')
         with self.assertRaisesRegex(ValueError, 'private cross-app'):
             self.result()
+
+    def test_maps_is_an_explicit_separate_app_group(self):
+        ET.SubElement(self.system,'memory_region',name='map_heap',size='0x1000000')
+        d=ET.SubElement(self.system,'protection_domain',name='offline_map')
+        ET.SubElement(d,'map',mr='map_heap',perms='rw')
+        with self.assertRaisesRegex(ValueError,'unclassified lifecycle'):self.result()
+        result=self.result(maps=True)
+        self.assertEqual(result['apps']['maps']['services'],[])
+        ET.SubElement(d,'map',mr='nexawal',perms='r')
+        with self.assertRaisesRegex(ValueError,'private cross-app'):self.result(maps=True)
+
+    def test_maps_cannot_claim_the_curated_lock_guarantees(self):
+        ET.SubElement(self.system,'protection_domain',name='offline_map')
+        ET.SubElement(self.system,'protection_domain',name='lock_auth')
+        with self.assertRaisesRegex(ValueError,'outside the curated'):self.result(maps=True)
 
     def test_rtc_readout_is_not_owned_private_memory(self):
         ET.SubElement(self.system,'memory_region',name='rtc',size='0x1000',phys_addr='0x9010000')

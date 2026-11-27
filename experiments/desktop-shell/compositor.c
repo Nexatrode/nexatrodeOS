@@ -5,8 +5,11 @@
 #include <microkit.h>
 struct surface_header { _Atomic uint32_t revision; uint32_t width, height, stride; };
 uintptr_t surface_a, surface_b, output_frame, focus_page, input_handoff, input_a, input_b;
-#if DESKTOP_APP_COUNT == 3
+#if DESKTOP_APP_COUNT >= 3
 uintptr_t surface_c, input_c;
+#endif
+#if DESKTOP_APP_COUNT >= 4
+uintptr_t surface_d, input_d;
 #endif
 uintptr_t shell_surface, shell_state, shell_input, ui_pointer;
 static bool dynamic_active, focus_dirty;
@@ -23,7 +26,7 @@ static unsigned pointer_owner;
 static unsigned drag_owner;
 static int32_t drag_offset_x,drag_offset_y;
 #endif
-#if DESKTOP_APP_COUNT == 3
+#if DESKTOP_APP_COUNT >= 3
 static unsigned chrome_pending;
 #endif
 static int32_t pointer_x, pointer_y;
@@ -50,13 +53,16 @@ static void publish_state(void)
 static void input_notify(unsigned owner)
 {
 #ifdef DESKTOP_REAL_APPS
-    if (owner >= 1 && owner <= DESKTOP_APP_COUNT) { microkit_notify(23 + owner); return; }
+    if (owner >= 1 && owner <= DESKTOP_APP_COUNT) { microkit_notify(owner==4 ? 28 : 23 + owner); return; }
 #endif
     if (owner == 1) { if (dynamic_active) dynamic_input_notify(); }
     else microkit_notify(owner == 2 ? 8 : 22);
 }
 static uintptr_t app_input(unsigned owner) {
-#if DESKTOP_APP_COUNT == 3
+#if DESKTOP_APP_COUNT >= 4
+    if(owner==4)return input_d;
+#endif
+#if DESKTOP_APP_COUNT >= 3
     if(owner==3)return input_c;
 #endif
     return owner==1?input_a:input_b;
@@ -107,19 +113,19 @@ static void reset_input(void)
     drag_owner=0;
 #endif
     memset(key_owners, 0, sizeof(key_owners)); pointer_owner = 0;
-#if DESKTOP_APP_COUNT == 3
+#if DESKTOP_APP_COUNT >= 3
     chrome_pending = 0;
 #endif
     for (unsigned owner = 1; owner <= DESKTOP_SHELL_OWNER; ++owner) emit(owner, (struct desktop_event){.kind = DESKTOP_RESET});
 }
-#if DESKTOP_APP_COUNT == 3
+#if DESKTOP_APP_COUNT >= 3
 /* Dock and button hit boxes match desktop_shell.slint in logical pixels.
  * Commit focus in input order, before routing the next keyboard event. A
  * delayed shell paint/callback must not send typing to the previous app. */
 static unsigned chrome_at(int32_t x, int32_t y)
 {
     for (unsigned i = 0; i < DESKTOP_APP_COUNT; ++i) {
-        int32_t left = (SHELL_WIDTH - 276) / 2 + 16 + 84 * i;
+        int32_t left = (SHELL_WIDTH - SHELL_DOCK_WIDTH) / 2 + 16 + 84 * i;
         if (x >= left && x < left + 76 && y >= (int)SHELL_HEIGHT - 106 && y < (int)SHELL_HEIGHT - 24)
             return ((i + 1) << 8) | SHELL_APP_LAUNCH;
     }
@@ -166,7 +172,7 @@ static void pointer_event(unsigned value)
 #endif
     unsigned owner = pointer_owner ? pointer_owner : shell_hit(&desktop, pointer_x, pointer_y);
     if (value == 1 && !pointer_owner) {
-#if DESKTOP_APP_COUNT == 3
+#if DESKTOP_APP_COUNT >= 3
         chrome_pending = chrome_at(pointer_x, pointer_y);
 #endif
         pointer_owner = owner;
@@ -178,7 +184,7 @@ static void pointer_event(unsigned value)
     emit(owner, (struct desktop_event){.kind = DESKTOP_POINTER, .value = value, .x = x, .y = y});
     if (value == 0) {
         pointer_owner = 0;
-#if DESKTOP_APP_COUNT == 3
+#if DESKTOP_APP_COUNT >= 3
         if (chrome_pending && chrome_pending == chrome_at(pointer_x, pointer_y)) chrome_activate(chrome_pending);
         chrome_pending = 0;
 #endif
@@ -259,8 +265,11 @@ static bool compose(void)
 #ifdef DESKTOP_REAL_APPS
     composition_dirty |= snapshot_app(surface_a, app_pixels[0], &app_revision[0]);
     composition_dirty |= snapshot_app(surface_b, app_pixels[1], &app_revision[1]);
-#if DESKTOP_APP_COUNT == 3
+#if DESKTOP_APP_COUNT >= 3
     composition_dirty |= snapshot_app(surface_c, app_pixels[2], &app_revision[2]);
+#if DESKTOP_APP_COUNT >= 4
+    composition_dirty |= snapshot_app(surface_d, app_pixels[3], &app_revision[3]);
+#endif
 #endif
 #else
     if (dynamic_active) composition_dirty |= snapshot(surface_a, APP_PIXEL_WIDTH, APP_PIXEL_HEIGHT, app_pixels[0], &app_revision[0]);

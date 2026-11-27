@@ -10,7 +10,7 @@ struct gpu_stamp {
     unsigned width,height,app_height;
     int px,py;
     struct shell_state scene;
-    uint32_t revisions[7];
+    uint32_t revisions[1 + 2 * DESKTOP_APP_COUNT];
     struct gpu_rect backdrop_damage;
 };
 static inline bool gpu_rect_empty(struct gpu_rect r) {return r.x>=r.right||r.y>=r.bottom;}
@@ -51,7 +51,7 @@ static inline struct gpu_rect gpu_damage(const struct gpu_stamp *old,const struc
     for(unsigned i=0;i<DESKTOP_APP_COUNT;++i){
         const struct shell_window *a=&old->scene.windows[i],*b=&next->scene.windows[i];
         if(a->x!=b->x||a->y!=b->y||a->visible!=b->visible){gpu_union(&r,gpu_window(old,i));gpu_union(&r,gpu_window(next,i));}
-        if(old->revisions[i+1]!=next->revisions[i+1]||old->revisions[i+4]!=next->revisions[i+4])gpu_union(&r,gpu_window(next,i));
+        if(old->revisions[i+1]!=next->revisions[i+1]||old->revisions[i+1+DESKTOP_APP_COUNT]!=next->revisions[i+1+DESKTOP_APP_COUNT])gpu_union(&r,gpu_window(next,i));
     }
     unsigned before[DESKTOP_APP_COUNT],after[DESKTOP_APP_COUNT],bp[DESKTOP_APP_COUNT],ap[DESKTOP_APP_COUNT];
     shell_order(&old->scene,before);shell_order(&next->scene,after);

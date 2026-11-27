@@ -13,6 +13,10 @@ void *memcpy(void *to,const void *from,size_t n) {uint8_t *d=to;const uint8_t *s
 void *memset(void *to,int c,size_t n) {uint8_t *d=to;while(n--)*d++=c;return to;}
 uintptr_t mmio, dma, dma_paddr, shell_surface, shell_state, ui_pointer;
 uintptr_t surface_a, surface_b, surface_c, output_frame, shell_decorations, gpu_observation;
+#if DESKTOP_APP_COUNT >= 4
+uintptr_t surface_d;
+#endif
+#define GPU_TEXTURE_COUNT (1u + 2u * DESKTOP_APP_COUNT)
 #include "transport.h"
 #include "pacing.h"
 #include "damage.h"
@@ -41,13 +45,18 @@ static uint32_t mode_revision,mode_serial;
 #define DH ((APP_HEIGHT+44u)*DESKTOP_SCALE)
 #define MAX_DH ((APP_MAX_HEIGHT+44u)*DESKTOP_SCALE)
 #define DECOR_BYTES (DW*MAX_DH*3u)
-static uint8_t shell_cache[SHELL_BYTES], app_cache[3][APP_BYTES], scratch[SHELL_BYTES];
-static uint8_t decor_cache[3][DECOR_BYTES];
-static uint8_t *cache[7]={shell_cache,app_cache[0],app_cache[1],app_cache[2],decor_cache[0],decor_cache[1],decor_cache[2]};
-static uint32_t revisions[7], pointer_revision, scene_revision;
+static uint8_t shell_cache[SHELL_BYTES], app_cache[DESKTOP_APP_COUNT][APP_BYTES], scratch[SHELL_BYTES];
+static uint8_t decor_cache[DESKTOP_APP_COUNT][DECOR_BYTES];
+static uint8_t *cache[GPU_TEXTURE_COUNT];
+static uint32_t revisions[GPU_TEXTURE_COUNT], pointer_revision, scene_revision;
 static struct shell_state scene;
 #ifdef DESKTOP_DYNAMIC
+#if DESKTOP_APP_COUNT == 4
+static uint32_t offsets[11]={0x200000,0x2200000,0x4200000,0x6200000,0x6800000,0x6e00000,0x7400000,0x7a00000,0x8000000,0x8600000,0x8c00000};
+_Static_assert(0x8c00000+DW*MAX_DH*4<=0x9600000,"bounded four-app DMA textures");
+#else
 static uint32_t offsets[9]={0x200000,0x2200000,0x4200000,0x6200000,0x6800000,0x6e00000,0x7400000,0x7a00000,0x8000000};
+#endif
 _Static_assert(0x8000000+DW*MAX_DH*4<=0x9000000,"bounded resize DMA textures");
 #else
 static uint32_t offsets[9]={0x20000,0x1020000,0x2020000,0x3020000,0x34a0000,0x3920000,0x3e00000,0x4400000,0x4a00000};
@@ -145,7 +154,7 @@ static bool resize_targets(void) {
 static bool upload(unsigned i,unsigned width,struct gpu_rect rect) {
     if(gpu_rect_empty(rect))return true;
     volatile uint32_t *dest=(void*)(dma+offsets[i+2]);const uint8_t *src=cache[i];
-    unsigned stride=i==0?MAX_W:width,resource_height=i==0?MAX_H:i<=3?APP_MAX_PIXEL_HEIGHT:MAX_DH;
+    unsigned stride=i==0?MAX_W:width,resource_height=i==0?MAX_H:i<=DESKTOP_APP_COUNT?APP_MAX_PIXEL_HEIGHT:MAX_DH;
     for(unsigned y=rect.y;y<(unsigned)rect.bottom;++y)for(unsigned x=rect.x;x<(unsigned)rect.right;++x){unsigned n=y*width+x;dest[y*stride+x]=0xff000000u|((uint32_t)src[n*3]<<16)|((uint32_t)src[n*3+1]<<8)|src[n*3+2];}
     request();uint32_t *v=(void*)(dma+GPU_REQUEST+24);v[0]=rect.x;v[1]=rect.y;v[3]=rect.right-rect.x;v[4]=rect.bottom-rect.y;v[5]=1;
     v[6]=((unsigned)rect.y*stride+rect.x)*4;v[8]=10+i;v[10]=stride*4;v[11]=stride*resource_height*4;
@@ -159,8 +168,8 @@ static bool snapshot(unsigned i,uintptr_t source,unsigned width,unsigned height)
     if(!rev||(rev&1)||rev==revisions[i])return false;
     const uint32_t *fields=(void*)source;
     if(fields[1]!=width||fields[2]!=height||fields[3]!=width*3)return false;
-    unsigned header=i==0?GPU_BACKDROP_HEADER_BYTES:(i<=3?sizeof(slint_frame_header_t):16);
-    if(i>=1&&i<=3 && fields[4]!=SLINT_FRAME_FORMAT_RGB8)return false;
+    unsigned header=i==0?GPU_BACKDROP_HEADER_BYTES:(i<=DESKTOP_APP_COUNT?sizeof(slint_frame_header_t):16);
+    if(i>=1&&i<=DESKTOP_APP_COUNT && fields[4]!=SLINT_FRAME_FORMAT_RGB8)return false;
     struct gpu_rect rect={0,0,width,height};
     if(i==0){uint32_t history[GPU_BACKDROP_HISTORY*5];const volatile uint32_t *v=(void*)(source+16);
         for(unsigned n=0;n<GPU_BACKDROP_HISTORY*5;++n)history[n]=v[n];
@@ -195,13 +204,13 @@ static uint32_t reference(unsigned x,unsigned y,int px,int py,bool pointer_visib
     unsigned order[DESKTOP_APP_COUNT];shell_order(&scene,order);
     static const unsigned corner[10]={0,0,0,1,1,2,3,4,6,9};
     for(unsigned i=0;i<DESKTOP_APP_COUNT;++i){unsigned id=order[i];struct shell_window *w=&scene.windows[id-1];
-        if(!w->visible||!revisions[id+3])continue;
+        if(!w->visible||!revisions[id+DESKTOP_APP_COUNT])continue;
         int left=w->x*DESKTOP_SCALE,top=w->y*DESKTOP_SCALE;
         int dx=(int)x-left+DESKTOP_SCALE,dy=(int)y-top+43*DESKTOP_SCALE;
         if(dx>=0&&dy>=0&&dx<(int)DW&&dy<(int)DH){
             unsigned row=dy/DESKTOP_SCALE,edge=row<14?row:row>=APP_HEIGHT+44-14?APP_HEIGHT+43-row:14;
             unsigned inset=edge<14?round_inset[edge]*DESKTOP_SCALE:0;
-            if((unsigned)dx>=inset&&(unsigned)dx<DW-inset)p=cache[id+3]+((unsigned)dy*DW+dx)*3;
+            if((unsigned)dx>=inset&&(unsigned)dx<DW-inset)p=cache[id+DESKTOP_APP_COUNT]+((unsigned)dy*DW+dx)*3;
         }
         if(revisions[id]&&(int)x>=left&&(int)x<left+(int)AW&&(int)y>=top&&(int)y<top+(int)AH){
             unsigned row=(y-top)/DESKTOP_SCALE,inset=row>=APP_HEIGHT-10?corner[row-(APP_HEIGHT-10)]*DESKTOP_SCALE:0;
@@ -234,16 +243,17 @@ static bool read_mode(void) {
     __atomic_thread_fence(__ATOMIC_ACQUIRE);
     if(!revision||(revision&1)||revision==mode_revision||revision!=__atomic_load_n(&m->revision,__ATOMIC_ACQUIRE)||copy.scale!=2||copy.width<DISPLAY_MIN_W||copy.height<DISPLAY_MIN_H||copy.width>MAX_W||copy.height>MAX_H||(copy.width&1)||(copy.height&1)||copy.app_height<360||copy.app_height>520)return false;
     if(W!=copy.width||H!=copy.height){revisions[0]=0;targets_dirty=true;}
-    if(APP_HEIGHT!=copy.app_height)for(unsigned i=1;i<7;++i)revisions[i]=0;
+    if(APP_HEIGHT!=copy.app_height)for(unsigned i=1;i<GPU_TEXTURE_COUNT;++i)revisions[i]=0;
     desktop_width=copy.width/2;desktop_height=copy.height/2;desktop_app_height=copy.app_height;
     mode_revision=revision;mode_serial=copy.serial;return true;
 }
 #endif
 #ifdef DESKTOP_TRIO_LOCK
+_Static_assert(DESKTOP_APP_COUNT==3,"curated lock group is three apps");
 #include "lock.h"
 #endif
 static void prepare_frame(void) {
-    while(work.snapshot_index<7){
+    while(work.snapshot_index<GPU_TEXTURE_COUNT){
         if(pending_commands==GPU_BATCH_SLOTS){wait_for_batch(FRAME_UPLOADS);return;}
         unsigned i=work.snapshot_index++;
 #ifdef DESKTOP_TRIO_LOCK
@@ -254,8 +264,12 @@ static void prepare_frame(void) {
         }
 #endif
         if(i==0)work.dirty|=snapshot(0,shell_surface,W,H);
-        else if(i<=3){uintptr_t source=i==1?surface_a:i==2?surface_b:surface_c;work.dirty|=snapshot(i,source,AW,AH);}
-        else work.dirty|=snapshot(i,shell_decorations+(i-4)*0x400000,DW,DH);
+        else if(i<=DESKTOP_APP_COUNT){uintptr_t source=i==1?surface_a:i==2?surface_b:surface_c;
+#if DESKTOP_APP_COUNT >= 4
+            if(i==4)source=surface_d;
+#endif
+            work.dirty|=snapshot(i,source,AW,AH);}
+        else work.dirty|=snapshot(i,shell_decorations+(i-1-DESKTOP_APP_COUNT)*0x400000,DW,DH);
         if(failed)return;
     }
     if(pending_commands){wait_for_batch(FRAME_UPLOADS);return;}
@@ -272,7 +286,7 @@ static void prepare_frame(void) {
 #endif
     work.stamp=(struct gpu_stamp){.valid=true,.cursor=pointer_ok&&visible,.width=W,.height=H,.app_height=APP_HEIGHT,.px=px,.py=py,.scene=scene};
     work.stamp.backdrop_damage=backdrop_pending[target-7];
-    for(unsigned i=0;i<7;++i)work.stamp.revisions[i]=revisions[i];
+    for(unsigned i=0;i<GPU_TEXTURE_COUNT;++i)work.stamp.revisions[i]=revisions[i];
     work.damage=gpu_damage(&buffer_stamp[target-7],&work.stamp);
     if(!gpu_compose(&work.stamp,work.damage,blit)){failed=true;return;}
     bool has_draw=words!=0;
@@ -303,8 +317,12 @@ static void complete_frame(unsigned source) {
     __atomic_add_fetch(&frames,1,__ATOMIC_RELEASE);
     volatile uint32_t *stats=(void*)gpu_observation;uint32_t generation=stats[0];stats[0]=generation+1;__atomic_thread_fence(__ATOMIC_SEQ_CST);
     stats[1]=presented_scene_revision;stats[2]=frames;stats[3]=uploads;stats[4]=(ticks()-begin)*1000000/frequency();
-    stats[5]=revisions[0];stats[6]=revisions[4];stats[7]=revisions[5];stats[8]=revisions[6];
+    stats[5]=revisions[0];stats[6]=revisions[DESKTOP_APP_COUNT+1];stats[7]=revisions[DESKTOP_APP_COUNT+2];stats[8]=revisions[DESKTOP_APP_COUNT+3];
     stats[9]=W;stats[10]=H;stats[12]=APP_HEIGHT;
+    /* Retained producer generations in this completed presentation. Bounded
+     * metadata lets tests correlate app publication with GPU completion. */
+    stats[992]=0x54455831;stats[993]=GPU_TEXTURE_COUNT;
+    for(unsigned i=0;i<GPU_TEXTURE_COUNT;++i)stats[994+i]=revisions[i];
     /* Bounded timing-only history. No app text, pixels or key events. The
      * existing observation seqlock also protects each 80-byte ring record. */
     stats[13]=0x4d4f5431;stats[14]=48;
@@ -373,6 +391,7 @@ static void drive(unsigned source) {
     }
 }
 void init(void) {
+    cache[0]=shell_cache;for(unsigned i=0;i<DESKTOP_APP_COUNT;++i){cache[i+1]=app_cache[i];cache[i+1+DESKTOP_APP_COUNT]=decor_cache[i];}
     gpu=mmio;bool found=false;
     for(unsigned o=0;o<0x1000;o+=0x200)if(*(volatile uint32_t*)(mmio+o)==0x74726976&&*(volatile uint32_t*)(mmio+o+8)==16){gpu=mmio+o;found=true;break;}
     if(!found||read_reg(4)!=2){microkit_dbg_puts("DESKTOP_GPU|FAIL|modern GPU absent\n");return;}
@@ -384,8 +403,8 @@ void init(void) {
     write_reg(0x38,8);address(0x80,dma_paddr);address(0x90,dma_paddr+0x100);address(0xa0,dma_paddr+0x200);write_reg(0x44,1);write_reg(0x70,15);
     request();uint32_t *v=(void*)(dma+GPU_REQUEST+24);v[0]=9;char *name=(void*)(v+2);const char *s="nexatrode";for(unsigned i=0;i<9;++i)name[i]=s[i];if(!ok(command(0x200,1,96)))return;
     if(!resource(7,W,H,offsets[0],true)||!resource(8,W,H,offsets[1],true)||!resource(10,MAX_W,MAX_H,offsets[2],false))return;
-    for(unsigned i=1;i<=3;++i)if(!resource(10+i,AW,APP_MAX_PIXEL_HEIGHT,offsets[i+2],false))return;
-    for(unsigned i=4;i<7;++i)if(!resource(10+i,DW,MAX_DH,offsets[i+2],false))return;
+    for(unsigned i=1;i<=DESKTOP_APP_COUNT;++i)if(!resource(10+i,AW,APP_MAX_PIXEL_HEIGHT,offsets[i+2],false))return;
+    for(unsigned i=1+DESKTOP_APP_COUNT;i<GPU_TEXTURE_COUNT;++i)if(!resource(10+i,DW,MAX_DH,offsets[i+2],false))return;
     if(!resource(20,64,88,GPU_CURSOR_BASE,false))return;
     for(unsigned i=0;i<64*88;++i)((volatile uint32_t*)(dma+GPU_CURSOR_BASE))[i]=0xff40f4ffu;
     request();v=(void*)(dma+GPU_REQUEST+24);v[3]=64;v[4]=88;v[5]=1;v[8]=20;v[10]=256;v[11]=64*88*4;if(!ok(command(0x205,1,72)))return;

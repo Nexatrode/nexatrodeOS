@@ -7,7 +7,7 @@ use core::{ptr, sync::atomic::{AtomicU32, Ordering, fence}};
 use personal_os_slint_notes_spike::{DesktopShell, DesktopWindow, guest_platform, wall_clock};
 use sel4_microkit::{Channel, ChannelSet, Handler, Infallible, MessageInfo, memory_region_symbol, protection_domain, set_mr, debug_println};
 use slint::{ComponentHandle, LogicalPosition, PhysicalSize, Model, ModelRc, VecModel, platform::{PointerEventButton, WindowEvent, software_renderer::{MinimalSoftwareWindow, RepaintBufferType}}};
-const APP_COUNT: usize = if cfg!(feature = "desktop-browser-shell") { 3 } else { 2 };
+const APP_COUNT: usize = if cfg!(feature="desktop-maps-shell") {4} else if cfg!(feature = "desktop-browser-shell") { 3 } else { 2 };
 const SCALE: usize = if cfg!(feature = "desktop-shell-2x") { 2 } else { 1 };
 const WIDTH: usize = 1280 * SCALE;
 const HEIGHT: usize = 800 * SCALE;
@@ -52,7 +52,7 @@ impl Shell {
             fence(Ordering::Acquire);
             if first == state.revision.load(Ordering::Acquire) && (1..=APP_COUNT as u32).contains(&top) {
                 let order: [usize; APP_COUNT] = core::array::from_fn(|i| {
-                    if APP_COUNT==3 { (((packed >> (4*i)) & 15) as usize).wrapping_sub(1) }
+                    if APP_COUNT>=3 { (((packed >> (4*i)) & 15) as usize).wrapping_sub(1) }
                     else if i==0 { if top==1 {1} else {0} } else {top as usize-1}
                 });
                 if order.iter().any(|i|*i>=APP_COUNT) || order.iter().enumerate().any(|(i,v)|order[..i].contains(v)) { return; }
@@ -67,6 +67,7 @@ impl Shell {
                 self.ui.set_notes_running(wins[0].open != 0);
                 self.ui.set_calculator_running(wins[1].open != 0);
                 self.ui.set_browser_running(wins.get(2).is_some_and(|w|w.open!=0));
+                self.ui.set_maps_running(wins.get(3).is_some_and(|w|w.open!=0));
                 self.revision = first;
                 self.focused = focused;
             }
@@ -177,13 +178,14 @@ fn init() -> Shell {
     guest_platform::install(&window);
     window.dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor: SCALE as f32 });
     let ui = DesktopShell::new().unwrap();
-    ui.set_browser_enabled(APP_COUNT==3);
+    ui.set_browser_enabled(APP_COUNT>=3);
+    ui.set_maps_enabled(APP_COUNT==4);
     ui.set_real_apps(cfg!(feature = "desktop-apps-shell"));
     ui.set_compositor_layers(cfg!(feature="desktop-virgl-shell"));
     ui.on_command(|command, id, x, y| {
         // Three-app input focus and buttons are committed by the trusted
         // manager in event order, independently of shell repaint latency.
-        if cfg!(feature="desktop-virgl-shell") || (APP_COUNT == 3 && command != 4) { return; }
+        if cfg!(feature="desktop-virgl-shell") || (APP_COUNT >= 3 && command != 4) { return; }
         for (i, value) in [command, id, x, y].into_iter().enumerate() { set_mr(i, value as u64); }
         let reply = Channel::new(0).pp_call(MessageInfo::new(0x7b0, 4));
         if reply.label() != 0 { debug_println!("DESKTOP_SHELL|COMMAND_REJECTED|{}", command); }

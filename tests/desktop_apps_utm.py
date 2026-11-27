@@ -20,6 +20,7 @@ def main():
     p.add_argument('--composer',type=Path,required=True,help='large-page composer for the combined app ELF footprint')
     p.add_argument('--output',type=Path,required=True)
     p.add_argument('--resume',action='store_true')
+    p.add_argument('--maps',action='store_true',help='opt-in fourth offline CoMaps-data window; current GPU/resize profile only')
     p.add_argument('--browser',action='store_true',help='add windowed NetSurf with its own HTTPS session')
     p.add_argument('--virgl',action='store_true',help='experimental isolated retained-texture GPU compositor')
     p.add_argument('--gpu-verify',action='store_true',help='export GPU readback for pixel tests (adds frame overhead)')
@@ -27,6 +28,8 @@ def main():
     p.add_argument('--wrapped-session',action='store_true',help='disposable passphrase-wrapped three-app restart group; requires its private composer and a fresh disk')
     p.add_argument('--lock-idle-ms',type=int,default=60000)
     a=p.parse_args()
+    if a.maps and (not (a.browser and a.virgl and a.desktop_resize) or a.wrapped_session):p.error('--maps requires --browser --virgl --desktop-resize and its unlocked disposable profile')
+    app_count=4 if a.maps else 3 if a.browser else 2
     if a.desktop_resize and not (a.browser and a.virgl):p.error('--desktop-resize requires --browser --virgl')
     if a.wrapped_session and not (a.browser and a.virgl and a.desktop_resize):p.error('--wrapped-session requires the full three-app resize profile')
     if not 10000<=a.lock_idle_ms<=600000:p.error('lock idle must be 10000..600000 ms')
@@ -55,7 +58,7 @@ def main():
     for b in ('slint_photo_reader','slint_photo_worker','slint_transcript_worker'):shutil.copyfile(target/(b+'.elf'),out/(b+'.elf'))
     target=cargo('experiments/slint-notes/Cargo.toml','desktop-wallet-window,desktop-apps-observe'+(',desktop-resize-app' if a.desktop_resize else ''),['slint_notes_utm'])
     shutil.copyfile(target/'slint_notes_utm.elf',out/'wallet_ui.elf')
-    target=cargo('experiments/slint-notes/Cargo.toml','desktop-resize-shell' if a.desktop_resize else 'desktop-virgl-shell' if a.virgl else 'desktop-browser-shell' if a.browser else 'desktop-apps-shell',['desktop_shell'])
+    target=cargo('experiments/slint-notes/Cargo.toml','desktop-maps-shell' if a.maps else 'desktop-resize-shell' if a.desktop_resize else 'desktop-virgl-shell' if a.virgl else 'desktop-browser-shell' if a.browser else 'desktop-apps-shell',['desktop_shell'])
     shutil.copyfile(target/'desktop_shell.elf',out/'desktop_shell.elf')
     bins=['rust_vault_disk','rust_messages_agent_app','rust_entropy_rng','rust_clock']
     target=cargo('rust/Cargo.toml','storage-test,simplex-agent-vault,utm-slint-input,utm-photo-reader,utm-transcript-worker',bins,'build/desktop-apps-backends')
@@ -78,6 +81,9 @@ def main():
         sys.path.insert(0,str(ROOT/'experiments/desktop-apps'))
         import browser as desktop_browser
         desktop_browser.build(ROOT,out,inputs,ROOT/'build/netsurf-native',resize=a.desktop_resize)
+    if a.maps:
+        import maps as desktop_maps
+        map_pin=desktop_maps.build(ROOT,out,inputs,run)
     # Only the public agent code/config is imported. Never the vault ELF.
     shutil.copyfile(inputs/'pds/agentstore_probe.elf',out/'agentstore_probe.elf')
     for b in ('blk_driver.elf','blk_virt.elf'):shutil.copyfile(storage/b,out/b)
@@ -106,7 +112,7 @@ def main():
     if a.virgl and not a.browser:p.error('VirGL currently requires the three-app fixture')
     if a.gpu_verify and not a.virgl:p.error('--gpu-verify requires --virgl')
     flags=['clang','--target=aarch64-none-elf','-mcpu=cortex-a53','-mgeneral-regs-only','-std=gnu11','-O2','-ffreestanding','-fno-stack-protector','-nostdlib','-Wall','-Wextra','-Werror','-I',board/'include']
-    run(*flags,*(['-DDESKTOP_DYNAMIC'] if a.desktop_resize else []),*(['-DDESKTOP_VIRGL'] if a.virgl else []),*(['-DDESKTOP_APP_COUNT=3'] if a.browser else []),'-DDESKTOP_SCALE=2u','-DSLINT_FRAME_WIDTH=2560u','-DSLINT_FRAME_HEIGHT=1600u','-DSLINT_FRAME_REGION_BYTES=0x1000000u','-c',ROOT/'experiments/desktop-apps/manager.c','-o',out/'manager.o')
+    run(*flags,*(['-DDESKTOP_DYNAMIC'] if a.desktop_resize else []),*(['-DDESKTOP_VIRGL'] if a.virgl else []),*([f'-DDESKTOP_APP_COUNT={app_count}'] if a.browser else []),'-DDESKTOP_SCALE=2u','-DSLINT_FRAME_WIDTH=2560u','-DSLINT_FRAME_HEIGHT=1600u','-DSLINT_FRAME_REGION_BYTES=0x1000000u','-c',ROOT/'experiments/desktop-apps/manager.c','-o',out/'manager.o')
     run('ld.lld','-L',board/'lib',out/'manager.o','-lmicrokit','-T','microkit.ld','-o',out/'manager.elf')
     run(*flags,'-c',ROOT/'experiments/desktop-simplex/environment.c','-o',out/'environment.o')
     run('ld.lld','-L',board/'lib',out/'environment.o','-lmicrokit','-T','microkit.ld','-o',out/'environment.elf')
@@ -200,6 +206,7 @@ def main():
             if old is None:raise ValueError('unknown region '+name)
             m=copy.deepcopy(old);m.set('name',name);m.attrib.pop('phys_addr',None);system.append(m)
     if a.browser:desktop_browser.attach(system,manager,inputs,channel,mapping,mr)
+    if a.maps:desktop_maps.attach(system,manager,mapping,mr,channel)
     if a.virgl:
         gpu_irq=copy.deepcopy(pd('gpu_driver').find('irq'));gpu_irq.set('id','1')
         for name in ('gpu_client','gpu_driver','gpu_virt'):system.remove(pd(name))
@@ -209,11 +216,12 @@ def main():
         ET.SubElement(render,'program_image',path='desktop_gpu.elf')
         render.append(gpu_irq)
         for name,addr,symbol in [('shell_surface',0x70000000,'shell_surface'),('shell_state',0x72000000,'shell_state'),('ui_pointer',0x72001000,'ui_pointer'),('chat_frame',0x74000000,'surface_a'),('wallet_frame',0x75000000,'surface_b'),('browser_frame',0x76000000,'surface_c')]:mapping(render,name,addr,'r',symbol)
+        if a.maps:mapping(render,'map_frame',0x77000000,'r','surface_d')
         ET.SubElement(render,'map',mr='virtio_regs',vaddr='0x40000000',perms='rw',cached='false',setvar_vaddr='mmio')
-        mr('desktop_gpu_dma',0x9000000 if a.desktop_resize else 0x6000000,page_size='0x200000')
+        mr('desktop_gpu_dma',0x9600000 if a.maps else 0x9000000 if a.desktop_resize else 0x6000000,page_size='0x200000')
         ET.SubElement(render,'map',mr='desktop_gpu_dma',vaddr='0x60000000',perms='rw',cached='false',setvar_vaddr='dma')
         ET.SubElement(render,'setvar',symbol='dma_paddr',region_paddr='desktop_gpu_dma')
-        mr('shell_decorations',0xc00000,page_size='0x200000')
+        mr('shell_decorations',app_count*0x400000,page_size='0x200000')
         mapping(pd('desktop_shell'),'shell_decorations',0x76000000,'rw','shell_decorations')
         mapping(render,'shell_decorations',0x7a000000,'r','shell_decorations')
         system.find("memory_region[@name='shell_heap']").set('size','0x8000000' if a.desktop_resize else '0x4000000')
@@ -229,7 +237,7 @@ def main():
         used={m.get('mr') for m in system.iter('map')}
         for r in list(system.findall('memory_region')):
             if r.get('name') not in used:system.remove(r)
-        run(*flags,'-mstrict-align',*(['-DDESKTOP_DYNAMIC'] if a.desktop_resize else []),*(['-DDESKTOP_TRIO_LOCK'] if a.wrapped_session else []),'-DDESKTOP_APP_COUNT=3','-DDESKTOP_SCALE=2u','-DSLINT_FRAME_WIDTH=2560u','-DSLINT_FRAME_HEIGHT=1600u','-DSLINT_FRAME_REGION_BYTES=0x1000000u',*(['-DDESKTOP_GPU_VERIFY'] if a.gpu_verify else []),'-c',ROOT/'experiments/desktop-gpu/renderer.c','-o',out/'desktop_gpu.o')
+        run(*flags,'-mstrict-align',*(['-DDESKTOP_DYNAMIC'] if a.desktop_resize else []),*(['-DDESKTOP_TRIO_LOCK'] if a.wrapped_session else []),f'-DDESKTOP_APP_COUNT={app_count}','-DDESKTOP_SCALE=2u','-DSLINT_FRAME_WIDTH=2560u','-DSLINT_FRAME_HEIGHT=1600u','-DSLINT_FRAME_REGION_BYTES=0x1000000u',*(['-DDESKTOP_GPU_VERIFY'] if a.gpu_verify else []),'-c',ROOT/'experiments/desktop-gpu/renderer.c','-o',out/'desktop_gpu.o')
         run('ld.lld','-L',board/'lib',out/'desktop_gpu.o','-lmicrokit','-T','microkit.ld','-o',out/'desktop_gpu.elf')
     if a.desktop_resize:
         from desktop_resize_agent_build import attach,compile_agent
@@ -240,6 +248,7 @@ def main():
         mapping(manager,'display_request',0x6b001000,'r','desktop_display_request')
         for name,addr,perms in [('desktop_manager',0x6b000000,'rw'),('desktop_shell',0x77000000,'r'),('desktop_gpu',0x7b001000,'r'),('chat_ui',0x73000000,'r'),('wallet_ui',0x73000000,'r'),('native_browser',0x73000000,'r')]:
             mapping(pd(name),'desktop_display_mode',addr,perms,'desktop_display_mode')
+        if a.maps:mapping(pd('offline_map'),'desktop_display_mode',0x73000000,'r','desktop_display_mode')
         mapping(pd('desktop_gpu'),'display_ack',0x7b002000,'rw','display_ack')
     # Retain the original 4-core wallet worker affinities; normal service PDs on CPU0.
     if a.wrapped_session:
@@ -250,7 +259,7 @@ def main():
         desktop_session.attach(system,out,mapping,channel,mr)
         run(*flags,'-I',out,'-DDESKTOP_DYNAMIC','-DDESKTOP_VIRGL','-DDESKTOP_TRIO_LOCK',f'-DLOCK_IDLE_MS={a.lock_idle_ms}',
             *(['-DTRIO_STARTUP_TRACE'] if a.gpu_verify else []),
-            '-DDESKTOP_APP_COUNT=3','-DDESKTOP_SCALE=2u','-DSLINT_FRAME_WIDTH=2560u','-DSLINT_FRAME_HEIGHT=1600u','-DSLINT_FRAME_REGION_BYTES=0x1000000u',
+            f'-DDESKTOP_APP_COUNT={app_count}','-DDESKTOP_SCALE=2u','-DSLINT_FRAME_WIDTH=2560u','-DSLINT_FRAME_HEIGHT=1600u','-DSLINT_FRAME_REGION_BYTES=0x1000000u',
             '-c',ROOT/'experiments/desktop-apps/manager.c','-o',out/'manager.o')
         run('ld.lld','-L',board/'lib',out/'manager.o','-lmicrokit','-T','microkit.ld','-o',out/'manager.elf')
         run(*flags,'-c',ROOT/'experiments/desktop-apps/lock_probe.c','-o',out/'lock_probe.o')
@@ -258,9 +267,10 @@ def main():
     ET.indent(system);ET.ElementTree(system).write(out/'desktop-apps.system',encoding='utf-8',xml_declaration=True)
     from desktop_apps_manifest import validate
     validate(out/'desktop-apps.system',out,browser=a.browser)
+    if a.maps:desktop_maps.validate(system)
     if a.browser:
         from runtime_manifest import inventory
-        (out/'runtime.json').write_text(json.dumps(inventory(out/'desktop-apps.system'),indent=2)+'\n')
+        (out/'runtime.json').write_text(json.dumps(inventory(out/'desktop-apps.system',maps=a.maps),indent=2)+'\n')
     subprocess.run([str(a.composer.resolve()),str(out/'desktop-apps.system'),'--board',BOARD,'--config',CONFIG,'--search-path',str(out),'-o',str(out/'loader.img'),'-r',str(out/'report.txt')],cwd=ROOT,env=dict(env,MICROKIT_SDK=str(sdk)),check=True)
     sha=lambda x:hashlib.sha256(x.read_bytes()).hexdigest()
     sources=[Path(__file__),*[x for x in (ROOT/'experiments/desktop-apps').glob('*') if x.suffix in {'.c','.h','.rs','.py'}],ROOT/'experiments/slint-notes/ui/desktop_chat.slint',ROOT/'experiments/slint-notes/ui/full_suite.slint',ROOT/'experiments/desktop-shell/compositor.c',ROOT/'experiments/desktop-shell/shell.rs']
@@ -274,7 +284,13 @@ def main():
     if a.browser:
         sources += [p for p in (ROOT/'experiments/netsurf-native').rglob('*') if p.is_file() and '__pycache__' not in str(p)]
         sources += [ROOT/'tests/net/dhcp_client.c',ROOT/'tests/net/haskell_tcp_service.c',ROOT/'tests/net/include/haskell_tcp_protocol.h',ROOT/'tests/net/include/desktop_tcp_wire.h',ROOT/'experiments/guest-https/src/lib.rs',ROOT/'experiments/guest-https/Cargo.toml']
-    manifest={'system_sha256':sha(out/'desktop-apps.system'),'runtime_sha256':sha(out/'runtime.json') if a.browser else None,'desktop_resize':a.desktop_resize,'resize_bounds':[[1600,1200],[3840,2160]] if a.desktop_resize else None,'virgl':a.virgl,'gpu_verify':a.gpu_verify,'browser':a.browser,'apps':['SimpleX','NexaWal']+(['NetSurf'] if a.browser else []),'scale':2,'resolution':[2560,1600],'vcpus':4,'saved_data_used':False,'development_storage_key':True,'static_services':True,'sources':{str(x.relative_to(ROOT)):sha(x) for x in sources if x.is_file()},'artifacts':{x.name:sha(x) for x in out.glob('*.elf')},'loader_sha256':sha(out/'loader.img')}
+    manifest={'system_sha256':sha(out/'desktop-apps.system'),'runtime_sha256':sha(out/'runtime.json') if a.browser else None,'desktop_resize':a.desktop_resize,'resize_bounds':[[1600,1200],[3840,2160]] if a.desktop_resize else None,'virgl':a.virgl,'gpu_verify':a.gpu_verify,'browser':a.browser,'maps':a.maps,'apps':['SimpleX','NexaWal']+(['NetSurf'] if a.browser else [])+(['Maps'] if a.maps else []),'scale':2,'resolution':[2560,1600],'vcpus':4,'saved_data_used':False,'development_storage_key':True,'static_services':True,'sources':{str(x.relative_to(ROOT)):sha(x) for x in sources if x.is_file()},'artifacts':{x.name:sha(x) for x in out.glob('*.elf')},'loader_sha256':sha(out/'loader.img')}
+    if a.maps:
+        manifest['map_region']=map_pin
+        manifest['composer_sha256']=sha(a.composer.resolve())
+        extra=[x for x in (ROOT/'experiments/comaps-native').rglob('*') if x.is_file() and '__pycache__' not in str(x)]
+        extra += [ROOT/'experiments/slint-notes/assets/icons/maps.svg',ROOT/'tests/desktop_maps_input.py',ROOT/'tests/desktop_maps_contract_test.py',ROOT/'tests/comaps_raster_test.c']
+        manifest['sources'].update({str(x.relative_to(ROOT)):sha(x) for x in extra})
     manifest.update(wrapped_session=a.wrapped_session,lock_idle_ms=a.lock_idle_ms if a.wrapped_session else None,wallet_event_pump=a.wrapped_session)
     if a.wrapped_session:
         manifest['development_storage_key']=False
