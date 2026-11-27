@@ -16,4 +16,7 @@ class Boundary(unittest.TestCase):
    s=(ROOT/'rust/src'/f).read_text()
    for bad in ['elf_window_trace','service_registry_trace','rmtfs_event_clock','intent_ack_clock','unsafe','with_io']:self.assertNotIn(bad,s)
   s=(ROOT/'rust/src/qcom_owner_ready_handoff.rs').read_text();self.assertIn('self.adapter.take_elf_slot_turn(&completed,&waiting)',s);self.assertIn('self.dispatch_service_registry_step(interrupts)',s);self.assertIn('self.elf_ready_handoff.ready.take()',s)
+ def test_runtime_attempt_precedes_other_service_work(self):
+  s=(ROOT/'rust/src/pixel_mpss_runtime.rs').read_text();a=s.index('    fn service_pass(');z=s.index('        let server = (&mut *self.boot).server().map_err(|_| 0x51u32)?;',a);call='self.router.service_ready_blocker(owner)'
+  self.assertEqual(s.count(call),1);self.assertIn(call,s[a:z]);self.assertIn('self.router.dispatch_queued_elf_reply(owner)',s[a:z])
 if __name__=='__main__':unittest.main()
