@@ -1,7 +1,16 @@
 //! Retained startup outcomes and bounded MCFG cleanup diagnostics.
 use super::*;
+/* POST_EFS_ELF_PANEL_BEGIN */
+#[cfg(feature="sunfish-post-efs-elf-writer")]
+#[path="pixel_mpss_post_efs_elf.rs"]
+mod post_efs_elf;
+/* POST_EFS_ELF_PANEL_END */
 impl RuntimeDomain {
     pub(super) fn show_tftp_completion(&self, d: &Display, owner: &ModemOwner) {
+/* POST_EFS_ELF_PANEL_BEGIN */
+#[cfg(feature="sunfish-post-efs-elf-writer")]
+        {self.show_post_efs_elf(d,owner);return;}
+/* POST_EFS_ELF_PANEL_END */
         #[cfg(feature="sunfish-startup-prerequisites")]
         {self.show_startup_prerequisites(d,owner);return;}
         #[cfg(feature="sunfish-mcfg-writer-trace")]
