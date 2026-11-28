@@ -2,6 +2,8 @@ from pathlib import Path
 import re,subprocess,unittest
 ROOT=Path(__file__).resolve().parents[1];BASE='a310ca9f'
 def without_ruleset_fifo(path,s):
+ from sunfish_ruleset_control_source_test import without_ruleset_control,without_integrated_maps
+ s=without_integrated_maps(path,without_ruleset_control(path,s))
  s=re.sub(r'/\* RULESET_FIFO_BEGIN \*/\n.*?/\* RULESET_FIFO_END \*/\n\n?','',s,flags=re.S)
  if path=='rust/Cargo.toml':s=s.replace('sunfish-ruleset-reply-fifo = ["sunfish-ruleset-service-handoff"]\n','')
  return s

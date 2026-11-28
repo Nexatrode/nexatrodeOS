@@ -237,6 +237,11 @@ impl<I: BootIo> BootTransport<I> {
 /* EFS_REPLY_FIFO_END */
             #[cfg(feature="sunfish-registry-tx3-wire-headers")]
             registry_wire: None,
+/* RULESET_CONTROL_BEGIN */
+                #[cfg(feature="sunfish-ruleset-control-window")]
+                ruleset_control:crate::qcom_glink_fifo::RulesetControlTrace::default(),
+/* RULESET_CONTROL_END */
+
                 #[cfg(feature = "sunfish-registry-prearm-io-trace")]
                 prearm_io: None,
                 #[cfg(feature = "sunfish-tftp-tail-observer")]

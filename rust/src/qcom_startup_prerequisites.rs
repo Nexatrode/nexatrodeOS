@@ -37,6 +37,11 @@ fn matches_tx(r:&StartupRead,t:&Transmit,local:u32)->bool{
  &&t.len>=32&&word(&t.bytes,4)==1&&word(&t.bytes,20)==r.reply_bytes
 }
 impl StartupRead {pub fn record_sequence(&self)->Option<u64>{self.record.map(|r|r.sequence())}}
+/* RULESET_CONTROL_BEGIN */
+#[cfg(feature="sunfish-ruleset-control-window")]
+impl StartupRead {pub(crate) fn observation_handle(&self)->TftpHandle{self.handle}}
+/* RULESET_CONTROL_END */
+
 impl Session {
  pub fn startup_prerequisites(&self)->&StartupPrerequisites{&self.startup_prerequisites}
  pub(super) fn observe_startup_read(&mut self,index:usize,handle:TftpHandle){

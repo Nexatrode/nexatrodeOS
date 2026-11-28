@@ -1,7 +1,17 @@
 //! Original second/third ruleset reply consumption and matching receipt visibility.
 use super::*;
+/* RULESET_CONTROL_BEGIN */
+#[cfg(feature="sunfish-ruleset-control-window")]
+#[path="pixel_mpss_ruleset_control.rs"]
+mod ruleset_control;
+/* RULESET_CONTROL_END */
+
 impl RuntimeDomain{
  pub(super) fn show_ruleset_reply_fifo(&self,d:&Display,owner:&ModemOwner){
+/* RULESET_CONTROL_BEGIN */
+  #[cfg(feature="sunfish-ruleset-control-window")]
+  {self.show_ruleset_control_window(d,owner);return;}
+/* RULESET_CONTROL_END */
   for n in 2..=28{d.replace_line(n,"");}d.replace_line(1,"RULESET REPLY FIFO");
   let age=|t|self.time_from_us(Some(self.runtime_started),t);
   let row=|n,label,v:&[u32]|{d.header_label(n,label);let mut f=[(0,8);6];for(i,v)in v.iter().enumerate(){f[i]=(*v,8);}d.header_row(n,true,&f[..v.len()]);};

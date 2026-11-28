@@ -2267,6 +2267,10 @@ impl<I: Io> Owner<I> {
 /* EFS_REPLY_FIFO_BEGIN */
 #[cfg(feature="sunfish-efs-reply-fifo")]
     pub fn efs_reply_fifo(&self)->Option<fifo::EfsReplyFifo>{self.adapter.efs_reply_fifo()}
+/* RULESET_CONTROL_BEGIN */
+    #[cfg(feature="sunfish-ruleset-control-window")]
+    pub fn ruleset_control_trace(&self)->&fifo::RulesetControlTrace{self.adapter.ruleset_control_trace()}
+/* RULESET_CONTROL_END */
 /* RULESET_FIFO_BEGIN */
     #[cfg(feature="sunfish-ruleset-reply-fifo")]
     pub fn ruleset_reply_fifo(&self,index:usize)->Option<fifo::RulesetReplyFifo>{self.adapter.ruleset_reply_fifo(index)}

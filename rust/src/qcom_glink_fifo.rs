@@ -68,6 +68,13 @@ pub use grant_reads::GrantBufferReads;
 #[cfg(feature = "sunfish-oack-grant-outcome")]
 pub use grant_reads::OackGrantTrace;
 
+/* RULESET_CONTROL_BEGIN */
+#[cfg(feature="sunfish-ruleset-control-window")]
+#[path="qcom_fifo_ruleset_control.rs"]
+mod ruleset_control;
+#[cfg(feature="sunfish-ruleset-control-window")]
+pub use ruleset_control::{RulesetControlTrace,RulesetControlEntry,RulesetRequestVisibility};
+/* RULESET_CONTROL_END */
 use crate::qcom_glink_qmi::{
     self as core, Event, Published, Reply, RequestHandle, Session, TftpHandle, WriteError,
 };
@@ -1552,6 +1559,11 @@ struct Ring<I> {
 /* EFS_REPLY_FIFO_END */
     #[cfg(feature="sunfish-registry-tx3-wire-headers")]
     registry_wire: Option<RegistryWireTrace>,
+/* RULESET_CONTROL_BEGIN */
+    #[cfg(feature="sunfish-ruleset-control-window")]
+    ruleset_control:RulesetControlTrace,
+/* RULESET_CONTROL_END */
+
     #[cfg(feature = "sunfish-registry-prearm-io-trace")]
     prearm_io: Option<RegistryPrearmIo>,
     #[cfg(feature = "sunfish-tftp-tail-observer")]
@@ -2182,6 +2194,10 @@ impl<I: Io> Ring<I> {
             let h=RegistryWireHeader::read(record,true,self.first_server_check_clock.map(|clock|clock()));
             self.registry_wire.as_mut().unwrap().record(h,false);
         }
+/* RULESET_CONTROL_BEGIN */
+        #[cfg(feature="sunfish-ruleset-control-window")]
+        self.observe_ruleset_control_tx(record);
+/* RULESET_CONTROL_END */
         Ok(true)
     }
 
@@ -2394,6 +2410,11 @@ impl<I: Io> Adapter<I> {
 /* EFS_REPLY_FIFO_END */
                 #[cfg(feature="sunfish-registry-tx3-wire-headers")]
                 registry_wire: None,
+/* RULESET_CONTROL_BEGIN */
+                #[cfg(feature="sunfish-ruleset-control-window")]
+                ruleset_control:crate::qcom_glink_fifo::RulesetControlTrace::default(),
+/* RULESET_CONTROL_END */
+
                 #[cfg(feature = "sunfish-registry-prearm-io-trace")]
                 prearm_io: None,
                 #[cfg(feature = "sunfish-tftp-tail-observer")]
@@ -3332,6 +3353,10 @@ impl<I: Io> Adapter<I> {
 #[cfg(feature="sunfish-mcfg-rx-veto-trace")]
             self.record_mcfg_rx_event(4,Some(RegistrationHeader::read(&first.bytes[..first.len],false,None)));
 /* MCFG_RX_VETO_END */
+/* RULESET_CONTROL_BEGIN */
+            #[cfg(feature="sunfish-ruleset-control-window")]
+            let control_before=ruleset_reply::INDICES.map(|i|self.session.startup_prerequisites().reads[i].map(|r|(r.record_sequence(),r.flags)));
+/* RULESET_CONTROL_END */
             let event = match self.session.ingest(generation, &first.bytes[..first.len]) {
                 Ok(event) => event,
                 Err(error) => {
@@ -3344,6 +3369,10 @@ impl<I: Io> Adapter<I> {
             };
             #[cfg(feature = "sunfish-grant-buffer-reads")]
             if first.bytes[0] == 9 { self.ring.grant_reads.release(word(&first.bytes, 4)); }
+/* RULESET_CONTROL_BEGIN */
+            #[cfg(feature="sunfish-ruleset-control-window")]
+            self.observe_ruleset_control_rx(first.len,true,control_before);
+/* RULESET_CONTROL_END */
             let queue = &mut self.ring.control.as_mut().unwrap().early;
             queue.rotate_left(1);
             queue[7] = None;
@@ -3425,6 +3454,10 @@ impl<I: Io> Adapter<I> {
             self.ring.capture_registry_wire_rx(size,false);
             #[cfg(feature = "sunfish-tftp-first-oack-headers")]
             self.ring.capture_first_oack_rx(size, false);
+/* RULESET_CONTROL_BEGIN */
+            #[cfg(feature="sunfish-ruleset-control-window")]
+            self.observe_ruleset_control_rx(size,false,ruleset_reply::INDICES.map(|i|self.session.startup_prerequisites().reads[i].map(|r|(r.record_sequence(),r.flags))));
+/* RULESET_CONTROL_END */
             self.consume_received(size, false)?;
             self.quarantined = false;
             return Ok(Receive::Control);
@@ -3484,6 +3517,11 @@ impl<I: Io> Adapter<I> {
         #[cfg(feature="sunfish-ruleset-reply-fifo")]
         self.observe_ruleset_reply_rx(ruleset_before,size);
 /* RULESET_FIFO_END */
+/* RULESET_CONTROL_BEGIN */
+        #[cfg(feature="sunfish-ruleset-control-window")]
+        self.observe_ruleset_control_rx(size,false,ruleset_before);
+/* RULESET_CONTROL_END */
+
         #[cfg(feature = "sunfish-first-wrq-spare-oack")]
         if matches!(event, Receive::Session(core::Event::ReceiveIntentRequest { .. }))
             && word(&self.ring.record, 4) == 108 && self.first_grant.request_108_at.is_none()
@@ -4309,6 +4347,11 @@ impl<I: Io> Adapter<I> {
         #[cfg(feature="sunfish-ruleset-reply-fifo")]
         self.arm_ruleset_reply_fifo(ruleset_waiting,result);
 /* RULESET_FIFO_END */
+/* RULESET_CONTROL_BEGIN */
+        #[cfg(feature="sunfish-ruleset-control-window")]
+        self.bind_ruleset_control_records();
+/* RULESET_CONTROL_END */
+
 /* RECEIPT_FIFO_BEGIN */
         #[cfg(feature="sunfish-registry-receipt-fifo")]
         self.arm_elf_reply_fifo(result);
@@ -4742,6 +4785,11 @@ impl<I: Io> Adapter<I> {
 /* EFS_REPLY_FIFO_END */
         #[cfg(feature="sunfish-registry-tx3-wire-headers")]
         { self.ring.registry_wire=None; }
+/* RULESET_CONTROL_BEGIN */
+        #[cfg(feature="sunfish-ruleset-control-window")]
+        {self.ring.ruleset_control=RulesetControlTrace::default();}
+/* RULESET_CONTROL_END */
+
         #[cfg(feature = "sunfish-registry-prearm-io-trace")]
         { self.ring.io.registry_prearm_timing(false); self.ring.prearm_io = None; }
         #[cfg(feature = "sunfish-ipa-init-close-visibility")]

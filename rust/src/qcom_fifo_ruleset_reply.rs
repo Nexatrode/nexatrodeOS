@@ -9,6 +9,10 @@ pub struct RulesetReplyFifo {
 pub(super) struct RulesetReplyWatch {
  pub(super) window:RegistryReplyWindow,record:u64,intent:u32,armed:Option<u64>,unread:u32,close_unread:Option<u32>,
 }
+/* RULESET_CONTROL_BEGIN */
+#[cfg(feature="sunfish-ruleset-control-window")]
+impl RulesetReplyWatch {pub(super) fn binding(&self)->(u64,u32){(self.record,self.intent)}}
+/* RULESET_CONTROL_END */
 impl<I:Io> Adapter<I>{
  pub fn ruleset_reply_fifo(&self,index:usize)->Option<RulesetReplyFifo>{
   let w=self.ring.ruleset_reply.get(index)?.as_ref()?;
