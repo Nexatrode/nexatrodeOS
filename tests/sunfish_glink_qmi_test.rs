@@ -4384,12 +4384,14 @@ mod registry_between_grants {
     fn own_request_return_and_ready_qrtr_credit_keep_their_turns(){
         for confirm in [false,true]{
             let(mut s,request)=prepared(false,confirm,4096);
+            let credit_first=confirm&&cfg!(feature="sunfish-tx3-credit-return-turn");
+            if credit_first{let(e,b)=publish(&mut s).unwrap();assert!(matches!(e,Published::Data{..}));assert_eq!(word(&b,20),7);}
             assert!(matches!(publish(&mut s).unwrap().0,Published::ReceiveDone(_)));
-            let early=if cfg!(feature="sunfish-registry-ready-handoffs") && !confirm {Some(reply(&mut s))}else{None};
+            let early=if cfg!(feature="sunfish-registry-ready-handoffs") && (!confirm||credit_first) {Some(reply(&mut s))}else{None};
             grant(&mut s);
-            if confirm {let(e,b)=publish(&mut s).unwrap();assert!(matches!(e,Published::Data{..}));assert_eq!(word(&b,20),7);}
+            if confirm&&!credit_first {let(e,b)=publish(&mut s).unwrap();assert!(matches!(e,Published::Data{..}));assert_eq!(word(&b,20),7);}
             let(id,_)=early.unwrap_or_else(||reply(&mut s));
-            assert_eq!(s.registry_window_trace().predecessor.unwrap().publication.unwrap().mask&0x300,if cfg!(feature="sunfish-registry-ready-handoffs")&&!confirm{0x300}else{0});
+            assert_eq!(s.registry_window_trace().predecessor.unwrap().publication.unwrap().mask&0x300,if cfg!(feature="sunfish-registry-ready-handoffs")&&(!confirm||credit_first){0x300}else{0});
             assert_eq!(s.ingest(1,&control(14,id)),Ok(Event::ReplyRxDone(request)));
         }
     }

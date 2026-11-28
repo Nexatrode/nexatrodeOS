@@ -50,3 +50,5 @@ pub(super) fn queue_order_test_setup(confirm:bool,txn:u16,capacity:u32,returned:
 
 #[cfg(feature="sunfish-tx3-own-return-turn")]
 pub(super) fn tx3_manifest_pending()->(Session,RequestHandle,u32){queued_elf(true,false,3,b"avs/audio",0,4096,true,false)}
+#[cfg(feature="sunfish-tx3-credit-return-turn")]
+pub(super) fn tx3_manifest_pending_confirmed()->(Session,RequestHandle,u32){queued_elf(true,true,3,b"avs/audio",0,4096,true,false)}

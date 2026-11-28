@@ -38,7 +38,7 @@ fn full_slots(controls:bool)->(Session,RequestHandle,Vec<u32>){
 }
 #[test]fn tx3_own_return_denial_credit_fit_other_txn_and_bounded_call_stay_protected(){
  let(mut s,_,_)=full_slots(false);assert_eq!(publish(&mut s).unwrap().0,Published::IntentRequestAck{granted:false});
- for(confirm,txn,capacity)in[(true,3,4096),(false,4,4096),(false,3,16)]{let(mut s,_,_)=setup(false,confirm,txn,capacity);grant(&mut s);}
+ for(confirm,txn,capacity)in[(true,3,4096),(false,4,4096),(false,3,16)]{let(mut s,_,id)=setup(false,confirm,txn,capacity);if confirm&&cfg!(feature="sunfish-tx3-credit-return-turn"){let(_,b)=reply(&mut s);assert_eq!(word(&b,20),7);assert_eq!(publish(&mut s).unwrap().0,Published::ReceiveDone(id));let _=reply(&mut s);}grant(&mut s);}
  let(mut s,_,_)=setup(false,false,3,4096);let e=s.publish_oack_followup(1,qcom_glink_qmi::OackFollowup::Advertise,|_|Ok(())).unwrap();assert!(!matches!(e,Some(Published::ReceiveDone(_))));assert_eq!(s.registry_window_trace().predecessor.unwrap().publication.map_or(0,|p|p.mask)&0x600000,0);
 }
 #[test]fn tx3_own_return_uncertain_or_unwound_write_quarantines_and_resets(){
@@ -51,3 +51,7 @@ fn full_slots(controls:bool)->(Session,RequestHandle,Vec<u32>){
  assert_eq!(word(&b,8),88);assert_eq!(&b[49..51],&3u16.to_le_bytes());assert!(b.windows(b"msm/adsp/audio_pd".len()).any(|w|w==b"msm/adsp/audio_pd"));
  grant(&mut s);assert_eq!(s.ingest(1,&control(14,remote)),Ok(Event::ReplyRxDone(h)));
 }
+
+#[cfg(feature="sunfish-tx3-credit-return-turn")]
+#[path="sunfish_tx3_credit_return_cases.rs"]
+mod credit_return_cases;

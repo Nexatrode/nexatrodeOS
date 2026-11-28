@@ -2,6 +2,8 @@ from pathlib import Path
 import re,subprocess,unittest
 ROOT=Path(__file__).resolve().parents[1];BASE='7dee737a'
 def without_own_return(path,s):
+ from sunfish_tx3_credit_return_source_test import without_credit_return
+ s=without_credit_return(path,s)
  s=re.sub(r'/\* TX3_RETURN_BEGIN \*/\n.*?/\* TX3_RETURN_END \*/\n','',s,flags=re.S)
  if path=='rust/Cargo.toml':s=s.replace('sunfish-tx3-own-return-turn = ["sunfish-registry-receipt-fifo"]\n','')
  if path=='rust/src/qcom_glink_qmi.rs':s=s.replace('.or(priority_registration_done)\n            .or(denial_done)','.or(priority_registration_done).or(denial_done)')

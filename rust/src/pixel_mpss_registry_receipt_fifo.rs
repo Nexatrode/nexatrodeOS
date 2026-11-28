@@ -6,6 +6,10 @@ impl RuntimeDomain {
 /* TX3_RETURN_BEGIN */
         #[cfg(feature="sunfish-tx3-own-return-turn")]
         d.replace_line(1,"TX3 OWN RETURN TURN");
+/* TX3_CREDIT_BEGIN */
+        #[cfg(feature="sunfish-tx3-credit-return-turn")]
+        d.replace_line(1,"TX3 CREDIT RETURN");
+/* TX3_CREDIT_END */
 /* TX3_RETURN_END */
         let age=|t|self.time_from_us(Some(self.runtime_started),t);
         let span=|t|self.time_from_us(Some(0),t);

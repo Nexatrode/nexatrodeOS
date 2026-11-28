@@ -792,6 +792,10 @@ struct Transmit {
 /* TX3_RETURN_BEGIN */
     #[cfg(feature="sunfish-tx3-own-return-turn")]
     registry_own_return_used:bool,
+/* TX3_CREDIT_BEGIN */
+    #[cfg(feature="sunfish-tx3-credit-return-turn")]
+    tx3_own_credit_committed:bool,
+/* TX3_CREDIT_END */
 /* TX3_RETURN_END */
 /* READY_HANDOFF_END */
     #[cfg(feature = "sunfish-registry-converted-credit-turn")]
@@ -840,6 +844,10 @@ impl Transmit {
 /* TX3_RETURN_BEGIN */
             #[cfg(feature="sunfish-tx3-own-return-turn")]
             registry_own_return_used:false,
+/* TX3_CREDIT_BEGIN */
+            #[cfg(feature="sunfish-tx3-credit-return-turn")]
+            tx3_own_credit_committed:false,
+/* TX3_CREDIT_END */
 /* TX3_RETURN_END */
 /* READY_HANDOFF_END */
             #[cfg(feature = "sunfish-registry-converted-credit-turn")]
@@ -8109,6 +8117,10 @@ impl Session {
                 || {#[cfg(feature="sunfish-elf-credit-pair-turn")] {self.elf_ready_credit_can_continue(*i)}
                     #[cfg(not(feature="sunfish-elf-credit-pair-turn"))] {false}}
 /* ELF_CREDIT_END */
+/* TX3_CREDIT_BEGIN */
+                || {#[cfg(feature="sunfish-tx3-credit-return-turn")] {self.tx3_own_credit_can_continue(*i)}
+                    #[cfg(not(feature="sunfish-tx3-credit-return-turn"))] {false}}
+/* TX3_CREDIT_END */
                 ))}else{None};
         #[cfg(feature="sunfish-registry-ready-handoffs")]
         let registry_before_grant=registry_before_grant || ready_registry.is_some();
@@ -8142,6 +8154,14 @@ impl Session {
         let converted_credit=converted_credit.or_else(||ordinary.then(||
             self.elf_ready_credit_candidate(registry_candidate,ready_registry,converted_registry)).flatten());
 /* ELF_CREDIT_END */
+/* TX3_CREDIT_BEGIN */
+        #[cfg(feature="sunfish-tx3-credit-return-turn")]
+        let tx3_own_credit = if converted_credit.is_none() {
+            self.tx3_own_credit_candidate(ordinary,conversion_wrq_return || conversion_tftp)
+        } else {None};
+        #[cfg(feature="sunfish-tx3-credit-return-turn")]
+        let converted_credit=converted_credit.or(tx3_own_credit);
+/* TX3_CREDIT_END */
         #[cfg(feature = "sunfish-registry-converted-credit-turn")]
         let prefer_ack = prefer_ack && converted_credit.is_none();
         #[cfg(feature = "sunfish-wlan-registry-turn-gates")]
@@ -8986,6 +9006,11 @@ impl Session {
 /* ELF_CREDIT_BEGIN */
             let credit_observer_matches={#[cfg(feature="sunfish-elf-credit-pair-turn")] {!self.transmit[registry].elf_ready_credit_target}
                 #[cfg(not(feature="sunfish-elf-credit-pair-turn"))] {true}};
+/* TX3_CREDIT_BEGIN */
+            #[cfg(feature="sunfish-tx3-credit-return-turn")]
+            let credit_observer_matches=credit_observer_matches
+                && tx3_own_credit.is_none_or(|(target,_,_)|target!=registry);
+/* TX3_CREDIT_END */
             if credit_observer_matches {
 /* ELF_CREDIT_END */
             if let Some(first) = self.registry_window.target.as_mut().and_then(|p| p.conversion.first.as_mut())
@@ -9068,6 +9093,12 @@ impl Session {
         #[cfg(feature = "sunfish-registry-converted-credit-turn")]
         if result.is_ok() && let Some((registry, _, _)) = borrowed_credit {
             self.transmit[registry].registry_publication.mask |= 1 << 18;
+/* TX3_CREDIT_BEGIN */
+            #[cfg(feature="sunfish-tx3-credit-return-turn")]
+            if tx3_own_credit.is_some_and(|(target,credit,_)|target==registry
+                && matches!(&commit,Commit::Data(actual,_,_)if *actual==credit))
+            {self.transmit[registry].tx3_own_credit_committed=true;}
+/* TX3_CREDIT_END */
 /* ELF_CREDIT_BEGIN */
             #[cfg(feature="sunfish-elf-credit-pair-turn")]
             if self.transmit[registry].elf_ready_credit_target {self.transmit[registry].elf_ready_credit_committed=true;}
