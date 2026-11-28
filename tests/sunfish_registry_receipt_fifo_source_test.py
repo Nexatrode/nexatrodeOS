@@ -2,6 +2,8 @@ from pathlib import Path
 import re,subprocess,unittest
 ROOT=Path(__file__).resolve().parents[1];BASE='4cdab83e'
 def without_receipt(path,s):
+ from sunfish_tx3_own_return_source_test import without_own_return
+ s=without_own_return(path,s)
  s=re.sub(r'/\* RECEIPT_FIFO_BEGIN \*/\n.*?/\* RECEIPT_FIFO_END \*/\n','',s,flags=re.S)
  if path=='rust/Cargo.toml':s=s.replace('sunfish-registry-receipt-fifo = ["sunfish-registry-elf-pressure"]\n','')
  return s

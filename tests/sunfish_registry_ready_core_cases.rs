@@ -15,7 +15,7 @@ fn reply(s:&mut Session)->(u32,Vec<u8>){let(e,b)=publish(s).unwrap();let Publish
  let(mut s,h,_)=setup(true,false,3,4096);let mut original=vec![];assert_eq!(s.publish_next(1,|b|{original.extend_from_slice(b);Err(WriteError::WouldBlock)}),Err(Error::WouldBlock));let p=s.registry_window_trace().predecessor.unwrap().publication.unwrap();assert_eq!(p.mask&0x180000,0x80000);grant(&mut s);let(id,b)=reply(&mut s);assert_eq!(b,original);assert_eq!(s.registry_window_trace().predecessor.unwrap().publication.unwrap().mask&0x180000,0x80000);assert_eq!(s.ingest(1,&control(14,id)),Ok(Event::ReplyRxDone(h)));
 }
 #[test]fn ready_reply_own_return_credit_and_other_transactions_keep_priority(){
- let(mut own,h,id)=setup(false,false,3,4096);grant(&mut own);assert_eq!(publish(&mut own).unwrap().0,Published::ReceiveDone(id));let(i,_)=reply(&mut own);assert_eq!(own.ingest(1,&control(14,i)),Ok(Event::ReplyRxDone(h)));
+ let(mut own,h,id)=setup(false,false,3,4096);if !cfg!(feature="sunfish-tx3-own-return-turn"){grant(&mut own);}assert_eq!(publish(&mut own).unwrap().0,Published::ReceiveDone(id));let(i,_)=reply(&mut own);if cfg!(feature="sunfish-tx3-own-return-turn"){grant(&mut own);}assert_eq!(own.ingest(1,&control(14,i)),Ok(Event::ReplyRxDone(h)));
  let(mut credit,_,_)=setup(true,true,3,4096);grant(&mut credit);let(_,b)=reply(&mut credit);assert_eq!(word(&b,20),7);let _=reply(&mut credit);
  let(mut four,_,_)=setup(true,false,4,4096);grant(&mut four);let _=reply(&mut four);
 }
@@ -37,3 +37,7 @@ mod elf_ready_cases;
 #[cfg(feature="sunfish-registry-elf-pressure")]
 #[path="sunfish_registry_queue_ready_cases.rs"]
 mod registry_queue_ready_cases;
+
+#[cfg(feature="sunfish-tx3-own-return-turn")]
+#[path="sunfish_tx3_own_return_cases.rs"]
+mod tx3_own_return_cases;

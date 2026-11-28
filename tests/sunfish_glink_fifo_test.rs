@@ -1534,3 +1534,7 @@ mod announcement_fixture;
 #[cfg(feature="sunfish-registry-receipt-fifo")]
 #[path="sunfish_elf_receipt_fifo_cases.rs"]
 mod elf_receipt_fifo_cases;
+
+#[cfg(feature="sunfish-tx3-own-return-turn")]
+#[path="sunfish_tx3_own_return_fifo_cases.rs"]
+mod tx3_own_return_fifo_cases;

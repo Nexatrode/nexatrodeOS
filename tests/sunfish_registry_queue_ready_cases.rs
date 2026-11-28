@@ -11,7 +11,7 @@ use super::*;
  assert_eq!(s.ingest(1,&control(14,id)),Ok(Event::ReplyRxDone(h)));
 }
 #[test]fn registry_queue_ready_own_return_credit_fit_and_other_txn_stay_required(){
- let(mut s,h,id)=elf_ready_cases::queue_order_test_setup(false,3,4096,false);grant(&mut s);assert_eq!(publish(&mut s).unwrap().0,Published::ReceiveDone(id));let(i,_)=reply(&mut s);assert_eq!(s.ingest(1,&control(14,i)),Ok(Event::ReplyRxDone(h)));
+ let(mut s,h,id)=elf_ready_cases::queue_order_test_setup(false,3,4096,false);if !cfg!(feature="sunfish-tx3-own-return-turn"){grant(&mut s);}assert_eq!(publish(&mut s).unwrap().0,Published::ReceiveDone(id));let(i,_)=reply(&mut s);if cfg!(feature="sunfish-tx3-own-return-turn"){grant(&mut s);}assert_eq!(s.ingest(1,&control(14,i)),Ok(Event::ReplyRxDone(h)));
  let(mut s,_,_)=elf_ready_cases::queue_order_test_setup(true,3,4096,true);grant(&mut s);let(_,b)=reply(&mut s);assert_eq!(word(&b,20),7);let _=reply(&mut s);
  let(mut s,_,_)=elf_ready_cases::queue_order_test_setup(false,4,4096,true);grant(&mut s);let _=reply(&mut s);
  let(mut s,_,_)=elf_ready_cases::queue_order_test_setup(false,3,16,true);grant(&mut s);assert!(matches!(publish(&mut s).unwrap().0,Published::RemoteIntentRequest{..}));s.ingest(1,&control(8,1)).unwrap();s.ingest(1,&intents(&[(9,4096)])).unwrap();let _=reply(&mut s);

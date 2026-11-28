@@ -99,6 +99,11 @@ use crate::qcom_wlfw_client::{
     WlanConfigOutcome as WlfwConfigOutcome, WlanModeOutcome as WlfwModeOutcome,
 };
 use core::sync::atomic::{AtomicU64, Ordering};
+/* TX3_RETURN_BEGIN */
+#[cfg(feature="sunfish-tx3-own-return-turn")]
+#[path="qcom_tx3_own_return.rs"]
+mod tx3_own_return;
+/* TX3_RETURN_END */
 
 pub const MAX_DATAGRAM_BYTES: usize = routing::MAX_DATAGRAM_BYTES;
 pub const RX_SLOTS: usize = 8;
@@ -735,6 +740,10 @@ pub struct RegistryPublication {
     /// Observation only; none of these counters controls publication.
     #[cfg(feature = "sunfish-registry-grant-eligibility")]
     pub grant_gates: [u32; 12],
+/* TX3_RETURN_BEGIN */
+    #[cfg(feature="sunfish-tx3-own-return-turn")]
+    pub own_return_gates:[u32;8],
+/* TX3_RETURN_END */
 }
 
 #[cfg(feature = "sunfish-wlan-registry-ack-trace")]
@@ -780,6 +789,10 @@ struct Transmit {
 /* READY_HANDOFF_BEGIN */
     #[cfg(feature="sunfish-registry-ready-handoffs")]
     registry_return_turn_due:bool,
+/* TX3_RETURN_BEGIN */
+    #[cfg(feature="sunfish-tx3-own-return-turn")]
+    registry_own_return_used:bool,
+/* TX3_RETURN_END */
 /* READY_HANDOFF_END */
     #[cfg(feature = "sunfish-registry-converted-credit-turn")]
     registry_credit_turn_used: bool,
@@ -824,6 +837,10 @@ impl Transmit {
 /* READY_HANDOFF_BEGIN */
             #[cfg(feature="sunfish-registry-ready-handoffs")]
             registry_return_turn_due:false,
+/* TX3_RETURN_BEGIN */
+            #[cfg(feature="sunfish-tx3-own-return-turn")]
+            registry_own_return_used:false,
+/* TX3_RETURN_END */
 /* READY_HANDOFF_END */
             #[cfg(feature = "sunfish-registry-converted-credit-turn")]
             registry_credit_turn_used: false,
@@ -842,6 +859,10 @@ impl Transmit {
                 ack: RegistryAckTrace::EMPTY,
                 #[cfg(feature = "sunfish-registry-grant-eligibility")]
                 grant_gates: [0; 12],
+/* TX3_RETURN_BEGIN */
+                #[cfg(feature="sunfish-tx3-own-return-turn")]
+                own_return_gates:[0;8],
+/* TX3_RETURN_END */
             },
             #[cfg(feature = "sunfish-tftp-final-ack-observer")]
             final_ack_observed: false,
@@ -8536,6 +8557,13 @@ impl Session {
         };
         #[cfg(not(feature = "sunfish-glink-denial-rxdone-turn"))]
         let denial_done = None;
+/* TX3_RETURN_BEGIN */
+        #[cfg(feature="sunfish-tx3-own-return-turn")]
+        let (tx3_own_return,tx3_own_gate)=self.tx3_own_return_candidate(ordinary,
+            conversion_wrq_return || conversion_tftp || priority_data.is_some());
+        #[cfg(feature="sunfish-tx3-own-return-turn")]
+        self.observe_tx3_own_return_gate(tx3_own_gate);
+/* TX3_RETURN_END */
         #[cfg(feature = "sunfish-tftp-oack-followup-reason")]
         if followup.is_some() {
             let candidate = priority_data.or_else(|| self.next_transmit());
@@ -8577,7 +8605,14 @@ impl Session {
             oack.credit_pass_at.get_or_insert_with(|| self.intent_ack_clock.map_or(0, |clock| clock()));
         }
         let (commit, published, size) = if let Some(index) = priority_wrq_done
-            .or(priority_registration_done).or(denial_done).or(done_before_ack).or(oack_release).or(repeat_release)
+            .or(priority_registration_done)
+/* TX3_RETURN_BEGIN */
+            .or({
+                #[cfg(feature="sunfish-tx3-own-return-turn")] {tx3_own_return.map(|(_,rx)|rx)}
+                #[cfg(not(feature="sunfish-tx3-own-return-turn"))] {None}
+            })
+/* TX3_RETURN_END */
+            .or(denial_done).or(done_before_ack).or(oack_release).or(repeat_release)
         {
             let id = self.receive[index].id;
             glink_header(&mut record, 6, self.config.local_channel, id);
@@ -8900,6 +8935,15 @@ impl Session {
         self.quarantined = true;
         #[cfg(feature = "sunfish-wlan-elf-oack-queue-trace")]
         let elf_oack_writer = self.oack_publish_clock();
+/* TX3_RETURN_BEGIN */
+        #[cfg(feature="sunfish-tx3-own-return-turn")]
+        let borrowed_tx3_return=tx3_own_return.filter(|(_,rx)|matches!(&commit,Commit::Done(i)if i==rx));
+        #[cfg(feature="sunfish-tx3-own-return-turn")]
+        if let Some((slot,_))=borrowed_tx3_return {
+            self.transmit[slot].registry_own_return_used=true;
+            self.transmit[slot].registry_publication.mask|=1<<21;
+        }
+/* TX3_RETURN_END */
         #[cfg(feature = "sunfish-ipa-init-tx-trace")]
         let init_writer = init_target.and(self.intent_ack_clock).map(|clock| clock());
         #[cfg(feature = "sunfish-ipa-registration-tx-trace")]
@@ -9001,6 +9045,12 @@ impl Session {
         }
 /* READY_HANDOFF_END */
         let result = writer(&record[..size]);
+/* TX3_RETURN_BEGIN */
+        #[cfg(feature="sunfish-tx3-own-return-turn")]
+        if result.is_ok() && let Some((slot,_))=borrowed_tx3_return {
+            self.transmit[slot].registry_publication.mask|=1<<22;
+        }
+/* TX3_RETURN_END */
 /* READY_HANDOFF_BEGIN */
         #[cfg(feature="sunfish-registry-ready-handoffs")]
         if result.is_ok() && let Some((i,_))=ready_registry.filter(|(i,_)|borrowed_registry_slot==Some(*i)){

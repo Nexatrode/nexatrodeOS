@@ -47,3 +47,6 @@ mod elf_credit_cases;
 pub(super) fn queue_before_return_test_setup()->(Session,RequestHandle,u32){queue_order_test_setup(false,3,4096,true)}
 #[cfg(feature="sunfish-registry-elf-pressure")]
 pub(super) fn queue_order_test_setup(confirm:bool,txn:u16,capacity:u32,returned:bool)->(Session,RequestHandle,u32){queued_elf(true,confirm,txn,b"other/service",0,capacity,true,returned)}
+
+#[cfg(feature="sunfish-tx3-own-return-turn")]
+pub(super) fn tx3_manifest_pending()->(Session,RequestHandle,u32){queued_elf(true,false,3,b"avs/audio",0,4096,true,false)}

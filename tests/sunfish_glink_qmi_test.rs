@@ -3842,6 +3842,14 @@ fn intent_ack_turn_sends_exact_backing_and_yields_to_ordinary_work() {
 
     CLOCK.store(100, Relaxed);
     assert_eq!(s.ingest(1, &control(7, 67)), Ok(Event::ReceiveIntentRequest { granted: true }));
+    // Spend the exact TX3 return loan without committing it, then retain this
+    // fixture's original backing-advertisement blocked/retry sequence.
+    #[cfg(feature="sunfish-tx3-own-return-turn")]
+    assert_eq!(s.publish_next(1, |record| {
+        assert_eq!(word(record, 0) & 0xffff, 6);
+        assert_eq!(word(record, 4), id);
+        Err(WriteError::WouldBlock)
+    }), Err(Error::WouldBlock));
     let mut attempted = Vec::new();
     assert_eq!(s.publish_next(1, |record| {
         attempted.extend_from_slice(record);

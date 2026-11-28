@@ -3,6 +3,10 @@ use super::*;
 impl RuntimeDomain {
     pub(super) fn show_registry_receipt_fifo(&self,d:&Display,owner:&ModemOwner){
         for n in 2..=28{d.replace_line(n,"");}d.replace_line(1,"REGISTRY RECEIPT FIFO");
+/* TX3_RETURN_BEGIN */
+        #[cfg(feature="sunfish-tx3-own-return-turn")]
+        d.replace_line(1,"TX3 OWN RETURN TURN");
+/* TX3_RETURN_END */
         let age=|t|self.time_from_us(Some(self.runtime_started),t);
         let span=|t|self.time_from_us(Some(0),t);
         let row=|n,label,v:&[u32]|{d.header_label(n,label);let mut f=[(0,8);6];for(i,v)in v.iter().enumerate(){f[i]=(*v,8);}d.header_row(n,true,&f[..v.len()]);};
@@ -19,6 +23,13 @@ impl RuntimeDomain {
         }
         row(8,"ELF ARM UNREAD INTENT CORE OWNER",&[age(elf_fifo.and_then(|w|w.armed_at)),elf_fifo.map_or(u32::MAX,|w|w.unread_at_arm),elf_fifo.map_or(u32::MAX,|w|w.remote_intent),age(elf_fifo.and_then(|w|w.core_done_at)),age(e.and_then(|e|e.done))]);
         let grant=old.and_then(|p|p.grant);
+/* TX3_RETURN_BEGIN */
+        #[cfg(feature="sunfish-tx3-own-return-turn")]
+        {let g=tx3.map_or([u32::MAX;8],|p|p.own_return_gates);row(9,"OWN RETURN GATES 0 1 2 3",&g[..4]);row(25,"OWN RETURN GATES 4 5 6 7",&g[4..]);}
+/* TX3_RETURN_END */
+/* TX3_RETURN_BEGIN */
+        #[cfg(not(feature="sunfish-tx3-own-return-turn"))]
+/* TX3_RETURN_END */
         row(9,"TX3 FIRST CONVERT AD ACK INTENT",&[age(grant.and_then(|g|g.converted_at)),age(grant.and_then(|g|g.advertised_at)),age(grant.and_then(|g|g.ack_at)),grant.map_or(u32::MAX,|g|g.intent)]);
         for (base,label,p) in [(10,"TX3",tx3),(14,"ELF",elf)] {
             let t=p.map_or([u32::MAX;8],|p|p.turn_gates);let g=p.map_or([u32::MAX;12],|p|p.grant_gates);
@@ -39,6 +50,9 @@ impl RuntimeDomain {
         let seq=|i:usize|early.reads[i].and_then(|r|r.record_sequence());
         row(24,"DIGEST RECORD1 LO HI RECORD2 LO HI N OMIT",&[seq(4).map_or(u32::MAX,|s|s as u32),seq(4).map_or(u32::MAX,|s|(s>>32)as u32),seq(5).map_or(u32::MAX,|s|s as u32),seq(5).map_or(u32::MAX,|s|(s>>32)as u32),early.digest_total,early.digest_omitted]);
         let h=owner.ready_handoff_trace();let close=owner.mcfg_close_trace();
+/* TX3_RETURN_BEGIN */
+        #[cfg(not(feature="sunfish-tx3-own-return-turn"))]
+/* TX3_RETURN_END */
         row(25,"HANDOFF FLAGS ARMS RX RESULT CLOSE OBS COMMIT",&[h.flags,h.arms,h.receipts,h.result,close.observed,close.committed]);
         let ipa=owner.linux_ipa_report();let flags=ipa.and_then(|r|r.protocol.map(|p|u32::from(p.modem_ready)|(u32::from(p.qmi_uc_ready)<<1)|(u32::from(p.indication_requested)<<2)|(u32::from(p.indication_sent)<<3)|(u32::from(r.protocol_complete)<<4)|(u32::from(r.failed)<<5)|(u32::from(r.pending_record)<<6)|(u32::from(r.record_queued)<<7)|(u32::from(r.held_response)<<8)|(u32::from(p.initial_boot)<<9)));
         let credit=s.elf_exchange.and_then(|e|e.host_credit);let reads=owner.read_sequence();
