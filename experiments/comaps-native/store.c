@@ -32,6 +32,9 @@ static uint64_t us(void){uint64_t count,freq;__asm__ volatile("mrs %0,cntpct_el0
 #ifdef MAP_IMPORT
 static void local_publish(void);
 #endif
+#ifdef MAP_FILES
+static void files_release(void),files_step(void);
+#endif
 static bool readable;
 static unsigned readable_region;
 static uint8_t journals[8192];
@@ -48,6 +51,9 @@ static void set(unsigned n,uint32_t v){*(volatile uint32_t*)(map_disk_regs+n)=v;
 static void address(unsigned n,uint64_t p){set(n,(uint32_t)p);set(n+4,(uint32_t)(p>>32));}
 static struct map_store_page *page(void){return (void*)map_store_control;}
 static void done(unsigned error) {
+#ifdef MAP_FILES
+    if(error&&page()->command>=MAP_IMPORT_PROBE)files_release();
+#endif
     struct map_store_page *p=page();p->region=region;p->generation=generation;
     p->result=error;p->length=error?0:target_length;p->chunk=chunk;
 #ifdef MAP_PRIVATE
@@ -79,6 +85,9 @@ static void read_next(void) {
 }
 #ifdef MAP_IMPORT
 #include "import_store.h"
+#ifdef MAP_FILES
+#include "files_store.h"
+#endif
 #endif
 static void complete(void) {
     uint8_t *dma=(void*)map_disk_dma;volatile uint16_t *u=(void*)(dma+0x200);
@@ -93,6 +102,7 @@ static void complete(void) {
     if(waited>io->max_wait_us){io->max_wait_us=waited;io->worst[0]=submitted_at;io->worst[1]=irq_at;io->worst[2]=amount;io->worst[3]=phase;}
 #ifdef MAP_IMPORT
     if(local_complete())return;
+    if(phase==2&&page()->command==MAP_IMPORT_READ&&import_cancelled()){import_ready=import_probed=false;done(MAP_STORE_CANCELLED);return;}
 #endif
 #ifdef MAP_PRIVATE
     if(phase==5){dma_read((void*)map_private_cipher,dma+0x1000,8192);done(MAP_STORE_OK);return;}
@@ -136,9 +146,15 @@ void init(void) {
     microkit_dbg_puts("MAPSTORE|READY|dedicated public disk\n");
 }
 void notified(microkit_channel channel) {
+    #ifdef MAP_FILES
+    if(channel==3){files_step();return;}
+#endif
     if(channel==0){irq_at=us();uint32_t irq=reg(0x60);set(0x64,irq);
         uint64_t acked=us()-irq_at;page()->io.ack_us+=acked;if(acked>page()->io.max_ack_us)page()->io.max_ack_us=acked;
         complete();microkit_irq_ack(0);return;}
+#ifdef MAP_FILES
+    if(channel==1&&!busy&&files_source&&import_cancelled()){files_release();import_probed=import_ready=false;}
+#endif
     if(channel!=1||busy)return;
     struct map_store_page *p=page();uint64_t next=__atomic_load_n(&p->sequence,__ATOMIC_ACQUIRE);
     if(!next||next==sequence)return;sequence=next;busy=true;

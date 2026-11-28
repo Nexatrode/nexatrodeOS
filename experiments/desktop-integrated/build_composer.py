@@ -15,7 +15,7 @@ def replace(path, before, after):
     path.write_text(text.replace(before, after))
 
 
-def build(source, output, pool_bits=24, simplex_session=False, desktop_session=False, desktop_maps=False, mobile_maps_session=False):
+def build(source, output, pool_bits=24, simplex_session=False, desktop_session=False, desktop_maps=False, mobile_maps_session=False, files_picker=False):
     if output.is_relative_to(source.resolve()):
         raise ValueError("composer output must be outside the shared source checkout")
     output.mkdir(parents=True, exist_ok=True)
@@ -87,13 +87,14 @@ def build(source, output, pool_bits=24, simplex_session=False, desktop_session=F
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         if mobile_maps_session:
-            managed_names=["offline_map","map_store"]
+            managed_names=["offline_map","map_store"]+(["files_picker"] if files_picker else [])
             module.patch(builder,replace,service_names=tuple(managed_names),parent_name="maps_lock_manager")
         elif desktop_session:
             runtime_spec=importlib.util.spec_from_file_location('desktop_inventory',Path(__file__).parent.parent/'desktop-apps/runtime_manifest.py')
             runtime=importlib.util.module_from_spec(runtime_spec);runtime_spec.loader.exec_module(runtime)
             names=tuple(name for app in runtime.APPS.values() for name in (app['frontend'],*app['services']))
             if desktop_maps:names+=('offline_map','map_store')
+            if files_picker:names+=('files_picker',)
             managed_names=list(names)
             module.patch(builder,replace,service_names=names,parent_name='desktop_manager')
         else:
@@ -111,6 +112,7 @@ def build(source, output, pool_bits=24, simplex_session=False, desktop_session=F
         "desktop_session": desktop_session,
         "desktop_maps": desktop_maps,
         "mobile_maps_session": mobile_maps_session,
+        "files_picker": files_picker,
         "service_names": managed_names,
         "patch_sha256": hashlib.sha256(patch).hexdigest(),
         "composer_sha256": hashlib.sha256((output / "target/release/microkit").read_bytes()).hexdigest(),
@@ -128,8 +130,9 @@ if __name__ == "__main__":
     parser.add_argument("--desktop-session", action="store_true", help="enable the disposable parent-managed three-app desktop group")
     parser.add_argument('--desktop-maps',action='store_true',help='include Maps renderer and disk service in the managed desktop group')
     parser.add_argument("--mobile-maps-session",action="store_true")
+    parser.add_argument("--files-picker",action="store_true")
     arguments = parser.parse_args()
     if sum((arguments.simplex_session,arguments.desktop_session,arguments.mobile_maps_session))>1:parser.error("choose one managed service catalog")
     if arguments.simplex_session and arguments.desktop_session:parser.error('choose one managed service catalog')
     if arguments.desktop_maps and not arguments.desktop_session:parser.error('--desktop-maps requires --desktop-session')
-    print(build(arguments.source, arguments.output.resolve(), arguments.pool_bits, arguments.simplex_session,arguments.desktop_session,arguments.desktop_maps,arguments.mobile_maps_session))
+    print(build(arguments.source, arguments.output.resolve(), arguments.pool_bits, arguments.simplex_session,arguments.desktop_session,arguments.desktop_maps,arguments.mobile_maps_session,arguments.files_picker))

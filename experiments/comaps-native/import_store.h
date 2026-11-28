@@ -14,6 +14,7 @@ static uint8_t import_digest[32];
 static void local_publish(void){
     memcpy(page()->local_regions,local_regions,sizeof(local_regions));memcpy(page()->local_pack,&import_pack,sizeof(import_pack));page()->catalog_generation=local_generation;page()->import_phase=phase;
 }
+static bool import_cancelled(void){uint64_t cancel=__atomic_load_n(&page()->cancel_sequence,__ATOMIC_ACQUIRE);return cancel&&cancel==page()->sequence;}
 static void import_write_next(void){
     size_t n=import_pack.length-offset;if(n>CHUNK)n=CHUNK;size_t aligned=(n+511)&~(size_t)511;
     memset((void*)(map_disk_dma+MAP_IO_PAYLOAD_OFFSET),0,aligned);dma_write((void*)(map_disk_dma+MAP_IO_PAYLOAD_OFFSET),(void*)(map_store_bytes+offset),n);
@@ -21,6 +22,9 @@ static void import_write_next(void){
     if(!submit(1,MAP_IMPORT_EXTENT(import_pack.region,import_bank)+offset,aligned))done(MAP_STORE_IO);
 }
 static bool local_complete(void){
+    /* Finish the current DMA first. The old catalogue remains authoritative
+     * until phase 14 starts; beyond that point finish the durable commit. */
+    if(phase>=10&&phase<=13&&import_cancelled()){import_ready=import_probed=false;done(MAP_STORE_CANCELLED);return true;}
     if(phase==8){
         dma_read(local_journals,(void*)(map_disk_dma+MAP_IO_PAYLOAD_OFFSET),8192);local_generation=0;bool valid=false;
         for(unsigned i=0;i<2;i++){uint64_t g;if(map_local_catalog_read(local_journals+i*4096,local_candidate,&g)&&g>local_generation){local_generation=g;local_bank=i;memcpy(local_regions,local_candidate,sizeof(local_regions));valid=true;}}
@@ -41,7 +45,7 @@ static bool local_complete(void){
         phase=12;page()->import_phase=12;offset=0;target_length=import_pack.length;target_offset=MAP_IMPORT_EXTENT(region,import_bank);read_next();return true;
     }
     if(phase==12){
-        size_t n=target_length-offset;if(n>amount)n=amount;dma_read((void*)(map_store_bytes+offset),(void*)(map_disk_dma+MAP_IO_PAYLOAD_OFFSET),n);offset+=n;
+        size_t n=target_length-offset;if(n>amount)n=amount;dma_read((void*)(map_store_bytes+offset),(void*)(map_disk_dma+MAP_IO_PAYLOAD_OFFSET),n);offset+=n;page()->progress=offset;
         if(offset<target_length){read_next();return true;}
         uint8_t digest[32];map_sha256((void*)map_store_bytes,target_length,digest);
         if(memcmp(digest,import_pack.digest,32)){done(MAP_STORE_CORRUPT);return true;}
@@ -60,14 +64,26 @@ static bool local_complete(void){
         microkit_dbg_puts("MAPIMPORT|COMMITTED\n");done(MAP_STORE_OK);return true;
     }return false;
 }
+#ifdef MAP_FILES
+static bool files_begin(void);
+static void files_step(void);
+#endif
 static bool local_request(unsigned command){
     if(command!=MAP_IMPORT_COMMIT)import_ready=false;
     if(command==MAP_STORE_BOOT){phase=8;if(!submit(0,MAP_IMPORT_CATALOG,8192))done(MAP_STORE_IO);return true;}
     if(command>=MAP_IMPORT_PROBE&&command<=MAP_IMPORT_COMMIT&&!local_generation){done(MAP_STORE_CORRUPT);return true;}
-    if(command==MAP_IMPORT_PROBE){region=0;phase=10;if(!submit(0,MAP_IMPORT_INBOX,4096))done(MAP_STORE_IO);return true;}
+    if(command==MAP_IMPORT_PROBE){region=0;
+#ifdef MAP_FILES
+        if(!files_begin())done(MAP_STORE_INVALID);return true;
+#endif
+        phase=10;if(!submit(0,MAP_IMPORT_INBOX,4096))done(MAP_STORE_IO);return true;}
     if(command==MAP_IMPORT_READ){
         if(!import_probed||!import_pack.version||!map_local_update_allowed(&import_pack,&local_regions[import_pack.region])){done(MAP_STORE_INVALID);return true;}
-        region=import_pack.region;target_length=import_pack.length;target_offset=MAP_IMPORT_INBOX+4096;memcpy(import_digest,import_pack.digest,32);target_digest=import_digest;
+        region=import_pack.region;target_length=import_pack.length;
+#ifdef MAP_FILES
+        phase=17;page()->import_phase=17;offset=0;read_start=us();files_step();return true;
+#endif
+        target_offset=MAP_IMPORT_INBOX+4096;memcpy(import_digest,import_pack.digest,32);target_digest=import_digest;
         phase=2;offset=0;read_start=us();read_next();return true;
     }
     if(command==MAP_IMPORT_COMMIT){

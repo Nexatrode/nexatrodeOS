@@ -12,6 +12,7 @@ def attach(root,system,out,mapping,region,channel,inputs,run):
         assert data[:6]==b'\x7fELF\x02\x01' and size==56
         return struct.unpack_from('<Q',data,24)[0],[struct.unpack_from('<II6Q',data,off+size*i) for i in range(count)]
     domains={p.get('name'):p for p in system.findall('protection_domain')}
+    members=NAMES+(('files_picker',) if 'files_picker' in domains else ())
     domains['vault'].set('priority','129')
     manager=ET.SubElement(system,'protection_domain',name='maps_lock_manager',priority='128',budget='8000',period='10000',stack_size='0x40000')
     ET.SubElement(manager,'program_image',path='maps-lock.elf')
@@ -26,9 +27,9 @@ def attach(root,system,out,mapping,region,channel,inputs,run):
     mapping(manager,'maps_lock_state',0x78000000,'rw');mapping(manager,'maps_session_state',0x78002000,'rw')
     mapping(domains['slint_ui'],'maps_lock_state',0x94000000,'r','maps_lock_state')
     boot=[];children=[]
-    owned={m.get('mr') for name in NAMES for m in domains[name].findall('map')}-{'map_disk_regs'}
+    owned={m.get('mr') for name in members for m in domains[name].findall('map')}-{'map_disk_regs'}
     sizes={m.get('name'):int(m.get('size'),0) for m in system.findall('memory_region')}
-    for i,name in enumerate(NAMES):
+    for i,name in enumerate(members):
         d=domains[name];entry,segments=program(out/d.find('program_image').get('path'));base=BASE+i*STRIDE
         for kind,flags,_,va,_,_,mem,_ in segments:
             if kind==1 and flags&2:boot.append((base+(va&~4095),((va+mem+4095)&~4095)-(va&~4095)))
@@ -40,7 +41,7 @@ def attach(root,system,out,mapping,region,channel,inputs,run):
         address=(address+0x1fffff)&~0x1fffff;size=sizes[name]
         mapping(manager,name,address,'rw',cached=name!='map_disk_dma');ranges.append((address,size));aliases[name]=(address,size);address+=size
     header='''#pragma once
-#define SESSION_CHILD_COUNT 2u
+#define SESSION_CHILD_COUNT MEMBERSu
 #define SESSION_FIRST_CHILD 32u
 #define SESSION_SC_CAP_BASE 32u
 #define SESSION_STACK_TOP ((seL4_UserVSpaceTop & ~4095UL)-4096)
@@ -48,15 +49,15 @@ def attach(root,system,out,mapping,region,channel,inputs,run):
 struct session_child {uintptr_t address;size_t pages;uintptr_t entry;};
 struct session_range {uintptr_t address;size_t bytes;};
 static const struct session_child session_children[]={
-'''+''.join(f'{{{b}UL,{n},{e}UL}},\n' for b,n,e in children)+'};\nstatic const struct session_range session_ranges[]={\n'+''.join(f'{{{a}UL,{s}}},\n' for a,s in ranges)+'};\n'+f'#define SESSION_RANGE_COUNT {len(ranges)}u\n#define SESSION_BOOT_RANGE_COUNT {len(boot)}u\n'
-    (out/'session_layout.h').write_text(header);(out/'session-layout.json').write_text(json.dumps(dict(children=dict(zip(NAMES,children)),boot_ranges=boot,ranges=ranges,private_shared=aliases,saved_data_used=False),indent=2)+'\n')
+'''.replace('MEMBERS',str(len(members)))+''.join(f'{{{b}UL,{n},{e}UL}},\n' for b,n,e in children)+'};\nstatic const struct session_range session_ranges[]={\n'+''.join(f'{{{a}UL,{s}}},\n' for a,s in ranges)+'};\n'+f'#define SESSION_RANGE_COUNT {len(ranges)}u\n#define SESSION_BOOT_RANGE_COUNT {len(boot)}u\n'
+    (out/'session_layout.h').write_text(header);(out/'session-layout.json').write_text(json.dumps(dict(children=dict(zip(members,children)),boot_ranges=boot,ranges=ranges,private_shared=aliases,saved_data_used=False),indent=2)+'\n')
     assert not any(m.get('mr')=='map_session_key' for m in domains['slint_ui'].findall('map'))
     assert 'map_disk_regs' not in aliases and 'map_disk_dma' in aliases
     all_domains={p.get('name'):p for p in system.iter('protection_domain')}
     key_owners={name for name,d in all_domains.items() if d.find("map[@mr='map_session_key']") is not None}
     assert key_owners=={'maps_lock_manager','offline_map','vault'}
     assert domains['slint_ui'].find("map[@mr='maps_lock_state']").get('perms')=='r'
-    assert tuple(p.get('name') for p in manager.findall('protection_domain'))==NAMES
+    assert tuple(p.get('name') for p in manager.findall('protection_domain'))==members
     endpoints=set()
     for link in system.findall('channel'):
         ends=list(link)

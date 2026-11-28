@@ -6,7 +6,7 @@ import subprocess
 import xml.etree.ElementTree as ET
 
 
-def build(root, out, inputs, run, *, mobile=False, storage=False, private=False, session=False, importing=False):
+def build(root, out, inputs, run, *, mobile=False, storage=False, private=False, session=False, importing=False, files=False, files_fixture=False):
     here=root/'experiments/comaps-native';base=root/'build/comaps'
     spec=importlib.util.spec_from_file_location('comaps_prepare',here/'prepare.py')
     preparation=importlib.util.module_from_spec(spec);spec.loader.exec_module(preparation)
@@ -27,6 +27,8 @@ def build(root, out, inputs, run, *, mobile=False, storage=False, private=False,
         '-DSLINT_FRAME_REGION_BYTES=0x800000u' if mobile else '-DSLINT_FRAME_REGION_BYTES=0x400000u']
     if storage:flags+=['-DMAP_STORAGE=1']
     if importing:flags+=['-DMAP_IMPORT=1']
+    if files:flags+=['-DMAP_FILES=1']
+    if files_fixture:flags+=['-DMAP_FILES_VERIFY=1']
     crypto=[]
     if private:
         assert storage
@@ -43,6 +45,10 @@ def build(root, out, inputs, run, *, mobile=False, storage=False, private=False,
     if storage:
         for unit in ('store','hash'):run('clang',*flags,'-c',here/(unit+'.c'),'-o',out/('maps-'+unit+'.o'))
         run('ld.lld','--gc-sections','-L',board/'lib','-L',sysroot/'lib','-T',board/'lib/microkit.ld',out/'maps-store.o',out/'maps-hash.o','--start-group','-lmicrokit','-lc','--end-group','-o',out/'map-store.elf')
+    if files:
+        assert importing
+        spec=importlib.util.spec_from_file_location('files_picker_build',root/'experiments/files-picker/build.py');picker=importlib.util.module_from_spec(spec);spec.loader.exec_module(picker)
+        picker.build(root,out,flags,board,sysroot,run,fixture=files_fixture)
     notices=out/'licenses/maps';notices.mkdir(parents=True,exist_ok=True)
     for name in ('LICENSE','NOTICE'):shutil.copyfile(src/name,notices/('CoMaps-'+name))
     shutil.copyfile(here/'NOTICE',notices/'NexatrodeOS-NOTICE')
@@ -79,15 +85,16 @@ def validate(system):
         assert start+size<=next_start,('overlapping physical regions',name,next_name)
     app=domains['offline_map']
     stored='map_store' in domains
+    files='files_picker' in domains
     private=system.find("memory_region[@name='map_private_cipher']") is not None
     locked='lock_auth' in domains
     assert {m.get('mr'):m.get('perms') for m in app.findall('map')}==dict({
-        'map_frame':'rw','map_heap':'rw','map_input':'rw','map_observation':'rw','desktop_display_mode':'r'},**({'map_store_control':'rw','map_store_bytes':'r'} if stored else {}),**({'map_private_cipher':'rw'} if private else {}),**({'map_session_key':'rw'} if locked else {}))
+        'map_frame':'rw','map_heap':'rw','map_input':'rw','map_observation':'rw','desktop_display_mode':'r'},**({'map_store_control':'rw','map_store_bytes':'r'} if stored else {}),**({'map_private_cipher':'rw'} if private else {}),**({'map_session_key':'rw'} if locked else {}),**({'files_state':'r','files_request':'rw'} if files else {}))
     links={}
     for c in system.findall('channel'):
         a,b=list(c)
         for x,y in ((a,b),(b,a)):links[x.get('pd'),int(x.get('id'))]=(y.get('pd'),int(y.get('id')))
-    assert {i:peer for (pd,i),peer in links.items() if pd=='offline_map'}==({0:('desktop_manager',29),1:('desktop_manager',28)}|({2:('map_store',1)} if stored else {})|({3:('entropy_rng',5),4:('timer_driver',14)} if private else {})|({5:('vault',13)} if locked else {}))
+    assert {i:peer for (pd,i),peer in links.items() if pd=='offline_map'}==({0:('desktop_manager',29),1:('desktop_manager',28)}|({2:('map_store',1)} if stored else {})|({3:('entropy_rng',5),4:('timer_driver',14)} if private else {})|({5:('vault',13)} if locked else {})|({6:('files_picker',1)} if files else {}))
     if stored:validate_storage(system)
     if private:validate_private(system)
     for name in ('chat_ui','wallet_ui','native_browser','wallet_app','simplex_agent','vault'):
@@ -125,8 +132,9 @@ def validate_mobile(system):
     domains={p.get('name'):p for p in system.iter('protection_domain')}
     uses=lambda name:{m.get('mr'):m.get('perms') for m in domains[name].findall('map')}
     stored='map_store' in domains
+    files='files_picker' in domains
     private=system.find("memory_region[@name='map_private_cipher']") is not None
-    assert uses('offline_map')==dict(mobile_maps_frame='rw',mobile_maps_heap='rw',mobile_maps_input='rw',map_observation='rw',mobile_maps_state='rw',**({'map_store_control':'rw','map_store_bytes':'r'} if stored else {}),**({'map_private_cipher':'rw'} if private else {}))
+    assert uses('offline_map')==dict(mobile_maps_frame='rw',mobile_maps_heap='rw',mobile_maps_input='rw',map_observation='rw',mobile_maps_state='rw',**({'map_store_control':'rw','map_store_bytes':'r'} if stored else {}),**({'map_private_cipher':'rw'} if private else {}),**({'files_state':'r','files_request':'rw'} if files else {}))
     assert uses('slint_ui')['mobile_maps_frame']=='r' and uses('slint_ui')['mobile_maps_input']=='rw'
     assert uses('slint_ui')['mobile_maps_state']=='r'
     private_regions={'mobile_maps_frame','mobile_maps_heap','mobile_maps_input','map_observation','mobile_maps_state'}
@@ -137,7 +145,7 @@ def validate_mobile(system):
     for c in system.findall('channel'):
         a,b=list(c)
         for x,y in ((a,b),(b,a)):links[x.get('pd'),int(x.get('id'))]=(y.get('pd'),int(y.get('id')))
-    assert {i:peer for (pd,i),peer in links.items() if pd=='offline_map'}==({0:('slint_ui',19),1:('slint_ui',20)}|({2:('map_store',1)} if stored else {})|({3:('entropy_rng',5),4:('timer_driver',14)} if private else {}))
+    assert {i:peer for (pd,i),peer in links.items() if pd=='offline_map'}==({0:('slint_ui',19),1:('slint_ui',20)}|({2:('map_store',1)} if stored else {})|({3:('entropy_rng',5),4:('timer_driver',14)} if private else {})|({6:('files_picker',1)} if files else {}))
     if stored:validate_storage(system)
     if private:validate_private(system)
     assert 'lock_auth' not in domains
@@ -161,18 +169,19 @@ def validate_storage(system):
     domains={p.get('name'):p for p in system.iter('protection_domain')}
     # Public hashing may use idle CPU, but it must remain preemptible by Maps
     # drawing and every interactive frontend. Keep a bounded reservation.
-    service=domains['map_store'];app=domains['offline_map']
+    service=domains['map_store'];app=domains['offline_map'];files='files_picker' in domains
     assert int(service.get('priority'))<int(app.get('priority'))
     assert 0<int(service.get('budget'))<int(service.get('period'))<=10000
     expected={'map_store_control':'rw','map_store_bytes':'rw','map_disk_regs':'rw','map_disk_dma':'rw'}
+    if files:expected.update(files_state='r',files_chunk='r')
     if system.find("memory_region[@name='map_private_cipher']") is not None:expected['map_private_cipher']='rw'
     assert {m.get('mr'):m.get('perms') for m in domains['map_store'].findall('map')}==expected
-    private=set(expected)
+    private=set(expected)-{'files_state','files_chunk'}
     for name,pd in domains.items():
         if name not in ('offline_map','map_store') and not (name=='desktop_manager' and 'lock_auth' in domains):assert not private&{m.get('mr') for m in pd.findall('map')},name
     assert [(i.get('irq'),i.get('id')) for i in domains['map_store'].findall('irq')]==[('64','0')]
     links=[(e.get('pd'),e.get('id')) for c in system.findall('channel') for e in c if any(x.get('pd')=='map_store' for x in c)]
-    assert sorted(links)==[('map_store','1'),('offline_map','2')]
+    assert sorted(links)==sorted([('map_store','1'),('offline_map','2')]+([('map_store','3'),('files_picker','2')] if files else []))
 
 
 def attach_private(system,app,mapping,mr,channel):

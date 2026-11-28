@@ -25,6 +25,12 @@
 #include "spatial.h"
 #ifdef MAP_IMPORT
 #include "import_format.h"
+#ifdef MAP_FILES
+#include "../files-picker/protocol.h"
+uintptr_t files_request,files_state;
+static uint64_t files_open_serial;
+static void files_poll(void);
+#endif
 #define REGION_STEP 40u
 #define REGION_NAME_Y 17
 #define REGION_FONT 16
@@ -33,7 +39,7 @@ static struct map_local_region import_regions[4];
 static struct map_local_pack import_preview;
 static unsigned import_state;
 static void import_request(unsigned),import_metadata(void),import_reply(void);
-static bool import_busy(void){return import_state==1||import_state==3||import_state==4;}
+static bool import_busy(void){return import_state==1||import_state==3||import_state==4||import_state==8;}
 #endif
 #ifndef REGION_STEP
 #define REGION_STEP 48u
@@ -143,6 +149,9 @@ static void profile(uint64_t start,uint64_t *phases,uint64_t rendered,uint64_t n
     p[13]=storage_state;p[14]=storage_error;p[15]=storage_generation;
 #ifdef MAP_IMPORT
     struct map_store_page *ip=(void*)map_store_control;
+    #ifdef MAP_FILES
+    struct files_state *fp=(void*)files_state;p[976]=fp->open;p[977]=fp->status;p[978]=fp->serial;p[979]=fp->reads;p[980]=fp->denied;
+#endif
     p[960]=0x4e584d494d503031ULL;p[961]=import_state;p[962]=ip->import_phase;p[963]=ip->catalog_generation;p[968]=0;
     for(unsigned i=0;i<4;i++){p[964+i]=import_regions[i].version;if(import_regions[i].present)p[968]|=1u<<i;}
     p[969]=import_preview.region;p[970]=import_preview.version;p[971]=ip->progress;
@@ -468,8 +477,9 @@ static void draw(void) {
                 text(18,TOP+113,13,0x91b5c5,"Local pack · publisher not verified");
                 fill(16,TOP+136,W-32,38,0x245566);text(28,TOP+162,17,0x92e3e0,import_regions[import_preview.region].present?"Install update":"Import region");
             }else{
-                text(18,TOP+72,16,import_state==6?0xffa6ad:0x91b5c5,import_state==6?"Pack rejected · current maps retained":import_state==5?"Installed and verified":"Validating and installing…");
+                text(18,TOP+72,16,import_state==6?0xffa6ad:0x91b5c5,import_state==6?"Pack rejected · current maps retained":import_state==5?"Installed and verified":import_state==7?"Import cancelled":"Validating and installing…");
                 text(18,TOP+105,13,0x91b5c5,"Previous version kept until durable commit");
+                if(import_busy()){struct map_store_page *p=(void*)map_store_control;char progress[100];snprintf(progress,sizeof(progress),"%s · %llu / %llu KB",(p->import_phase==14||p->import_phase==15)?"Finishing":p->import_phase==12?"Checking":p->import_phase==11?"Installing":"Reading",(unsigned long long)(p->progress/1024),(unsigned long long)(import_preview.length/1024));text(18,TOP+135,15,0x92e3e0,progress);fill(18,TOP+145,W-36,5,0x081b28);uint64_t value=p->progress;if(value>import_preview.length)value=import_preview.length;if(import_preview.length)fill(18,TOP+145,(W-36)*value/import_preview.length,5,0x3acbd5);fill(16,TOP+180,W-32,34,0x245566);text(28,TOP+204,16,0x92e3e0,(p->import_phase==14||p->import_phase==15)?"Finishing safely":p->cancel_sequence==p->sequence?"Cancelling safely":"Cancel import");}
             }
             if(!import_busy()){fill(16,TOP+180,W-32,34,0x245566);text(28,TOP+204,16,0x92e3e0,"Back to regions");}
         }else{
@@ -491,7 +501,13 @@ static void draw(void) {
 #ifdef MAP_IMPORT
         int action_y=TOP+MAP_REGION_COUNT*REGION_STEP+14;
         fill(12,action_y,W/2-16,38,0x183c4a);text(24,action_y+25,16,0x92e3e0,"Close");
-        fill(W/2+4,action_y,W/2-16,38,0x245566);text(W/2+12,action_y+25,16,0x92e3e0,"Import local pack");
+        fill(W/2+4,action_y,W/2-16,38,0x245566);text(W/2+12,action_y+25,16,0x92e3e0,
+#ifdef MAP_FILES
+        "Choose from Files"
+#else
+        "Import local pack"
+#endif
+        );
         }
 #endif
     }else if(storage_state==2&&!search_open){
@@ -621,10 +637,14 @@ static void motion(void) {
 }
 static void map_button(unsigned value) {
 #ifdef MAP_IMPORT
-    if(import_busy())return;
+    if(import_busy()){if(import_state==8)return;if(value&&my>=TOP+180&&my<TOP+214){struct map_store_page *p=(void*)map_store_control;__atomic_store_n(&p->cancel_sequence,p->sequence,__ATOMIC_RELEASE);changed=true;}return;}
     if(value&&region_picker&&import_state){
         if(import_state==2&&my>=TOP+136&&my<TOP+174){import_request(MAP_IMPORT_READ);return;}
-        if(my>=TOP+180&&my<TOP+214){import_state=0;changed=true;}return;
+        if(my>=TOP+180&&my<TOP+214){
+#ifdef MAP_FILES
+            struct map_store_page*p=(void*)map_store_control;__atomic_store_n(&p->cancel_sequence,p->sequence,__ATOMIC_RELEASE);microkit_notify(2);
+#endif
+            import_state=0;changed=true;}return;
     }
 #endif
 #ifdef MAP_PRIVATE
@@ -646,7 +666,13 @@ static void map_button(unsigned value) {
     if(region_picker){
 #ifdef MAP_IMPORT
         if(my>=TOP+MAP_REGION_COUNT*REGION_STEP+14&&my<TOP+MAP_REGION_COUNT*REGION_STEP+52){
-            if(mx>=W/2)import_request(MAP_IMPORT_PROBE);else{region_picker=false;changed=true;}return;
+            if(mx>=W/2){
+#ifdef MAP_FILES
+        import_state=8;struct files_request*r=(void*)files_request;__atomic_store_n(&r->open,++files_open_serial,__ATOMIC_RELEASE);microkit_notify(6);
+#else
+        import_request(MAP_IMPORT_PROBE);
+#endif
+}else{region_picker=false;changed=true;}return;
         }
 #endif
         if(my>=TOP+MAP_REGION_COUNT*48+57&&my<TOP+MAP_REGION_COUNT*48+91){if(storage_state==1)storage_cancel();region_picker=false;changed=true;return;}
@@ -748,7 +774,7 @@ static void input(void) {
         /* Drain app input during the single in-flight transaction. Parent
          * focus/lock/resize controls above still run; a search/region command
          * must never replace the shared storage request before completion. */
-        if(import_busy())continue;
+        if(import_busy()){if(device==1&&kind==1&&e[1]==272&&e[2]){mx=(int16_t)e[3]/SCALE;my=(int16_t)(e[3]>>16)/SCALE;map_button(1);}continue;}
 #endif
         if(device==4&&kind==0){search_character(e[1]);continue;}
         if(device==0&&kind==1){map_key(e[1],e[2]);continue;}
@@ -950,7 +976,19 @@ static void storage_reply(void) {
 #endif
 }
 #endif
+#ifdef MAP_FILES
+static void files_poll(void){
+    const struct files_state*s=(void*)files_state;unsigned rev=__atomic_load_n(&s->revision,__ATOMIC_ACQUIRE);unsigned open=s->open,status=s->status;uint64_t serial=s->serial;atomic_thread_fence(memory_order_acquire);
+    if(!rev||(rev&1)||rev!=__atomic_load_n(&s->revision,__ATOMIC_ACQUIRE))return;
+    if(import_state==8&&serial==files_open_serial&&!open){if(status==1)import_request(MAP_IMPORT_PROBE);else if(status==2){import_state=0;changed=true;draw();}}
+    // Directory traversal yields between entries rather than blocking input.
+    if(open)microkit_notify(6);
+}
+#endif
 void notified(microkit_channel channel){
+#ifdef MAP_FILES
+    if(channel==6){files_poll();return;}
+#endif
     if(channel==1)input();
 #ifdef MAP_STORAGE
     else if(channel==2){

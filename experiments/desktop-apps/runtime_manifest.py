@@ -19,7 +19,7 @@ INFRASTRUCTURE = frozenset((
     'input_driver', 'timer_poller', 'desktop_manager', 'desktop_shell',
     'denied_services', 'desktop_gpu', 'display_agent',
     'gpu_driver', 'gpu_virt', 'gpu_client',
-    'lock_auth','lock_probe',
+    'lock_auth','lock_probe','files_picker',
 ))
 PUBLIC_APP_REGIONS = frozenset(('clock_view', 'desktop_display_mode', 'rtc'))
 

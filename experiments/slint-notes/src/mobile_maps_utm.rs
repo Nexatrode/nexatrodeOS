@@ -47,6 +47,15 @@ impl Maps {
         }
         self.sent=self.sent.wrapping_add(1);
         unsafe {&*self.queue.add(2).cast::<AtomicU32>()}.store(self.sent,Ordering::Release);
+        #[cfg(feature="mobile-map-files")]
+        {
+            let q=memory_region_symbol!(files_input:*mut u32).as_ptr();
+            let head=Self::revision(unsafe{q.add(2)});let tail=Self::revision(unsafe{q.add(3)});
+            if head.wrapping_sub(tail)<224 {
+                for (i,w) in [device|(kind<<16),code,value,position].iter().enumerate(){unsafe{core::ptr::write_volatile(q.add(4+(head%224) as usize*4+i),*w);}}
+                unsafe{&*q.add(2).cast::<AtomicU32>()}.store(head.wrapping_add(1),Ordering::Release);Channel::new(22).notify();
+            }
+        }
         CHANNEL.notify();true
     }
     #[cfg(feature="mobile-maps-os-unlock")]
@@ -80,13 +89,21 @@ impl Maps {
         if rev!=0&&rev&1==0&&keyboard<=1&&searching<=1&&private<=1&&rev==Self::revision(self.state){ui.set_maps_keyboard(keyboard!=0);self.searching=searching!=0;ui.set_maps_private_entry(private!=0);}
         let height=(((HEIGHT as f32-(ui.get_top_inset()+80.+if ui.get_maps_keyboard(){268.}else{0.})*SCALE).max(0.) as u32)/3).clamp(320,720);
         if height!=self.height&&self.send(3,1,0,height,0){self.height=height;}
-        let r=Self::revision(self.frame);
+        #[cfg(feature="mobile-map-files")]
+        let frame={let s=memory_region_symbol!(files_state:*mut u32).as_ptr();if Self::read(unsafe{s.add(1)})!=0{memory_region_symbol!(files_frame:*mut u32).as_ptr()}else{self.frame}};
+        #[cfg(not(feature="mobile-map-files"))] let frame=self.frame;
+        #[cfg(feature="mobile-map-files")]
+        { // Different producers can have equal revisions. Compare source as well.
+            static mut LAST_FRAME:usize=0;
+            unsafe{if LAST_FRAME!=frame as usize{self.revision=0;LAST_FRAME=frame as usize;}}
+        }
+        let r=Self::revision(frame);
         if r==0||r&1!=0||r==self.revision{return;}
-        let (w,h,stride,format)=(Self::read(unsafe{self.frame.add(1)}),Self::read(unsafe{self.frame.add(2)}),Self::read(unsafe{self.frame.add(3)}),Self::read(unsafe{self.frame.add(4)}));
+        let (w,h,stride,format)=(Self::read(unsafe{frame.add(1)}),Self::read(unsafe{frame.add(2)}),Self::read(unsafe{frame.add(3)}),Self::read(unsafe{frame.add(4)}));
         if w!=1080||h!=self.height*3||stride!=3240||format!=1{return;}
         let mut pixels=slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(w,h);
-        unsafe {personal_os_slint_notes_spike::frame_copy::copy_nonoverlapping_ram(pixels.make_mut_bytes().as_mut_ptr(),self.frame.add(7).cast(),(stride*h) as usize);}
-        fence(Ordering::Acquire);if r!=Self::revision(self.frame){return;}
+        unsafe {personal_os_slint_notes_spike::frame_copy::copy_nonoverlapping_ram(pixels.make_mut_bytes().as_mut_ptr(),frame.add(7).cast(),(stride*h) as usize);}
+        fence(Ordering::Acquire);if r!=Self::revision(frame){return;}
         self.revision=r;ui.set_maps_frame(slint::Image::from_rgb8(pixels));
     }
     pub fn input(&mut self,ui:&NotesWindow,device:u64,kind:u64,code:u64,value:u64,x:u32,y:u32)->bool {

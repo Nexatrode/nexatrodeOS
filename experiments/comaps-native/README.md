@@ -521,7 +521,7 @@ the native reader's existing feature/point limits. Slots 0 and 1 update Gibralta
 and San Marino; slot 2 retains the pinned spatial Liechtenstein data; slot 3
 accepts one additional local region. It is an experiment with a supported subset
 of MWM, not a general CoMaps importer, arbitrary region downloader, or Files
-picker. The generated test pack installs public Gibraltar geometry under the
+picker in this legacy inbox profile. The generated test pack installs public Gibraltar geometry under the
 separate `Local Gibraltar` identity. The update fixture adds harmless trailing
 container padding, giving a different payload hash and length while preserving
 coordinates and the region identity.
@@ -542,8 +542,8 @@ manifest, drive layout, stopped state and disk size. It writes only the fixed
 local inbox. After starting/unlocking the fixture, open Maps → region name →
 **Import local pack**, review its name/version/size, then choose **Import region**
 or **Install update**. The guest performs installation; the host does not select
-an active version or overwrite an installed map. Runtime hot-plug, download and
-file-picker integration remain future work.
+an active version or overwrite an installed map. Runtime hot-plug and downloads remain future work. The optional Files-backed
+profile below replaces this stopped-VM inbox workflow.
 
 The guest reads and hashes the candidate in bounded chunks, then the renderer
 structurally decodes it into its spare map workspace before granting commit.
@@ -570,3 +570,58 @@ updates, downgrade/identity rejection and untouched private ciphertext banks.
 a throttled interrupted payload write, cold restart, torn-catalogue fallback,
 invalid geometry/stale-pack rejection and encrypted saved-place recovery. Its
 fresh desktop fixture requires `--gpu-verify` for composed image readback.
+
+
+### Files-backed selection and background import
+
+`--map-files` adds a trusted Files picker to the existing `--map-import` wrapped
+OS-unlock profiles on desktop and mobile. The private composer must also include
+`--files-picker` in the corresponding managed service group. Use a fresh marked
+disposable stage. `--map-files-fixture` additionally seeds two **public** sample
+`.nxregion` files into that fixture's encrypted Files library; the seed code and
+Vault write API are compiled out without that separate option. No personal
+wallet/chat disks or installed vault keys are inputs.
+
+Open Maps → region manager → **Choose from Files**. The picker filters for
+`.nxregion`, pages through the encrypted library with a bounded twelve-entry
+buffer, and supports touch, mouse and Up/Down/Enter/Escape. The selected pack's
+name, version and size are previewed before installation. No publisher signature
+is implied by its hash or file extension. The accepted format and geometry
+limits remain those documented above.
+
+The trusted `files_picker` domain has a private Vault endpoint and transfer page.
+Its directory, original file IDs, input queue, heap and surface are not mapped
+by Maps. The OS input adapter copies actual events into a separate trusted queue;
+it displays the picker's read-only surface while the chooser is open. Maps can
+request a chooser but cannot select a row through its own writable input queue.
+The storage worker receives only a randomly generated 128-bit selected-file
+grant, bounded file length and a read-only chunk page. Its provider endpoint has
+no list, arbitrary-file-open, write or wallet/chat namespace operation. Vault
+also checks the selected source's Files-library ownership on every chunk read.
+The existing Files library is currently the encrypted attachment-backed store,
+not a general POSIX filesystem.
+
+The worker reads at most 3 KiB per source IPC, yielding between chunks. Progress
+is drawn at most ten times a second with read, install, readback-check and
+finishing phases. The UI accepts cancellation during reads or writes. An
+in-flight disk operation completes before cancellation; no catalogue publication
+starts after cancellation is observed. Once publication has started, the worker
+finishes and reports the committed result rather than a false cancellation.
+Grants are revoked on preview dismissal, read completion, cancellation or failure.
+
+The OS-lock supervisors suspend and scrub the picker along with Maps and its
+storage worker. This includes grants, directory metadata, queues, chunk buffers,
+frame, heap, writable ELF, stack and IPC state. Mobile uses a two-phase close: suspend new work, let the passive Vault finish
+its outstanding call and evict the root, then detach donated scheduling contexts
+and scrub. The intermediate state gates input but is not reported as a completed
+lock. The Vault clears its dedicated transfer page when evicting the wrapped root. Unlock starts without a selection
+or grant and recovers the durable catalogue and encrypted saved places. Phone
+Slint/UI and other application RAM retain their previously documented limits;
+this is not a new whole-phone memory-erasure guarantee.
+
+`python3 tests/maps_files_test.py` exercises the actual selected reader and
+transaction code under address/undefined-behavior sanitizers. The desktop/mobile
+`tests/maps_files_utm.py --guest ... [--mobile]` fixture checks selection, provider
+denials, progress, safe cancellation, lock during the chooser/read/write phases,
+installation, updates, cold restart and saved-place recovery. Live provider probes
+are enabled only in the explicitly disposable seed profile.

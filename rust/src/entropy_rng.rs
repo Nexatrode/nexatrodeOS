@@ -59,7 +59,8 @@ impl Handler for EntropyService {
             || channel == SIMPLEX_AGENT_CHANNEL
             || channel == WALLET_CHANNEL
             || cfg!(feature = "utm-device-lock") && channel == Channel::new(4)
-            || cfg!(feature = "utm-maps-private") && channel == Channel::new(5);
+            || cfg!(feature = "utm-maps-private") && channel == Channel::new(5)
+            || cfg!(feature = "utm-files-picker") && channel == Channel::new(6);
         if !authorized
             || request.label() != REQUEST_BYTES
             || request.count() != 0

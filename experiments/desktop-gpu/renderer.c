@@ -15,6 +15,13 @@ uintptr_t mmio, dma, dma_paddr, shell_surface, shell_state, ui_pointer;
 uintptr_t surface_a, surface_b, surface_c, output_frame, shell_decorations, gpu_observation;
 #if DESKTOP_APP_COUNT >= 4
 uintptr_t surface_d;
+#ifdef MAP_FILES
+uintptr_t files_frame,files_state;
+static uintptr_t files_source_previous;
+/* Producer revisions are local to each surface. Damage needs a separate
+ * content serial when Files and Maps share one retained texture. */
+static uint32_t files_content_revision;
+#endif
 #endif
 #define GPU_TEXTURE_COUNT (1u + 2u * DESKTOP_APP_COUNT)
 #include "transport.h"
@@ -182,6 +189,9 @@ static bool snapshot(unsigned i,uintptr_t source,unsigned width,unsigned height)
     for(unsigned y=rect.y;y<(unsigned)rect.bottom;++y)for(unsigned n=rect.x*3;n<(unsigned)rect.right*3;++n)cache[i][y*width*3+n]=scratch[y*width*3+n];
     if(!upload(i,width,rect))return false;
     if(i==0)for(unsigned b=0;b<2;++b)gpu_union(&backdrop_pending[b],rect);
+#ifdef MAP_FILES
+    if(i==4){if(!++files_content_revision)++files_content_revision;}
+#endif
     revisions[i]=rev;return true;
 }
 static bool read_scene(void) {
@@ -266,7 +276,12 @@ static void prepare_frame(void) {
         if(i==0)work.dirty|=snapshot(0,shell_surface,W,H);
         else if(i<=DESKTOP_APP_COUNT){uintptr_t source=i==1?surface_a:i==2?surface_b:surface_c;
 #if DESKTOP_APP_COUNT >= 4
-            if(i==4)source=surface_d;
+            if(i==4){source=surface_d;
+#ifdef MAP_FILES
+                if(((volatile uint32_t*)files_state)[1])source=files_frame;
+                if(files_source_previous!=source){revisions[i]=0;files_source_previous=source;}
+#endif
+            }
 #endif
             work.dirty|=snapshot(i,source,AW,AH);}
         else work.dirty|=snapshot(i,shell_decorations+(i-1-DESKTOP_APP_COUNT)*0x400000,DW,DH);
@@ -286,7 +301,11 @@ static void prepare_frame(void) {
 #endif
     work.stamp=(struct gpu_stamp){.valid=true,.cursor=pointer_ok&&visible,.width=W,.height=H,.app_height=APP_HEIGHT,.px=px,.py=py,.scene=scene};
     work.stamp.backdrop_damage=backdrop_pending[target-7];
-    for(unsigned i=0;i<GPU_TEXTURE_COUNT;++i)work.stamp.revisions[i]=revisions[i];
+    for(unsigned i=0;i<GPU_TEXTURE_COUNT;++i){work.stamp.revisions[i]=revisions[i];
+#ifdef MAP_FILES
+        if(i==4)work.stamp.revisions[i]=revisions[i]?files_content_revision:0;
+#endif
+    }
     work.damage=gpu_damage(&buffer_stamp[target-7],&work.stamp);
     if(!gpu_compose(&work.stamp,work.damage,blit)){failed=true;return;}
     bool has_draw=words!=0;

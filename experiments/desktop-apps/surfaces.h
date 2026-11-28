@@ -6,6 +6,12 @@ static void app_record(unsigned owner, uint32_t device, uint32_t kind,
                        uint32_t code, uint32_t value, int32_t x, int32_t y)
 {
     if (owner < 1 || owner > DESKTOP_APP_COUNT) return;
+#ifdef MAP_FILES
+    if(owner==4){
+        uint32_t*f=(void*)files_input;uint32_t head=__atomic_load_n(f+2,__ATOMIC_ACQUIRE),tail=__atomic_load_n(f+3,__ATOMIC_ACQUIRE);
+        if(head-tail<224){uint32_t*r=f+4+(head%224)*4;r[0]=device|(kind<<16);r[1]=code;r[2]=value;r[3]=(uint16_t)(int16_t)(x*(int)DESKTOP_SCALE)|((uint32_t)(uint16_t)(int16_t)(y*(int)DESKTOP_SCALE)<<16);__atomic_store_n(f+2,head+1,__ATOMIC_RELEASE);microkit_notify(32);}
+    }
+#endif
     uint32_t *q = (void *)app_input(owner);
     unsigned i = owner - 1;
     uint32_t tail = __atomic_load_n(&q[3], __ATOMIC_ACQUIRE);

@@ -7835,7 +7835,7 @@ impl Handler for SlintService {
             else {self.mobile_browser.borrow_mut().poll(&self._ui);}
         }
         #[cfg(feature="mobile-maps")]
-        if channels.contains(Channel::new(19)) {
+        if channels.contains(Channel::new(19)) || cfg!(feature="mobile-map-files") && channels.contains(Channel::new(22)) {
             if self._ui.get_page()==19 {self.publish_frame();SLINT_INPUT.notify();}
             else {self.mobile_maps.borrow_mut().poll(&self._ui);}
         }

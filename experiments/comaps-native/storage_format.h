@@ -21,7 +21,7 @@
 #define MAP_STORAGE_MAGIC 0x4e584d53544f5231ULL
 enum { MAP_STORE_BOOT=1, MAP_STORE_LOAD=2, MAP_STORE_COMMIT=3, MAP_PRIVATE_READ=4, MAP_PRIVATE_WRITE=5, MAP_STORE_PAGE=6, MAP_STORE_SEARCH=7, MAP_IMPORT_PROBE=8, MAP_IMPORT_READ=9, MAP_IMPORT_COMMIT=10 };
 #define MAP_PRIVATE_OFFSET (1024u*1024u)
-enum { MAP_STORE_OK=0, MAP_STORE_IO=1, MAP_STORE_CORRUPT=2, MAP_STORE_INVALID=3, MAP_STORE_CAPACITY=4 };
+enum { MAP_STORE_OK=0, MAP_STORE_IO=1, MAP_STORE_CORRUPT=2, MAP_STORE_INVALID=3, MAP_STORE_CAPACITY=4, MAP_STORE_CANCELLED=5 };
 /* Elapsed guest times include preemption. wait_us measures doorbell to
  * completion-handler entry, not bare disk time; pair with QEMU block stats. */
 struct map_io_times {
@@ -34,7 +34,7 @@ struct map_store_page {
 #ifdef MAP_IMPORT
     /* Public metadata only. Keep this handoff within its existing 4 KiB page. */
     uint8_t local_regions[4*136],local_pack[144];
-    uint64_t catalog_generation,import_phase;
+    uint64_t catalog_generation,import_phase,cancel_sequence;
 #endif
 };
 _Static_assert(sizeof(struct map_store_page)<=4096,"bounded storage handoff");

@@ -1,0 +1,192 @@
+{
+  "date": "2026-11-27",
+  "profiles": [
+    {
+      "platform": "mobile",
+      "fixture_uuid": "4FD01039-A413-4B7A-8838-A1DA89063FD8",
+      "build": "build/mobile-browser/maps-files-picker",
+      "loader_sha256": "aafe1c01afaf9d8f34030452ac11a9bf23a29213b334807039d07494e093bcce",
+      "source_manifest_sha256": "233ef20acd5f44e5388b278205e4d8c54c31ac4a52d034c443f177ac46ce8783",
+      "tested_harness_snapshot_sha256": "bf915561dc8bd352c16eb975252a0b7a52470473df4b6b9c3e4130f5e342382f",
+      "current_harness_sha256": "c771f4176d1f2e48375aa704b43b212189286332765b747a9483a117d4846bb5",
+      "runtime_rebuild_identical_to_tested_loader": true,
+      "fixture_stopped": true,
+      "selected_file_contract": {
+        "passed": true,
+        "mobile": true,
+        "rejected": [
+          "Maps enumerates Files input",
+          "Maps writes selection",
+          "storage reads Vault transfer",
+          "picker omitted from lock group",
+          "wallet reads file grants"
+        ],
+        "picker_in_managed_erase_group": true
+      },
+      "validation": {
+        "passed": true,
+        "mobile": true,
+        "checks": [
+          "trusted Files picker lists encrypted-library source packs; cancelling selection imports nothing",
+          "provider denies forged grants, directory enumeration, oversized and out-of-range reads; backing out revokes the selected grant",
+          "bounded encrypted background reads publish progress and accept cancellation without installing a region",
+          "cancel waits for the current payload DMA, retains the previous catalogue and preserves encrypted saved places",
+          "OS lock scrubs picker state and selected authority; unlock reconstructs Files and restores private saved places",
+          "locking during encrypted reads and inactive payload writes revokes access, resets the worker and recovers the prior durable catalogue",
+          "two different Files selections import and update without stopping the VM or staging the legacy inbox",
+          "cold restart, stale-pack rejection and another OS lock/unlock retain installed maps and unchanged saved-place ciphertext"
+        ],
+        "lock_observations": [
+          {
+            "initial_phase": 5,
+            "trigger_phase": 5,
+            "trigger_state": 8,
+            "trigger_progress": 126976,
+            "source_disk_slowed": false,
+            "picker_erased": true
+          },
+          {
+            "initial_phase": 17,
+            "trigger_phase": 17,
+            "trigger_state": 3,
+            "trigger_progress": 24576,
+            "source_disk_slowed": true,
+            "picker_erased": true
+          },
+          {
+            "initial_phase": 11,
+            "trigger_phase": 11,
+            "trigger_state": 4,
+            "trigger_progress": 126976,
+            "source_disk_slowed": false,
+            "picker_erased": true
+          },
+          {
+            "initial_phase": 16,
+            "trigger_phase": 16,
+            "trigger_state": 0,
+            "trigger_progress": 0,
+            "source_disk_slowed": false,
+            "picker_erased": true
+          }
+        ],
+        "loader_sha256": "aafe1c01afaf9d8f34030452ac11a9bf23a29213b334807039d07494e093bcce",
+        "saved_data_used": false,
+        "pixel_wifi_touched": false,
+        "region_versions": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "scope": "trusted encrypted-library picker and bounded prepared RAW-MWM imports; fixture seeds are public and test-only"
+      },
+      "postrun_checks": []
+    },
+    {
+      "platform": "desktop",
+      "fixture_uuid": "7A69F0B5-6E23-4980-8373-C4A10822F478",
+      "build": "build/desktop-apps/maps-files-picker",
+      "loader_sha256": "8891aabd4b4727a9ff5d1fa9b28bbf2ca2dc27ab533a4f7b7b95ffef0534195b",
+      "source_manifest_sha256": "70edd8d1518de35b43061ddebcc98dcc64d3c270a9c4cbcbde5cc874b7efe8f9",
+      "tested_harness_snapshot_sha256": "b40b30679031ba6d2730bf069d39ab9577e7500f8508546da68e37bdff2fb2e9",
+      "current_harness_sha256": "c771f4176d1f2e48375aa704b43b212189286332765b747a9483a117d4846bb5",
+      "runtime_rebuild_identical_to_tested_loader": true,
+      "fixture_stopped": true,
+      "selected_file_contract": {
+        "passed": true,
+        "mobile": false,
+        "rejected": [
+          "Maps enumerates Files input",
+          "Maps writes selection",
+          "storage reads Vault transfer",
+          "picker omitted from lock group",
+          "wallet reads file grants"
+        ],
+        "picker_in_managed_erase_group": true
+      },
+      "validation": {
+        "passed": true,
+        "mobile": false,
+        "checks": [
+          "trusted Files picker lists encrypted-library source packs; cancelling selection imports nothing",
+          "provider denies forged grants, directory enumeration, oversized and out-of-range reads; backing out revokes the selected grant",
+          "bounded encrypted background reads publish progress and accept cancellation without installing a region",
+          "cancel waits for the current payload DMA, retains the previous catalogue and preserves encrypted saved places",
+          "OS lock scrubs picker state and selected authority; unlock reconstructs Files and restores private saved places",
+          "locking during encrypted reads and inactive payload writes revokes access, resets the worker and recovers the prior durable catalogue",
+          "two different Files selections import and update without stopping the VM or staging the legacy inbox",
+          "cold restart, stale-pack rejection and another OS lock/unlock retain installed maps and unchanged saved-place ciphertext",
+          "six repeated trusted-picker/source switches pass real GPU readback and retained-texture damage checks"
+        ],
+        "lock_observations": [
+          {
+            "initial_phase": 5,
+            "trigger_phase": 5,
+            "trigger_state": 8,
+            "trigger_progress": 126976,
+            "source_disk_slowed": false,
+            "picker_erased": true
+          },
+          {
+            "initial_phase": 17,
+            "trigger_phase": 17,
+            "trigger_state": 3,
+            "trigger_progress": 6144,
+            "source_disk_slowed": true,
+            "picker_erased": true
+          },
+          {
+            "initial_phase": 11,
+            "trigger_phase": 11,
+            "trigger_state": 4,
+            "trigger_progress": 126976,
+            "source_disk_slowed": false,
+            "picker_erased": true
+          },
+          {
+            "initial_phase": 16,
+            "trigger_phase": 16,
+            "trigger_state": 0,
+            "trigger_progress": 0,
+            "source_disk_slowed": false,
+            "picker_erased": true
+          }
+        ],
+        "loader_sha256": "8891aabd4b4727a9ff5d1fa9b28bbf2ca2dc27ab533a4f7b7b95ffef0534195b",
+        "saved_data_used": false,
+        "pixel_wifi_touched": false,
+        "region_versions": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "scope": "trusted encrypted-library picker and bounded prepared RAW-MWM imports; fixture seeds are public and test-only"
+      },
+      "postrun_checks": [
+        "All six recorded returns show the Maps region manager, not a stale chooser",
+        "No GPU failure markers in the final guest trace"
+      ]
+    }
+  ],
+  "saved_wallet_or_chats_used": false,
+  "pixel_wifi_touched": false,
+  "host_tests": [
+    "maps_files_test.py: 1 passed; selected-file bounds, revocation, background reads, corruption and durable install under ASan/UBSan",
+    "maps_import_format_test.py: 3 passed; crash cuts, cancellation boundaries, torn sectors and retained private banks",
+    "map_storage_host_test.py: 6 passed",
+    "map_storage_contract_test.py: 8 passed",
+    "mobile_maps_contract_test.py: 9 passed",
+    "desktop_command_test.py: 15 passed, including incompatible Files-disk reuse rejection",
+    "maps_session_contract_test.py: 7 weakened authority/erasure mutations rejected",
+    "desktop_gpu_damage_test.c with four apps: passed under ASan/UBSan",
+    "vault_crypto::maps_tests::maps_child_key_is_stable_distinct_and_evicted: passed"
+  ],
+  "rebuild_note": "Final installer guards and stricter desktop screenshot/trace assertions were followed by byte-identical runtime rebuilds. Recorded desktop screenshots and the trace also satisfy those strengthened assertions.",
+  "limits": [
+    "Prepared raw-MWM packages up to 8 MiB; not arbitrary CoMaps MWM support",
+    "Sources are selected from the encrypted Files library; public fixture seeding is opt-in",
+    "Mobile cleanup covers supervised Maps, store and Files picker, not the entire phone UI or all RAM"
+  ]
+}

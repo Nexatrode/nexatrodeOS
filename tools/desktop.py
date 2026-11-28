@@ -72,7 +72,7 @@ def session(guest, *, installed=True):
     data = bundle / 'Data'
     if (data/'build-manifest.json').is_file():
         deployed_format=json.loads((data/'build-manifest.json').read_text())
-        if any(bool(deployed_format.get(k))!=bool(manifest.get(k)) for k in ('wrapped_session','map_import')):
+        if any(bool(deployed_format.get(k))!=bool(manifest.get(k)) for k in ('wrapped_session','map_import','map_files')):
             raise ValueError('use a fresh disposable VM for a different vault/key format or map format')
     if not data.resolve().is_relative_to(bundle):
         raise ValueError('disposable VM data directory must stay inside its bundle')

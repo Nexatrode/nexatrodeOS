@@ -10,6 +10,9 @@ uintptr_t surface_c, input_c;
 #endif
 #if DESKTOP_APP_COUNT >= 4
 uintptr_t surface_d, input_d;
+#ifdef MAP_FILES
+uintptr_t files_input,files_state;
+#endif
 #endif
 uintptr_t shell_surface, shell_state, shell_input, ui_pointer;
 static bool dynamic_active, focus_dirty;
@@ -53,7 +56,14 @@ static void publish_state(void)
 static void input_notify(unsigned owner)
 {
 #ifdef DESKTOP_REAL_APPS
-    if (owner >= 1 && owner <= DESKTOP_APP_COUNT) { microkit_notify(owner==4 ? 28 : 23 + owner); return; }
+    if (owner >= 1 && owner <= DESKTOP_APP_COUNT) {
+#ifdef MAP_FILES
+        // Also wake the trusted chooser for resize/focus notifications that
+        // do not append an app input record.
+        if(owner==4)microkit_notify(32);
+#endif
+        microkit_notify(owner==4 ? 28 : 23 + owner); return;
+    }
 #endif
     if (owner == 1) { if (dynamic_active) dynamic_input_notify(); }
     else microkit_notify(owner == 2 ? 8 : 22);

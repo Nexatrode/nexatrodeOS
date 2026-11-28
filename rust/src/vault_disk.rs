@@ -5,6 +5,11 @@
 compile_error!("the disposable wrapped-vault experiment must never use an installation vault key");
 
 mod vault_protocol;
+#[cfg(feature="utm-files-picker")]
+fn files_transfer() -> *mut personal_os_rust_server::vault_blob_transfer::BlobTransferPage {
+    sel4_microkit::memory_region_symbol!(files_vault_transfer: *mut personal_os_rust_server::vault_blob_transfer::BlobTransferPage).as_ptr()
+}
+
 #[cfg(feature = "utm-maps-vault-key")]
 fn maps_key_page() -> *mut personal_os_rust_server::vault_blob_transfer::BlobTransferPage {
     sel4_microkit::memory_region_symbol!(map_session_key: *mut personal_os_rust_server::vault_blob_transfer::BlobTransferPage).as_ptr()
@@ -466,6 +471,8 @@ impl Vault {
     fn wrapped_clear(&mut self, erase_key: bool) {
         #[cfg(feature = "utm-maps-vault-key")]
         unsafe { core::slice::from_raw_parts_mut(maps_key_page().cast::<u8>(),4096).fill(0); }
+        #[cfg(feature="utm-files-picker")]
+        unsafe { core::slice::from_raw_parts_mut(files_transfer().cast::<u8>(),4096).fill(0); }
         use zeroize::Zeroize;
         let was_unlocked = self.wrapped_unlocked;
         self.wrapped_unlocked = false;
@@ -1635,7 +1642,7 @@ impl Vault {
                     return Err(REPLY_CORRUPT);
                 }
                 #[cfg(feature = "utm-photo-reader")]
-                if expected_owner.is_some_and(|expected| !vault_photo_access::permits(id, expected, owner)) {
+                if expected_owner.is_some_and(|expected| if expected==vault_protocol::LIBRARY_OWNER {id==0 || owner!=expected} else {!vault_photo_access::permits(id, expected, owner)}) {
                     return Err(REPLY_DENIED);
                 }
                 #[cfg(not(feature = "utm-photo-reader"))]
@@ -1683,10 +1690,12 @@ impl Vault {
     /// Store library metadata as authenticated history events and bytes in the
     /// existing encrypted attachment allocator. No existing extents move.
     fn library_commit_staged(&mut self, total: usize, filename: &[u8]) -> Result<u64, MessageLabel> {
-        let page = self.transfer_page(MESSAGES_NAMESPACE)?;
+        self.library_commit_on_page(total,filename,self.transfer_page(MESSAGES_NAMESPACE)?)
+    }
+    fn library_commit_on_page(&mut self, total: usize, filename: &[u8], page: *mut BlobTransferPage) -> Result<u64, MessageLabel> {
         set_mr(0, vault_protocol::LIBRARY_OWNER);
         set_mr(1, total as u64);
-        let reply = self.photo_request(MessageInfo::new(vault_protocol::REQUEST_ATTACHMENT_COMMIT, 2))?;
+        let reply = self.photo_request_on_page(MessageInfo::new(vault_protocol::REQUEST_ATTACHMENT_COMMIT, 2),page,None)?;
         if reply.label() != REPLY_OK || reply.count() != 1 { return Err(REPLY_STORAGE); }
         let file_id = get_mr(0);
         let mut entry = [0u8; 21 + 120];
@@ -1697,7 +1706,7 @@ impl Vault {
         entry[21..21 + filename.len()].copy_from_slice(filename);
         if !(unsafe { &mut *page }).set_payload(&entry[..21 + filename.len()]) { return Err(REPLY_CORRUPT); }
         set_mr(0, vault_protocol::LIBRARY_OWNER);
-        let reply = self.history_request(MessageInfo::new(vault_protocol::REQUEST_HISTORY_APPEND, 1))?;
+        let reply = self.history_request_on_page(MessageInfo::new(vault_protocol::REQUEST_HISTORY_APPEND, 1),page)?;
         if reply.label() != REPLY_OK || reply.count() != 1 { return Err(REPLY_STORAGE); }
         Ok(file_id)
     }
@@ -1727,9 +1736,12 @@ impl Vault {
     }
 
     fn library_request(&mut self, request: MessageInfo) -> Result<MessageInfo, MessageLabel> {
+        self.library_request_on_page(request,self.transfer_page(MESSAGES_NAMESPACE)?)
+    }
+    fn library_request_on_page(&mut self, request: MessageInfo, page: *mut BlobTransferPage) -> Result<MessageInfo, MessageLabel> {
         use vault_protocol::{LIBRARY_OWNER, PHOTO_CHUNK, PHOTO_MAX, REQUEST_ATTACHMENT_COMMIT,
             REQUEST_HISTORY_READ, REQUEST_LIBRARY_CLONE, REQUEST_LIBRARY_NEXT, REQUEST_LIBRARY_DELETE, REQUEST_LIBRARY_IMPORT, REQUEST_LIBRARY_COPY_TO_CHAT};
-        let page = self.transfer_page(MESSAGES_NAMESPACE)?;
+
         match (request.label(), request.count()) {
             (REQUEST_LIBRARY_COPY_TO_CHAT, 2) => {
                 let id = get_mr(0);
@@ -1751,7 +1763,7 @@ impl Vault {
                 let mut filename = [0u8; 120];
                 let length = name.len();
                 filename[..length].copy_from_slice(name);
-                let id = self.library_commit_staged(total, &filename[..length])?;
+                let id = self.library_commit_on_page(total, &filename[..length],page)?;
                 set_mr(0, id);
                 Ok(MessageInfo::new(REPLY_OK, 1))
             }
@@ -1779,7 +1791,7 @@ impl Vault {
                 while cursor < end {
                     cursor += 1;
                     set_mr(0, cursor);
-                    let reply = match self.history_request(MessageInfo::new(REQUEST_HISTORY_READ, 1)) {
+                    let reply = match self.history_request_on_page(MessageInfo::new(REQUEST_HISTORY_READ, 1),page) {
                         Ok(reply) => reply,
                         Err(REPLY_NO_BLOB) => continue,
                         Err(err) => return Err(err),
@@ -1873,6 +1885,9 @@ impl Vault {
     }
 
     fn history_request(&mut self, request: MessageInfo) -> Result<MessageInfo, MessageLabel> {
+        self.history_request_on_page(request,self.transfer_page(MESSAGES_NAMESPACE)?)
+    }
+    fn history_request_on_page(&mut self, request: MessageInfo, page: *mut BlobTransferPage) -> Result<MessageInfo, MessageLabel> {
         use vault_protocol::{REQUEST_HISTORY_APPEND, REQUEST_HISTORY_END, REQUEST_HISTORY_READ, REQUEST_HISTORY_READ_BATCH};
         let blocks = self.block.capacity_blocks()?;
         if blocks <= MESSAGE_PHOTO_FIRST_BLOCK + 2 {
@@ -1886,7 +1901,7 @@ impl Vault {
                 Ok(MessageInfo::new(REPLY_OK, 1))
             }
             (REQUEST_HISTORY_APPEND, 1) => {
-                let page = self.transfer_page(MESSAGES_NAMESPACE)?;
+
                 let event = (unsafe { &*page }).payload().ok_or(REPLY_BAD_REQUEST)?;
                 if input == 0 || event.is_empty() || event.len() > vault_history::MAX_EVENT_SIZE {
                     return Err(REPLY_BAD_REQUEST);
@@ -1952,7 +1967,7 @@ impl Vault {
                 let (owner, event) =
                     vault_history::split_event(&raw[offset..offset + record.payload_length])
                         .ok_or(REPLY_CORRUPT)?;
-                let page = self.transfer_page(MESSAGES_NAMESPACE)?;
+
                 if !(unsafe { &mut *page }).set_payload(event) {
                     return Err(REPLY_CORRUPT);
                 }
@@ -1989,7 +2004,7 @@ impl Vault {
                 let count = writer.count();
                 let payload = writer.bytes();
                 let length = payload.len();
-                let page = self.transfer_page(MESSAGES_NAMESPACE)?;
+
                 if !(unsafe { &mut *page }).set_payload(payload) { return Err(REPLY_CORRUPT); }
                 set_mr(0, count as u64);
                 set_mr(1, length as u64);
@@ -2585,6 +2600,22 @@ impl Handler for Vault {
         #[cfg(feature = "utm-wrapped-vault-experiment")]
         if !self.wrapped_unlocked || channel == vault_protocol::OWNER_CHANNEL {
             return Ok(MessageInfo::new(REPLY_DENIED, 0));
+        }
+        #[cfg(feature="utm-files-picker")]
+        if channel==Channel::new(15) {
+            let page=files_transfer();
+            let result=match (request.label(),request.count()) {
+                (vault_protocol::REQUEST_LIBRARY_NEXT,1)=>self.library_request_on_page(request,page),
+                (vault_protocol::REQUEST_PHOTO_READ,3) if get_mr(0)!=0 && get_mr(2)==vault_protocol::LIBRARY_OWNER =>
+                    self.photo_request_on_page(MessageInfo::new(vault_protocol::REQUEST_PHOTO_READ,2),page,Some(vault_protocol::LIBRARY_OWNER)),
+                #[cfg(feature="utm-files-picker-fixture")]
+                (vault_protocol::REQUEST_PHOTO_STAGE,1)=>self.photo_request_on_page(request,page,None),
+                #[cfg(feature="utm-files-picker-fixture")]
+                (vault_protocol::REQUEST_LIBRARY_IMPORT,1)=>self.library_request_on_page(request,page),
+                _=>Err(REPLY_DENIED),
+            };
+            if result.is_err(){unsafe { &mut *page }.set_payload(&[]);}
+            return Ok(result.unwrap_or_else(|label|MessageInfo::new(label,0)));
         }
         #[cfg(all(feature = "utm-device-lock", not(feature = "utm-wrapped-vault-experiment")))]
         if channel == vault_protocol::DEVICE_LOCK_CHANNEL {

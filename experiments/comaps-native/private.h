@@ -215,9 +215,16 @@ static bool private_key(unsigned code,unsigned value){
 }
 static void private_tick(void){
     if((mp_opened()||private_keyboard()||private_pending_save)&&us()/1000-private_last_activity>=60000){private_lock();}
+    #ifdef MAP_IMPORT
+    if(import_busy()&&import_state!=8)changed=true;
+#endif
     bool was=active;if(changed&&!active)active=true;draw();active=was;publish_search_state();
 #ifdef MAP_PROFILE
     profile(0,NULL,0,0);
 #endif
-    microkit_mr_set(0,1000000000);microkit_ppcall(4,microkit_msginfo_new(1,1));
+    microkit_mr_set(0,
+#ifdef MAP_IMPORT
+        import_busy()?100000000:
+#endif
+        1000000000);microkit_ppcall(4,microkit_msginfo_new(1,1));
 }

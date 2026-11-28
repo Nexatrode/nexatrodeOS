@@ -10,7 +10,7 @@ static void import_request(unsigned command){
 }
 static void import_reply(void){
     struct map_store_page *p=(void*)map_store_control;storage_state=0;import_metadata();
-    if(p->result){import_state=6;storage_error=p->result;changed=true;draw();return;}
+    if(p->result){import_state=p->result==MAP_STORE_CANCELLED?7:6;storage_error=p->result;changed=true;draw();return;}
     if(p->command==MAP_IMPORT_PROBE){memcpy(&import_preview,p->local_pack,sizeof(import_preview));import_state=2;}
     else if(p->command==MAP_IMPORT_READ){
         /* Decoding and capacity checks happen before the store may write. */

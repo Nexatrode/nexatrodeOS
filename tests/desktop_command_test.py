@@ -68,6 +68,11 @@ class CommandGuards(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'map format'):
             desktop.session(self.guest,installed=False)
 
+    def test_install_cannot_change_existing_selected_files_format(self):
+        self.map_disk();self.manifest['map_files']=True;self.save()
+        with self.assertRaisesRegex(ValueError,'map format'):
+            desktop.session(self.guest,installed=False)
+
     def test_saved_data_session_is_rejected(self):
         self.state['saved_data_used']=True;self.save()
         with self.assertRaisesRegex(ValueError,'disposable VM'):desktop.session(self.guest)

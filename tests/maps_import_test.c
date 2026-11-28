@@ -52,6 +52,14 @@ int main(void){
   base();prepare_update(1);import_pack.region=3;import_pack.identity[0]=7;strcpy(import_pack.name,"Local region");pending=false;assert(local_request(MAP_IMPORT_COMMIT));unsigned n=0;
   while(pending&&n++<cut)perform();assert(recover(found)==1);assert(!found[3].present||found[3].version==1);assert(!memcmp(original,disk+MAP_PRIVATE_OFFSET,8192));pending=false;
  }
+ /* Cancellation before catalogue publication retains the old version; after
+  * publication starts it must complete, never report a false cancellation. */
+ for(unsigned cut=0;cut<10;cut++){
+  base();prepare_update(2);pending=false;control.cancel_sequence=0;control.sequence=42;assert(local_request(MAP_IMPORT_COMMIT));
+  for(unsigned n=0;pending&&n<cut;n++)perform();
+  if(pending){unsigned at=phase;control.cancel_sequence=42;pump();assert((at<=13&&error==MAP_STORE_CANCELLED&&recover(found)==1)||(at>=14&&error==0&&recover(found)==2));}
+ }
+ control.cancel_sequence=0;
  /* A damaged destination must never become the active version. */
  base();prepare_update(2);assert(local_request(MAP_IMPORT_COMMIT));while(phase==11)perform();assert(phase==12);disk[MAP_IMPORT_EXTENT(0,0)+42]^=1;pump();assert(error==MAP_STORE_CORRUPT&&recover(found)==1);
  base();prepare_update(2);assert(local_request(MAP_IMPORT_COMMIT));pump();assert(finished&&!error&&local_generation==2&&recover(found)==2);
@@ -67,5 +75,5 @@ int main(void){
  assert(!memcmp(original,disk+MAP_PRIVATE_OFFSET,8192));
  local_generation=0;pending=false;finished=false;assert(local_request(MAP_IMPORT_PROBE)&&finished&&error==MAP_STORE_CORRUPT&&!pending);
  free(disk);free((void*)map_disk_dma);free((void*)map_store_bytes);
- puts("PASS guest import I/O crash cuts, torn catalogue sectors, alternating updates, downgrade/identity rejection and untouched private banks");
+ puts("PASS guest import I/O crash cuts, torn catalogue sectors, alternating updates, downgrade/identity rejection and untouched private banks");return 0;
 }

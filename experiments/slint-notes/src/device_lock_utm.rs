@@ -132,7 +132,13 @@ impl DeviceLock {
         maps_transition(false)?;
         unsafe { self.page.as_mut() }.set_payload(&[]);
         let reply = VAULT.pp_call(MessageInfo::new(0x453, 0));
-        if reply.label() == OK as _ { Ok(()) } else { Err(()) }
+        if reply.label() != OK as _ { return Err(()); }
+        #[cfg(feature="mobile-maps-os-unlock")]
+        {
+            let reply=Channel::new(21).pp_call(MessageInfo::new(0x7d2,0));
+            if reply.label()!=0x7df || reply.count()!=3 || get_mr(1)!=0 { return Err(()); }
+        }
+        Ok(())
     }
 
     #[cfg(feature = "utm-wrapped-vault-experiment")]

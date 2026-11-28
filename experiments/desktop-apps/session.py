@@ -12,7 +12,7 @@ from runtime_manifest import APPS, PUBLIC_APP_REGIONS
 NAMES=tuple(name for app in APPS.values() for name in (app['frontend'],*app['services']))
 assert len(NAMES)==14
 MAP_NAMES=('offline_map','map_store')
-def names(maps=False):return NAMES+(MAP_NAMES if maps else ())
+def names(maps=False,files=False):return NAMES+(MAP_NAMES if maps else ())+(('files_picker',) if files else ())
 BASE=0x2000000000
 STRIDE=0x20000000
 
@@ -25,7 +25,7 @@ def program(path):
 
 
 def attach(system,out,mapping,channel,mr,*,maps=False):
-    members=names(maps)
+    members=names(maps,system.find(".//protection_domain[@name='files_picker']") is not None)
     domains={p.get('name'):p for p in system.iter('protection_domain')}
     manager=domains['desktop_manager'];manager.set('stack_size','0x40000')
     # Microkit PPC targets must outrank their callers. Keep the input manager's
@@ -136,7 +136,7 @@ def validate(system,aliases,ranges,boot,*,maps=False):
     """Check actual assembled authority/erasure coverage before composition."""
     domains={p.get('name'):p for p in system.iter('protection_domain')}
     manager=domains['desktop_manager']
-    members=names(maps)
+    members=names(maps,system.find(".//protection_domain[@name='files_picker']") is not None)
     assert tuple(p.get('name') for p in manager.findall('protection_domain'))==members
     sizes={r.get('name'):int(r.get('size'),0) for r in system.findall('memory_region')}
     owned={m.get('mr') for n in members for m in domains[n].findall('map')}-PUBLIC_APP_REGIONS-({'map_disk_regs'} if maps else set())

@@ -75,7 +75,10 @@ pub const PHOTO_CHUNK: usize = 3072;
 /// Physical slot geometry is part of the existing disk format.
 pub const PHOTO_SLOT_CHUNKS: usize = 4;
 /// Attachments may occupy multiple individually authenticated legacy slots.
+#[cfg(not(feature="utm-files-picker"))]
 pub const PHOTO_MAX: usize = 1024 * 1024;
+#[cfg(feature="utm-files-picker")]
+pub const PHOTO_MAX: usize = 8 * 1024 * 1024 + 4096;
 
 /// Append a history event. MR0=chat handle, payload=event. Reply MR0=record ID.
 pub const REQUEST_HISTORY_APPEND: MessageLabel = 0x439;

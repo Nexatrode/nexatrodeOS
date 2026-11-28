@@ -30,7 +30,11 @@ def main():
     p.add_argument('--lock-idle-ms',type=int,default=60000)
     p.add_argument('--map-private',action='store_true',help='opt-in app-scoped encrypted saved places; disposable data only')
     p.add_argument('--map-import',action='store_true',help='fresh local-pack import and transactional update fixture')
+    p.add_argument('--map-files-fixture',action='store_true',help='seed only public disposable sample packs; never personal data')
+    p.add_argument('--map-files',action='store_true',help='trusted selected-file picker with public disposable sample files')
     a=p.parse_args()
+    if a.map_files_fixture and not a.map_files:p.error('--map-files-fixture requires --map-files')
+    if a.map_files and not a.map_import:p.error('--map-files requires --map-import')
     if a.map_import and not (a.wrapped_session and a.map_private):p.error('--map-import requires --wrapped-session --map-private')
     if a.map_storage and not a.maps:p.error('--map-storage requires --maps')
     if a.map_private and not a.map_storage:p.error('--map-private requires --map-storage')
@@ -45,7 +49,7 @@ def main():
     out.mkdir(parents=True,exist_ok=a.resume)
     if (out/'build.json').exists():
         old=json.loads((out/'build.json').read_text())
-        if bool(old.get('wrapped_session'))!=a.wrapped_session or bool(old.get('map_import'))!=a.map_import:p.error('use a fresh stage for a different disk/key format')
+        if bool(old.get('wrapped_session'))!=a.wrapped_session or bool(old.get('map_import'))!=a.map_import or bool(old.get('map_files'))!=a.map_files:p.error('use a fresh stage for a different disk/key format')
     (out/'.disposable-build').touch()
     sdk=inputs/'sdk';board=sdk/'board'/BOARD/CONFIG
     env=dict(os.environ,PATH='/opt/homebrew/opt/llvm/bin:/opt/homebrew/bin:'+os.environ['PATH'],
@@ -71,7 +75,7 @@ def main():
     target=cargo('rust/Cargo.toml','storage-test,simplex-agent-vault,utm-slint-input,utm-photo-reader,utm-transcript-worker'+(',utm-maps-private' if a.map_private else ''),bins,'build/desktop-apps-backends')
     for b in bins:shutil.copyfile(target/(b+'.elf'),out/(b+'.elf'))
     if a.wrapped_session:
-        target=cargo('rust/Cargo.toml','storage-test,utm-simplex-live-test,utm-slint-input'+(',utm-maps-session-lock' if a.maps else ''),['rust_vault_disk','rust_entropy_rng'],'build/desktop-apps-wrapped-backend')
+        target=cargo('rust/Cargo.toml','storage-test,utm-simplex-live-test,utm-slint-input'+(',utm-maps-session-lock' if a.maps else '')+(',utm-files-picker-fixture' if a.map_files_fixture else ',utm-files-picker' if a.map_files else ''),['rust_vault_disk','rust_entropy_rng'],'build/desktop-apps-wrapped-backend')
         sections=subprocess.check_output(['llvm-readelf','-S',target/'rust_vault_disk.elf'],text=True,env=env)
         assert '.utm_vault_key' not in sections,'installation key forbidden in disposable lock'
         shutil.copyfile(target/'rust_vault_disk.elf',out/'rust_vault_disk.elf')
@@ -90,7 +94,7 @@ def main():
         desktop_browser.build(ROOT,out,inputs,ROOT/'build/netsurf-native',resize=a.desktop_resize)
     if a.maps:
         import maps as desktop_maps
-        map_pin=desktop_maps.build(ROOT,out,inputs,run,storage=a.map_storage,private=a.map_private,session=a.wrapped_session,importing=a.map_import)
+        map_pin=desktop_maps.build(ROOT,out,inputs,run,storage=a.map_storage,private=a.map_private,session=a.wrapped_session,importing=a.map_import,files=a.map_files,files_fixture=a.map_files_fixture)
     # Only the public agent code/config is imported. Never the vault ELF.
     shutil.copyfile(inputs/'pds/agentstore_probe.elf',out/'agentstore_probe.elf')
     for b in ('blk_driver.elf','blk_virt.elf'):shutil.copyfile(storage/b,out/b)
@@ -118,7 +122,7 @@ def main():
     shutil.copyfile(out/'network/dhcp_client.elf',out/'dhcp_client.elf')
     if a.virgl and not a.browser:p.error('VirGL currently requires the three-app fixture')
     if a.gpu_verify and not a.virgl:p.error('--gpu-verify requires --virgl')
-    flags=['clang','--target=aarch64-none-elf','-mcpu=cortex-a53','-mgeneral-regs-only','-std=gnu11','-O2','-ffreestanding','-fno-stack-protector','-nostdlib','-Wall','-Wextra','-Werror','-I',board/'include']
+    flags=['clang',*(['-DMAP_FILES=1'] if a.map_files else []),'--target=aarch64-none-elf','-mcpu=cortex-a53','-mgeneral-regs-only','-std=gnu11','-O2','-ffreestanding','-fno-stack-protector','-nostdlib','-Wall','-Wextra','-Werror','-I',board/'include']
     run(*flags,*(['-DDESKTOP_DYNAMIC'] if a.desktop_resize else []),*(['-DDESKTOP_VIRGL'] if a.virgl else []),*([f'-DDESKTOP_APP_COUNT={app_count}'] if a.browser else []),'-DDESKTOP_SCALE=2u','-DSLINT_FRAME_WIDTH=2560u','-DSLINT_FRAME_HEIGHT=1600u','-DSLINT_FRAME_REGION_BYTES=0x1000000u','-c',ROOT/'experiments/desktop-apps/manager.c','-o',out/'manager.o')
     run('ld.lld','-L',board/'lib',out/'manager.o','-lmicrokit','-T','microkit.ld','-o',out/'manager.elf')
     run(*flags,'-c',ROOT/'experiments/desktop-simplex/environment.c','-o',out/'environment.o')
@@ -214,6 +218,10 @@ def main():
             m=copy.deepcopy(old);m.set('name',name);m.attrib.pop('phys_addr',None);system.append(m)
     if a.browser:desktop_browser.attach(system,manager,inputs,channel,mapping,mr)
     if a.maps:desktop_maps.attach(system,manager,mapping,mr,channel,storage=a.map_storage,private=a.map_private)
+    if a.map_files:
+        import importlib.util
+        spec=importlib.util.spec_from_file_location('files_picker_build',ROOT/'experiments/files-picker/build.py');picker=importlib.util.module_from_spec(spec);spec.loader.exec_module(picker)
+        picker.attach(system,mapping,mr,channel)
     if a.virgl:
         gpu_irq=copy.deepcopy(pd('gpu_driver').find('irq'));gpu_irq.set('id','1')
         for name in ('gpu_client','gpu_driver','gpu_virt'):system.remove(pd(name))
@@ -224,6 +232,8 @@ def main():
         render.append(gpu_irq)
         for name,addr,symbol in [('shell_surface',0x70000000,'shell_surface'),('shell_state',0x72000000,'shell_state'),('ui_pointer',0x72001000,'ui_pointer'),('chat_frame',0x74000000,'surface_a'),('wallet_frame',0x75000000,'surface_b'),('browser_frame',0x76000000,'surface_c')]:mapping(render,name,addr,'r',symbol)
         if a.maps:mapping(render,'map_frame',0x77000000,'r','surface_d')
+        if a.map_files:
+            mapping(render,'files_frame',0x7d000000,'r','files_frame');mapping(render,'files_state',0x7d400000,'r','files_state')
         ET.SubElement(render,'map',mr='virtio_regs',vaddr='0x40000000',perms='rw',cached='false',setvar_vaddr='mmio')
         mr('desktop_gpu_dma',0x9600000 if a.maps else 0x9000000 if a.desktop_resize else 0x6000000,page_size='0x200000')
         ET.SubElement(render,'map',mr='desktop_gpu_dma',vaddr='0x60000000',perms='rw',cached='false',setvar_vaddr='dma')
@@ -261,7 +271,7 @@ def main():
     if a.wrapped_session:
         import session as desktop_session
         provenance=json.loads((a.composer.resolve().parents[2]/'provenance.json').read_text())
-        assert provenance.get('desktop_session') and provenance['service_names']==list(desktop_session.names(a.maps)),'wrong managed composer catalog'
+        assert provenance.get('desktop_session') and provenance['service_names']==list(desktop_session.names(a.maps,a.map_files)),'wrong managed composer catalog'
         assert hashlib.sha256(a.composer.read_bytes()).hexdigest()==provenance['composer_sha256']
         desktop_session.attach(system,out,mapping,channel,mr,maps=a.maps)
         run(*flags,'-I',out,'-DDESKTOP_DYNAMIC','-DDESKTOP_VIRGL','-DDESKTOP_TRIO_LOCK',f'-DLOCK_IDLE_MS={a.lock_idle_ms}',
@@ -275,6 +285,7 @@ def main():
     from desktop_apps_manifest import validate
     validate(out/'desktop-apps.system',out,browser=a.browser)
     if a.maps:desktop_maps.validate(system)
+    if a.map_files:picker.validate(system)
     if a.browser:
         from runtime_manifest import inventory
         (out/'runtime.json').write_text(json.dumps(inventory(out/'desktop-apps.system',maps=a.maps),indent=2)+'\n')
@@ -296,7 +307,7 @@ def main():
         manifest['map_storage']=a.map_storage
         manifest['map_region']=map_pin
         if a.map_storage:
-            manifest['map_import']=a.map_import;manifest['map_private']=a.map_private;manifest['map_pack_sha256']=sha(out/'maps.img')
+            manifest['map_files_fixture']=a.map_files_fixture;manifest['map_files']=a.map_files;manifest['map_import']=a.map_import;manifest['map_private']=a.map_private;manifest['map_pack_sha256']=sha(out/'maps.img')
             manifest['sources']['tests/map_storage_fixture.py']=sha(ROOT/'tests/map_storage_fixture.py')
         manifest['composer_sha256']=sha(a.composer.resolve())
         extra=[x for x in (ROOT/'experiments/comaps-native').rglob('*') if x.is_file() and '__pycache__' not in str(x)]
@@ -320,6 +331,7 @@ def main():
     if a.map_private:
         manifest['maps_private_scope']=('OS unlock; vault-derived Maps-only key; two authenticated ciphertext banks; scrubbed managed renderer and reset disk service on full lock' if a.wrapped_session else 'separate app-scoped passphrase; random wrapped key; two authenticated ciphertext banks; locks on hide and 60s idle; not full-session key eviction')
         manifest['sources'].update({str(x.relative_to(ROOT)):sha(x) for x in [ROOT/'rust/src/record_crypto.rs',ROOT/'rust/src/vault_key_prototype.rs',ROOT/'rust/src/entropy_rng.rs',ROOT/'tests/comaps_private_utm.py',ROOT/'tests/comaps_private_contract_test.py']})
+    if a.map_files:manifest['sources'].update({str(x.relative_to(ROOT)):sha(x) for x in list((ROOT/'experiments/files-picker').glob('*'))+[ROOT/'tests/maps_files_test.py',ROOT/'tests/maps_files_contract_test.py',ROOT/'tests/maps_files_store_test.c',ROOT/'tests/maps_files_utm.py',ROOT/'rust/src/vault_protocol.rs'] if x.is_file()})
     (out/'build.json').write_text(json.dumps(manifest,indent=2)+'\n')
 
 if __name__=='__main__':main()
