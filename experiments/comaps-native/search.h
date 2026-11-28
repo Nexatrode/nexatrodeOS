@@ -5,15 +5,33 @@
 #pragma once
 #include "mwm.h"
 #include <string.h>
+#include <math.h>
 #define MAP_SEARCH_QUERY 48
 #define MAP_SEARCH_RESULTS 8
+#define MAP_SEARCH_CATALOGUE_MAX 8192
+struct map_search_entry {char name[96];float x,y;uint32_t geometry;};
+_Static_assert(sizeof(struct map_search_entry)==108,"search-v1 little-endian ABI");
+/* Validate the complete candidate before replacing a previously usable index.
+ * Bounds are local map coordinates, as in native rendering pages. */
+static inline bool map_search_catalogue_read(struct map_search_entry *out,unsigned *count,const void *bytes,size_t length,const double bounds[4]){
+    uint32_t h[4];if(length<16)return false;memcpy(h,bytes,16);
+    if(h[0]!=0x3153584e||h[1]>MAP_SEARCH_CATALOGUE_MAX||h[2]!=sizeof(*out)||h[3]||length!=16+(size_t)h[1]*sizeof(*out))return false;
+    for(unsigned i=0;i<h[1];i++){
+        struct map_search_entry e;memcpy(&e,(const uint8_t*)bytes+16+i*sizeof(e),sizeof(e));
+        if(!e.name[0]||!memchr(e.name,0,sizeof(e.name))||e.geometry>1||!isfinite(e.x)||!isfinite(e.y)||e.x<bounds[0]||e.y<bounds[1]||e.x>bounds[2]||e.y>bounds[3])return false;
+    }
+    memcpy(out,(const uint8_t*)bytes+16,h[1]*sizeof(*out));*count=h[1];return true;
+}
 struct map_search {
     uint32_t index[MAP_MAX_FEATURES],result[MAP_SEARCH_RESULTS];
     uint8_t rank[MAP_SEARCH_RESULTS];
     unsigned indexed,count,cursor,offset;
     bool more;
     char query[MAP_SEARCH_QUERY+1];
+    const struct map_search_entry *catalogue;
 };
+static inline const char *map_search_name(const struct map_search *s,const struct offline_map *m,unsigned id){return s->catalogue?s->catalogue[id].name:m->features[id].name;}
+static inline unsigned map_search_geometry(const struct map_search *s,const struct offline_map *m,unsigned id){return s->catalogue?s->catalogue[id].geometry:m->features[id].geometry;}
 static inline void map_search_fold(char *out,const char *in,size_t size){
     size_t n=0;bool space=false;
     for(;*in&&n+1<size;in++){
@@ -34,14 +52,14 @@ static inline void map_search_run(struct map_search *s,const struct offline_map 
     s->count=s->cursor=s->offset=0;s->more=false;
     char query[MAP_SEARCH_QUERY+1];map_search_fold(query,s->query,sizeof(query));if(!*query)return;
     for(unsigned i=0;i<s->indexed;i++){
-        unsigned id=s->index[i];const struct map_feature *f=&map->features[id];
-        char name[96];map_search_fold(name,f->name,sizeof(name));int rank=map_search_rank(name,query);if(rank<0)continue;
+        unsigned id=s->catalogue?i:s->index[i],geometry=map_search_geometry(s,map,id);
+        char name[96];map_search_fold(name,map_search_name(s,map,id),sizeof(name));int rank=map_search_rank(name,query);if(rank<0)continue;
         unsigned insert=s->count;bool duplicate=false;
         for(unsigned j=0;j<s->count;j++){
-            const struct map_feature *old=&map->features[s->result[j]];char other[96];map_search_fold(other,old->name,sizeof(other));
+            unsigned old=map_search_geometry(s,map,s->result[j]);char other[96];map_search_fold(other,map_search_name(s,map,s->result[j]),sizeof(other));
             int order=strcmp(name,other);
-            if(f->geometry==old->geometry&&!order){duplicate=true;break;}
-            if(insert==s->count&&(rank<s->rank[j]||(rank==s->rank[j]&&(f->geometry<old->geometry||(f->geometry==old->geometry&&order<0)))))insert=j;
+            if(geometry==old&&!order){duplicate=true;break;}
+            if(insert==s->count&&(rank<s->rank[j]||(rank==s->rank[j]&&(geometry<old||(geometry==old&&order<0)))))insert=j;
         }
         if(duplicate)continue;
         if(s->count==MAP_SEARCH_RESULTS){s->more=true;if(insert==s->count)continue;}

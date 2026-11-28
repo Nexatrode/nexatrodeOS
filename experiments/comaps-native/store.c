@@ -135,10 +135,13 @@ void notified(microkit_channel channel) {
 #endif
     if(p->command==MAP_STORE_BOOT){phase=1;if(!submit(0,0,8192))done(MAP_STORE_IO);return;}
     if(p->region>=MAP_REGION_COUNT){region=0;done(MAP_STORE_INVALID);return;}region=(unsigned)p->region;
-    if(p->command==MAP_STORE_LOAD||p->command==MAP_STORE_PAGE){
+    if(p->command==MAP_STORE_LOAD||p->command==MAP_STORE_PAGE||p->command==MAP_STORE_SEARCH){
         readable=false;phase=2;offset=0;page()->progress=page()->read_us=page()->hash_us=0;read_start=us();chunk=0;
         target_length=map_regions[region].length;target_offset=MAP_FILE_OFFSET(region);target_digest=map_regions[region].digest;
-        if(p->command==MAP_STORE_PAGE){
+        if(p->command==MAP_STORE_SEARCH){
+            if(region!=2){done(MAP_STORE_INVALID);return;}
+            target_length=map_search_pin.length;target_offset=map_search_pin.offset;target_digest=map_search_pin.digest;
+        }else if(p->command==MAP_STORE_PAGE){
             if(region!=2||p->chunk>=MAP_PAGE_COUNT){done(MAP_STORE_INVALID);return;}chunk=p->chunk;
             target_length=map_pages[chunk].length;target_offset+=map_pages[chunk].offset;target_digest=map_pages[chunk].digest;
         }else if(region==2){done(MAP_STORE_INVALID);return;}

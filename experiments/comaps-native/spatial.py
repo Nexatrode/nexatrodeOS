@@ -17,7 +17,7 @@ def prepare(base, source, work=None):
     subprocess.run(['clang','-O2','-I'+str(HERE),str(HERE/'mwm.c'),str(HERE/'export.c'),'-o',str(exe)],check=True)
     info=json.loads(subprocess.check_output([str(exe),str(source),str(raw)],text=True))
     styles=[int(s) for s in (base/'styles.h').read_text().split('{')[1].split('}')[0].split(',')]
-    groups=[[] for _ in range(65)];bounds=info['bounds'];total_bytes=raw.stat().st_size
+    groups=[[] for _ in range(65)];bounds=info['bounds'];total_bytes=raw.stat().st_size;names=[]
     with raw.open('rb') as stream:
         while head:=stream.read(140):
             assert len(head)==140
@@ -28,6 +28,11 @@ def prepare(base, source, work=None):
                 value=styles[t] if t<len(styles) else 0
                 if not style or value in (1,3,5):style=value
             if not style:continue
+            if name and ((geometry==0 and style==8) or (geometry==1 and style in (4,5))):
+                # Keep every segment's anchor: a duplicate road name can span
+                # different cells. Runtime ranking deduplicates displayed names.
+                anchor=struct.unpack_from('<ff',points,(count//2)*8)
+                names.append(struct.pack('<96sffI',f[17],*anchor,geometry))
             absolute=[f[2]+info['origin'][0],f[3]+info['origin'][1],f[4]+info['origin'][0],f[5]+info['origin'][1]]
             x=min(7,max(0,int(((absolute[0]+absolute[2])/2-bounds[0])/(bounds[2]-bounds[0])*8)))
             y=min(7,max(0,int(((absolute[1]+absolute[3])/2-bounds[1])/(bounds[3]-bounds[1])*8)))
@@ -47,5 +52,9 @@ def prepare(base, source, work=None):
             at=stream.tell();stream.write(payload);stream.write(bytes((-len(payload))%512))
             pages.append(dict(offset=at,bytes=len(payload),sha256=hashlib.sha256(payload).hexdigest(),features=count,points=points,bounds=box))
     info.update(source_bytes=source.stat().st_size,export_bytes=total_bytes,bytes=pack.stat().st_size,sha256=hashlib.sha256(pack.read_bytes()).hexdigest(),pages=pages)
+    assert len(names)<=8192,'whole-region name index exceeds fixed capacity'
+    payload=struct.pack('<4I',0x3153584e,len(names),108,0)+b''.join(names)
+    (work/(source.stem+'.nxsearch')).write_bytes(payload)
+    info['search']=dict(offset=48*1024*1024,bytes=len(payload),records=len(names),sha256=hashlib.sha256(payload).hexdigest())
     (work/(source.stem+'-profile.json')).write_text(json.dumps(info,indent=2)+'\n')
     return pack,info

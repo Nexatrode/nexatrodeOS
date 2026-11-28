@@ -88,6 +88,12 @@ def main():
     def open_maps():
         if a.mobile:
             page=struct.unpack('<Q',read(0x5fb92008,8))[0]
+            if page==14:
+                # Only the public disposable credential from private Maps tests.
+                assert m.get('map_private')
+                position(540,1900,True);time.sleep(.1);position(540,1500);time.sleep(.1);position(540,1500,False);time.sleep(.2)
+                for c in 'disposabledevice42':key(c);time.sleep(.12)
+                key('ret');until(lambda:struct.unpack('<Q',read(0x5fb92008,8))[0]==0);page=0
             if page!=19:
                 if page:
                     x,y=(40,65) if page==16 else (370,60) if page==18 else (350,136)
@@ -150,17 +156,43 @@ def main():
         clear();word('kingsway');saved=query()
         if a.mobile:tap_physical(370*SCALE,60*SCALE)
         else:w,h=mode()[2]//2,mode()[3]//2;tap_physical((w-360)//2+54,h-65)
-        until(lambda:not s()[4]);old=s()[2:4];key('a');time.sleep(.2);assert s()[2:4]==old and query()==saved and not s()[706]
-        open_maps();assert query()==saved and s()[705] and not s()[706]
-        tap(80,64+28);until(lambda:s()[706]);clear();close()
+        until(lambda:not s()[4] and not s()[706]);time.sleep(.2)
+        # Private builds deliberately wipe queries and the retained frame on
+        # focus loss. Non-private builds retain the search for navigation.
+        expected='' if m.get('map_private') else saved
+        old=s()[2];key('a');time.sleep(.2);assert s()[2]==old and query()==expected and not s()[706]
+        open_maps();assert query()==expected and bool(s()[705])==(not m.get('map_private')) and not s()[706]
+        if not s()[705]:begin()
+        else:tap(80,64+28);until(lambda:s()[706])
+        clear();close()
         if not a.mobile:key('f',ctrl=True);until(lambda:s()[705]);key('esc');until(lambda:not s()[705])
         begin();word('gibraltar');choose(1);begin();word('gibraltar');assert not s()[707]
         clear();word('san marino');first=results()[0];assert first['name']=='San Marino' and first['kind']==0
         screenshot('san-marino-results',['San Marino','Place']);samples.append(dict(query=query(),results=results()))
         key('ret');until(lambda:not s()[705] and s()[513]==first['id']);screenshot('san-marino-opened',['San Marino','Place','Map point'])
         choose(0);assert not query() and not s()[707];checks.append('hidden-app input isolation, keyboard hide/restore, search cancellation, region-scoped index rebuild and San Marino result selection')
+        choose(2);assert s()[8]==0 and not s()[891] and s()[893] and s()[894]==3275
+        # Altneugut is a minor road absent from the overview LOD. Ruggell is
+        # outside the subsequently loaded southern viewport: both must be
+        # found from the same immutable whole-region index.
+        for name,kind in (('Altneugut',1),('Ruggell',0)):
+            if name=='Ruggell':
+                st=s();cy=struct.unpack('<q',struct.pack('<Q',st[6]))[0]/1e9;units=st[7]/1e12
+                catalogue=(stage/'spatial/Liechtenstein.nxsearch').read_bytes()
+                target=next(struct.unpack_from('<96sffI',catalogue,at) for at in range(16,len(catalogue),108) if catalogue[at:at+96].split(b'\0',1)[0]==b'Ruggell')
+                assert abs(target[2]-cy)>(st[9]-64-(52 if a.mobile else 36))*units*.75,'destination must be outside loaded viewport margin'
+            begin();assert s()[710]==3275;word(name);first=results()[0]
+            assert first['name']==name and first['kind']==kind and first['rank']==0
+            screenshot('whole-region-'+name.lower(),[name,'Choose a result']);samples.append(dict(query=query(),results=results()))
+            key('ret');until(lambda:not s()[705] and s()[13]==0 and s()[891] and s()[513])
+            if a.mobile:until(lambda:s()[9]>600)
+            until(lambda:state()[1][520*8:520*8+96].split(b'\0',1)[0].decode()==name)
+            assert s()[893] and s()[894]==3275 and s()[884]<=32768 and s()[885]<=524288
+            screenshot('whole-region-opened-'+name.lower(),[name,'Road' if kind else 'Place','Map point'])
+        checks.append('whole-region index finds minor road absent from overview and place outside loaded viewport; asynchronous detail loads resolve original feature and details')
+        begin();word('Altneugut');assert results()[0]['name']=='Altneugut';close();choose(0);begin();word('Altneugut');assert not s()[707];close()
         assert not host_locked()
-        result=dict(passed=True,mobile=a.mobile,uuid=session['uuid'],loader_sha256=m['loader_sha256'],network_disconnected_during_search=True,saved_data_used=False,pixel_wifi_touched=False,checks=checks,samples=samples,scope='disposable UTM; QMP hardware/touch events, actual native map results and composed pixels; names in current region, not address/global search or physical Pixel touch')
+        result=dict(passed=True,mobile=a.mobile,uuid=session['uuid'],loader_sha256=m['loader_sha256'],network_disconnected_during_search=True,saved_data_used=False,pixel_wifi_touched=False,checks=checks,samples=samples,scope='disposable UTM; QMP hardware/touch events, actual native map results and composed pixels; whole-region place/road names, not addresses/global search or physical Pixel touch')
         (evidence/'validation.json').write_text(json.dumps(result,indent=2)+'\n');print(json.dumps(result,indent=2),flush=True)
     finally:
         try:

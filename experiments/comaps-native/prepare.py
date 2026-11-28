@@ -74,6 +74,8 @@ def prepare_storage(base, out):
     for page in profile['pages']:
         header+='{'+str(page['offset'])+','+str(page['bytes'])+',{'+','.join('0x'+page['sha256'][i:i+2] for i in range(0,64,2))+'},{'+','.join(map(repr,page['bounds']))+'}},\n'
     header+='};\nstatic const double map_spatial_bounds[4]={'+','.join(map(repr,profile['bounds']))+'};\nstatic const double map_spatial_origin[2]={'+','.join(map(repr,profile['origin']))+'};\n'
+    index=profile['search']
+    header+='static const struct map_page_pin map_search_pin={'+str(index['offset'])+','+str(index['bytes'])+',{'+','.join('0x'+index['sha256'][i:i+2] for i in range(0,64,2))+'},{0,0,0,0}};\n'
     (out/'regions_generated.h').write_text(header)
     catalog['pack_bytes']=64*1024*1024
     catalog['regions'][2]['spatial']=profile
@@ -83,6 +85,7 @@ def prepare_storage(base, out):
     with pack.open('wb') as disk:
         disk.truncate(catalog['pack_bytes'])
         for i,path in enumerate(paths):disk.seek((i+1)*8*1024*1024);disk.write(path.read_bytes())
+        disk.seek(index['offset']);disk.write((out/'spatial/Liechtenstein.nxsearch').read_bytes())
     catalog['pack_sha256']=hashlib.sha256(pack.read_bytes()).hexdigest()
     (out/'map-pack.json').write_text(json.dumps(catalog,indent=2)+'\n')
     return catalog

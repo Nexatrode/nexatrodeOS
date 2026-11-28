@@ -299,7 +299,7 @@ def main():
         extra=[x for x in (ROOT/'experiments/comaps-native').rglob('*') if x.is_file() and '__pycache__' not in str(x)]
         extra += [ROOT/'experiments/slint-notes/assets/icons/maps.svg',ROOT/'tests/desktop_maps_input.py',ROOT/'tests/desktop_maps_contract_test.py',ROOT/'tests/comaps_raster_test.c',ROOT/'tests/comaps_labels_test.c']
         extra += [ROOT/'tests/comaps_details_utm.py',ROOT/'tests/comaps_interaction_test.c']
-        extra += [ROOT/'tests/comaps_search_utm.py',ROOT/'tests/comaps_search_test.c',ROOT/'tests/comaps_regions_utm.py',ROOT/'tests/comaps_io_utm.py',ROOT/'tests/comaps_loading_input.py',ROOT/'tests/comaps_spatial_host.py',ROOT/'tests/comaps_spatial_test.c']
+        extra += [ROOT/'tests/comaps_search_utm.py',ROOT/'tests/comaps_search_test.c',ROOT/'tests/comaps_catalogue_test.c',ROOT/'tests/comaps_region_search_host.py',ROOT/'tests/comaps_regions_utm.py',ROOT/'tests/comaps_io_utm.py',ROOT/'tests/comaps_loading_input.py',ROOT/'tests/comaps_spatial_host.py',ROOT/'tests/comaps_spatial_test.c']
         manifest['sources'].update({str(x.relative_to(ROOT)):sha(x) for x in extra})
     manifest.update(wrapped_session=a.wrapped_session,lock_idle_ms=a.lock_idle_ms if a.wrapped_session else None,wallet_event_pump=a.wrapped_session)
     if a.wrapped_session:

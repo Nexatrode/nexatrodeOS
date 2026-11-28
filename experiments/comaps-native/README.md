@@ -90,7 +90,7 @@ composition does not supply the full graphics API that Drape expects.
 
 ## Two storage-backed regions (disposable UTM only)
 
-The magnifying-glass button opens offline **name search in the loaded region**.
+The magnifying-glass button opens offline **name search in the selected region**.
 Desktop also accepts S, / or Ctrl+F. Type a place/road name, use arrows and Enter
 or tap a result to center it and open its details. Matching folds ASCII case and
 repeated spaces; exact and prefix matches precede other substrings. Repeated
@@ -99,7 +99,7 @@ scrollable list; dragging that list does not pan the map. Escape or × cancels.
 On mobile, the existing on-screen keyboard edits the query; SHOW RESULTS hides
 it, and OPEN FIRST opens the first result. Tap the query field to show it again.
 
-Search uses a fixed-capacity list of eligible named decoded features, with a
+Search uses a fixed-capacity list of eligible names and anchors, with a
 48-byte UTF-8 query and eight result slots. It adds no network or vault access.
 Only two read-only keyboard/search visibility flags are shared with the phone
 shell. Hidden Maps receives no typing; its keyboard is dismissed on focus loss.
@@ -107,6 +107,36 @@ Changing regions rebuilds the index and clears query/results. Queries are not
 written to disk. This is not CoMaps' full search engine: address/POI metadata,
 search across unloaded regions and Unicode case/diacritic folding are absent.
 Non-ASCII name bytes remain visible and match literally when entered.
+
+### Whole-region names with bounded geometry
+
+For chunked Liechtenstein, the build exports every supported named place and
+road segment from the complete pinned MWM, independently of the rendering LOD.
+The 3,275 records occupy 353,716 bytes at the fixed public-pack offset 48 MiB.
+Each record contains a name, kind and original geometry midpoint. The catalogue
+is hash-pinned in the guest, read asynchronously by `map_store`, structurally
+validated, then retained in a fixed 8,192-record array (884,736 bytes). Oversize
+builds fail explicitly. Gibraltar and San Marino continue using their fully
+decoded region indexes. Queries, selection and private saved places do not enter
+the public catalogue.
+
+Selecting a catalogue result centers its anchor and asynchronously loads only
+the required detail pages; the resulting original feature supplies the details
+card. The catalogue survives pan/zoom without rebuilding or re-reading it.
+Switching regions clears the query/results and selects the appropriate index.
+A damaged catalogue fails the region load while retaining the prior map; it
+never silently substitutes incomplete viewport-only results. Existing selection
+journals, private ciphertext banks and map geometry offsets are unchanged.
+Existing disposable packs need their new public catalogue extent installed
+while stopped; this experiment is not a production disk-format migration.
+
+`tests/comaps_region_search_host.py` checks full-source coverage and exact
+anchors, SHA-256 pins, absence of a minor-road result from the overview LOD,
+and sanitized malformed/truncated index rejection. The shared UTM search test
+also selects Altneugut from overview, then Ruggell outside the loaded southern view,
+with the fixture network disconnected. It checks camera/detail recovery on both
+layouts. Address parsing, fuzzy/Unicode folding, routing and cross-region search
+remain separate work.
 
 `tests/comaps_search_test.c` checks the bounded engine under sanitizers.
 `tests/comaps_search_utm.py --guest <stage> [--mobile]` disconnects only that
@@ -324,7 +354,8 @@ candidate. Each disk request remains at most 64 KiB; completions drive the next
 request/page. The current map remains visible until the entire candidate is
 valid. A failed chunk retains it. Dense views exceeding a fixed cap fail rather
 than silently dropping features or allocating more memory. Search on this region
-covers the loaded rendering area/LOD; it is not full-region address search.
+covers the whole selected region through the separate name catalogue described
+below; it is not full-region address search.
 
 Tap the current region name to open the shared **region manager**. It lists the
 three installed regions, their runtime sizes, current selection and the chunked
