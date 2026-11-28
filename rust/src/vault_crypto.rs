@@ -73,12 +73,12 @@ impl DevelopmentCryptoProvider {
 
     /// No key bytes leave the provider; used by the disposable lifecycle's
     /// synchronous eviction acknowledgement, including its failure control.
-    #[cfg(feature = "utm-dynamic-vault-lock")]
+    #[cfg(any(feature = "utm-dynamic-vault-lock",feature="utm-maps-vault-key"))]
     pub fn key_is_cleared(&self) -> bool { self.key.iter().all(|byte| *byte == 0) }
 
     /// Fixed-purpose child key. Neither caller-provided contexts nor the root
     /// key are exposed to an application.
-    #[cfg(feature = "utm-maps-session-lock")]
+    #[cfg(feature = "utm-maps-vault-key")]
     pub fn maps_key(&self) -> Option<zeroize::Zeroizing<[u8;32]>> {
         use hmac::{Hmac,Mac};
         if self.key_is_cleared() { return None; }
@@ -88,7 +88,7 @@ impl DevelopmentCryptoProvider {
     }
 }
 
-#[cfg(all(test,feature="utm-maps-session-lock"))]
+#[cfg(all(test,feature="utm-maps-vault-key"))]
 mod maps_tests {
     use super::*;
     #[test] fn maps_child_key_is_stable_distinct_and_evicted() {

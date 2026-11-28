@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Opt-in phone NetSurf + existing phone apps, fresh development-key disks only.
+"""Opt-in phone NetSurf + existing phone apps, fresh disposable disks only.
 
 Public SDK, driver code and block configuration are read-only inputs. Never read
 the installation manifest, installed vault ELF, any VM disk or personal app data.
@@ -20,11 +20,21 @@ def main():
     p.add_argument('--maps',action='store_true',help='add the shared offline map renderer and private phone adapter')
     p.add_argument('--map-storage',action='store_true',help='two pinned public regions on a separate disposable disk')
     p.add_argument('--map-private',action='store_true',help='opt-in app-scoped encrypted saved places; disposable data only')
+    p.add_argument('--maps-os-unlock',action='store_true',help='fresh wrapped OS vault; supervised Maps key/memory lock lifecycle')
+    p.add_argument('--gated-agent',type=Path,help='public test-only SimpleX ELF with simplex_wait_for_vault; required for the OS-unlock profile')
     a=p.parse_args();inputs=a.inputs.resolve();out=a.output.resolve()
+    if a.maps_os_unlock and (not a.gated_agent or not a.gated_agent.is_file()):p.error('--maps-os-unlock requires a public --gated-agent ELF')
+    if a.maps_os_unlock:
+        provenance=json.loads((a.composer.resolve().parents[2]/'provenance.json').read_text())
+        assert provenance.get('mobile_maps_session') and provenance['service_names']==['offline_map','map_store']
+        assert provenance['composer_sha256']==hashlib.sha256(a.composer.read_bytes()).hexdigest()
+    if a.maps_os_unlock and not a.map_private:p.error('--maps-os-unlock requires --map-private')
     if a.map_storage and not a.maps:p.error('--map-storage requires --maps')
     if a.map_private and not a.map_storage:p.error('--map-private requires --map-storage')
     if not out.is_relative_to(ROOT/'build/mobile-browser') or '.utm' in str(out):p.error('use a worktree build/mobile-browser staging directory')
     if out.exists() and any(out.iterdir()) and not (a.resume and (out/'.disposable-build').is_file()):p.error('use a fresh stage or --resume on a marked stage')
+    if (out/'build.json').exists():
+        old=json.loads((out/'build.json').read_text());assert old.get('maps_os_unlock',False)==a.maps_os_unlock,'use a fresh stage when changing key format'
     out.mkdir(parents=True,exist_ok=True);(out/'.disposable-build').touch()
     env=dict(os.environ,PATH='/opt/homebrew/opt/llvm/bin:/opt/homebrew/bin:'+os.environ['PATH'],
         SEL4_PREFIX=str(inputs/'sel4-install'),SEL4_INCLUDE_DIRS=str(inputs/'sdk/board/qemu_virt_aarch64_el1/smp-debug/include'),
@@ -42,16 +52,22 @@ def main():
     for link in list(system.findall('channel')):
         if any(e.get('pd') in demo for e in link):system.remove(link)
     # Copy public code only; the vault is always newly compiled with a disposable
-    # development key. No installed vault ELF or installation.json is inspected.
+    # development key or newly enrolled wrapped key. No installed vault ELF or
+    # installation.json is inspected.
     for image in {p.get('path') for p in system.iter('program_image')} - {'rust_vault_disk.elf','slint_notes_utm.elf','slint_photo_worker.elf','slint_photo_reader.elf','slint_transcript_worker.elf','rust_messages_agent_app.elf','rust_entropy_rng.elf','rust_clock.elf','input_service.elf'}:
         shutil.copyfile(inputs/'pds'/image,out/image)
-    ui=cargo('experiments/slint-notes/Cargo.toml','mobile-netsurf,simplex-agent-ui,utm-photo-worker,utm-transcript-worker,utm-device-lock'+(',mobile-maps' if a.maps else '')+(',mobile-browser-test' if a.observe else ''),['slint_notes_utm','slint_photo_worker','slint_photo_reader','slint_transcript_worker'],'mobile-browser-cargo')
+    ui=cargo('experiments/slint-notes/Cargo.toml','mobile-netsurf,simplex-agent-ui,utm-photo-worker,utm-transcript-worker,utm-device-lock'+(',mobile-maps-os-unlock' if a.maps_os_unlock else ',mobile-maps' if a.maps else '')+(',mobile-browser-test' if a.observe else ''),['slint_notes_utm','slint_photo_worker','slint_photo_reader','slint_transcript_worker'],'mobile-browser-cargo')
     for name in ('slint_notes_utm','slint_photo_worker','slint_photo_reader','slint_transcript_worker'):shutil.copyfile(ui/(name+'.elf'),out/(name+'.elf'))
-    backend=cargo('rust/Cargo.toml','storage-test,simplex-agent-vault,utm-slint-input,utm-photo-reader,utm-transcript-worker,utm-device-lock'+(',utm-maps-private' if a.map_private else ''),['rust_vault_disk','rust_messages_agent_app','rust_entropy_rng','rust_input_service','rust_clock'],'mobile-browser-backends')
+    backend=cargo('rust/Cargo.toml','storage-test,simplex-agent-vault,utm-slint-input,utm-photo-reader,utm-transcript-worker,utm-device-lock'+(',utm-maps-vault-key' if a.maps_os_unlock else ',utm-maps-private' if a.map_private else ''),['rust_vault_disk','rust_messages_agent_app','rust_entropy_rng','rust_input_service','rust_clock'],'mobile-browser-backends')
     for name in ('rust_vault_disk','rust_messages_agent_app','rust_entropy_rng','rust_clock'):shutil.copyfile(backend/(name+'.elf'),out/(name+'.elf'))
     shutil.copyfile(backend/'rust_input_service.elf',out/'input_service.elf')
     sections=subprocess.check_output(['llvm-readelf','-S',out/'rust_vault_disk.elf'],text=True,env=env)
     assert '.utm_vault_key' not in sections,'installed vault keys are forbidden'
+    if a.maps_os_unlock:
+        assert a.gated_agent and a.gated_agent.is_file(),'OS-unlock profile requires --gated-agent'
+        symbols=subprocess.check_output(['llvm-nm',a.gated_agent],text=True,env=env)
+        assert ' simplex_wait_for_vault' in symbols,'SimpleX startup gate missing'
+        shutil.copyfile(a.gated_agent,out/'agentstore_probe.elf')
     storage=a.storage.resolve()
     for name in ('blk_driver.elf','blk_virt.elf'):shutil.copyfile(storage/name,out/name)
     config=bytearray((storage/'blk_client_vault.data').read_bytes());assert len(config)==80 and config[:5]==b'sDDF\x02'
@@ -97,9 +113,13 @@ def main():
     if a.maps:
         spec=importlib.util.spec_from_file_location('shared_maps_adapter',ROOT/'experiments/desktop-apps/maps.py')
         maps=importlib.util.module_from_spec(spec);spec.loader.exec_module(maps)
-        map_pin=maps.build(ROOT,out,inputs,run,mobile=True,storage=a.map_storage,private=a.map_private)
+        map_pin=maps.build(ROOT,out,inputs,run,mobile=True,storage=a.map_storage,private=a.map_private,session=a.maps_os_unlock)
         maps.attach_mobile(system,pd('slint_ui'),mapping,region,channel,storage=a.map_storage,private=a.map_private)
         maps.validate_mobile(system)
+        if a.maps_os_unlock:
+            spec=importlib.util.spec_from_file_location("mobile_maps_session",ROOT/"experiments/mobile-browser/maps_session.py")
+            session=importlib.util.module_from_spec(spec);spec.loader.exec_module(session)
+            session.attach(ROOT,system,out,mapping,region,channel,inputs,run)
     validate(system,a.observe)
     ET.indent(system);ET.ElementTree(system).write(out/'mobile.system',encoding='utf-8',xml_declaration=True)
     run(a.composer.resolve(),out/'mobile.system','--board','qemu_virt_aarch64_el1','--config','smp-debug','--search-path',out,'-o',out/'loader.img','-r',out/'report.txt',env=dict(env,MICROKIT_SDK=str(inputs/'sdk')))
@@ -112,7 +132,7 @@ def main():
         sources += [ROOT/'experiments/desktop-apps/maps.py',ROOT/'experiments/slint-notes/src/mobile_maps_utm.rs',ROOT/'experiments/slint-notes/assets/icons/maps.svg',ROOT/'tests/mobile_maps_input.py',ROOT/'tests/mobile_maps_contract_test.py']
         sources += [ROOT/'tests/comaps_details_utm.py',ROOT/'tests/comaps_interaction_test.c']
         sources += [ROOT/'tests/comaps_search_utm.py',ROOT/'tests/comaps_search_test.c',ROOT/'tests/comaps_catalogue_test.c',ROOT/'tests/comaps_region_search_host.py',ROOT/'tests/comaps_regions_utm.py',ROOT/'tests/comaps_io_utm.py',ROOT/'tests/comaps_loading_input.py',ROOT/'tests/comaps_spatial_host.py',ROOT/'tests/comaps_spatial_test.c']
-    manifest=dict(profile='mobile-netsurf-maps' if a.maps else 'mobile-netsurf',maps=a.maps,saved_data_used=False,development_storage_key=True,observation=a.observe,resolution=[1080,2340],browser_css_width=360,browser_scale=3,javascript=True,https=True,certificate_verification=True,private_tcp_slot=4,full_session_lock=False,source_commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),sources={str(x.relative_to(ROOT)):digest(x) for x in sources},artifacts={x.name:digest(x) for x in out.glob('*.elf')},composer_sha256=digest(a.composer.resolve()),loader_sha256=digest(out/'loader.img'))
+    manifest=dict(profile='mobile-maps-os-unlock' if a.maps_os_unlock else 'mobile-netsurf-maps' if a.maps else 'mobile-netsurf',maps=a.maps,saved_data_used=False,development_storage_key=not a.maps_os_unlock,maps_os_unlock=a.maps_os_unlock,observation=a.observe,resolution=[1080,2340],browser_css_width=360,browser_scale=3,javascript=True,https=True,certificate_verification=True,private_tcp_slot=4,full_session_lock=False,source_commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),sources={str(x.relative_to(ROOT)):digest(x) for x in sources},artifacts={x.name:digest(x) for x in out.glob('*.elf')},composer_sha256=digest(a.composer.resolve()),loader_sha256=digest(out/'loader.img'))
     if a.maps:manifest['map_region']=map_pin
     if a.map_storage:
         manifest['map_private']=a.map_private;manifest['map_storage']=True;manifest['map_pack_sha256']=digest(out/'maps.img')
@@ -120,10 +140,15 @@ def main():
     if a.map_private:
         manifest['maps_private_scope']='separate app-scoped passphrase; random wrapped key; two authenticated ciphertext banks; locks on hide and 60s idle; not full-session key eviction'
         manifest['sources'].update({str(x.relative_to(ROOT)):digest(x) for x in [ROOT/'rust/src/record_crypto.rs',ROOT/'rust/src/vault_key_prototype.rs',ROOT/'rust/src/entropy_rng.rs',ROOT/'tests/comaps_private_utm.py',ROOT/'tests/comaps_private_contract_test.py']})
-    (out/'build.json').write_text(json.dumps(manifest,indent=2)+'\n');print('PASS mobile browser with existing phone apps; disposable development key only',flush=True)
+    if a.maps_os_unlock:
+        manifest['gated_agent_sha256']=digest(a.gated_agent)
+        manifest['maps_private_scope']='OS-derived Maps key; root eviction and supervised Maps/store writable-page scrubbing on OS lock; UI renderer and other phone app RAM are outside erasure scope'
+        extra=[ROOT/'experiments/mobile-browser/maps_lock.c',ROOT/'experiments/mobile-browser/maps_session.py',ROOT/'experiments/desktop-simplex/session.h',ROOT/'experiments/slint-notes/src/device_lock_utm.rs',ROOT/'rust/src/vault_crypto.rs',ROOT/'rust/src/vault_disk.rs',ROOT/'tests/mobile_maps_session_utm.py',ROOT/'experiments/ghc-microkit/simplex_vault_gate.c',ROOT/'tests/build_simplex_vault_gate.py']
+        manifest['sources'].update({str(x.relative_to(ROOT)):digest(x) for x in extra})
+    (out/'build.json').write_text(json.dumps(manifest,indent=2)+'\n');print('PASS mobile browser with existing phone apps; disposable '+('wrapped OS vault' if a.maps_os_unlock else 'development key'),flush=True)
 
 def validate(system,observe=False):
-    domains={p.get('name'):p for p in system.findall('protection_domain')}
+    domains={p.get('name'):p for p in system.iter('protection_domain')}
     sizes={m.get('name'):int(m.get('size').replace('_',''),0) for m in system.findall('memory_region')}
     for name,domain in domains.items():
         ranges=sorted((int(m.get('vaddr').replace('_',''),0),sizes[m.get('mr')],m.get('mr')) for m in domain.findall('map'))

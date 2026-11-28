@@ -9,8 +9,12 @@
 #ifndef SESSION_BOOT_RANGE_COUNT
 #define SESSION_BOOT_RANGE_COUNT SESSION_RANGE_COUNT
 #endif
+#ifndef SESSION_SNAPSHOT_BYTES
 #define SESSION_SNAPSHOT_BYTES (16 * 1024 * 1024)
+#endif
+#ifndef SESSION_MAX_BOOT_PAGES
 #define SESSION_MAX_BOOT_PAGES 4096
+#endif
 static uint8_t session_boot_bytes[SESSION_SNAPSHOT_BYTES];
 static struct { uintptr_t address; } session_boot_pages[SESSION_MAX_BOOT_PAGES];
 static unsigned session_boot_used;

@@ -6,6 +6,8 @@ const PAGE:i32=19;
 pub struct Maps {
     frame:*const u32,queue:*mut u32,state:*const u32,sent:u32,revision:u32,
     active:bool,searching:bool,height:u32,down:bool,reset_pending:bool,
+    #[cfg(feature="mobile-maps-os-unlock")]
+    lifecycle_revision:u32,
 }
 impl Maps {
     pub fn initialize(ui:&NotesWindow)->Rc<RefCell<Self>> {
@@ -14,6 +16,7 @@ impl Maps {
             frame:memory_region_symbol!(mobile_maps_frame:*mut u32).as_ptr(),
             queue:memory_region_symbol!(mobile_maps_input:*mut u32).as_ptr(),
             state:memory_region_symbol!(mobile_maps_state:*mut u32).as_ptr(),
+            #[cfg(feature="mobile-maps-os-unlock")] lifecycle_revision:0,
             sent:0,revision:0,active:false,searching:false,height:0,down:false,reset_pending:false,
         }));
         let b=result.clone();ui.on_maps_key(move |key| {
@@ -33,6 +36,8 @@ impl Maps {
     fn read(p:*const u32)->u32 {unsafe {core::ptr::read_volatile(p)}}
     fn revision(p:*const u32)->u32 {unsafe {&*p.cast::<AtomicU32>()}.load(Ordering::Acquire)}
     fn send(&mut self,device:u32,kind:u32,code:u32,value:u32,position:u32)->bool {
+        #[cfg(feature="mobile-maps-os-unlock")]
+        if !self.lifecycle_open(){return false;}
         let tail=Self::revision(unsafe {self.queue.add(3)});
         if self.sent.wrapping_sub(tail)>=if device==3 {224}else{220} {
             if device!=3 {self.reset_pending=true;}return false;
@@ -44,7 +49,21 @@ impl Maps {
         unsafe {&*self.queue.add(2).cast::<AtomicU32>()}.store(self.sent,Ordering::Release);
         CHANNEL.notify();true
     }
+    #[cfg(feature="mobile-maps-os-unlock")]
+    fn lifecycle_open(&mut self)->bool {
+        let p=memory_region_symbol!(maps_lock_state:*mut u32).as_ptr();
+        let rev=Self::revision(p);let active=Self::read(unsafe{p.add(1)});
+        fence(Ordering::Acquire);
+        if rev==0||rev&1!=0||rev!=Self::revision(p){return false;}
+        if rev!=self.lifecycle_revision {
+            self.lifecycle_revision=rev;self.sent=0;self.revision=0;self.active=false;
+            self.searching=false;self.height=0;self.down=false;self.reset_pending=false;
+        }
+        active==1
+    }
     pub fn poll(&mut self,ui:&NotesWindow) {
+        #[cfg(feature="mobile-maps-os-unlock")]
+        if !self.lifecycle_open(){ui.set_maps_frame(slint::Image::default());ui.set_maps_keyboard(false);return;}
         let active=ui.get_page()==PAGE&&!ui.get_device_lock_screen();
         if self.reset_pending {
             if !self.send(3,0,0,0,0){return;}

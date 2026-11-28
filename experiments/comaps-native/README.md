@@ -450,3 +450,59 @@ fixture's map disk is throttled to 2 MiB/s and four host workers run. It restore
 the disk rate and releases the pointer in cleanup. Both guest publication times
 and injection-to-observed-frame times are recorded separately, alongside a
 composed screenshot; neither is a physical touch-to-display measurement.
+
+## Optional mobile OS-unlock profile
+
+`experiments/mobile-browser/build.py --maps --map-storage --map-private
+--maps-os-unlock --gated-agent /path/to/public-gated-agent.elf` selects a fresh
+phone fixture with the same `NXMPS002` saved-place format and domain-separated
+Maps key as the desktop OS-unlock profile. The default mobile fixture keeps its
+existing format. The builder and runner refuse to reuse a stage or disk across
+these formats; this does not migrate existing saved places or personal data.
+
+Build its private composer with
+`experiments/desktop-integrated/build_composer.py --mobile-maps-session`.
+The required public SimpleX test ELF can be produced with
+`tests/build_simplex_vault_gate.py`; it waits for the wrapped vault before
+starting its database. No installation vault ELF or VM disk is an input.
+
+On a blank disk the phone requires OS passphrase enrollment. The trusted phone
+UI activates the wrapped vault, then asks a small guardian to reconstruct Maps
+and its disk service. The guardian accepts opening only with a newly activated
+vault epoch. Maps can request only its own derived app key over its dedicated
+endpoint; the UI and disk service do not map that key-transfer page. Saved places
+opens without another passphrase. The page is cleared immediately after use.
+
+Manual and idle OS locking first suspend both Maps processes, reset their
+VirtIO disk, erase and verify all writable image, stack, IPC, heap, shared
+queue/surface and key-transfer pages, and clear registers/TLS. The UI then evicts
+the vault root. Unlock reconstructs boot state and reads the authenticated
+saved-place banks. Queue producers reset their counters on lifecycle changes.
+The storage driver retains the interrupted-I/O restart acknowledgement fix used
+by the desktop profile.
+
+This is a Maps lifecycle boundary, not a whole-phone RAM-erasure guarantee.
+Slint releases/hides its copied map image, but freed UI renderer pixel buffers,
+other phone app/worker memory, host graphics memory and debug/physical access
+are outside this test's erasure claim. Software passphrase wrapping provides no
+hardware anti-rollback or Titan M protection.
+
+`tests/mobile_maps_session_utm.py --guest build/mobile-browser/maps-os-lock`
+uses only the marked disposable fixture. It exercises enrollment, wrong/correct
+OS unlock, encrypted save/rename, manual and idle lock, repeated recovery,
+pan/zoom/Fit, region selection and locked cold restart. It independently reads
+physical pages from the composer's report while Maps is stopped, checks the
+private name on the recovered scanout, and checks that neither the test name nor
+passphrase appears in disk plaintext or serial logs.
+
+Verified on 2026-11-27 in the fresh four-vCPU phone fixture
+`build/mobile-browser/maps-os-lock` (UUID
+`582D3912-D909-421B-810E-0965A150CCB4`). Enrollment, wrong/correct OS unlock,
+private save/rename, manual and 60-second idle lock, pan/zoom/Fit, repeated
+recovery and locked cold restart passed. All **869 physical frames / 53,792,768
+bytes** were zero at each of seven locked checkpoints. The decrypted private
+name recovered on the phone scanout after unlocking; neither the test name nor
+passphrase appeared in plaintext on the two disks or in serial output. Evidence:
+`session-verification/validation.json` and screenshots in that marked stage.
+The fixture was left locked. No personal wallet/chat disk or Pixel worktree was
+used.

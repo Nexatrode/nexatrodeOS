@@ -9,7 +9,8 @@ def ctl(*args):return subprocess.run([CTL,*map(str,args)],capture_output=True,te
 def stage(path):
     path=path.resolve();assert path.is_relative_to(ROOT/'build/mobile-browser') and (path/'.disposable-build').is_file()
     manifest=json.loads((path/'build.json').read_text())
-    assert manifest['profile'] in ('mobile-netsurf','mobile-netsurf-maps') and manifest['saved_data_used'] is False and manifest['development_storage_key'] is True
+    assert manifest['profile'] in ('mobile-netsurf','mobile-netsurf-maps','mobile-maps-os-unlock') and manifest['saved_data_used'] is False
+    assert manifest['development_storage_key'] is (not manifest.get('maps_os_unlock',False))
     digest=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
     assert not (path/'loader.img').is_symlink(),'linked loader forbidden'
     assert digest(path/'loader.img')==manifest['loader_sha256']
@@ -23,6 +24,8 @@ def main():
     if a.reuse:
         old_state=json.loads((guest/'session.json').read_text());tag=old_state['uuid'];bundle=Path(old_state['bundle']).resolve();data=bundle/'Data'
         assert not old_state['saved_data_used'] and bundle.parent==guest and bundle.name=='Mobile-Browser-'+tag[:8]+'.utm'
+        installed=json.loads((data/'build-manifest.json').read_text())
+        assert installed.get('maps_os_unlock',False)==m.get('maps_os_unlock',False),'refuse cross-format disk reuse'
         old_cfg=plistlib.loads((bundle/'config.plist').read_bytes())
         assert old_cfg['Information']['UUID']==tag and len(old_cfg['Drive'])==(2 if m.get('map_storage') else 1) and old_cfg['Drive'][0]['ImageName']=='blank.img'
         assert data.resolve()==data and not any((data/n).is_symlink() for n in ('blank.img','loader.img'))
@@ -73,7 +76,7 @@ def main():
         while time.monotonic()<end:
             text=(data/'trace.log').read_text(errors='replace') if (data/'trace.log').exists() else ''
             assert not any(x in text for x in ('VMFault','panicked at','MON|ERROR','Data Abort')),text[-3500:]
-            if 'SLINT FIRST FRAME' in text and 'NETSURF|BOOT|' in text and (not m.get('maps') or 'COMAPS|READY|' in text):break
+            if 'SLINT FIRST FRAME' in text and 'NETSURF|BOOT|' in text and (not m.get('maps') or ('MAPS_LOCK|BOOT_LOCKED' in text if m.get('maps_os_unlock') else 'COMAPS|READY|' in text)):break
             time.sleep(.2)
         else:raise RuntimeError('mobile boot timeout: '+text[-3500:])
         if not a.boot_only:

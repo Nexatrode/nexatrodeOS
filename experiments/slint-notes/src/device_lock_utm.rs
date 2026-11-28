@@ -128,6 +128,8 @@ impl DeviceLock {
 
     #[cfg(feature = "utm-wrapped-vault-experiment")]
     fn vault_lock(&mut self) -> Result<(), ()> {
+        #[cfg(feature="mobile-maps-os-unlock")]
+        maps_transition(false)?;
         unsafe { self.page.as_mut() }.set_payload(&[]);
         let reply = VAULT.pp_call(MessageInfo::new(0x453, 0));
         if reply.label() == OK as _ { Ok(()) } else { Err(()) }
@@ -141,6 +143,8 @@ impl DeviceLock {
         let reply = VAULT.pp_call(MessageInfo::new(0x452, 0));
         unsafe { self.page.as_mut() }.set_payload(&[]);
         if reply.label() == OK as _ {
+            #[cfg(feature="mobile-maps-os-unlock")]
+            if maps_transition(true).is_err() { let _=VAULT.pp_call(MessageInfo::new(0x453,0));return Err(()); }
             VAULT_UNLOCKED.store(true, core::sync::atomic::Ordering::Release);
             Ok(())
         } else { Err(()) }
@@ -277,7 +281,13 @@ pub fn initialize(ui: &NotesWindow, page: NonNull<BlobTransferPage>) -> Rc<RefCe
             },
         }) {
             Ok(Some(controller)) => { lock.controller = Some(controller); lock.stage = 1; ui.set_device_lock_enabled(true); open_screen(ui, 1, "Enter your passphrase."); }
-            Ok(None) => { ui.set_device_lock_enabled(false); close_screen(ui); }
+            Ok(None) => {
+                ui.set_device_lock_enabled(false);
+                #[cfg(feature="mobile-maps-os-unlock")]
+                { lock.stage=2;open_screen(ui,2,"Choose a passphrase of at least 8 characters."); }
+                #[cfg(not(feature="mobile-maps-os-unlock"))]
+                close_screen(ui);
+            }
             Err(_) => { lock.stage = 0; open_screen(ui, 0, "Lock storage unavailable; restart required."); }
         }
     }
@@ -302,7 +312,12 @@ pub fn initialize(ui: &NotesWindow, page: NonNull<BlobTransferPage>) -> Rc<RefCe
                 #[cfg(feature = "utm-wrapped-vault-experiment")]
                 { lock.pending_wrapped = None; }
                 if lock.controller.is_some() { lock.stage = 1; open_screen(&ui, 1, "Enter your passphrase."); }
-                else { lock.stage = 0; close_screen(&ui); }
+                else {
+                    #[cfg(feature="mobile-maps-os-unlock")]
+                    { lock.stage=2;open_screen(&ui,2,"Choose a passphrase of at least 8 characters."); }
+                    #[cfg(not(feature="mobile-maps-os-unlock"))]
+                    { lock.stage = 0; close_screen(&ui); }
+                }
             } else if action == 1 {
                 if let Some(controller) = lock.controller.as_mut() { controller.lock();
                     #[cfg(feature = "utm-wrapped-vault-experiment")] if lock.vault_lock().is_err() { lock.stage = 0; open_screen(&ui, 0, "Vault lock failed; restart required."); return; }
@@ -315,4 +330,10 @@ pub fn initialize(ui: &NotesWindow, page: NonNull<BlobTransferPage>) -> Rc<RefCe
         }
     });
     state
+}
+
+#[cfg(feature="mobile-maps-os-unlock")]
+fn maps_transition(open:bool)->Result<(),()> {
+    let reply=Channel::new(21).pp_call(MessageInfo::new(if open {0x7d1}else{0x7d0},0));
+    if reply.label()==0x7df && reply.count()==3 && get_mr(1)==u64::from(open) {Ok(())}else{Err(())}
 }

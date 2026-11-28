@@ -5,10 +5,12 @@
 compile_error!("the disposable wrapped-vault experiment must never use an installation vault key");
 
 mod vault_protocol;
-#[cfg(feature = "utm-maps-session-lock")]
+#[cfg(feature = "utm-maps-vault-key")]
 fn maps_key_page() -> *mut personal_os_rust_server::vault_blob_transfer::BlobTransferPage {
     sel4_microkit::memory_region_symbol!(map_session_key: *mut personal_os_rust_server::vault_blob_transfer::BlobTransferPage).as_ptr()
 }
+#[cfg(all(feature="utm-maps-vault-key",not(feature="utm-dynamic-vault-lock")))]
+static mut MAPS_UNLOCK_EPOCH:u64=0;
 #[cfg(feature = "utm-photo-reader")]
 mod vault_photo_access;
 
@@ -462,7 +464,7 @@ impl Vault {
 
     #[cfg(feature = "utm-wrapped-vault-experiment")]
     fn wrapped_clear(&mut self, erase_key: bool) {
-        #[cfg(feature = "utm-maps-session-lock")]
+        #[cfg(feature = "utm-maps-vault-key")]
         unsafe { core::slice::from_raw_parts_mut(maps_key_page().cast::<u8>(),4096).fill(0); }
         use zeroize::Zeroize;
         let was_unlocked = self.wrapped_unlocked;
@@ -2528,6 +2530,8 @@ impl Handler for Vault {
                     self.wrapped_lock();
                     return Ok(MessageInfo::new(label, 0));
                 }
+                #[cfg(all(feature="utm-maps-vault-key",not(feature="utm-dynamic-vault-lock")))]
+                unsafe { MAPS_UNLOCK_EPOCH=MAPS_UNLOCK_EPOCH.checked_add(1).expect("Maps activation epoch exhausted"); }
                 #[cfg(feature = "utm-dynamic-vault-lock")]
                 {
                     assert!(self.lifecycle.prepared(epoch));
@@ -2550,15 +2554,32 @@ impl Handler for Vault {
             && request.count() == 0 {
             return Ok(MessageInfo::new(if self.wrapped_unlocked { REPLY_OK } else { REPLY_DENIED }, 0));
         }
-        #[cfg(feature = "utm-maps-session-lock")]
+        #[cfg(feature = "utm-maps-vault-key")]
+        if channel==Channel::new(14)&&request.label()==0x459&&request.count()==0 {
+            #[cfg(feature="utm-dynamic-vault-lock")]
+            let epoch=self.lifecycle.epoch();
+            #[cfg(not(feature="utm-dynamic-vault-lock"))]
+            let epoch=unsafe {MAPS_UNLOCK_EPOCH};
+            set_mr(0,epoch);set_mr(1,u64::from(self.wrapped_unlocked&&!self.crypto.key_is_cleared()));
+            return Ok(MessageInfo::new(REPLY_OK,2));
+        }
+        #[cfg(feature = "utm-maps-vault-key")]
         if channel == Channel::new(13) {
             let page=unsafe { &mut *maps_key_page() };
             page.set_payload(&[]);
-            if request.label()!=0x458 || request.count()!=0 || !self.wrapped_unlocked || self.lifecycle.phase()!=personal_os_rust_server::vault_lifecycle::Phase::Active {
+            #[cfg(feature="utm-dynamic-vault-lock")]
+            let active=self.lifecycle.phase()==personal_os_rust_server::vault_lifecycle::Phase::Active;
+            #[cfg(not(feature="utm-dynamic-vault-lock"))]
+            let active=true;
+            if request.label()!=0x458 || request.count()!=0 || !self.wrapped_unlocked || !active {
                 return Ok(MessageInfo::new(REPLY_DENIED,0));
             }
             let Some(key)=self.crypto.maps_key() else { return Ok(MessageInfo::new(REPLY_DENIED,0)); };
-            page.set_payload(&*key);set_mr(0,self.lifecycle.epoch());
+            #[cfg(feature="utm-dynamic-vault-lock")]
+            let epoch=self.lifecycle.epoch();
+            #[cfg(not(feature="utm-dynamic-vault-lock"))]
+            let epoch=unsafe {MAPS_UNLOCK_EPOCH};
+            page.set_payload(&*key);set_mr(0,epoch);
             return Ok(MessageInfo::new(REPLY_OK,1));
         }
         #[cfg(feature = "utm-wrapped-vault-experiment")]
