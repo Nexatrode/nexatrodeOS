@@ -9,10 +9,10 @@ def configure(guest,data,cfg,manifest,*,reuse=False):
     assert manifest['saved_data_used'] is False and manifest['map_storage'] is True
     disk=data/'maps.img';assert not disk.is_symlink()
     if reuse:
-        assert len(cfg['Drive'])==2 and cfg['Drive'][1]['ImageName']=='maps.img' and disk.stat().st_size==32*1024*1024
+        assert len(cfg['Drive'])==2 and cfg['Drive'][1]['ImageName']=='maps.img' and disk.stat().st_size==manifest['map_region']['storage_regions'].get('pack_bytes',32*1024*1024)
         return
     assert len(cfg['Drive'])==1 and not disk.exists()
-    pack=guest/'maps.img';assert not pack.is_symlink() and pack.stat().st_size==32*1024*1024
+    pack=guest/'maps.img';assert not pack.is_symlink() and pack.stat().st_size==manifest['map_region']['storage_regions'].get('pack_bytes',32*1024*1024)
     assert hashlib.sha256(pack.read_bytes()).hexdigest()==manifest['map_pack_sha256']
     shutil.copyfile(pack,disk)
     drive=str(uuid.uuid4()).upper()

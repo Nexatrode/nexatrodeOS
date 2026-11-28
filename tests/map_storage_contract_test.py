@@ -28,6 +28,12 @@ class StorageAuthority(unittest.TestCase):
     def test_no_extra_storage_endpoint(self):
         c=ET.SubElement(self.s,'channel');ET.SubElement(c,'end',pd='map_store',id='4');ET.SubElement(c,'end',pd='vault',id='31')
         with self.assertRaises(AssertionError):maps.validate_mobile(self.s)
+    def test_storage_never_preempts_map_rendering(self):
+        self.pd('map_store').set('priority',self.pd('offline_map').get('priority'))
+        with self.assertRaises(AssertionError):maps.validate_mobile(self.s)
+    def test_storage_has_a_bounded_reservation(self):
+        self.pd('map_store').set('budget',self.pd('map_store').get('period'))
+        with self.assertRaises(AssertionError):maps.validate_mobile(self.s)
     def test_no_access_to_other_block_queue(self):
         ET.SubElement(self.pd('map_store'),'map',mr='blk_client_vault_request',perms='rw')
         with self.assertRaises(AssertionError):maps.validate_mobile(self.s)

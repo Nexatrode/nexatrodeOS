@@ -123,9 +123,9 @@ def main():
         guard();assert ctl('status',tag).stdout.strip()=='stopped'
         # Restore only this fixture's public map payloads, retaining selections.
         with disk.open('r+b') as f, (guest/'maps.img').open('rb') as source:
-            f.truncate(32*1024*1024)
+            f.truncate(manifest['map_region']['storage_regions'].get('pack_bytes',32*1024*1024))
             for i,r in enumerate(manifest['map_region']['storage_regions']['regions']):
-                offset=(i+1)*8*1024*1024;source.seek(offset);f.seek(offset);f.write(source.read(r['bytes']))
+                offset=(i+1)*8*1024*1024;source.seek(offset);f.seek(offset);f.write(source.read(r.get('spatial',{}).get('bytes',r['bytes'])))
             f.flush();os.fsync(f.fileno())
     try:
         connect();until(lambda:state()[13]==0 and state()[11] in (1,2));open_maps()

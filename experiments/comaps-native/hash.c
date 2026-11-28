@@ -18,7 +18,21 @@ static void block(uint32_t h[8],const uint8_t p[64]) {
     uint32_t w[64];for(unsigned i=0;i<16;i++)w[i]=(uint32_t)p[i*4]<<24|(uint32_t)p[i*4+1]<<16|(uint32_t)p[i*4+2]<<8|p[i*4+3];
     for(unsigned i=16;i<64;i++)w[i]=w[i-16]+(r(w[i-15],7)^r(w[i-15],18)^(w[i-15]>>3))+w[i-7]+(r(w[i-2],17)^r(w[i-2],19)^(w[i-2]>>10));
     uint32_t a=h[0],b=h[1],c=h[2],d=h[3],e=h[4],f=h[5],g=h[6],z=h[7];
-    for(unsigned i=0;i<64;i++){uint32_t t=z+(r(e,6)^r(e,11)^r(e,25))+((e&f)^(~e&g))+k[i]+w[i];uint32_t u=(r(a,2)^r(a,13)^r(a,22))+((a&b)^(a&c)^(b&c));z=g;g=f;f=e;e=d+t;d=c;c=b;b=a;a=t+u;}
+    /* Eight rounds restore the original register roles. This avoids rotating
+     * eight live state words and a loop branch on every round, without relying
+     * on optional CPU crypto instructions or changing the SHA-256 algorithm. */
+#define ROUND(A,B,C,D,E,F,G,H,I) do { \
+    uint32_t t=(H)+(r((E),6)^r((E),11)^r((E),25))+(((E)&(F))^(~(E)&(G)))+k[(I)]+w[(I)]; \
+    uint32_t u=(r((A),2)^r((A),13)^r((A),22))+(((A)&(B))^((A)&(C))^((B)&(C))); \
+    (D)+=t;(H)=t+u; \
+} while(0)
+    for(unsigned i=0;i<64;i+=8){
+        ROUND(a,b,c,d,e,f,g,z,i);ROUND(z,a,b,c,d,e,f,g,i+1);
+        ROUND(g,z,a,b,c,d,e,f,i+2);ROUND(f,g,z,a,b,c,d,e,i+3);
+        ROUND(e,f,g,z,a,b,c,d,i+4);ROUND(d,e,f,g,z,a,b,c,i+5);
+        ROUND(c,d,e,f,g,z,a,b,i+6);ROUND(b,c,d,e,f,g,z,a,i+7);
+    }
+#undef ROUND
     h[0]+=a;h[1]+=b;h[2]+=c;h[3]+=d;h[4]+=e;h[5]+=f;h[6]+=g;h[7]+=z;
 }
 void map_sha256(const void *data,size_t n,uint8_t out[32]) {

@@ -1,4 +1,4 @@
-"""Checksums against hashlib, two real regions and torn selection records."""
+"""Checksums against hashlib, three regions and torn selection records."""
 import ctypes,hashlib,importlib.util,json,subprocess,unittest
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1];HERE=ROOT/'experiments/comaps-native'
@@ -19,19 +19,32 @@ class Storage(unittest.TestCase):
             raw=bytes((i*41+7)%256 for i in range(n));out=ctypes.create_string_buffer(32)
             self.lib.map_sha256(raw,n,out);self.assertEqual(out.raw,hashlib.sha256(raw).digest())
     def test_pinned_disk_files_and_guest_hash(self):
-        pack=(self.out/'maps.img').read_bytes();self.assertEqual(len(pack),32*1024*1024)
+        pack=(self.out/'maps.img').read_bytes();self.assertEqual(len(pack),self.catalog['pack_bytes'])
         for i,r in enumerate(self.catalog['regions']):
-            raw=pack[(i+1)*8*1024*1024:][:r['bytes']];out=ctypes.create_string_buffer(32)
-            self.lib.map_sha256(raw,len(raw),out);self.assertEqual(out.raw.hex(),r['sha256'])
+            pin=r.get('spatial',r);raw=pack[r['offset']:][:pin['bytes']];out=ctypes.create_string_buffer(32)
+            self.lib.map_sha256(raw,len(raw),out);self.assertEqual(out.raw.hex(),pin['sha256'])
+    def test_concurrent_stage_exports_are_independent(self):
+        from concurrent.futures import ThreadPoolExecutor
+        spec=importlib.util.spec_from_file_location('maps_parallel_prepare',HERE/'prepare.py');module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        def build(index):
+            out=self.out/('parallel-'+str(index));out.mkdir(exist_ok=True);(out/'.disposable-build').touch()
+            result=module.prepare_storage(ROOT/'build/comaps',out)
+            self.assertTrue((out/'spatial/export').is_file())
+            return result['pack_sha256']
+        with ThreadPoolExecutor(max_workers=2) as pool:self.assertEqual(list(pool.map(build,range(2))),[self.catalog['pack_sha256']]*2)
     def test_torn_and_corrupt_selection_records(self):
         record=ctypes.create_string_buffer(4096);self.lib.record(record,12,1);raw=record.raw
         self.assertTrue(self.lib.valid(raw))
         for cut in range(1,64):self.assertFalse(self.lib.valid(raw[:cut]+bytes(4096-cut)))
         for i in range(64):
             changed=bytearray(raw);changed[i]^=128;self.assertFalse(self.lib.valid(bytes(changed)))
-        for generation,region in [(0,0),(2**64-1,0),(1,2)]:
+        for generation,region in [(0,0),(2**64-1,0),(1,3)]:
             self.lib.record(record,generation,region);self.assertFalse(self.lib.valid(record))
+    def test_appended_id_and_private_bank_are_preserved(self):
+        record=ctypes.create_string_buffer(4096);self.lib.record(record,99,2);self.assertTrue(self.lib.valid(record))
+        self.assertEqual([r['id'] for r in self.catalog['regions']],[0,1,2])
+        self.assertEqual((self.out/'maps.img').read_bytes()[1024*1024:1024*1024+8192],bytes(8192))
     def test_real_regions_sanitized(self):
         exe=self.out/'reader';subprocess.run(['/opt/homebrew/opt/llvm/bin/clang','-O1','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all','-I'+str(HERE),str(HERE/'mwm.c'),str(HERE/'reader_test.c'),'-o',str(exe)],check=True)
-        for r in self.catalog['regions']:subprocess.run([str(exe),str(ROOT/'build/comaps'/(r['name']+'.mwm'))],check=True)
+        for r in self.catalog['regions'][:2]:subprocess.run([str(exe),str(ROOT/'build/comaps'/(r['name']+'.mwm'))],check=True)
 if __name__=='__main__':unittest.main()

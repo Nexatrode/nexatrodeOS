@@ -1,7 +1,7 @@
 """Real phone scanout, touch gestures, measured labels and private app routing."""
 import json,re,shutil,struct,subprocess,time
 SCALE=2.6086957
-def exercise(q,data,evidence):
+def exercise(q,data,evidence,*,browser_regression=True):
     evidence.mkdir(parents=True,exist_ok=True);checks=[];label_frames=[]
     def guard():
         s=(data/'trace.log').read_text(errors='replace')
@@ -106,13 +106,14 @@ def exercise(q,data,evidence):
     map_tap(325,35);until(lambda:state()[0][5:9]==initial[5:9]);labels('final')
     screen('maps-phone-final',['Gibraltar','CoMaps','Zoom 0'])
     # The new launcher must also preserve the existing phone browser behavior.
-    home();browser_evidence=evidence/'browser-regression';browser_evidence.mkdir(exist_ok=True)
-    from mobile_browser_input import exercise as browser_exercise
-    browser_exercise(q,data,browser_evidence)
-    open_maps();screen('maps-phone-final',['MAPS','HOME','Gibraltar','CoMaps','Zoom 0'])
-    checks.append('existing nine phone browser scenario groups pass in the same four-app assembly')
+    if browser_regression:
+        home();browser_evidence=evidence/'browser-regression';browser_evidence.mkdir(exist_ok=True)
+        from mobile_browser_input import exercise as browser_exercise
+        browser_exercise(q,data,browser_evidence)
+        open_maps();screen('maps-phone-final',['MAPS','HOME','Gibraltar','CoMaps','Zoom 0'])
+        checks.append('existing nine phone browser scenario groups pass in the same four-app assembly')
     manifest=json.loads((data/'build-manifest.json').read_text())
-    result=dict(passed=True,loader_sha256=manifest['loader_sha256'],checks=checks,browser_regression_passed=True,saved_data_used=False,pixel_wifi_touched=False,viewport=[1080,2340],map_scale=3,map_native_height=state()[0][9],colour_counts=counts,label_frames=label_frames,host_cpu_workers=4,
+    result=dict(passed=True,loader_sha256=manifest['loader_sha256'],checks=checks,browser_regression_passed=browser_regression,saved_data_used=False,pixel_wifi_touched=False,viewport=[1080,2340],map_scale=3,map_native_height=state()[0][9],colour_counts=counts,label_frames=label_frames,host_cpu_workers=4,
         input_handler_to_publication_ms=dict(median=timings[len(timings)//2],p95=timings[min(len(timings)-1,int(len(timings)*.95))],maximum=max(timings)),samples=list(samples.values()),scope='disposable phone map integration and guest timing; QMP input and real scanout, no physical touch latency, GPS, search, routing or shared wrapped-session lock guarantee')
     (evidence/'validation.json').write_text(json.dumps(result,indent=2)+'\n')
     print(json.dumps({k:v for k,v in result.items() if k not in ('samples','label_frames')},indent=2),flush=True)

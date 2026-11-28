@@ -1,7 +1,7 @@
 # Offline CoMaps-data experiment
 
-This is a native ARM64/seL4 bring-up viewer for one real CoMaps map region,
-Gibraltar (1,272,536 bytes). It reads the pinned `.mwm` directly in the guest,
+This is a native ARM64/seL4 viewer for pinned CoMaps map data. The embedded
+profile uses Gibraltar (1,272,536 bytes); storage profiles add two more regions. It reads the pinned `.mwm` directly in the guest,
 including points, inner/outer polylines and triangle geometry. Geometry is decoded
 once at startup, then retained for viewport culling and CPU rendering at
 2560×1600, 2×. It is **not the full CoMaps app or its Drape renderer**.
@@ -301,3 +301,93 @@ UUID and public-map disk. It checks real composed pixels and verifies that a
 private test name/passphrase do not appear in the raw disk. Crypto unit tests
 cover envelope and record authentication, fallback and live-key zeroization;
 `tests/comaps_private_contract_test.py` rejects cross-app authority additions.
+
+## Larger region and bounded spatial loading
+
+The three-region storage profile adds **Liechtenstein**, from the same pinned
+CoMaps series/version: 4,511,920 source bytes, 58,130 features and 906,581 points.
+The former whole-map reader hits its point capacity at record 19,863. Increasing
+all map arrays would scale memory with region size. Instead, a build-time
+streaming visitor uses the existing decoder's fixed workspace to export the
+supported rendering subset into an overview and 64 spatial detail pages. The
+source MWM stays in the public build cache, with its pinned SHA-256. Geometry
+retained in detail pages is unchanged; the overview intentionally omits buildings,
+minor roads and non-place points. This remains a CoMaps-data experiment, not the
+complete CoMaps renderer, search index or an arbitrary-size region importer.
+
+In the guest, the file buffer remains **8 MiB**, each candidate stays capped at
+**32,768 features / 524,288 points**, and there are still two reusable decoded
+candidates. Only the pages intersecting the viewport plus a 50% margin are read
+at detail zoom (level 3 and above). Pages are checked individually against hashes
+compiled from the pinned source, structurally validated and filtered into the
+candidate. Each disk request remains at most 64 KiB; completions drive the next
+request/page. The current map remains visible until the entire candidate is
+valid. A failed chunk retains it. Dense views exceeding a fixed cap fail rather
+than silently dropping features or allocating more memory. Search on this region
+covers the loaded rendering area/LOD; it is not full-region address search.
+
+Tap the current region name to open the shared **region manager**. It lists the
+three installed regions, their runtime sizes, current selection and the chunked
+format. Choose one, retry a failed region, or cancel an in-progress candidate.
+Cancellation waits for the outstanding bounded disk operation, discards the
+candidate and leaves the last successful selection journal unchanged. Progress is
+reported per page. These are provisioned offline regions: runtime downloads,
+remove/install and updates are not implemented by this manager.
+
+The new disposable pack is **64 MiB**. Gibraltar and San Marino retain their
+original offsets (8 and 16 MiB), while Liechtenstein's derived pages start at
+24 MiB. Selection records remain at 0/4096; private saved-place ciphertext banks
+remain at 1 MiB. Region IDs 0=Gibraltar and 1=San Marino are unchanged, and
+2=Liechtenstein is appended. Builders require fresh disposable stages/disks for
+this layout; they do not expand or migrate an installed personal-data disk.
+Saved places use these stable IDs and absolute coordinates, independently of
+which detail pages are loaded. A missing/corrupt region never deletes a bookmark.
+
+`tests/comaps_spatial_host.py` profiles the source and checks page parsing under
+ASan/UBSan, including truncations, viewport filtering, capacity exhaustion and
+mutations. `tests/comaps_regions_utm.py --guest <stage> [--mobile] [--regression]`
+checks manager pixels, overview/detail loading, repeated loaded-host panning,
+cancel with a throttled disposable map disk, cold restart, corrupted overview
+and detail pages, and recovery. Timings separate disk/DMA, hashing, page parsing
+and end-to-end selection. They include scheduling/preemption; they do not measure
+physical touch-to-display latency. Full private saved-place regressions remain
+in `tests/comaps_private_utm.py`.
+
+## I/O latency tracing
+
+`tests/comaps_io_utm.py --guest <desktop stage> --output build/maps-io/run`
+repeats the same Liechtenstein overview/detail viewport, samples the guest timing
+page and the dedicated map disk's QEMU block statistics, and optionally adds
+four bounded host CPU workers with `--load`. It does not edit a disk, reboot,
+enroll a passphrase or import personal data. The recorded script and loader
+hash distinguish each experiment.
+
+The guest records doorbell-to-completion-handler waits, request setup/doorbell
+calls, interrupt MMIO acknowledgements, DMA copying, service dispatch, and the
+handoff back to the renderer, with a bounded wait histogram and worst-request
+record. These are elapsed times and include preemption. A stalled doorbell call
+is counted in both issue and wait time; **do not sum them**. QEMU's block times
+cover its backend completion, not delivery of the guest IRQ. This comparison
+locates delays around virtual I/O without claiming to distinguish every host
+scheduler wait from a seL4 kernel wait.
+
+Public reads now use up to **124 KiB** of the existing 128 KiB DMA allocation
+(the first 4 KiB contains descriptors/control). This reduces MMIO round trips
+without adding memory, outstanding requests or raw-disk authority. Empty
+spatial cells are skipped. The portable SHA-256 rounds are unrolled in groups
+of eight, retain the same pinned hashes and require no optional CPU crypto
+instructions. The volatile byte-copy path remains for safe uncached DMA tails.
+
+The public-map service runs below Maps rendering (priority 94 versus 95), with
+an 8/10 ms reservation. The former 3/10 ms reservation stretched software
+hashing across replenishments even when the UI was idle. The larger reservation
+uses available CPU while the lower priority lets map drawing and interactive
+frontends preempt it. This trades background throughput during active panning
+for immediate drawing, rather than raising a hashing service above the UI.
+
+`tests/comaps_loading_input.py --guest <desktop stage> --output
+build/maps-io/drag-loading --load` checks twelve held-drag frames while the
+fixture's map disk is throttled to 2 MiB/s and four host workers run. It restores
+the disk rate and releases the pointer in cleanup. Both guest publication times
+and injection-to-observed-frame times are recorded separately, alongside a
+composed screenshot; neither is a physical touch-to-display measurement.

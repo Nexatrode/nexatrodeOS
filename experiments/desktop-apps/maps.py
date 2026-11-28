@@ -138,7 +138,7 @@ def attach_storage(system, app, mapping, mr, channel):
     mr('map_disk_dma',0x20000,phys_addr='0x5f880000')
     mapping(app,'map_store_control',0x72000000,'rw','map_store_control')
     mapping(app,'map_store_bytes',0x76000000,'r','map_store_bytes')
-    store=ET.SubElement(system,'protection_domain',name='map_store',priority='96',budget='3000',period='10000',stack_size='0x4000')
+    store=ET.SubElement(system,'protection_domain',name='map_store',priority='94',budget='8000',period='10000',stack_size='0x4000')
     ET.SubElement(store,'program_image',path='map-store.elf')
     for name,va,perms in [('map_store_control',0x72000000,'rw'),('map_store_bytes',0x73000000,'rw'),('map_disk_regs',0x74000000,'rw'),('map_disk_dma',0x75000000,'rw')]:
         mapping(store,name,va,perms,name)
@@ -148,6 +148,11 @@ def attach_storage(system, app, mapping, mr, channel):
 
 def validate_storage(system):
     domains={p.get('name'):p for p in system.findall('protection_domain')}
+    # Public hashing may use idle CPU, but it must remain preemptible by Maps
+    # drawing and every interactive frontend. Keep a bounded reservation.
+    service=domains['map_store'];app=domains['offline_map']
+    assert int(service.get('priority'))<int(app.get('priority'))
+    assert 0<int(service.get('budget'))<int(service.get('period'))<=10000
     expected={'map_store_control':'rw','map_store_bytes':'rw','map_disk_regs':'rw','map_disk_dma':'rw'}
     if system.find("memory_region[@name='map_private_cipher']") is not None:expected['map_private_cipher']='rw'
     assert {m.get('mr'):m.get('perms') for m in domains['map_store'].findall('map')}==expected

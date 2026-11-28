@@ -46,12 +46,15 @@ extern "C" bool map_reference(const unsigned char *raw,size_t bytes,unsigned cou
     verified++;return true;
 }
 static offline_map map;
+static unsigned long long streamed_points;
+static bool consume(const offline_map *m,const map_feature *,void *){streamed_points+=m->point_count;return true;}
 int main(int argc,char **argv) {
-    if(argc!=2)return 2;
+    if(argc!=2&&argc!=3)return 2;
     std::ifstream stream(argv[1],std::ios::binary);
     std::vector<unsigned char> blob((std::istreambuf_iterator<char>(stream)),{});
-    if(!map_load(&map,blob.data(),blob.size())) {std::fprintf(stderr,"Reader failed %s at record %u\n",map.error,map.records);return 1;}
+    if(!(argc==3?map_visit(&map,blob.data(),blob.size(),consume,nullptr):map_load(&map,blob.data(),blob.size()))) {std::fprintf(stderr,"Reader failed %s at record %u\n",map.error,map.records);return 1;}
     if(!map.records||!map.point_count||!verified)return 1;
     std::printf("PASS %u geometry blocks compared point-for-point against unmodified CoMaps; records=%u points=%u\n",verified,map.records,map.point_count);
+    if(argc==3)std::printf("STREAM records=%u points=%llu workspace=%zu\n",map.records,streamed_points,sizeof(map));
     return 0;
 }

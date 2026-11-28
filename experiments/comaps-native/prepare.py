@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Fetch a pinned public CoMaps source and authenticated-by-hash offline region."""
-import csv, hashlib, json, subprocess, urllib.request
+import csv, hashlib, json, subprocess, urllib.request, importlib.util
 from urllib.parse import quote
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
@@ -56,7 +56,7 @@ def prepare_storage(base, out):
     assert base.is_relative_to(ROOT/'build/comaps') and out.is_relative_to(ROOT/'build')
     assert (out/'.disposable-build').is_file() and not any(p.suffix=='.utm' for p in (out,*out.parents))
     catalog=json.loads((HERE/'regions.json').read_text());regions=catalog['regions']
-    assert len(regions)==2 and all(16<r['bytes']<=8*1024*1024 for r in regions)
+    assert len(regions)==3 and [r["id"] for r in regions]==list(range(3)) and [r["name"] for r in regions[:2]]==["Gibraltar","San Marino"] and all(16<r['bytes']<=8*1024*1024 for r in regions)
     paths=[]
     for r in regions:
         path=base/(r['name']+'.mwm')
@@ -65,12 +65,23 @@ def prepare_storage(base, out):
             assert len(raw)==r['bytes'] and hashlib.sha256(raw).hexdigest()==r['sha256'];path.write_bytes(raw)
         assert path.stat().st_size==r['bytes'] and hashlib.sha256(path.read_bytes()).hexdigest()==r['sha256']
         paths.append(path)
-    header='/* Generated from pinned public regions.json. */\nstruct map_region_pin { const char *name; unsigned length; unsigned char digest[32]; };\nstatic const struct map_region_pin map_regions[2]={\n'
+    spec=importlib.util.spec_from_file_location('comaps_spatial',HERE/'spatial.py')
+    spatial=importlib.util.module_from_spec(spec);spec.loader.exec_module(spatial)
+    spatial_path,profile=spatial.prepare(base,paths[2],out/'spatial');paths[2]=spatial_path
+    header='/* Generated from pinned public regions.json. */\nstruct map_region_pin { const char *name; unsigned length; unsigned char digest[32]; };\nstatic const struct map_region_pin map_regions[MAP_REGION_COUNT]={\n'
     for r in regions:header+='{'+json.dumps(r['name'])+','+str(r['bytes'])+',{'+','.join('0x'+r['sha256'][i:i+2] for i in range(0,64,2))+'}},\n'
-    (out/'regions_generated.h').write_text(header+'};\n')
+    header+='};\nstruct map_page_pin { unsigned offset,length; unsigned char digest[32]; double bounds[4]; };\nstatic const struct map_page_pin map_pages[65]={\n'
+    for page in profile['pages']:
+        header+='{'+str(page['offset'])+','+str(page['bytes'])+',{'+','.join('0x'+page['sha256'][i:i+2] for i in range(0,64,2))+'},{'+','.join(map(repr,page['bounds']))+'}},\n'
+    header+='};\nstatic const double map_spatial_bounds[4]={'+','.join(map(repr,profile['bounds']))+'};\nstatic const double map_spatial_origin[2]={'+','.join(map(repr,profile['origin']))+'};\n'
+    (out/'regions_generated.h').write_text(header)
+    catalog['pack_bytes']=64*1024*1024
+    catalog['regions'][2]['spatial']=profile
+    for i,r in enumerate(regions):r['offset']=(i+1)*8*1024*1024
+
     pack=out/'maps.img';assert not pack.is_symlink()
     with pack.open('wb') as disk:
-        disk.truncate(32*1024*1024)
+        disk.truncate(catalog['pack_bytes'])
         for i,path in enumerate(paths):disk.seek((i+1)*8*1024*1024);disk.write(path.read_bytes())
     catalog['pack_sha256']=hashlib.sha256(pack.read_bytes()).hexdigest()
     (out/'map-pack.json').write_text(json.dumps(catalog,indent=2)+'\n')

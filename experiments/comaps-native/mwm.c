@@ -198,7 +198,7 @@ static bool feature(struct decoder *d,struct cursor c) {
     if(c.bad) return false;
     m->feature_count++;return true;
 }
-bool map_load(struct offline_map *m,const unsigned char *data,size_t size) {
+static bool load(struct offline_map *m,const unsigned char *data,size_t size,map_visitor visitor,void *context) {
     memset(m,0,sizeof(*m));memset(&decoder,0,sizeof(decoder));decoder.map=m;
     m->error="invalid MWM";
     if(size<16||size>32*1024*1024) return false;
@@ -237,8 +237,13 @@ bool map_load(struct offline_map *m,const unsigned char *data,size_t size) {
         uint64_t bytes=var(&c);
         if(c.bad||!bytes||bytes>(uint64_t)(c.end-c.p))return false;
         struct cursor record={c.p,c.p+bytes,false};skip(&c,bytes);m->records++;
+        if(visitor){m->feature_count=0;m->point_count=0;}
         if(!feature(&decoder,record))return false;
+        if(visitor&&!visitor(m,&m->features[0],context))return false;
     }
     if(c.bad||!m->feature_count||!m->point_count)return false;
     m->error=NULL;return true;
 }
+
+bool map_load(struct offline_map *m,const unsigned char *data,size_t size){return load(m,data,size,NULL,NULL);}
+bool map_visit(struct offline_map *m,const unsigned char *data,size_t size,map_visitor visitor,void *context){return visitor&&load(m,data,size,visitor,context);}

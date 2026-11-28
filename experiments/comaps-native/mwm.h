@@ -27,3 +27,8 @@ struct offline_map {
     const char *error;
 };
 bool map_load(struct offline_map *, const unsigned char *, size_t);
+
+/* Streaming exporter: one bounded feature at a time, fixed decoder workspace.
+ * Callback pointers are valid only until the next feature. */
+typedef bool (*map_visitor)(const struct offline_map *,const struct map_feature *,void *);
+bool map_visit(struct offline_map *,const unsigned char *,size_t,map_visitor,void *);

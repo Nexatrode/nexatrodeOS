@@ -22,10 +22,18 @@
 #ifdef MAP_STORAGE
 #include "storage_format.h"
 #include "regions_generated.h"
+#include "spatial.h"
 uintptr_t map_store_control,map_store_bytes;
-static unsigned loaded_region=2,requested_region,storage_state=1,storage_error;
+static unsigned loaded_region=MAP_REGION_COUNT,requested_region,storage_state=1,storage_error;
 static uint64_t storage_sequence,storage_generation;
-static bool region_picker;
+static bool region_picker,load_cancelled,spatial_loading,spatial_refresh,load_detail;
+static unsigned spatial_queue[MAP_PAGE_COUNT],spatial_count,spatial_next;
+static double spatial_view[4],loaded_view[4];
+static unsigned loaded_lod;
+static struct {char name[96];float x,y;unsigned geometry;bool valid;} spatial_selection;
+static struct map_io_times load_io;
+static uint64_t load_started,load_read_us,load_hash_us,load_decode_us,load_bytes,load_finished,load_progress_draw;
+static void spatial_begin(bool),spatial_maybe(void),spatial_reply(void),storage_cancel(void);
 static bool recovering=true;
 static struct offline_map maps[2],*current_map=&maps[0],*candidate=&maps[1];
 #define map (*current_map)
@@ -110,8 +118,13 @@ static void profile(uint64_t start,uint64_t *phases,uint64_t rendered,uint64_t n
     p[5]=(uint64_t)(int64_t)(cx*1e9);p[6]=(uint64_t)(int64_t)(cy*1e9);p[7]=(uint64_t)(units*1e12);p[8]=zoom_level;
     p[9]=H;p[10]=last_layout.count;
 #ifdef MAP_STORAGE
-    p[11]=loaded_region<2?loaded_region+1:0;p[12]=requested_region+1;
+    p[11]=loaded_region<MAP_REGION_COUNT?loaded_region+1:0;p[12]=requested_region+1;
     p[13]=storage_state;p[14]=storage_error;p[15]=storage_generation;
+    p[880]=region_picker;p[881]=spatial_loading;p[882]=spatial_next;p[883]=spatial_count;
+    p[884]=map.feature_count;p[885]=map.point_count;p[886]=load_read_us;p[887]=load_hash_us;p[888]=load_decode_us;
+    p[889]=load_finished;p[890]=load_bytes;p[891]=loaded_lod;p[892]=load_cancelled;
+    _Static_assert(901*sizeof(uint64_t)+sizeof(load_io)<=8192,"bounded disk timing summary");
+    p[900]=0x4e584d494f303031ULL;memcpy((void*)(p+901),&load_io,sizeof(load_io));
 #endif
     _Static_assert(464*8+MAP_MAX_LABELS*4*4<=4096,"bounded label rectangles after timing history");
     uint32_t *rect=(void*)(p+464);
@@ -255,7 +268,11 @@ static void draw_search(void){
     fill(0,TOP,W,BOTTOM-TOP,0x071521);fill(8,TOP+8,W-64,42,0x123143);fill(8,TOP+48,W-64,2,0x34cddd);
     clipped_text(16,TOP+35,17,search.query[0]?0xe9f7fb:0x91b5c5,search.query[0]?search.query:"Place or road name",W-86,true);
     fill(W-48,TOP+8,40,42,0x183c4a);text(W-38,TOP+37,25,0x92e3e0,"×");
-    const char *status=!search.query[0]?"Search this region offline":!search.count?"No matches in this region":search.more?"First 8 matches · choose a result":"Choose a result";
+    const char *scope="Search this region offline";
+#ifdef MAP_STORAGE
+    if(loaded_region==2)scope="Search loaded area · zoom for detail";
+#endif
+    const char *status=!search.query[0]?scope:!search.count?"No matches in this region":search.more?"First 8 matches · choose a result":"Choose a result";
     text(12,TOP+71,13,0x91b5c5,status);search_clamp();
     for(unsigned row=0;row<search_rows()&&row+search.offset<search.count;row++){
         unsigned i=row+search.offset;const struct map_feature *f=&map.features[search.result[i]];int y=TOP+82+row*48;
@@ -304,7 +321,7 @@ static void reset(void) {
     selection_clear();held=false;map_gesture_cancel(&gesture);
     last_layout.count=0;
 #ifdef MAP_STORAGE
-    if(loaded_region==1){cx=0;cy=0;initial_units=fmax((map.maxx-map.minx)/W,(map.maxy-map.miny)/(BOTTOM-TOP))*1.05;}
+    if(loaded_region<MAP_REGION_COUNT&&loaded_region!=0){cx=0;cy=0;initial_units=fmax((map.maxx-map.minx)/W,(map.maxy-map.miny)/(BOTTOM-TOP))*1.05;}
     else
 #endif
     {
@@ -315,6 +332,9 @@ static void reset(void) {
     units=initial_units;zoom_level=0;changed=true;
 }
 static void zoom(int direction) {
+#ifdef MAP_STORAGE
+    if(storage_state==2&&storage_error==MAP_STORE_CAPACITY){storage_state=0;storage_error=0;}
+#endif
     if(direction>0&&zoom_level<6){units/=1.5;zoom_level++;}
     if(direction<0&&zoom_level>0){units*=1.5;zoom_level--;}
     last_layout.count=0;changed=true;
@@ -391,8 +411,9 @@ static void draw(void) {
     fill(0,0,W,TOP,0x0b202d);
 #if defined(MAP_DESKTOP) || defined(MAP_MOBILE)
 #ifdef MAP_STORAGE
-    text(12,27,20,0xe9f7fb,map_regions[loaded_region<2?loaded_region:requested_region].name);
-    text(12,51,13,0x91b5c5,storage_state==1?"Loading…":storage_state==3?"Saving selection…":storage_state==2?"Load failed · tap region":"Offline · regions");
+    text(12,27,20,0xe9f7fb,map_regions[loaded_region<MAP_REGION_COUNT?loaded_region:requested_region].name);
+    char load_status[64];snprintf(load_status,sizeof(load_status),"Loading %u/%u · tap region to cancel",spatial_next,spatial_count);
+    text(12,51,13,0x91b5c5,storage_state==1?load_status:storage_state==3?"Saving selection…":storage_state==2?"Load failed · tap region":"Offline · regions");
 #else
     text(16,27,22,0xe9f7fb,"Gibraltar");text(16,51,14,0x91b5c5,"CoMaps · offline");
 #endif
@@ -401,11 +422,19 @@ static void draw(void) {
 #endif
 #ifdef MAP_STORAGE
     if(region_picker&&!search_open){
-        for(unsigned i=0;i<2;i++){fill(6,TOP+6+(int)i*48,W-12,44,0x183c4a);text(16,TOP+35+(int)i*48,20,0xe9f7fb,map_regions[i].name);}
+        fill(6,TOP+4,W-12,242,0x0b202d);
+        for(unsigned i=0;i<MAP_REGION_COUNT;i++){
+            int y=TOP+6+(int)i*48;fill(8,y,W-16,44,i==loaded_region?0x245566:0x183c4a);
+            text(16,y+20,18,0xe9f7fb,map_regions[i].name);
+            char info[80];snprintf(info,sizeof(info),"%s · %.2f MB%s",i==loaded_region?"Current":"Installed",(i==2?map_pages[64].offset+map_pages[64].length:map_regions[i].length)/1e6,i==2?" · chunked":"");text(16,y+38,12,0x91b5c5,info);
+        }
+        text(16,TOP+173,13,0x91b5c5,"Fixed memory · validated before switching");
+        text(16,TOP+193,13,0x91b5c5,loaded_region==2?"Search covers loaded area · zoom for details":"3 offline regions · no network required");
+        fill(12,TOP+205,W-24,34,0x183c4a);text(24,TOP+228,16,0x92e3e0,storage_state==1?"Cancel loading":"Close region manager");
     }else if(storage_state==2&&!search_open){
         fill(6,TOP+6,W-12,54,0x472b32);
-        text(14,TOP+28,16,0xffa6ad,"Region unavailable or damaged");
-        text(14,TOP+49,13,0xe9f7fb,loaded_region<2?"Choose a region to retry. Current map retained.":"Choose another offline region to continue.");
+        text(14,TOP+28,16,0xffa6ad,storage_error==MAP_STORE_CAPACITY?"View too dense · zoom in":"Region unavailable or damaged");
+        text(14,TOP+49,13,0xe9f7fb,loaded_region<MAP_REGION_COUNT?"Choose a region to retry. Current map retained.":"Choose another offline region to continue.");
     }
 #endif
     int search_x=BUTTON_LEFT-46;fill(search_x,14,42,42,0x183c4a);
@@ -521,6 +550,9 @@ static void map_button(unsigned value) {
     if(!value){
         motion();bool tap=map_gesture_end(&gesture);held=false;
         if(search_open){if(tap&&search_pressed>=0&&my>=TOP+82&&my<(int)BOTTOM){unsigned row=(my-TOP-82)/48;if(row<search_rows()&&(unsigned)search_pressed==search.offset+row)search_accept((unsigned)search_pressed);}search_pressed=-1;return;}
+#ifdef MAP_STORAGE
+        if(storage_state==1||storage_state==3)return;
+#endif
         if(tap&&my>=TOP&&my<(int)BOTTOM)select_at(mx,my);
         return;
     }
@@ -529,13 +561,14 @@ static void map_button(unsigned value) {
 #ifdef MAP_STORAGE
     if(my>=0&&my<TOP&&mx<BUTTON_LEFT){search_close();region_picker=!region_picker;changed=true;return;}
     if(region_picker){
-        if(my>=TOP+6&&my<TOP+102&&storage_state!=1&&storage_state!=3){
+        if(my>=TOP+205&&my<TOP+239){if(storage_state==1)storage_cancel();region_picker=false;changed=true;return;}
+        if(my>=TOP+6&&my<TOP+6+MAP_REGION_COUNT*48&&storage_state!=1&&storage_state!=3){
             unsigned region=(unsigned)(my-TOP-6)/48;region_picker=false;held=false;
             recovering=false;storage_request(MAP_STORE_LOAD,region);return;
         }
         region_picker=false;changed=true;return;
     }
-    if(loaded_region==2)return;
+    if(loaded_region==MAP_REGION_COUNT)return;
     if(storage_state==2&&!search_open&&my>=TOP+6&&my<TOP+60)return;
 #endif
     if(search_open&&my>=(int)TOP&&my<(int)BOTTOM){
@@ -555,7 +588,7 @@ static void set_height(unsigned height) {
     if(map_height==height)return;
     map_height=height;initial_units=.066/(BOTTOM-TOP);
 #ifdef MAP_STORAGE
-    if(loaded_region==1)initial_units=fmax((map.maxx-map.minx)/W,(map.maxy-map.miny)/(BOTTOM-TOP))*1.05;
+    if(loaded_region!=0)initial_units=fmax((map.maxx-map.minx)/W,(map.maxy-map.miny)/(BOTTOM-TOP))*1.05;
 #endif
     double factor=1.;
     for(unsigned i=0;i<zoom_level;i++)factor*=1.5;
@@ -631,7 +664,11 @@ static void input(void) {
 #endif
             if(search_open){if((int32_t)e[2]<0&&search.offset+search_rows()<search.count)search.offset++;else if((int32_t)e[2]>0&&search.offset)search.offset--;changed=true;}else zoom((int32_t)e[2]>0?1:-1);}
     }
-    __atomic_store_n(q+3,input_tail,__ATOMIC_RELEASE);draw();publish_search_state();
+    __atomic_store_n(q+3,input_tail,__ATOMIC_RELEASE);
+#ifdef MAP_STORAGE
+    spatial_maybe();
+#endif
+    draw();publish_search_state();
 #ifdef MAP_PROFILE
     profile(0,NULL,0,0);
 #endif
@@ -650,7 +687,11 @@ static void input(void) {
             if(e.type==2&&e.code==8)zoom((int32_t)e.value>0?1:-1);
         } else if(e.device==INPUT_DEVICE_KEYBOARD&&e.type==1&&e.value<=2)map_key(e.code,e.value);
     }
-    __atomic_store_n(&q->tail,input_tail,__ATOMIC_RELEASE);publish_pointer();draw();
+    __atomic_store_n(&q->tail,input_tail,__ATOMIC_RELEASE);publish_pointer();
+#ifdef MAP_STORAGE
+    spatial_maybe();
+#endif
+    draw();
 }
 #endif
 void init(void) {
@@ -681,20 +722,90 @@ void init(void) {
     printf("COMAPS|READY|offline|no network\n");
 }
 #ifdef MAP_STORAGE
+static void storage_cancel(void){
+    load_cancelled=true;spatial_refresh=false;changed=true;
+}
+static void spatial_send(void){
+    struct map_store_page *p=(void*)map_store_control;p->command=MAP_STORE_PAGE;p->region=2;p->chunk=spatial_queue[spatial_next];p->length=p->progress=0;p->requested_us=us();
+    __atomic_store_n(&p->sequence,++storage_sequence,__ATOMIC_RELEASE);microkit_notify(2);changed=true;
+}
+static void spatial_begin(bool refresh){
+    spatial_refresh=refresh;spatial_loading=true;storage_state=1;storage_error=0;load_cancelled=false;load_progress_draw=us();
+    spatial_selection.valid=refresh&&selected_feature&&selected_feature<=map.feature_count;
+    if(spatial_selection.valid){const struct map_feature *f=&map.features[selected_feature-1];struct map_point p=map.points[f->first+f->count/2];memcpy(spatial_selection.name,f->name,96);spatial_selection.x=p.x;spatial_selection.y=p.y;spatial_selection.geometry=f->geometry;}
+    selection_clear();search_close();search.query[0]=0;map_search_run(&search,&map);held=false;map_gesture_cancel(&gesture);
+    memset(candidate,0,sizeof(*candidate));candidate->origin_x=map_spatial_origin[0];candidate->origin_y=map_spatial_origin[1];
+    candidate->minx=map_spatial_bounds[0];candidate->miny=map_spatial_bounds[1];candidate->maxx=map_spatial_bounds[2];candidate->maxy=map_spatial_bounds[3];
+    spatial_count=spatial_next=0;load_detail=refresh&&zoom_level>=3;
+    if(!load_detail){spatial_queue[spatial_count++]=0;}
+    else{
+        double dx=W*units*.75,dy=(BOTTOM-TOP)*units*.75;
+        spatial_view[0]=cx-dx;spatial_view[1]=cy-dy;spatial_view[2]=cx+dx;spatial_view[3]=cy+dy;
+        for(unsigned i=1;i<MAP_PAGE_COUNT;i++){
+            // Empty cells have no geometry and need no disk/hash round trip.
+            if(map_pages[i].length==16)continue;
+            const double *b=map_pages[i].bounds;double ox=candidate->origin_x,oy=candidate->origin_y;
+            if(!(b[2]<spatial_view[0]+ox||b[3]<spatial_view[1]+oy||b[0]>spatial_view[2]+ox||b[1]>spatial_view[3]+oy))spatial_queue[spatial_count++]=i;
+        }
+        if(!spatial_count){spatial_queue[spatial_count++]=0;}
+    }
+    spatial_send();
+}
+static void spatial_reply(void){
+    struct map_store_page *p=(void*)map_store_control;uint64_t start=us();
+    if(!spatial_loading||spatial_next>=spatial_count||p->chunk!=spatial_queue[spatial_next]||p->length!=map_pages[p->chunk].length||
+       !map_page_append(candidate,(void*)map_store_bytes,p->length,load_detail?spatial_view:NULL)){
+        storage_state=2;storage_error=candidate->error?MAP_STORE_CAPACITY:MAP_STORE_CORRUPT;spatial_loading=false;changed=true;return;
+    }
+    load_decode_us+=us()-start;spatial_next++;
+    if(spatial_next<spatial_count){spatial_send();return;}
+    struct offline_map *old=current_map;current_map=candidate;candidate=old;loaded_region=2;spatial_loading=false;
+    loaded_lod=load_detail?1:0;memcpy(loaded_view,spatial_view,sizeof(loaded_view));search_rebuild();
+    if(!spatial_refresh)reset();
+    else if(spatial_selection.valid){for(unsigned i=0;i<map.feature_count;i++){struct map_feature *f=&map.features[i];struct map_point p=map.points[f->first+f->count/2];if(f->geometry==spatial_selection.geometry&&!strcmp(f->name,spatial_selection.name)&&p.x==spatial_selection.x&&p.y==spatial_selection.y){selection_set(i);break;}}}
+    spatial_selection.valid=false;
+    printf("COMAPS|SPATIAL|pages=%u|features=%u|points=%u|read_us=%llu|hash_us=%llu|decode_us=%llu\n",spatial_count,map.feature_count,map.point_count,(unsigned long long)load_read_us,(unsigned long long)load_hash_us,(unsigned long long)load_decode_us);
+    if(spatial_refresh||(recovering&&storage_generation)){recovering=false;storage_state=0;load_finished=us()-load_started;changed=true;}
+    else{recovering=false;storage_request(MAP_STORE_COMMIT,loaded_region);}
+}
+static void spatial_maybe(void){
+    if(!active||loaded_region!=2||storage_state||held||search_open||region_picker)return;
+#ifdef MAP_PRIVATE
+    if(private_mode||private_busy)return;
+#endif
+    double dx=W*units*.5,dy=(BOTTOM-TOP)*units*.5;
+    bool detail=zoom_level>=3;
+    if(detail==loaded_lod&&(!detail||(cx-dx>=loaded_view[0]&&cy-dy>=loaded_view[1]&&cx+dx<=loaded_view[2]&&cy+dy<=loaded_view[3])))return;
+    memset(&load_io,0,sizeof(load_io));load_started=us();load_read_us=load_hash_us=load_decode_us=load_bytes=load_finished=0;requested_region=2;spatial_begin(true);
+}
 static void storage_request(unsigned command,unsigned region) {
     struct map_store_page *p=(void*)map_store_control;
+    if(command==MAP_STORE_LOAD){
+        memset(&load_io,0,sizeof(load_io));load_started=us();load_read_us=load_hash_us=load_decode_us=load_bytes=load_finished=0;load_cancelled=false;
+        if(region==2){requested_region=region;spatial_refresh=false;spatial_begin(false);return;}
+    }
     requested_region=region;storage_error=0;storage_state=command==MAP_STORE_COMMIT?3:1;held=false;
     map_gesture_cancel(&gesture);if(command!=MAP_STORE_COMMIT){selection_clear();search_close();search.query[0]=0;map_search_run(&search,&map);}
-    p->command=command;p->region=region;p->length=0;
+    p->command=command;p->region=region;p->length=0;p->requested_us=us();
     __atomic_store_n(&p->sequence,++storage_sequence,__ATOMIC_RELEASE);microkit_notify(2);changed=true;
 }
 static void storage_reply(void) {
     struct map_store_page *p=(void*)map_store_control;
     if(__atomic_load_n(&p->complete,__ATOMIC_ACQUIRE)!=storage_sequence)return;
     storage_generation=p->generation;
-    if(p->result||p->region>1){storage_error=p->result?p->result:MAP_STORE_INVALID;storage_state=2;changed=true;}
+    if(load_cancelled){spatial_loading=false;load_cancelled=false;storage_state=loaded_region<MAP_REGION_COUNT?0:2;changed=true;draw();return;}
+    if(p->command==MAP_STORE_LOAD||p->command==MAP_STORE_PAGE){
+        struct map_io_times *a=&load_io,*b=&p->io;
+        a->requests+=b->requests;a->wait_us+=b->wait_us;a->copy_us+=b->copy_us;a->issue_us+=b->issue_us;a->dispatch_us+=b->dispatch_us;a->viewer_us+=us()-p->done_us;a->empty_irqs+=b->empty_irqs;a->ack_us+=b->ack_us;if(b->max_ack_us>a->max_ack_us)a->max_ack_us=b->max_ack_us;
+        if(b->max_wait_us>a->max_wait_us){a->max_wait_us=b->max_wait_us;memcpy(a->worst,b->worst,sizeof(a->worst));}
+        if(b->max_copy_us>a->max_copy_us)a->max_copy_us=b->max_copy_us;if(b->max_issue_us>a->max_issue_us)a->max_issue_us=b->max_issue_us;
+        for(unsigned i=0;i<8;i++)a->bins[i]+=b->bins[i];
+        load_read_us+=p->read_us;load_hash_us+=p->hash_us;load_bytes+=p->length;}
+    if(p->result||p->region>=MAP_REGION_COUNT){storage_error=p->result?p->result:MAP_STORE_INVALID;storage_state=2;spatial_loading=false;changed=true;}
     else if(p->command==MAP_STORE_BOOT){storage_request(MAP_STORE_LOAD,(unsigned)p->region);}
+    else if(p->command==MAP_STORE_PAGE){spatial_reply();}
     else if(p->command==MAP_STORE_LOAD){
+        uint64_t decode_start=us();
         if(p->region!=requested_region||p->length!=map_regions[requested_region].length||p->length>MAP_FILE_LIMIT||!map_load(candidate,(void*)map_store_bytes,p->length)){
             storage_state=2;storage_error=MAP_STORE_CORRUPT;changed=true;
         }else{
@@ -703,12 +814,22 @@ static void storage_reply(void) {
             if(recovering&&storage_generation){recovering=false;storage_state=0;changed=true;}
             else {recovering=false;storage_request(MAP_STORE_COMMIT,loaded_region);}
         }
-    }else if(p->command==MAP_STORE_COMMIT){storage_state=0;changed=true;
+        load_decode_us+=us()-decode_start;
+    }else if(p->command==MAP_STORE_COMMIT){storage_state=0;changed=true;load_finished=us()-load_started;
 #ifdef MAP_PRIVATE
         private_restore();
 #endif
     }
-    draw();
+    // Chunk completions advance the loader, not the camera. Repainting the
+    // retained map for every page dominated larger-region latency. Keep input
+    // redraws immediate; cap progress-only redraws at 10 Hz.
+    if(spatial_loading&&storage_state==1&&us()-load_progress_draw<100000){
+#ifdef MAP_PROFILE
+        profile(0,NULL,0,0);
+#endif
+        return;
+    }
+    load_progress_draw=us();spatial_maybe();draw();
 #ifdef MAP_PROFILE
     profile(0,NULL,0,0);
 #endif

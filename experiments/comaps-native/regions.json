@@ -1,7 +1,24 @@
 {
   "regions": [
-    {"name": "Gibraltar", "bytes": 1272536, "sha256": "9b97bbdea3692d8a4e9d5049a7c625c437fc026baabd31b89d757bde1b50c640"},
-    {"name": "San Marino", "bytes": 1980495, "sha256": "15c5ed38e32970b155deceda3f5ed02c27613d0231df149080f40a710a84e95f"}
+    {
+      "name": "Gibraltar",
+      "bytes": 1272536,
+      "sha256": "9b97bbdea3692d8a4e9d5049a7c625c437fc026baabd31b89d757bde1b50c640",
+      "id": 0
+    },
+    {
+      "name": "San Marino",
+      "bytes": 1980495,
+      "sha256": "15c5ed38e32970b155deceda3f5ed02c27613d0231df149080f40a710a84e95f",
+      "id": 1
+    },
+    {
+      "id": 2,
+      "name": "Liechtenstein",
+      "bytes": 4511920,
+      "sha256": "834ea8abc94ed120744455a8d5420b48e9de8022cf7f07e804b92199e02e6226",
+      "format": "spatial-v1"
+    }
   ],
   "map_series": "2026.10.27",
   "map_version": 261105,

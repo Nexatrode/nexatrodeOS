@@ -6,7 +6,7 @@
 static void private_clear_input(void){private_wipe(private_password,sizeof(private_password));private_length=0;}
 static bool private_valid(void){
     if(places.magic!=PRIVATE_MAGIC||places.reserved||places.count>PRIVATE_MAX)return false;
-    for(unsigned i=0;i<places.count;i++){struct saved_place *p=&places.items[i];if(!p->name[0]||!memchr(p->name,0,96)||p->region>1||p->kind>1||!isfinite(p->x)||!isfinite(p->y)||fabs(p->x)>180||fabs(p->y)>181)return false;}
+    for(unsigned i=0;i<places.count;i++){struct saved_place *p=&places.items[i];if(!p->name[0]||!memchr(p->name,0,96)||p->region>=MAP_REGION_COUNT||p->kind>1||!isfinite(p->x)||!isfinite(p->y)||fabs(p->x)>180||fabs(p->y)>181)return false;}
     return true;
 }
 static bool private_entropy(void *out,unsigned n){
@@ -33,7 +33,7 @@ static void private_lock(void){
 }
 static void private_io(unsigned command,unsigned bank){
     struct map_store_page *p=(void*)map_store_control;private_busy=true;private_phase=command;private_sequence=++storage_sequence;
-    p->command=command;p->region=bank;p->length=0;__atomic_store_n(&p->sequence,private_sequence,__ATOMIC_RELEASE);microkit_notify(2);changed=true;
+    p->command=command;p->region=bank;p->length=0;p->requested_us=us();__atomic_store_n(&p->sequence,private_sequence,__ATOMIC_RELEASE);microkit_notify(2);changed=true;
 }
 static void private_begin(void){
     if(storage_state==1||storage_state==3||private_busy)return;
