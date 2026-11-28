@@ -1,4 +1,9 @@
 //! Exact RX_DONE visibility for the existing TX3 watch and first ELF reply.
+/* STARTUP_COVERAGE_BEGIN */
+#[cfg(feature="sunfish-startup-reply-coverage")]
+#[path="pixel_mpss_startup_reply_coverage.rs"]
+mod startup_reply_coverage;
+/* STARTUP_COVERAGE_END */
 use super::*;
 /* FIRST_MCFG_BEGIN */
 #[cfg(feature="sunfish-first-mcfg-response")]
@@ -13,6 +18,10 @@ mod elf_pool_wire;
 impl RuntimeDomain {
     pub(super) fn show_registry_receipt_fifo(&self,d:&Display,owner:&ModemOwner){
 /* FIRST_MCFG_BEGIN */
+/* STARTUP_COVERAGE_BEGIN */
+        #[cfg(feature="sunfish-startup-reply-coverage")]
+        {self.show_startup_reply_coverage(d,owner);return;}
+/* STARTUP_COVERAGE_END */
         #[cfg(feature="sunfish-first-mcfg-response")]
         {self.show_first_mcfg_response(d,owner);return;}
 /* FIRST_MCFG_END */

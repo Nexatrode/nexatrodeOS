@@ -5,6 +5,10 @@ pub struct StartupRead {
  handle:TftpHandle,record:Option<crate::qcom_qrtr_flow::Reservation>,slot:Option<usize>,
  pub kind:u32,pub peer:Address,pub flags:u32,pub request_bytes:u32,
  pub options_present:u32,pub options_flags:u32,pub rsize:u32,
+/* STARTUP_COVERAGE_BEGIN */
+ #[cfg(feature="sunfish-startup-reply-coverage")]
+ pub timeout_ms:u32,
+/* STARTUP_COVERAGE_END */
  pub result:u32,pub opcode:u32,pub number:u32,pub reply_bytes:u32,pub local_port:u32,pub remote_intent:u32,
  pub attempts:u32,pub waits:[u32;2],pub client:u32,
  pub received:Option<u64>,pub dispatched:Option<u64>,pub queued:Option<u64>,pub published:Option<u64>,pub done:Option<u64>,pub close:Option<u64>,
@@ -16,9 +20,17 @@ pub struct StartupRead {
 pub struct StartupPrerequisites {pub reads:[Option<StartupRead>;4],pub total:[u32;2],pub omitted:[u32;2]}
 /* ELF_DIGEST_BEGIN */
 #[cfg(feature="sunfish-elf-digest-outcome")]
+/* STARTUP_COVERAGE_BEGIN */
+#[cfg(not(feature="sunfish-startup-reply-coverage"))]
+/* STARTUP_COVERAGE_END */
 #[derive(Default)]
 pub struct StartupPrerequisites {pub reads:[Option<StartupRead>;6],pub total:[u32;2],pub omitted:[u32;2],pub digest_total:u32,pub digest_omitted:u32}
 /* ELF_DIGEST_END */
+/* STARTUP_COVERAGE_BEGIN */
+#[cfg(feature="sunfish-startup-reply-coverage")]
+#[derive(Default)]
+pub struct StartupPrerequisites {pub reads:[Option<StartupRead>;8],pub total:[u32;2],pub omitted:[u32;2],pub digest_total:u32,pub digest_omitted:u32}
+/* STARTUP_COVERAGE_END */
 fn matches_tx(r:&StartupRead,t:&Transmit,local:u32)->bool{
  r.record.is_some()&&r.record==t.reference_flow&&r.slot.is_some()
  &&matches!(t.kind,TxKind::TftpReply{source,destination}if source==Address{node:local,port:r.local_port}&&destination==r.peer)
@@ -49,14 +61,23 @@ impl Session {
   #[cfg(not(feature="sunfish-elf-digest-outcome"))]
 /* ELF_DIGEST_END */
   {c.total[k]=c.total[k].saturating_add(1);}
-  let i=k*2+usize::from(c.reads[k*2].is_some());if c.reads[i].is_some(){
+  let i=k*2+usize::from(c.reads[k*2].is_some());
+/* STARTUP_COVERAGE_BEGIN */
+  #[cfg(feature="sunfish-startup-reply-coverage")]
+  let i=if kind==1&&c.reads[i].is_some(){6+usize::from(c.reads[6].is_some())}else{i};
+/* STARTUP_COVERAGE_END */
+  if c.reads[i].is_some(){
 /* ELF_DIGEST_BEGIN */
   #[cfg(feature="sunfish-elf-digest-outcome")]
   if kind==3{c.digest_omitted=c.digest_omitted.saturating_add(1);}else{c.omitted[k]=c.omitted[k].saturating_add(1);}
   #[cfg(not(feature="sunfish-elf-digest-outcome"))]
 /* ELF_DIGEST_END */
   {c.omitted[k]=c.omitted[k].saturating_add(1);}return;}
-  c.reads[i]=Some(StartupRead{handle,record:None,slot:None,kind,peer,flags:1,request_bytes:body.len()as u32,options_present:opts.present,options_flags:opts.flags,rsize:opts.values[4],result:u32::MAX,opcode:u32::MAX,number:u32::MAX,reply_bytes:0,local_port:u32::MAX,remote_intent:u32::MAX,attempts:0,waits:[0;2],client:u32::MAX,received:at,dispatched:None,queued:None,published:None,done:None,close:None});
+  c.reads[i]=Some(StartupRead{handle,record:None,slot:None,kind,peer,flags:1,request_bytes:body.len()as u32,options_present:opts.present,options_flags:opts.flags,rsize:opts.values[4],
+/* STARTUP_COVERAGE_BEGIN */
+    #[cfg(feature="sunfish-startup-reply-coverage")] timeout_ms:opts.values[1],
+/* STARTUP_COVERAGE_END */
+    result:u32::MAX,opcode:u32::MAX,number:u32::MAX,reply_bytes:0,local_port:u32::MAX,remote_intent:u32::MAX,attempts:0,waits:[0;2],client:u32::MAX,received:at,dispatched:None,queued:None,published:None,done:None,close:None});
  }
  pub(crate) fn observe_startup_dispatch(&mut self,h:&TftpHandle,result:Result<crate::qcom_tftp_server_check::Reply,crate::qcom_tftp_server_check::Error>,bytes:&[u8]){
   let Some(r)=self.startup_prerequisites.reads.iter_mut().flatten().find(|r|r.handle==*h&&r.flags&2==0)else{return;};r.flags|=2;r.dispatched=self.intent_ack_clock.map(|c|c());r.result=result.err().map_or(0,|e|e.code());
@@ -76,7 +97,14 @@ impl Session {
   for r in self.startup_prerequisites.reads.iter_mut().flatten().filter(|r|r.peer==Address{node:self.config.peer_node,port}&&r.flags&128==0){r.flags|=128;r.close=self.intent_ack_clock.map(|c|c());}
  }
 }
+/* STARTUP_COVERAGE_BEGIN */
+#[cfg(not(feature="sunfish-startup-reply-coverage"))]
+/* STARTUP_COVERAGE_END */
 const _:()={assert!(::core::mem::size_of::<StartupPrerequisites>()<=1536);};
+/* STARTUP_COVERAGE_BEGIN */
+#[cfg(feature="sunfish-startup-reply-coverage")]
+const _:()={assert!(::core::mem::size_of::<StartupPrerequisites>()<=2304);};
+/* STARTUP_COVERAGE_END */
 #[cfg(test)]
 #[path="../../tests/sunfish_startup_prerequisites_cases.rs"]
 mod tests;

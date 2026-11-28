@@ -7,7 +7,7 @@ fn seed(s:&mut Session,index:usize,intent:u32,path:&[u8],peer:u32)->TftpHandle{
 fn startup_prerequisites_bounded_distinct_requests_before_elf_and_zero_rsize(){
  let mut s=setup();let paths=[b"/readwrite/ota_firewall/ruleset".as_slice(),b"/readwrite/modem_efs"];
  for(k,p)in paths.iter().enumerate(){for n in 0..5{let h=seed(&mut s,0,(k*10+n)as u32,p,0x20+k as u32);if n<2{s.observe_startup_read(0,h);}}}
- let c=s.startup_prerequisites();assert_eq!((c.total,c.omitted),([5,5],[3,3]));assert_eq!(c.reads.iter().flatten().count(),4);assert!(c.reads.iter().flatten().all(|r|r.received.is_none()&&r.options_present==16&&r.rsize==0));assert!(s.post_elf_mcfg().is_none());assert!(s.reset_after_transport_reset(2).is_ok());assert_eq!(s.startup_prerequisites().total,[0,0]);
+ let c=s.startup_prerequisites();let expanded=cfg!(feature="sunfish-startup-reply-coverage");assert_eq!((c.total,c.omitted),([5,5],[if expanded{1}else{3},3]));assert_eq!(c.reads.iter().flatten().count(),if expanded{6}else{4});assert!(c.reads.iter().flatten().all(|r|r.received.is_none()&&r.options_present==16&&r.rsize==0));assert!(s.post_elf_mcfg().is_none());assert!(s.reset_after_transport_reset(2).is_ok());assert_eq!(s.startup_prerequisites().total,[0,0]);
 }
 #[test]
 fn startup_prerequisites_exact_reservation_and_intent_reject_reused_slot(){
@@ -21,4 +21,17 @@ fn startup_prerequisites_dispatch_failure_queue_waits_and_exact_close(){
  let mut s=setup();let h=seed(&mut s,0,1,b"/readwrite/modem_efs",0x21);let unrelated=TftpHandle{intent:2,..h};s.observe_startup_dispatch(&unrelated,Err(crate::qcom_tftp_server_check::Error::UnexpectedRequest),&[]);assert_eq!(s.startup_prerequisites.reads[2].unwrap().flags,1);
  s.observe_startup_dispatch(&h,Err(crate::qcom_tftp_server_check::Error::UnexpectedRequest),&[]);let r=s.startup_prerequisites.reads[2].unwrap();assert_eq!(r.flags,3);assert_ne!(r.result,0);assert_eq!(r.opcode,u32::MAX);
  s.observe_startup_close(0x22);assert_eq!(s.startup_prerequisites.reads[2].unwrap().flags,3);s.observe_startup_close(0x21);assert_eq!(s.startup_prerequisites.reads[2].unwrap().flags,131);
+}
+#[cfg(feature="sunfish-startup-reply-coverage")]
+#[test]
+fn startup_coverage_extra_records_bound_and_reject_wrong_receipt_reset(){
+ let mut s=setup();let path=b"/readwrite/ota_firewall/ruleset";
+ for n in 0..5{let h=seed(&mut s,0,n,path,0x21);s.observe_startup_read(0,h);}
+ let c=s.startup_prerequisites();assert_eq!(c.total,[6,0]);assert_eq!(c.omitted,[2,0]);assert_eq!(c.reads.iter().flatten().count(),4);assert_eq!(c.reads[6].unwrap().handle.intent,2);assert_eq!(c.reads[7].unwrap().handle.intent,3);assert_eq!(c.reads[6].unwrap().timeout_ms,u32::MAX);
+ let mut table=crate::qcom_qrtr_flow::Table::<8>::new(1).unwrap();let d=crate::qcom_qrtr_flow::Destination{node:0,port:0x21};let first=table.reserve(d).unwrap();let second=table.reserve(d).unwrap();
+ let r=s.startup_prerequisites.reads[6].as_mut().unwrap();r.record=Some(first);r.slot=Some(0);r.flags=31;r.local_port=0x5002;r.reply_bytes=19;r.remote_intent=7;
+ let t=&mut s.transmit[0];t.kind=TxKind::TftpReply{source:Address{node:1,port:0x5002},destination:Address{node:0,port:0x21}};t.len=51;t.reference_flow=Some(second);t.bytes[4..8].copy_from_slice(&1u32.to_le_bytes());t.bytes[20..24].copy_from_slice(&19u32.to_le_bytes());s.observe_startup_done(0,7);assert_eq!(s.startup_prerequisites.reads[6].unwrap().flags,31);
+ s.transmit[0].reference_flow=Some(first);s.observe_startup_done(0,8);assert_eq!(s.startup_prerequisites.reads[6].unwrap().flags,31);s.observe_startup_done(0,7);assert_eq!(s.startup_prerequisites.reads[6].unwrap().flags,63);
+ s.observe_startup_close(0x22);assert_eq!(s.startup_prerequisites.reads[7].unwrap().flags,1);s.observe_startup_close(0x21);assert_eq!(s.startup_prerequisites.reads[7].unwrap().flags,129);
+ assert!(s.reset_after_transport_reset(2).is_ok());assert!(s.startup_prerequisites.reads.iter().all(Option::is_none));assert_eq!(s.startup_prerequisites.total,[0,0]);
 }

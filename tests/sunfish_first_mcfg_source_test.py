@@ -2,15 +2,20 @@ from pathlib import Path
 import re,subprocess,unittest
 ROOT=Path(__file__).resolve().parents[1];BASE='2ff2b35d'
 def without_first_mcfg(path,s):
+ from sunfish_startup_coverage_source_test import without_coverage
+ s=without_coverage(path,s)
  s=re.sub(r'/\* FIRST_MCFG_BEGIN \*/\n.*?/\* FIRST_MCFG_END \*/\n','',s,flags=re.S)
  if path=='rust/Cargo.toml':
   s=s.replace('sunfish-first-mcfg-response = ["sunfish-elf-pool-wire-panel"]\n','')
+  s=s.replace('utm-maps-vault-key = ["utm-maps-private", "utm-wrapped-vault-experiment"]\n','')
+  s=s.replace('utm-maps-session-lock = ["utm-maps-vault-key", "utm-dynamic-vault-lock"]\n','')
   s=s.replace('utm-maps-session-lock = ["utm-maps-private", "utm-dynamic-vault-lock"]\n','')
  # Independent mainline Maps overlay, exact known source only; absent in this native profile.
  if path in ['rust/src/vault_crypto.rs','rust/src/vault_disk.rs']:
   before=subprocess.check_output(['git','show',BASE+':'+path],text=True)
-  after=subprocess.check_output(['git','show','a524912e:'+path],text=True)
-  assert s in [before,after], 'unreviewed Maps/vault source delta'
+  after=subprocess.check_output(['git','show','dc18d26e:'+path],text=True)
+  previous=subprocess.check_output(['git','show','a524912e:'+path],text=True)
+  assert s in [before,previous,after], 'unreviewed Maps/vault source delta'
   s=before
  if path=='rust/src/qcom_post_elf_mcfg.rs':s=s.replace('if (after\n            ) && cap.mcfg.is_none()', 'if after && cap.mcfg.is_none()')
  return s

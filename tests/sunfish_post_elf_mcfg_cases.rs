@@ -118,4 +118,5 @@ include!("sunfish_tftp_arrival_order_cases.rs");
 #[cfg(feature="sunfish-elf-digest-outcome")]
 include!("sunfish_mbn_digest_cases.rs");
 include!("sunfish_first_mcfg_cases.rs");
+include!("sunfish_startup_coverage_cases.rs");
 }
