@@ -23,6 +23,24 @@
 #include "storage_format.h"
 #include "regions_generated.h"
 #include "spatial.h"
+#ifdef MAP_IMPORT
+#include "import_format.h"
+#define REGION_STEP 40u
+#define REGION_NAME_Y 17
+#define REGION_FONT 16
+#define REGION_INFO_Y 33
+static struct map_local_region import_regions[4];
+static struct map_local_pack import_preview;
+static unsigned import_state;
+static void import_request(unsigned),import_metadata(void),import_reply(void);
+static bool import_busy(void){return import_state==1||import_state==3||import_state==4;}
+#endif
+#ifndef REGION_STEP
+#define REGION_STEP 48u
+#define REGION_NAME_Y 20
+#define REGION_FONT 18
+#define REGION_INFO_Y 38
+#endif
 uintptr_t map_store_control,map_store_bytes;
 static unsigned loaded_region=MAP_REGION_COUNT,requested_region,storage_state=1,storage_error;
 static uint64_t storage_sequence,storage_generation;
@@ -123,6 +141,12 @@ static void profile(uint64_t start,uint64_t *phases,uint64_t rendered,uint64_t n
 #ifdef MAP_STORAGE
     p[11]=loaded_region<MAP_REGION_COUNT?loaded_region+1:0;p[12]=requested_region+1;
     p[13]=storage_state;p[14]=storage_error;p[15]=storage_generation;
+#ifdef MAP_IMPORT
+    struct map_store_page *ip=(void*)map_store_control;
+    p[960]=0x4e584d494d503031ULL;p[961]=import_state;p[962]=ip->import_phase;p[963]=ip->catalog_generation;p[968]=0;
+    for(unsigned i=0;i<4;i++){p[964+i]=import_regions[i].version;if(import_regions[i].present)p[968]|=1u<<i;}
+    p[969]=import_preview.region;p[970]=import_preview.version;p[971]=ip->progress;
+#endif
     p[880]=region_picker;p[881]=spatial_loading;p[882]=spatial_next;p[883]=spatial_count;
     p[884]=map.feature_count;p[885]=map.point_count;p[886]=load_read_us;p[887]=load_hash_us;p[888]=load_decode_us;
     p[889]=load_finished;p[890]=load_bytes;p[891]=loaded_lod;p[892]=load_cancelled;
@@ -434,15 +458,42 @@ static void draw(void) {
 #endif
 #ifdef MAP_STORAGE
     if(region_picker&&!search_open){
-        fill(6,TOP+4,W-12,242,0x0b202d);
+        fill(6,TOP+4,W-12,MAP_REGION_COUNT*REGION_STEP+56,0x0b202d);
+#ifdef MAP_IMPORT
+        if(import_state){
+            fill(8,TOP+8,W-16,220,0x183c4a);
+            text(18,TOP+34,20,0xe9f7fb,"Local offline region");
+            if(import_state==2){
+                text(18,TOP+65,18,0xe9f7fb,import_preview.name);char info[96];snprintf(info,sizeof(info),"Version %llu · %.2f MB",(unsigned long long)import_preview.version,import_preview.length/1e6);text(18,TOP+89,15,0x91b5c5,info);
+                text(18,TOP+113,13,0x91b5c5,"Local pack · publisher not verified");
+                fill(16,TOP+136,W-32,38,0x245566);text(28,TOP+162,17,0x92e3e0,import_regions[import_preview.region].present?"Install update":"Import region");
+            }else{
+                text(18,TOP+72,16,import_state==6?0xffa6ad:0x91b5c5,import_state==6?"Pack rejected · current maps retained":import_state==5?"Installed and verified":"Validating and installing…");
+                text(18,TOP+105,13,0x91b5c5,"Previous version kept until durable commit");
+            }
+            if(!import_busy()){fill(16,TOP+180,W-32,34,0x245566);text(28,TOP+204,16,0x92e3e0,"Back to regions");}
+        }else{
+#endif
         for(unsigned i=0;i<MAP_REGION_COUNT;i++){
-            int y=TOP+6+(int)i*48;fill(8,y,W-16,44,i==loaded_region?0x245566:0x183c4a);
-            text(16,y+20,18,0xe9f7fb,map_regions[i].name);
-            char info[80];snprintf(info,sizeof(info),"%s · %.2f MB%s",i==loaded_region?"Current":"Installed",(i==2?map_pages[64].offset+map_pages[64].length:map_regions[i].length)/1e6,i==2?" · chunked":"");text(16,y+38,12,0x91b5c5,info);
+            int y=TOP+6+(int)i*REGION_STEP;fill(8,y,W-16,REGION_STEP-4,i==loaded_region?0x245566:0x183c4a);
+            text(16,y+REGION_NAME_Y,REGION_FONT,0xe9f7fb,map_regions[i].name);
+            char info[80];snprintf(info,sizeof(info),"%s · %.2f MB%s",
+#ifdef MAP_IMPORT
+                !import_regions[i].present?"Not installed":
+#endif
+                i==loaded_region?"Current":"Installed",(i==2?map_pages[64].offset+map_pages[64].length:map_regions[i].length)/1e6,i==2?" · chunked":"");text(16,y+REGION_INFO_Y,12,0x91b5c5,info);
         }
-        text(16,TOP+173,13,0x91b5c5,"Fixed memory · validated before switching");
-        text(16,TOP+193,13,0x91b5c5,"3 offline regions · whole-region name search");
-        fill(12,TOP+205,W-24,34,0x183c4a);text(24,TOP+228,16,0x92e3e0,storage_state==1?"Cancel loading":"Close region manager");
+#ifndef MAP_IMPORT
+        text(16,TOP+MAP_REGION_COUNT*48+25,13,0x91b5c5,"Fixed memory · validated before switching");
+        text(16,TOP+MAP_REGION_COUNT*48+45,13,0x91b5c5,"Offline regions · whole-region name search");
+        fill(12,TOP+MAP_REGION_COUNT*48+57,W-24,34,0x183c4a);text(24,TOP+MAP_REGION_COUNT*48+80,16,0x92e3e0,storage_state==1?"Cancel loading":"Close region manager");
+#endif
+#ifdef MAP_IMPORT
+        int action_y=TOP+MAP_REGION_COUNT*REGION_STEP+14;
+        fill(12,action_y,W/2-16,38,0x183c4a);text(24,action_y+25,16,0x92e3e0,"Close");
+        fill(W/2+4,action_y,W/2-16,38,0x245566);text(W/2+12,action_y+25,16,0x92e3e0,"Import local pack");
+        }
+#endif
     }else if(storage_state==2&&!search_open){
         fill(6,TOP+6,W-12,54,0x472b32);
         text(14,TOP+28,16,0xffa6ad,storage_error==MAP_STORE_CAPACITY?"View too dense · zoom in":"Region unavailable or damaged");
@@ -569,6 +620,13 @@ static void motion(void) {
     }
 }
 static void map_button(unsigned value) {
+#ifdef MAP_IMPORT
+    if(import_busy())return;
+    if(value&&region_picker&&import_state){
+        if(import_state==2&&my>=TOP+136&&my<TOP+174){import_request(MAP_IMPORT_READ);return;}
+        if(my>=TOP+180&&my<TOP+214){import_state=0;changed=true;}return;
+    }
+#endif
 #ifdef MAP_PRIVATE
     if(private_button(value))return;
 #endif
@@ -586,9 +644,18 @@ static void map_button(unsigned value) {
 #ifdef MAP_STORAGE
     if(my>=0&&my<TOP&&mx<BUTTON_LEFT){search_close();region_picker=!region_picker;changed=true;return;}
     if(region_picker){
-        if(my>=TOP+205&&my<TOP+239){if(storage_state==1)storage_cancel();region_picker=false;changed=true;return;}
-        if(my>=TOP+6&&my<TOP+6+MAP_REGION_COUNT*48&&storage_state!=1&&storage_state!=3){
-            unsigned region=(unsigned)(my-TOP-6)/48;region_picker=false;held=false;
+#ifdef MAP_IMPORT
+        if(my>=TOP+MAP_REGION_COUNT*REGION_STEP+14&&my<TOP+MAP_REGION_COUNT*REGION_STEP+52){
+            if(mx>=W/2)import_request(MAP_IMPORT_PROBE);else{region_picker=false;changed=true;}return;
+        }
+#endif
+        if(my>=TOP+MAP_REGION_COUNT*48+57&&my<TOP+MAP_REGION_COUNT*48+91){if(storage_state==1)storage_cancel();region_picker=false;changed=true;return;}
+        if(my>=TOP+6&&my<TOP+6+MAP_REGION_COUNT*REGION_STEP&&storage_state!=1&&storage_state!=3){
+            unsigned region=(unsigned)(my-TOP-6)/REGION_STEP;
+#ifdef MAP_IMPORT
+            if(!import_regions[region].present){changed=true;return;}
+#endif
+            region_picker=false;held=false;
             recovering=false;storage_request(MAP_STORE_LOAD,region);return;
         }
         region_picker=false;changed=true;return;
@@ -677,6 +744,12 @@ static void input(void) {
             active=e[2]!=0;search_keyboard=search_shift=search_ctrl=false;map_gesture_cancel(&gesture);continue;}
 #endif
         if(!active)continue;
+#ifdef MAP_IMPORT
+        /* Drain app input during the single in-flight transaction. Parent
+         * focus/lock/resize controls above still run; a search/region command
+         * must never replace the shared storage request before completion. */
+        if(import_busy())continue;
+#endif
         if(device==4&&kind==0){search_character(e[1]);continue;}
         if(device==0&&kind==1){map_key(e[1],e[2]);continue;}
         if(device!=1)continue;
@@ -818,10 +891,17 @@ static void storage_request(unsigned command,unsigned region) {
     p->command=command;p->region=region;p->length=0;p->requested_us=us();
     __atomic_store_n(&p->sequence,++storage_sequence,__ATOMIC_RELEASE);microkit_notify(2);changed=true;
 }
+#ifdef MAP_IMPORT
+#include "import_view.h"
+#endif
 static void storage_reply(void) {
     struct map_store_page *p=(void*)map_store_control;
     if(__atomic_load_n(&p->complete,__ATOMIC_ACQUIRE)!=storage_sequence)return;
     storage_generation=p->generation;
+#ifdef MAP_IMPORT
+    if(p->command>=MAP_IMPORT_PROBE&&p->command<=MAP_IMPORT_COMMIT){import_reply();return;}
+    if(p->command==MAP_STORE_BOOT)import_metadata();
+#endif
     if(load_cancelled){spatial_loading=false;load_cancelled=false;storage_state=loaded_region<MAP_REGION_COUNT?0:2;changed=true;draw();return;}
     if(p->command==MAP_STORE_LOAD||p->command==MAP_STORE_PAGE){
         struct map_io_times *a=&load_io,*b=&p->io;

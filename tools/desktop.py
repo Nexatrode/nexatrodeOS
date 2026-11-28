@@ -70,8 +70,10 @@ def session(guest, *, installed=True):
         raise ValueError('the extra disposable drive must be the public maps.img')
     # Never follow a disk/image link out into an installation or another VM.
     data = bundle / 'Data'
-    if (data/'build-manifest.json').is_file() and bool(json.loads((data/'build-manifest.json').read_text()).get('wrapped_session'))!=bool(manifest.get('wrapped_session')):
-        raise ValueError('use a fresh disposable VM for a different vault/key format')
+    if (data/'build-manifest.json').is_file():
+        deployed_format=json.loads((data/'build-manifest.json').read_text())
+        if any(bool(deployed_format.get(k))!=bool(manifest.get(k)) for k in ('wrapped_session','map_import')):
+            raise ValueError('use a fresh disposable VM for a different vault/key format or map format')
     if not data.resolve().is_relative_to(bundle):
         raise ValueError('disposable VM data directory must stay inside its bundle')
     if any((data / n).is_symlink() for n in ('blank.img', 'loader.img', *(['maps.img'] if manifest.get('map_storage') else []))):
@@ -149,6 +151,7 @@ def main():
     for name in ('inputs', 'storage', 'shell-base', 'composer', 'output'):
         b.add_argument('--'+name, type=Path, required=True)
     b.add_argument('--maps',action='store_true',help='opt-in fourth offline Maps window; separate unlocked disposable profile')
+    b.add_argument('--map-import',action='store_true',help='fresh local region import/update format; requires --maps --map-storage --locked')
     b.add_argument('--map-storage',action='store_true',help='two public offline regions on a separate disposable Maps disk')
     b.add_argument('--resume', action='store_true', help='rebuild a marked disposable staging directory; no VM/disk changes')
     b.add_argument('--diagnostic', action='store_true', help='GPU readback/pixel checks; slower than the normal image')
@@ -181,6 +184,9 @@ def main():
         if a.map_storage:
             if not a.maps:raise ValueError('--map-storage requires --maps')
             command.append('--map-storage')
+        if a.map_import:
+            if not (a.maps and a.map_storage and a.locked):raise ValueError('--map-import requires --maps --map-storage --locked')
+            command.append('--map-import')
         if a.resume:
             command.append('--resume')
         if a.diagnostic:

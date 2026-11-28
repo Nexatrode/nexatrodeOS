@@ -22,7 +22,9 @@ def main():
     p.add_argument('--map-private',action='store_true',help='opt-in app-scoped encrypted saved places; disposable data only')
     p.add_argument('--maps-os-unlock',action='store_true',help='fresh wrapped OS vault; supervised Maps key/memory lock lifecycle')
     p.add_argument('--gated-agent',type=Path,help='public test-only SimpleX ELF with simplex_wait_for_vault; required for the OS-unlock profile')
+    p.add_argument('--map-import',action='store_true',help='fresh local-pack import and transactional update fixture')
     a=p.parse_args();inputs=a.inputs.resolve();out=a.output.resolve()
+    if a.map_import and not a.maps_os_unlock:p.error('--map-import requires --maps-os-unlock')
     if a.maps_os_unlock and (not a.gated_agent or not a.gated_agent.is_file()):p.error('--maps-os-unlock requires a public --gated-agent ELF')
     if a.maps_os_unlock:
         provenance=json.loads((a.composer.resolve().parents[2]/'provenance.json').read_text())
@@ -34,7 +36,7 @@ def main():
     if not out.is_relative_to(ROOT/'build/mobile-browser') or '.utm' in str(out):p.error('use a worktree build/mobile-browser staging directory')
     if out.exists() and any(out.iterdir()) and not (a.resume and (out/'.disposable-build').is_file()):p.error('use a fresh stage or --resume on a marked stage')
     if (out/'build.json').exists():
-        old=json.loads((out/'build.json').read_text());assert old.get('maps_os_unlock',False)==a.maps_os_unlock,'use a fresh stage when changing key format'
+        old=json.loads((out/'build.json').read_text());assert old.get('maps_os_unlock',False)==a.maps_os_unlock and old.get('map_import',False)==a.map_import,'use a fresh stage when changing key format'
     out.mkdir(parents=True,exist_ok=True);(out/'.disposable-build').touch()
     env=dict(os.environ,PATH='/opt/homebrew/opt/llvm/bin:/opt/homebrew/bin:'+os.environ['PATH'],
         SEL4_PREFIX=str(inputs/'sel4-install'),SEL4_INCLUDE_DIRS=str(inputs/'sdk/board/qemu_virt_aarch64_el1/smp-debug/include'),
@@ -113,7 +115,7 @@ def main():
     if a.maps:
         spec=importlib.util.spec_from_file_location('shared_maps_adapter',ROOT/'experiments/desktop-apps/maps.py')
         maps=importlib.util.module_from_spec(spec);spec.loader.exec_module(maps)
-        map_pin=maps.build(ROOT,out,inputs,run,mobile=True,storage=a.map_storage,private=a.map_private,session=a.maps_os_unlock)
+        map_pin=maps.build(ROOT,out,inputs,run,mobile=True,storage=a.map_storage,private=a.map_private,session=a.maps_os_unlock,importing=a.map_import)
         maps.attach_mobile(system,pd('slint_ui'),mapping,region,channel,storage=a.map_storage,private=a.map_private)
         maps.validate_mobile(system)
         if a.maps_os_unlock:
@@ -132,11 +134,13 @@ def main():
         sources += [ROOT/'experiments/desktop-apps/maps.py',ROOT/'experiments/slint-notes/src/mobile_maps_utm.rs',ROOT/'experiments/slint-notes/assets/icons/maps.svg',ROOT/'tests/mobile_maps_input.py',ROOT/'tests/mobile_maps_contract_test.py']
         sources += [ROOT/'tests/comaps_details_utm.py',ROOT/'tests/comaps_interaction_test.c']
         sources += [ROOT/'tests/comaps_search_utm.py',ROOT/'tests/comaps_search_test.c',ROOT/'tests/comaps_catalogue_test.c',ROOT/'tests/comaps_region_search_host.py',ROOT/'tests/comaps_regions_utm.py',ROOT/'tests/comaps_io_utm.py',ROOT/'tests/comaps_loading_input.py',ROOT/'tests/comaps_spatial_host.py',ROOT/'tests/comaps_spatial_test.c']
-    manifest=dict(profile='mobile-maps-os-unlock' if a.maps_os_unlock else 'mobile-netsurf-maps' if a.maps else 'mobile-netsurf',maps=a.maps,saved_data_used=False,development_storage_key=not a.maps_os_unlock,maps_os_unlock=a.maps_os_unlock,observation=a.observe,resolution=[1080,2340],browser_css_width=360,browser_scale=3,javascript=True,https=True,certificate_verification=True,private_tcp_slot=4,full_session_lock=False,source_commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),sources={str(x.relative_to(ROOT)):digest(x) for x in sources},artifacts={x.name:digest(x) for x in out.glob('*.elf')},composer_sha256=digest(a.composer.resolve()),loader_sha256=digest(out/'loader.img'))
+    manifest=dict(profile='mobile-maps-os-unlock' if a.maps_os_unlock else 'mobile-netsurf-maps' if a.maps else 'mobile-netsurf',maps=a.maps,saved_data_used=False,development_storage_key=not a.maps_os_unlock,maps_os_unlock=a.maps_os_unlock,map_import=a.map_import,observation=a.observe,resolution=[1080,2340],browser_css_width=360,browser_scale=3,javascript=True,https=True,certificate_verification=True,private_tcp_slot=4,full_session_lock=False,source_commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),sources={str(x.relative_to(ROOT)):digest(x) for x in sources},artifacts={x.name:digest(x) for x in out.glob('*.elf')},composer_sha256=digest(a.composer.resolve()),loader_sha256=digest(out/'loader.img'))
     if a.maps:manifest['map_region']=map_pin
     if a.map_storage:
         manifest['map_private']=a.map_private;manifest['map_storage']=True;manifest['map_pack_sha256']=digest(out/'maps.img')
         manifest['sources']['tests/map_storage_fixture.py']=digest(ROOT/'tests/map_storage_fixture.py')
+    if a.map_import:
+        manifest['sources'].update({str(x.relative_to(ROOT)):digest(x) for x in [ROOT/'tests/maps_import_utm.py',ROOT/'tests/maps_import_test.c',ROOT/'tests/maps_import_format_test.py']})
     if a.map_private:
         manifest['maps_private_scope']='separate app-scoped passphrase; random wrapped key; two authenticated ciphertext banks; locks on hide and 60s idle; not full-session key eviction'
         manifest['sources'].update({str(x.relative_to(ROOT)):digest(x) for x in [ROOT/'rust/src/record_crypto.rs',ROOT/'rust/src/vault_key_prototype.rs',ROOT/'rust/src/entropy_rng.rs',ROOT/'tests/comaps_private_utm.py',ROOT/'tests/comaps_private_contract_test.py']})

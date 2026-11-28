@@ -29,6 +29,9 @@ static const uint8_t *target_digest;
 static unsigned chunk;
 static uint64_t read_start,submitted_at,irq_at;
 static uint64_t us(void){uint64_t count,freq;__asm__ volatile("mrs %0,cntpct_el0":"=r"(count));__asm__ volatile("mrs %0,cntfrq_el0":"=r"(freq));return count/freq*1000000+(count%freq)*1000000/freq;}
+#ifdef MAP_IMPORT
+static void local_publish(void);
+#endif
 static bool readable;
 static unsigned readable_region;
 static uint8_t journals[8192];
@@ -49,6 +52,9 @@ static void done(unsigned error) {
     p->result=error;p->length=error?0:target_length;p->chunk=chunk;
 #ifdef MAP_PRIVATE
     if(private_operation){p->region=private_bank;p->length=error?0:8192;private_operation=false;}
+#endif
+#ifdef MAP_IMPORT
+    local_publish();
 #endif
     p->done_us=us();
     __atomic_store_n(&p->complete,sequence,__ATOMIC_RELEASE);busy=false;microkit_notify(1);
@@ -71,17 +77,23 @@ static void read_next(void) {
     size_t n=remain<CHUNK?((remain+511)&~(size_t)511):CHUNK;
     if(!submit(0,target_offset+offset,n))done(MAP_STORE_IO);
 }
+#ifdef MAP_IMPORT
+#include "import_store.h"
+#endif
 static void complete(void) {
     uint8_t *dma=(void*)map_disk_dma;volatile uint16_t *u=(void*)(dma+0x200);
     uint16_t next=u[1];if(next==used){page()->io.empty_irqs++;return;}
     atomic_thread_fence(memory_order_seq_cst);
     uint32_t *entry=(void*)(dma+0x204+(used%8)*8);
-    unsigned expected=(phase==1||phase==2||phase==5)?(unsigned)amount+1:1;
+    unsigned expected=(phase==1||phase==2||phase==5||phase==8||phase==10||phase==12)?(unsigned)amount+1:1;
     if(!busy||(uint16_t)(next-used)!=1||entry[0]!=0||entry[1]!=expected||dma[0x310]!=0){online=false;if(busy)done(MAP_STORE_IO);return;}
     used=next;
     struct map_io_times *io=&page()->io;uint64_t waited=irq_at-submitted_at;io->wait_us+=waited;
     unsigned bin=waited<10?0:waited<50?1:waited<100?2:waited<500?3:waited<1000?4:waited<5000?5:waited<20000?6:7;io->bins[bin]++;
     if(waited>io->max_wait_us){io->max_wait_us=waited;io->worst[0]=submitted_at;io->worst[1]=irq_at;io->worst[2]=amount;io->worst[3]=phase;}
+#ifdef MAP_IMPORT
+    if(local_complete())return;
+#endif
 #ifdef MAP_PRIVATE
     if(phase==5){dma_read((void*)map_private_cipher,dma+0x1000,8192);done(MAP_STORE_OK);return;}
     if(phase==6){phase=7;if(!submit(4,0,0))done(MAP_STORE_IO);return;}
@@ -101,6 +113,9 @@ static void complete(void) {
         uint8_t digest[32];map_sha256((void*)map_store_bytes,offset,digest);
         page()->hash_us=us()-hash_start;
         if(memcmp(digest,target_digest,32)){done(MAP_STORE_CORRUPT);return;}
+#ifdef MAP_IMPORT
+        if(page()->command==MAP_IMPORT_READ)import_ready=true;
+#endif
         readable=true;readable_region=region;done(MAP_STORE_OK);
     }else if(phase==3){phase=4;if(!submit(4,0,0))done(MAP_STORE_IO);}
     else if(phase==4){bank=1-bank;generation=pending_generation;done(MAP_STORE_OK);}
@@ -136,11 +151,18 @@ void notified(microkit_channel channel) {
         phase=6;dma_write((void*)(map_disk_dma+0x1000),(void*)(map_private_cipher+private_bank*4096),4096);
         if(!submit(1,MAP_PRIVATE_OFFSET+private_bank*4096,4096))done(MAP_STORE_IO);return;}
 #endif
+#ifdef MAP_IMPORT
+    if(local_request(p->command))return;
+#endif
     if(p->command==MAP_STORE_BOOT){phase=1;if(!submit(0,0,8192))done(MAP_STORE_IO);return;}
     if(p->region>=MAP_REGION_COUNT){region=0;done(MAP_STORE_INVALID);return;}region=(unsigned)p->region;
     if(p->command==MAP_STORE_LOAD||p->command==MAP_STORE_PAGE||p->command==MAP_STORE_SEARCH){
         readable=false;phase=2;offset=0;page()->progress=page()->read_us=page()->hash_us=0;read_start=us();chunk=0;
         target_length=map_regions[region].length;target_offset=MAP_FILE_OFFSET(region);target_digest=map_regions[region].digest;
+#ifdef MAP_IMPORT
+        if(!local_regions[region].present){done(MAP_STORE_INVALID);return;}
+        if(region!=2){target_length=local_regions[region].length;target_digest=local_regions[region].digest;if(local_regions[region].bank<2)target_offset=MAP_IMPORT_EXTENT(region,local_regions[region].bank);}
+#endif
         if(p->command==MAP_STORE_SEARCH){
             if(region!=2){done(MAP_STORE_INVALID);return;}
             target_length=map_search_pin.length;target_offset=map_search_pin.offset;target_digest=map_search_pin.digest;

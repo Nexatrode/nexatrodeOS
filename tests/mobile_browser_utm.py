@@ -25,7 +25,7 @@ def main():
         old_state=json.loads((guest/'session.json').read_text());tag=old_state['uuid'];bundle=Path(old_state['bundle']).resolve();data=bundle/'Data'
         assert not old_state['saved_data_used'] and bundle.parent==guest and bundle.name=='Mobile-Browser-'+tag[:8]+'.utm'
         installed=json.loads((data/'build-manifest.json').read_text())
-        assert installed.get('maps_os_unlock',False)==m.get('maps_os_unlock',False),'refuse cross-format disk reuse'
+        assert installed.get('maps_os_unlock',False)==m.get('maps_os_unlock',False) and installed.get('map_import',False)==m.get('map_import',False),'refuse cross-format disk reuse'
         old_cfg=plistlib.loads((bundle/'config.plist').read_bytes())
         assert old_cfg['Information']['UUID']==tag and len(old_cfg['Drive'])==(2 if m.get('map_storage') else 1) and old_cfg['Drive'][0]['ImageName']=='blank.img'
         assert data.resolve()==data and not any((data/n).is_symlink() for n in ('blank.img','loader.img'))

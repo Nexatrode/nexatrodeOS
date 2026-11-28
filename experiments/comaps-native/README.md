@@ -506,3 +506,67 @@ passphrase appeared in plaintext on the two disks or in serial output. Evidence:
 `session-verification/validation.json` and screenshots in that marked stage.
 The fixture was left locked. No personal wallet/chat disk or Pixel worktree was
 used.
+
+## Local region import and safe updates (disposable profiles)
+
+`--map-import` on the desktop/mobile builders adds a local import inbox and
+copy-on-write region catalogue to a **fresh 192 MiB public map disk**. Use the
+wrapped OS-unlock profile (`--wrapped-session` on desktop, `--maps-os-unlock`
+with a public gated SimpleX test ELF on mobile). The existing 64 MiB fixtures
+are a different format and must not be reused. Private saved-place banks remain
+at 1 MiB and are never rewritten by an import/update operation.
+
+This first format accepts prepared, bounded raw MWM packs up to **8 MiB**, using
+the native reader's existing feature/point limits. Slots 0 and 1 update Gibraltar
+and San Marino; slot 2 retains the pinned spatial Liechtenstein data; slot 3
+accepts one additional local region. It is an experiment with a supported subset
+of MWM, not a general CoMaps importer, arbitrary region downloader, or Files
+picker. The generated test pack installs public Gibraltar geometry under the
+separate `Local Gibraltar` identity. The update fixture adds harmless trailing
+container padding, giving a different payload hash and length while preserving
+coordinates and the region identity.
+
+Create a pack with `experiments/comaps-native/local_pack.py create --source
+/path/to/region.mwm --name 'Local region' --region 3 --version 1 --output
+/path/to/region.nxregion`. The fixed-size `NXMRPK01` header binds a stable identity,
+name, monotonic version, payload length and SHA-256. Header/body checksums detect
+damage; they do **not** authenticate a publisher. The preview states this before
+installation. Updating an installed slot requires the same identity/name and a
+newer version. Unsupported sizes, spatial-slot replacements and duplicate
+identities are rejected.
+
+Stop only the marked disposable fixture, then use
+`experiments/comaps-native/local_pack.py stage --guest build/.../fixture
+--package /path/to/region.nxregion`. This guarded helper checks the fixture UUID,
+manifest, drive layout, stopped state and disk size. It writes only the fixed
+local inbox. After starting/unlocking the fixture, open Maps → region name →
+**Import local pack**, review its name/version/size, then choose **Import region**
+or **Install update**. The guest performs installation; the host does not select
+an active version or overwrite an installed map. Runtime hot-plug, download and
+file-picker integration remain future work.
+
+The guest reads and hashes the candidate in bounded chunks, then the renderer
+structurally decodes it into its spare map workspace before granting commit.
+The storage worker writes an inactive 8 MiB extent, reads it back and checks its
+hash, flushes the payload, writes the inactive catalogue sector and flushes that
+sector. Only then does the running map switch. Two independently checked
+`NXMRCT01` catalogue sectors recover the latest complete generation. Interrupted
+payload/metadata writes retain a complete old or new version; malformed content
+and stale versions leave the current map intact. Both corrupt catalogue sectors
+require recovery rather than silently initializing an empty catalogue.
+
+Saved places retain their encrypted format and stable region/absolute-coordinate
+references across map versions. The OS-lock guardian stops the installer with
+Maps, resets the disk and scrubs its writable state; unlock reconstructs services
+and reads the durable catalogue. This retains the documented Maps-only RAM
+boundary rather than claiming whole-phone/UI memory erasure.
+
+`tests/maps_import_format_test.py` runs header/layout checks and the actual guest
+transaction state machine under address/undefined-behavior sanitizers. It cuts
+new imports and updates at every I/O completion, corrupts every byte position in
+the newest catalogue sector, tests destination readback damage, alternating
+updates, downgrade/identity rejection and untouched private ciphertext banks.
+`tests/maps_import_utm.py --guest ... [--mobile]` adds real QMP input and scanout,
+a throttled interrupted payload write, cold restart, torn-catalogue fallback,
+invalid geometry/stale-pack rejection and encrypted saved-place recovery. Its
+fresh desktop fixture requires `--gpu-verify` for composed image readback.

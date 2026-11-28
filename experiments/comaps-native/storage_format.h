@@ -5,8 +5,13 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#ifdef MAP_IMPORT
+#define MAP_PACK_BYTES (192u*1024*1024)
+#define MAP_REGION_COUNT 4u
+#else
 #define MAP_PACK_BYTES (64u*1024*1024)
 #define MAP_REGION_COUNT 3u
+#endif
 #define MAP_PAGE_COUNT 65u
 #define MAP_IO_DMA_BYTES 0x20000u
 #define MAP_IO_PAYLOAD_OFFSET 0x1000u
@@ -14,7 +19,7 @@
 #define MAP_FILE_LIMIT (8u*1024*1024)
 #define MAP_FILE_OFFSET(i) ((uint64_t)(i+1)*MAP_FILE_LIMIT)
 #define MAP_STORAGE_MAGIC 0x4e584d53544f5231ULL
-enum { MAP_STORE_BOOT=1, MAP_STORE_LOAD=2, MAP_STORE_COMMIT=3, MAP_PRIVATE_READ=4, MAP_PRIVATE_WRITE=5, MAP_STORE_PAGE=6, MAP_STORE_SEARCH=7 };
+enum { MAP_STORE_BOOT=1, MAP_STORE_LOAD=2, MAP_STORE_COMMIT=3, MAP_PRIVATE_READ=4, MAP_PRIVATE_WRITE=5, MAP_STORE_PAGE=6, MAP_STORE_SEARCH=7, MAP_IMPORT_PROBE=8, MAP_IMPORT_READ=9, MAP_IMPORT_COMMIT=10 };
 #define MAP_PRIVATE_OFFSET (1024u*1024u)
 enum { MAP_STORE_OK=0, MAP_STORE_IO=1, MAP_STORE_CORRUPT=2, MAP_STORE_INVALID=3, MAP_STORE_CAPACITY=4 };
 /* Elapsed guest times include preemption. wait_us measures doorbell to
@@ -26,7 +31,13 @@ struct map_io_times {
 struct map_store_page {
     uint64_t sequence, command, region, length, generation, result, complete, chunk, progress, read_us, hash_us,requested_us,done_us;
     struct map_io_times io;
+#ifdef MAP_IMPORT
+    /* Public metadata only. Keep this handoff within its existing 4 KiB page. */
+    uint8_t local_regions[4*136],local_pack[144];
+    uint64_t catalog_generation,import_phase;
+#endif
 };
+_Static_assert(sizeof(struct map_store_page)<=4096,"bounded storage handoff");
 void map_sha256(const void *,size_t,uint8_t[32]);
 /* Two independently checksummed sectors. Never overwrite the newest bank. */
 static inline bool map_selection_read(const uint8_t *p,uint64_t *gen,unsigned *region) {

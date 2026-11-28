@@ -68,9 +68,9 @@ def prepare_storage(base, out):
     spec=importlib.util.spec_from_file_location('comaps_spatial',HERE/'spatial.py')
     spatial=importlib.util.module_from_spec(spec);spec.loader.exec_module(spatial)
     spatial_path,profile=spatial.prepare(base,paths[2],out/'spatial');paths[2]=spatial_path
-    header='/* Generated from pinned public regions.json. */\nstruct map_region_pin { const char *name; unsigned length; unsigned char digest[32]; };\nstatic const struct map_region_pin map_regions[MAP_REGION_COUNT]={\n'
+    header='/* Generated from pinned public regions.json. */\nstruct map_region_pin { const char *name; unsigned length; unsigned char digest[32]; };\n#ifdef MAP_IMPORT\nstatic struct map_region_pin map_regions[MAP_REGION_COUNT]={\n#else\nstatic const struct map_region_pin map_regions[MAP_REGION_COUNT]={\n#endif\n'
     for r in regions:header+='{'+json.dumps(r['name'])+','+str(r['bytes'])+',{'+','.join('0x'+r['sha256'][i:i+2] for i in range(0,64,2))+'}},\n'
-    header+='};\nstruct map_page_pin { unsigned offset,length; unsigned char digest[32]; double bounds[4]; };\nstatic const struct map_page_pin map_pages[65]={\n'
+    header+='#ifdef MAP_IMPORT\n{"Local region",0,{0}},\n#endif\n};\nstruct map_page_pin { unsigned offset,length; unsigned char digest[32]; double bounds[4]; };\nstatic const struct map_page_pin map_pages[65]={\n'
     for page in profile['pages']:
         header+='{'+str(page['offset'])+','+str(page['bytes'])+',{'+','.join('0x'+page['sha256'][i:i+2] for i in range(0,64,2))+'},{'+','.join(map(repr,page['bounds']))+'}},\n'
     header+='};\nstatic const double map_spatial_bounds[4]={'+','.join(map(repr,profile['bounds']))+'};\nstatic const double map_spatial_origin[2]={'+','.join(map(repr,profile['origin']))+'};\n'

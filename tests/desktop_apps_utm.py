@@ -29,7 +29,9 @@ def main():
     p.add_argument('--wrapped-session',action='store_true',help='disposable passphrase-wrapped three-app restart group; requires its private composer and a fresh disk')
     p.add_argument('--lock-idle-ms',type=int,default=60000)
     p.add_argument('--map-private',action='store_true',help='opt-in app-scoped encrypted saved places; disposable data only')
+    p.add_argument('--map-import',action='store_true',help='fresh local-pack import and transactional update fixture')
     a=p.parse_args()
+    if a.map_import and not (a.wrapped_session and a.map_private):p.error('--map-import requires --wrapped-session --map-private')
     if a.map_storage and not a.maps:p.error('--map-storage requires --maps')
     if a.map_private and not a.map_storage:p.error('--map-private requires --map-storage')
     if a.maps and not (a.browser and a.virgl and a.desktop_resize):p.error('--maps requires --browser --virgl --desktop-resize')
@@ -43,7 +45,7 @@ def main():
     out.mkdir(parents=True,exist_ok=a.resume)
     if (out/'build.json').exists():
         old=json.loads((out/'build.json').read_text())
-        if bool(old.get('wrapped_session'))!=a.wrapped_session:p.error('use a fresh stage for a different disk/key format')
+        if bool(old.get('wrapped_session'))!=a.wrapped_session or bool(old.get('map_import'))!=a.map_import:p.error('use a fresh stage for a different disk/key format')
     (out/'.disposable-build').touch()
     sdk=inputs/'sdk';board=sdk/'board'/BOARD/CONFIG
     env=dict(os.environ,PATH='/opt/homebrew/opt/llvm/bin:/opt/homebrew/bin:'+os.environ['PATH'],
@@ -88,7 +90,7 @@ def main():
         desktop_browser.build(ROOT,out,inputs,ROOT/'build/netsurf-native',resize=a.desktop_resize)
     if a.maps:
         import maps as desktop_maps
-        map_pin=desktop_maps.build(ROOT,out,inputs,run,storage=a.map_storage,private=a.map_private,session=a.wrapped_session)
+        map_pin=desktop_maps.build(ROOT,out,inputs,run,storage=a.map_storage,private=a.map_private,session=a.wrapped_session,importing=a.map_import)
     # Only the public agent code/config is imported. Never the vault ELF.
     shutil.copyfile(inputs/'pds/agentstore_probe.elf',out/'agentstore_probe.elf')
     for b in ('blk_driver.elf','blk_virt.elf'):shutil.copyfile(storage/b,out/b)
@@ -294,7 +296,7 @@ def main():
         manifest['map_storage']=a.map_storage
         manifest['map_region']=map_pin
         if a.map_storage:
-            manifest['map_private']=a.map_private;manifest['map_pack_sha256']=sha(out/'maps.img')
+            manifest['map_import']=a.map_import;manifest['map_private']=a.map_private;manifest['map_pack_sha256']=sha(out/'maps.img')
             manifest['sources']['tests/map_storage_fixture.py']=sha(ROOT/'tests/map_storage_fixture.py')
         manifest['composer_sha256']=sha(a.composer.resolve())
         extra=[x for x in (ROOT/'experiments/comaps-native').rglob('*') if x.is_file() and '__pycache__' not in str(x)]
@@ -313,6 +315,8 @@ def main():
         manifest['sources'].update({str(x.relative_to(ROOT)):sha(x) for x in extra})
         manifest['session_layout_sha256']=sha(out/'session_layout.h')
         manifest['composer_sha256']=sha(a.composer.resolve())
+    if a.map_import:
+        manifest['sources'].update({str(x.relative_to(ROOT)):sha(x) for x in [ROOT/'tests/maps_import_utm.py',ROOT/'tests/maps_import_test.c',ROOT/'tests/maps_import_format_test.py']})
     if a.map_private:
         manifest['maps_private_scope']=('OS unlock; vault-derived Maps-only key; two authenticated ciphertext banks; scrubbed managed renderer and reset disk service on full lock' if a.wrapped_session else 'separate app-scoped passphrase; random wrapped key; two authenticated ciphertext banks; locks on hide and 60s idle; not full-session key eviction')
         manifest['sources'].update({str(x.relative_to(ROOT)):sha(x) for x in [ROOT/'rust/src/record_crypto.rs',ROOT/'rust/src/vault_key_prototype.rs',ROOT/'rust/src/entropy_rng.rs',ROOT/'tests/comaps_private_utm.py',ROOT/'tests/comaps_private_contract_test.py']})
