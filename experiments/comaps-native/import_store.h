@@ -10,6 +10,10 @@ static uint8_t local_journals[8192];
 static uint64_t local_generation;
 static unsigned local_bank,import_bank;
 static bool import_ready,import_probed;
+#ifdef MAP_LARGE_IMPORT
+static unsigned bundle_segment;
+static uint64_t bundle_peak;
+#endif
 static uint8_t import_digest[32];
 static void local_publish(void){
     memcpy(page()->local_regions,local_regions,sizeof(local_regions));memcpy(page()->local_pack,&import_pack,sizeof(import_pack));page()->catalog_generation=local_generation;page()->import_phase=phase;
@@ -53,7 +57,7 @@ static bool local_complete(void){
     }
     if(phase==13){
         memcpy(local_candidate,local_regions,sizeof(local_regions));struct map_local_region *r=&local_candidate[region];memset(r,0,sizeof(*r));
-        memcpy(r->identity,import_pack.identity,16);memcpy(r->name,import_pack.name,64);memcpy(r->digest,import_pack.digest,32);r->length=import_pack.length;r->version=import_pack.version;r->bank=import_bank;r->present=1;
+        memcpy(r->identity,import_pack.identity,16);memcpy(r->name,import_pack.name,64);memcpy(r->digest,import_pack.digest,32);r->length=import_pack.length;r->version=import_pack.version;r->bank=import_bank;r->present=import_pack.kind;
         map_local_catalog_write(local_journals,local_candidate,local_generation+1);
         dma_write((void*)(map_disk_dma+MAP_IO_PAYLOAD_OFFSET),local_journals,4096);phase=14;page()->import_phase=14;
         if(!submit(1,MAP_IMPORT_CATALOG+(1-local_bank)*4096,4096))done(MAP_STORE_IO);return true;
@@ -67,6 +71,9 @@ static bool local_complete(void){
 #ifdef MAP_FILES
 static bool files_begin(void);
 static void files_step(void);
+#ifdef MAP_LARGE_IMPORT
+static void bundle_start_segment(void);
+#endif
 #endif
 static bool local_request(unsigned command){
     if(command!=MAP_IMPORT_COMMIT)import_ready=false;
@@ -81,6 +88,9 @@ static bool local_request(unsigned command){
         if(!import_probed||!import_pack.version||!map_local_update_allowed(&import_pack,&local_regions[import_pack.region])){done(MAP_STORE_INVALID);return true;}
         region=import_pack.region;target_length=import_pack.length;
 #ifdef MAP_FILES
+#ifdef MAP_LARGE_IMPORT
+        if(import_pack.kind==2){import_bank=local_regions[region].bank==0?1:0;bundle_segment=0;bundle_peak=0;page()->peak_buffered=0;bundle_start_segment();return true;}
+#endif
         phase=17;page()->import_phase=17;offset=0;read_start=us();files_step();return true;
 #endif
         target_offset=MAP_IMPORT_INBOX+4096;memcpy(import_digest,import_pack.digest,32);target_digest=import_digest;
@@ -88,7 +98,11 @@ static bool local_request(unsigned command){
     }
     if(command==MAP_IMPORT_COMMIT){
         if(!import_ready||local_generation>=UINT64_MAX-1||!map_local_update_allowed(&import_pack,&local_regions[import_pack.region])){done(MAP_STORE_INVALID);return true;}
-        import_ready=false;region=import_pack.region;import_bank=local_regions[region].bank==0?1:0;phase=11;offset=0;page()->progress=0;readable=false;import_write_next();return true;
+        import_ready=false;region=import_pack.region;
+#ifdef MAP_LARGE_IMPORT
+        if(import_pack.kind==2){phase=13;page()->import_phase=13;if(!submit(4,0,0))done(MAP_STORE_IO);return true;}
+#endif
+        import_bank=local_regions[region].bank==0?1:0;phase=11;offset=0;page()->progress=0;readable=false;import_write_next();return true;
     }
     return false;
 }

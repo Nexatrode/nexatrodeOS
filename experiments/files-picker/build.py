@@ -4,7 +4,7 @@ import xml.etree.ElementTree as ET
 def build(root,out,flags,board,sysroot,run,*,fixture=False):
     here=root/'experiments/files-picker'
     # Explicit disposable fixture seed, compiled out of non-fixture brokers.
-    paths=[out/'local-packs/local-gibraltar-v1.nxregion',out/'local-packs/gibraltar-v2.nxregion']
+    paths=([out/'local-packs/liechtenstein-paged-v1.nxregion',out/'local-packs/liechtenstein-paged-v2.nxregion'] if '-DMAP_LARGE_IMPORT=1' in flags else [out/'local-packs/local-gibraltar-v1.nxregion',out/'local-packs/gibraltar-v2.nxregion'])
     assets='.section .rodata\n.balign 8\n.global map_font,files_sample,files_sample_end,files_sample2,files_sample2_end\nmap_font:\n.incbin "'+str(root/'experiments/slint-notes/assets/fonts/Roboto-Regular.ttf')+'"\n'
     for label,path in (zip(('files_sample','files_sample2'),paths) if fixture else []):assets+='\n'+label+':\n.incbin "'+str(path)+'"\n'+label+'_end:\n'
     (out/'files-assets.S').write_text(assets)

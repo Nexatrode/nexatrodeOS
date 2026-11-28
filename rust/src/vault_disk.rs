@@ -5,6 +5,8 @@
 compile_error!("the disposable wrapped-vault experiment must never use an installation vault key");
 
 mod vault_protocol;
+#[cfg(feature="utm-files-large")]
+include!("vault_files.rs");
 #[cfg(feature="utm-files-picker")]
 fn files_transfer() -> *mut personal_os_rust_server::vault_blob_transfer::BlobTransferPage {
     sel4_microkit::memory_region_symbol!(files_vault_transfer: *mut personal_os_rust_server::vault_blob_transfer::BlobTransferPage).as_ptr()
@@ -473,6 +475,12 @@ impl Vault {
         unsafe { core::slice::from_raw_parts_mut(maps_key_page().cast::<u8>(),4096).fill(0); }
         #[cfg(feature="utm-files-picker")]
         unsafe { core::slice::from_raw_parts_mut(files_transfer().cast::<u8>(),4096).fill(0); }
+        #[cfg(feature="utm-files-large")]
+        unsafe {
+            if let Some(e)=&mut *core::ptr::addr_of_mut!(FILES_UPLOAD){e.clear();}
+            if let Some((_,e))=&mut *core::ptr::addr_of_mut!(FILES_CACHE){e.clear();}
+            *core::ptr::addr_of_mut!(FILES_UPLOAD)=None;*core::ptr::addr_of_mut!(FILES_CACHE)=None;
+        }
         use zeroize::Zeroize;
         let was_unlocked = self.wrapped_unlocked;
         self.wrapped_unlocked = false;
@@ -1446,7 +1454,7 @@ impl Vault {
         Ok(latest)
     }
 
-    fn reserve_photo(&mut self, needed: usize, reserve_library_entry: bool) -> Result<(u64, usize), MessageLabel> {
+    fn reserve_photo(&mut self, needed: usize, reserve_library_entry: bool, append_only: bool) -> Result<(u64, usize), MessageLabel> {
         let (generation, slots) = self.photo_sequence()?;
         if needed == 0 || needed > vault_protocol::PHOTO_MAX.div_ceil(PHOTO_BLOCKS * vault_protocol::PHOTO_CHUNK) {
             return Err(REPLY_BAD_REQUEST);
@@ -1461,7 +1469,10 @@ impl Vault {
             history_end = history_end.checked_add(1).ok_or(REPLY_STORAGE)?;
         }
         let limit = vault_history::photo_limit(blocks, history_end).ok_or(REPLY_STORAGE)?;
-        let mut slot = 1u64;
+        // Multipart Files records have no deletion/reuse API yet. Append after
+        // the authenticated high-water mark instead of rescanning every old
+        // 12 KiB attachment slot for each new 1 MiB part.
+        let mut slot = if append_only {slots.checked_add(1).ok_or(REPLY_STORAGE)?} else {1u64};
         loop {
             let last = slot.checked_add(needed as u64 - 1).ok_or(REPLY_STORAGE)?;
             let first = self.message_photo_block(slot)?;
@@ -1537,6 +1548,9 @@ impl Vault {
     }
 
     fn photo_request_on_page(&mut self, request: MessageInfo, page: *mut BlobTransferPage, expected_owner: Option<u64>) -> Result<MessageInfo, MessageLabel> {
+        self.photo_request_on_page_checked(request,page,expected_owner,None)
+    }
+    fn photo_request_on_page_checked(&mut self, request: MessageInfo, page: *mut BlobTransferPage, expected_owner: Option<u64>, expected_length: Option<usize>) -> Result<MessageInfo, MessageLabel> {
         use vault_protocol::{PHOTO_CHUNK, PHOTO_MAX, REQUEST_PHOTO_COMMIT, REQUEST_PHOTO_READ, REQUEST_PHOTO_STAGE};
         if self.block.capacity_blocks()? < PHOTO_SEQUENCE_BLOCK + 2 {
             return Err(REPLY_STORAGE);
@@ -1577,7 +1591,7 @@ impl Vault {
                     return Err(REPLY_BAD_REQUEST);
                 }
                 let needed = length.div_ceil(PHOTO_BLOCKS * PHOTO_CHUNK);
-                let (generation, first_block) = self.reserve_photo(needed, handle == vault_protocol::LIBRARY_OWNER)?;
+                let (generation, first_block) = self.reserve_photo(needed, handle >= u64::MAX-1, handle == u64::MAX-1)?;
                 // The first block is the commit record. Flush the remaining
                 // blocks before it becomes visible to recovery.
                 for part in (0..length.div_ceil(PHOTO_CHUNK)).rev() {
@@ -1638,11 +1652,12 @@ impl Vault {
                     && record.payload_length >= PHOTO_HEADER).ok_or(REPLY_CORRUPT)?;
                 let base_start = vault_blob_record::CIPHERTEXT_OFFSET;
                 let (owner, total, _) = photo_header(&base_raw[base_start..base_start + base_record.payload_length]).ok_or(REPLY_CORRUPT)?;
-                if owner == 0 || total == 0 || total > PHOTO_MAX || part >= total.div_ceil(PHOTO_CHUNK) {
+                if owner == u64::MAX-1 && expected_owner != Some(u64::MAX-1) { return Err(REPLY_DENIED); }
+                if owner == 0 || total == 0 || total > PHOTO_MAX || expected_length.is_some_and(|n|n!=total) || part >= total.div_ceil(PHOTO_CHUNK) {
                     return Err(REPLY_CORRUPT);
                 }
                 #[cfg(feature = "utm-photo-reader")]
-                if expected_owner.is_some_and(|expected| if expected==vault_protocol::LIBRARY_OWNER {id==0 || owner!=expected} else {!vault_photo_access::permits(id, expected, owner)}) {
+                if expected_owner.is_some_and(|expected| if expected>=u64::MAX-1 {id==0 || owner!=expected} else {!vault_photo_access::permits(id, expected, owner)}) {
                     return Err(REPLY_DENIED);
                 }
                 #[cfg(not(feature = "utm-photo-reader"))]
@@ -1799,6 +1814,7 @@ impl Vault {
                     if reply.label() != REPLY_OK || reply.count() != 2 { return Err(REPLY_CORRUPT); }
                     if get_mr(0) != LIBRARY_OWNER { continue; }
                     let entry = (unsafe { &*page }).payload().ok_or(REPLY_CORRUPT)?;
+                    if entry.starts_with(b"NXFILE3\0"){continue;}
                     if entry.len() < 19 { return Err(REPLY_CORRUPT); }
                     let file_id = u64::from_le_bytes(entry[8..16].try_into().unwrap());
                     let (len, name_len, header) = if &entry[..8] == b"NXFILE1\0" {
@@ -2604,6 +2620,11 @@ impl Handler for Vault {
         #[cfg(feature="utm-files-picker")]
         if channel==Channel::new(15) {
             let page=files_transfer();
+            #[cfg(feature="utm-files-large")]
+            if (0x45a..=0x45e).contains(&request.label()) {
+                let result=self.files_large(request);if result.is_err(){unsafe{&mut *page}.set_payload(&[]);}
+                return Ok(result.unwrap_or_else(|label|MessageInfo::new(label,0)));
+            }
             let result=match (request.label(),request.count()) {
                 (vault_protocol::REQUEST_LIBRARY_NEXT,1)=>self.library_request_on_page(request,page),
                 (vault_protocol::REQUEST_PHOTO_READ,3) if get_mr(0)!=0 && get_mr(2)==vault_protocol::LIBRARY_OWNER =>
@@ -2663,7 +2684,7 @@ impl Handler for Vault {
             let id = get_mr(0);
             let part = get_mr(1);
             let owner = get_mr(2);
-            if id == 0 || owner == 0 || owner == vault_protocol::LIBRARY_OWNER || self.photo_read_transfer.is_null() {
+            if id == 0 || owner == 0 || owner >= u64::MAX-1 || self.photo_read_transfer.is_null() {
                 return Ok(MessageInfo::new(REPLY_DENIED, 0));
             }
             if let Err(label) = self.load_from_disk() {
@@ -2748,7 +2769,7 @@ impl Handler for Vault {
         {
             if matches!(request.label(), vault_protocol::REQUEST_PHOTO_COMMIT
                 | vault_protocol::REQUEST_ATTACHMENT_COMMIT | vault_protocol::REQUEST_PHOTO_PURGE_CHAT)
-                && get_mr(0) == vault_protocol::LIBRARY_OWNER
+                && get_mr(0) >= u64::MAX - 1
             {
                 return Ok(MessageInfo::new(REPLY_DENIED, 0));
             }

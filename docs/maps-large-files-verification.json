@@ -1,0 +1,288 @@
+{
+  "auditor_sha256": "820a8d44111e20c4d3b20d402462f81bf394a66add5b061b37150beb34f83c5b",
+  "passed": true,
+  "date": "2026-11-28",
+  "base_commit": "d26e51c8bf9a0f9795ebe75e35edb55a5068720e",
+  "vcpus": 4,
+  "accelerated_utm": true,
+  "saved_data_used": false,
+  "pixel_wifi_touched": false,
+  "source": {
+    "name": "prepared Liechtenstein",
+    "bytes": 13816320,
+    "body_bytes": 13812224,
+    "pages": 65,
+    "search_names": 3275,
+    "largest_segment_bytes": 3065244,
+    "package_body_limit_bytes": 33554432,
+    "source_files_limit_bytes": 67108864
+  },
+  "memory": {
+    "import_workspace_bytes": 8388608,
+    "files_segment_bytes": 1048576,
+    "source_ipc_max_bytes": 3072,
+    "decoded_candidates_bytes": 17563824,
+    "whole_region_name_catalogue_bytes": 884736,
+    "read_only_fixture_source_assets_bytes": 27632640,
+    "store_stack_bytes": 16384,
+    "largest_compiled_static_stack_frame_bytes": 5584,
+    "note": "Fixed workspace is reserved; largest segment describes the bytes touched for one page, not total guest RAM. Existing heaps, framebuffers, decoded candidates, Vault staging and read-only fixture assets are additional. Test source blobs are omitted without --map-files-fixture."
+  },
+  "host_checks": {
+    "paged_installer_asan_ubsan": true,
+    "directory_mutations": true,
+    "recomputed_hash_invalid_geometry_rejected": true,
+    "cancellation_phases": [
+      30,
+      31,
+      32
+    ],
+    "catalogue_commit_crash_cuts": true,
+    "private_banks_unchanged": true,
+    "existing_small_import_tests_passed": 3,
+    "existing_selected_files_tests_passed": 1,
+    "spatial_pages_sanitized": 65,
+    "vault_rust_tests_passed": 39,
+    "logical_files_metadata_tests_passed": 2,
+    "reserved_photo_owner_tests_passed": 2,
+    "authority_contract_negative_mutations_per_profile": 5,
+    "legacy_viewer_and_store_cross_compile": true,
+    "non_fixture_vault_cargo_check": true
+  },
+  "profiles": {
+    "desktop": {
+      "uuid": "49E28361-9557-4408-81DF-FC6E4147370E",
+      "loader_sha256": "39d4dd8d7d81283c617ad5008f9f4c336774a3e6fa94399df71b630af8606fac",
+      "checks": [
+        "trusted Files picker lists encrypted-library source packs; cancelling selection imports nothing",
+        "provider denies forged grants, directory enumeration, oversized and out-of-range reads; backing out revokes the selected grant",
+        "bounded encrypted background reads publish progress and accept cancellation without installing a region",
+        "cancel waits for the current payload DMA, retains the previous catalogue and preserves encrypted saved places",
+        "cold restart during an inactive-bank page write retains the old catalogue and saved places",
+        "OS lock scrubs picker state and selected authority; unlock reconstructs Files and restores private saved places",
+        "locking during encrypted reads and inactive payload writes revokes access, resets the worker and recovers the prior durable catalogue",
+        "two different Files selections import and update without stopping the VM or staging the legacy inbox",
+        "cold restart, stale-pack rejection and another OS lock/unlock retain installed maps and unchanged saved-place ciphertext",
+        "six repeated trusted-picker/source switches pass real GPU readback and retained-texture damage checks"
+      ],
+      "lock_observations": [
+        {
+          "initial_phase": 5,
+          "trigger_phase": 5,
+          "trigger_state": 8,
+          "trigger_progress": 1272536,
+          "source_disk_slowed": false,
+          "picker_erased": true
+        },
+        {
+          "initial_phase": 30,
+          "trigger_phase": 30,
+          "trigger_state": 3,
+          "trigger_progress": 14336,
+          "source_disk_slowed": true,
+          "picker_erased": true
+        },
+        {
+          "initial_phase": 31,
+          "trigger_phase": 31,
+          "trigger_state": 3,
+          "trigger_progress": 262144,
+          "source_disk_slowed": false,
+          "picker_erased": true
+        },
+        {
+          "initial_phase": 16,
+          "trigger_phase": 16,
+          "trigger_state": 0,
+          "trigger_progress": 0,
+          "source_disk_slowed": false,
+          "picker_erased": true
+        }
+      ],
+      "samples": [
+        {
+          "label": "v1",
+          "peak_workspace": 3065244,
+          "workspace_limit": 8388608,
+          "decoded_candidates": 17563824,
+          "search_catalogue": 884736,
+          "loaded_region": 4,
+          "names": 3275
+        },
+        {
+          "label": "v2",
+          "peak_workspace": 3065244,
+          "workspace_limit": 8388608,
+          "decoded_candidates": 17563824,
+          "search_catalogue": 884736,
+          "loaded_region": 4,
+          "names": 3275
+        },
+        {
+          "label": "restarted",
+          "peak_workspace": 0,
+          "workspace_limit": 8388608,
+          "decoded_candidates": 17563824,
+          "search_catalogue": 884736,
+          "loaded_region": 4,
+          "names": 3275
+        }
+      ],
+      "install_timings": [
+        {
+          "version": 1,
+          "install_seconds": 227.37973441602662
+        },
+        {
+          "version": 2,
+          "install_seconds": 228.26362987502944
+        }
+      ],
+      "runtime_rebuild_identical": true,
+      "all_compiled_source_fingerprints_verified": true,
+      "noncompiled_fingerprint_changes": [
+        "experiments/comaps-native/README.md",
+        "tests/maps_large_utm.py"
+      ],
+      "current_noncompiled_changes": [
+        "tests/maps_large_utm.py"
+      ],
+      "executed_harness_sha256": "e9cec9ea71964a21a71f70349ae275110de35bcf20b59cd36d80d7ddf71a6339",
+      "current_harness_sha256": "11bc7313341bf48e74b3fb40e3300c1811526bc4aa946ae5611b6f76221d910d",
+      "initial_version": 0,
+      "passed": true,
+      "map_disk_bytes": 402653184,
+      "build": "build/desktop-apps/maps-large-files",
+      "evidence": "build/desktop-apps/maps-large-files/large-files-verification/audited-validation.json",
+      "elf_set_sha256": "c1d5b21e4be7cb5837465c61769a7a30bd65aa9570afc7385b51e33d37cb3e27",
+      "fixed_regions": {
+        "map_store_bytes": 8388608,
+        "files_heap": 8388608,
+        "files_chunk": 4096,
+        "map_private_cipher": 8192
+      }
+    },
+    "mobile": {
+      "uuid": "AA8E21B0-F3A4-490D-8033-662F6EF67E1D",
+      "loader_sha256": "d9b213c4a63e60b675bd88974f42c1b859e181d5f4d249498c100add54512282",
+      "checks": [
+        "trusted Files picker lists encrypted-library source packs; cancelling selection imports nothing",
+        "provider denies forged grants, directory enumeration, oversized and out-of-range reads; backing out revokes the selected grant",
+        "bounded encrypted background reads publish progress and accept cancellation without installing a region",
+        "cancel waits for the current payload DMA, retains the previous catalogue and preserves encrypted saved places",
+        "cold restart during an inactive-bank page write retains the old catalogue and saved places",
+        "OS lock scrubs picker state and selected authority; unlock reconstructs Files and restores private saved places",
+        "locking during encrypted reads and inactive payload writes revokes access, resets the worker and recovers the prior durable catalogue",
+        "selected paged Files source installs/updates with unchanged encrypted saved places and no legacy inbox staging",
+        "cold restart, stale-pack rejection and another OS lock/unlock retain installed maps and unchanged saved-place ciphertext"
+      ],
+      "lock_observations": [
+        {
+          "initial_phase": 5,
+          "trigger_phase": 5,
+          "trigger_state": 8,
+          "trigger_progress": 3065244,
+          "source_disk_slowed": false,
+          "picker_erased": true
+        },
+        {
+          "initial_phase": 30,
+          "trigger_phase": 30,
+          "trigger_state": 3,
+          "trigger_progress": 54272,
+          "source_disk_slowed": true,
+          "picker_erased": true
+        },
+        {
+          "initial_phase": 31,
+          "trigger_phase": 31,
+          "trigger_state": 3,
+          "trigger_progress": 262144,
+          "source_disk_slowed": false,
+          "picker_erased": true
+        },
+        {
+          "initial_phase": 16,
+          "trigger_phase": 16,
+          "trigger_state": 0,
+          "trigger_progress": 0,
+          "source_disk_slowed": false,
+          "picker_erased": true
+        }
+      ],
+      "samples": [
+        {
+          "label": "v2",
+          "peak_workspace": 3065244,
+          "workspace_limit": 8388608,
+          "decoded_candidates": 17563824,
+          "search_catalogue": 884736,
+          "loaded_region": 4,
+          "names": 3275
+        },
+        {
+          "label": "restarted",
+          "peak_workspace": 0,
+          "workspace_limit": 8388608,
+          "decoded_candidates": 17563824,
+          "search_catalogue": 884736,
+          "loaded_region": 4,
+          "names": 3275
+        }
+      ],
+      "install_timings": [
+        {
+          "version": 2,
+          "install_seconds": 154.53922533302102
+        }
+      ],
+      "runtime_rebuild_identical": true,
+      "all_compiled_source_fingerprints_verified": true,
+      "noncompiled_fingerprint_changes": [
+        "experiments/comaps-native/README.md",
+        "tests/maps_large_utm.py"
+      ],
+      "current_noncompiled_changes": [
+        "tests/maps_large_utm.py"
+      ],
+      "executed_harness_sha256": "11bc7313341bf48e74b3fb40e3300c1811526bc4aa946ae5611b6f76221d910d",
+      "current_harness_sha256": "11bc7313341bf48e74b3fb40e3300c1811526bc4aa946ae5611b6f76221d910d",
+      "initial_version": 1,
+      "passed": true,
+      "map_disk_bytes": 402653184,
+      "build": "build/mobile-browser/maps-large-files",
+      "evidence": "build/mobile-browser/maps-large-files/large-files-verification/audited-validation.json",
+      "elf_set_sha256": "0b589788dcb8bb7d7e10505b036fbeed99a0c1cdf14b9bf9069528754484be15",
+      "fixed_regions": {
+        "map_store_bytes": 8388608,
+        "files_heap": 8388608,
+        "files_chunk": 4096,
+        "map_private_cipher": 8192
+      }
+    }
+  },
+  "verification_method": "Desktop tested a fresh Files v1 install and v2 update. Mobile first installed v1 and saved Vaduz, then ran the complete cancellation/lock/restart matrix on the v1-to-v2 update. Hardware key/mouse/touch events, actual observations and OCR of guest/composed pixels were used. Development runs finalized documentation/test fingerprints separately; the final auditor requires identical installed/rebuilt loaders and every ELF and verifies all compiled source fingerprints. Only the README and UI harness may differ as noncompiled inputs; executed harness hashes are recorded.",
+  "timing_scope": "Times start after selected-file preview and cover page source reads, validation, inactive-bank writes/readback, durable publication and loading the displayed map. Fixture provisioning is excluded. Host load and build activity varied; these are diagnostic wall times, not a desktop/mobile hardware comparison.",
+  "limits": [
+    "Prepared NXMRPK02 bundles with an overview, 64 detail pages and bounded whole-region index; arbitrary upstream MWM and continent-scale imports are not implemented.",
+    "Fresh 384 MiB public map-disk layout; no migration of installed 192 MiB map disks or personal data.",
+    "Encrypted multipart backing parts currently append without reclamation; interrupted test-source provisioning can leave unreachable encrypted parts.",
+    "No general external-drive/host file-ingress UI or publisher authentication is added.",
+    "Mobile erasure remains the managed Maps/store/picker group and Vault-key lifecycle; broader phone UI/other application RAM limits remain unchanged."
+  ],
+  "main_integration": {
+    "base_commit": "7ec14b579b8d97708b47c978ef6fd98ab1c4469d",
+    "scope": "Rebased without conflicts onto two newer Wi-Fi commits. The shared Cargo manifest gained a Wi-Fi feature declaration; upstream made no Maps runtime changes. Original UTM evidence and its tested base are retained above; UTM was not rerun after this rebase.",
+    "post_rebase_checks": {
+      "paged_import_asan_ubsan": true,
+      "small_import_tests_passed": 3,
+      "selected_file_tests_passed": 1,
+      "reserved_owner_tests_passed": 2,
+      "files_catalogue_tests_passed": 2,
+      "vault_tests_passed": 39,
+      "desktop_and_mobile_authority_contracts": true,
+      "arm64_nonfixture_vault_cargo_check": true,
+      "git_diff_check": true
+    }
+  }
+}

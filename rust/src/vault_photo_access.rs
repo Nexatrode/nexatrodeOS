@@ -2,7 +2,8 @@
 pub fn permits(id: u64, expected_owner: u64, actual_owner: u64) -> bool {
     id != 0
         && expected_owner != 0
-        && expected_owner != u64::MAX
+        && expected_owner < u64::MAX-1
+        && actual_owner != u64::MAX-1
         && (actual_owner == expected_owner || actual_owner == u64::MAX)
 }
 

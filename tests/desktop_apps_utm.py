@@ -30,9 +30,11 @@ def main():
     p.add_argument('--lock-idle-ms',type=int,default=60000)
     p.add_argument('--map-private',action='store_true',help='opt-in app-scoped encrypted saved places; disposable data only')
     p.add_argument('--map-import',action='store_true',help='fresh local-pack import and transactional update fixture')
+    p.add_argument('--map-large-import',action='store_true',help='stream bounded paged-region bundles through Files on a fresh 384 MiB map disk')
     p.add_argument('--map-files-fixture',action='store_true',help='seed only public disposable sample packs; never personal data')
     p.add_argument('--map-files',action='store_true',help='trusted selected-file picker with public disposable sample files')
     a=p.parse_args()
+    if a.map_large_import and not a.map_files:p.error('--map-large-import requires --map-files')
     if a.map_files_fixture and not a.map_files:p.error('--map-files-fixture requires --map-files')
     if a.map_files and not a.map_import:p.error('--map-files requires --map-import')
     if a.map_import and not (a.wrapped_session and a.map_private):p.error('--map-import requires --wrapped-session --map-private')
@@ -49,7 +51,7 @@ def main():
     out.mkdir(parents=True,exist_ok=a.resume)
     if (out/'build.json').exists():
         old=json.loads((out/'build.json').read_text())
-        if bool(old.get('wrapped_session'))!=a.wrapped_session or bool(old.get('map_import'))!=a.map_import or bool(old.get('map_files'))!=a.map_files:p.error('use a fresh stage for a different disk/key format')
+        if bool(old.get('wrapped_session'))!=a.wrapped_session or bool(old.get('map_import'))!=a.map_import or bool(old.get('map_files'))!=a.map_files or bool(old.get('map_large_import'))!=a.map_large_import:p.error('use a fresh stage for a different disk/key format')
     (out/'.disposable-build').touch()
     sdk=inputs/'sdk';board=sdk/'board'/BOARD/CONFIG
     env=dict(os.environ,PATH='/opt/homebrew/opt/llvm/bin:/opt/homebrew/bin:'+os.environ['PATH'],
@@ -75,7 +77,7 @@ def main():
     target=cargo('rust/Cargo.toml','storage-test,simplex-agent-vault,utm-slint-input,utm-photo-reader,utm-transcript-worker'+(',utm-maps-private' if a.map_private else ''),bins,'build/desktop-apps-backends')
     for b in bins:shutil.copyfile(target/(b+'.elf'),out/(b+'.elf'))
     if a.wrapped_session:
-        target=cargo('rust/Cargo.toml','storage-test,utm-simplex-live-test,utm-slint-input'+(',utm-maps-session-lock' if a.maps else '')+(',utm-files-picker-fixture' if a.map_files_fixture else ',utm-files-picker' if a.map_files else ''),['rust_vault_disk','rust_entropy_rng'],'build/desktop-apps-wrapped-backend')
+        target=cargo('rust/Cargo.toml','storage-test,utm-simplex-live-test,utm-slint-input'+(',utm-maps-session-lock' if a.maps else '')+(',utm-files-picker-fixture' if a.map_files_fixture else ',utm-files-picker' if a.map_files else '')+(',utm-files-large' if a.map_large_import else ''),['rust_vault_disk','rust_entropy_rng'],'build/desktop-apps-wrapped-backend')
         sections=subprocess.check_output(['llvm-readelf','-S',target/'rust_vault_disk.elf'],text=True,env=env)
         assert '.utm_vault_key' not in sections,'installation key forbidden in disposable lock'
         shutil.copyfile(target/'rust_vault_disk.elf',out/'rust_vault_disk.elf')
@@ -94,7 +96,7 @@ def main():
         desktop_browser.build(ROOT,out,inputs,ROOT/'build/netsurf-native',resize=a.desktop_resize)
     if a.maps:
         import maps as desktop_maps
-        map_pin=desktop_maps.build(ROOT,out,inputs,run,storage=a.map_storage,private=a.map_private,session=a.wrapped_session,importing=a.map_import,files=a.map_files,files_fixture=a.map_files_fixture)
+        map_pin=desktop_maps.build(ROOT,out,inputs,run,storage=a.map_storage,private=a.map_private,session=a.wrapped_session,importing=a.map_import,files=a.map_files,files_fixture=a.map_files_fixture,large=a.map_large_import)
     # Only the public agent code/config is imported. Never the vault ELF.
     shutil.copyfile(inputs/'pds/agentstore_probe.elf',out/'agentstore_probe.elf')
     for b in ('blk_driver.elf','blk_virt.elf'):shutil.copyfile(storage/b,out/b)
@@ -307,7 +309,7 @@ def main():
         manifest['map_storage']=a.map_storage
         manifest['map_region']=map_pin
         if a.map_storage:
-            manifest['map_files_fixture']=a.map_files_fixture;manifest['map_files']=a.map_files;manifest['map_import']=a.map_import;manifest['map_private']=a.map_private;manifest['map_pack_sha256']=sha(out/'maps.img')
+            manifest['map_large_import']=a.map_large_import;manifest['map_files_fixture']=a.map_files_fixture;manifest['map_files']=a.map_files;manifest['map_import']=a.map_import;manifest['map_private']=a.map_private;manifest['map_pack_sha256']=sha(out/'maps.img')
             manifest['sources']['tests/map_storage_fixture.py']=sha(ROOT/'tests/map_storage_fixture.py')
         manifest['composer_sha256']=sha(a.composer.resolve())
         extra=[x for x in (ROOT/'experiments/comaps-native').rglob('*') if x.is_file() and '__pycache__' not in str(x)]
@@ -332,6 +334,7 @@ def main():
         manifest['maps_private_scope']=('OS unlock; vault-derived Maps-only key; two authenticated ciphertext banks; scrubbed managed renderer and reset disk service on full lock' if a.wrapped_session else 'separate app-scoped passphrase; random wrapped key; two authenticated ciphertext banks; locks on hide and 60s idle; not full-session key eviction')
         manifest['sources'].update({str(x.relative_to(ROOT)):sha(x) for x in [ROOT/'rust/src/record_crypto.rs',ROOT/'rust/src/vault_key_prototype.rs',ROOT/'rust/src/entropy_rng.rs',ROOT/'tests/comaps_private_utm.py',ROOT/'tests/comaps_private_contract_test.py']})
     if a.map_files:manifest['sources'].update({str(x.relative_to(ROOT)):sha(x) for x in list((ROOT/'experiments/files-picker').glob('*'))+[ROOT/'tests/maps_files_test.py',ROOT/'tests/maps_files_contract_test.py',ROOT/'tests/maps_files_store_test.c',ROOT/'tests/maps_files_utm.py',ROOT/'rust/src/vault_protocol.rs'] if x.is_file()})
+    if a.map_large_import:manifest['sources'].update({str(x.relative_to(ROOT)):sha(x) for x in [ROOT/'rust/src'/n for n in ('lib.rs','files_catalogue.rs','vault_files.rs','vault_photo_access.rs')]+[ROOT/'tests'/n for n in ('maps_large_utm.py','maps_large_test.py','maps_large_store_test.c')]})
     (out/'build.json').write_text(json.dumps(manifest,indent=2)+'\n')
 
 if __name__=='__main__':main()

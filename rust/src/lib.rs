@@ -29,6 +29,7 @@ pub mod calculator;
 pub mod calendar;
 pub mod clock_display;
 pub mod device_lock;
+pub mod files_catalogue;
 #[cfg(any(test, feature = "vault-key-prototype"))]
 pub mod vault_key_prototype;
 #[cfg(any(test, feature = "utm-wrapped-vault-experiment"))]

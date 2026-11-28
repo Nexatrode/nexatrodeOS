@@ -625,3 +625,56 @@ transaction code under address/undefined-behavior sanitizers. The desktop/mobile
 denials, progress, safe cancellation, lock during the chooser/read/write phases,
 installation, updates, cold restart and saved-place recovery. Live provider probes
 are enabled only in the explicitly disposable seed profile.
+
+### Larger paged imports through Files
+
+`--map-large-import` extends `--map-files` on a **fresh disposable** desktop or
+mobile build. It uses a 384 MiB public map disk with two 32 MiB banks per region;
+it must not be installed over the older 192 MiB import layout. The existing
+small-pack profile and its disk offsets are unchanged. No regular installation,
+saved wallet/chat disk, or Pixel image is migrated by this experiment.
+
+`NXMRPK02` wraps a fixed 8 KiB directory, an overview, 64 detail pages and the
+whole-region name index. `paged_pack.py` packages the existing prepared spatial
+data; it does not import arbitrary upstream `.mwm` files directly. The directory
+binds each page's length, offset, bounds and SHA-256. Header and directory identities
+and versions must agree. Extents are contiguous and aligned, and nonfinite bounds,
+reserved bytes, oversized pages, invalid geometry and invalid search records are
+rejected. These checks detect malformed data; they do not authenticate a publisher.
+The present package-body limit is 32 MiB and each page is limited to 8 MiB.
+
+Files represents a larger logical file using authenticated `NXFILE3` metadata and
+1 MiB encrypted attachment segments. Only the trusted Vault/picker path sees the
+segment IDs. Reserved segment ownership is denied to normal photo-preview reads
+and chat purge/commit calls. The trusted fixture writer appends after the durable
+allocation high-water mark, avoiding repeated scans of prior attachment slots.
+It has no segment reclamation API yet; interrupted fixture provisioning can leave
+unreferenced encrypted parts. Provisioning is enabled only by the separate
+`--map-files-fixture` test option. A general external-drive/host file-ingress UI
+is still future work.
+
+Maps keeps its existing 8 MiB workspace and reuses it for one source page,
+structural validation, inactive-bank write and readback. Source IPC remains at
+most 3 KiB. Fixed parsed directory metadata, the existing decoded viewport
+candidates and the bounded name catalogue do not grow with the container size.
+The renderer loads the installed directory and reads only the pages it needs,
+while search uses the whole-region index. Cancellation is accepted between source
+chunks and disk completions. The region catalogue is published only after every
+page and the search index verify and the inactive bank is flushed. OS lock erases
+the managed picker/store/viewer state and unlock recovers the durable catalogue.
+The broader phone memory-erasure limitations described above still apply.
+
+The test package is 13,816,320 bytes (prepared Liechtenstein), exceeding the former
+8 MiB whole-file limit. Its largest segment is 3,065,244 bytes. The disposable
+fixture embeds two public source versions as **read-only test assets**; those
+27.6 MB of fixture assets are additional guest memory, not part of the mutable
+import workspace. Production builds without the seed option omit those blobs.
+
+`tests/maps_large_test.py` runs the actual streaming transaction under ASan/UBSan,
+including directory mutations, recomputed-hash structural corruption, cancellation
+in read/write/readback phases and interrupted catalogue commits. Run
+`rustc --test tests/maps_files_ownership.rs` for reserved photo-owner checks.
+`tests/maps_large_utm.py --guest ... [--mobile]` exercises the real encrypted Files
+source, UI progress/cancellation, interrupted install restart, OS lock/unlock,
+versioned updates, saved places, place/road search and pan/zoom. Verification
+records are in `docs/maps-large-files-verification.json` when live tests complete.

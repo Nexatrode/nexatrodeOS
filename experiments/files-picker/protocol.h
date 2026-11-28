@@ -8,7 +8,11 @@
 #define FILES_READ 0x470
 #define FILES_RELEASE 0x471
 #define FILES_CHUNK 3072u
+#ifdef MAP_LARGE_IMPORT
+#define FILES_LIMIT (64u*1024*1024)
+#else
 #define FILES_LIMIT (8u*1024*1024+4096)
+#endif
 struct files_state {uint32_t revision,open;uint64_t serial,token[2],length,status;char name[128];uint64_t reads,denied;};
 struct files_request {uint64_t open;};
 struct files_chunk {uint32_t length;uint8_t bytes[FILES_CHUNK];};

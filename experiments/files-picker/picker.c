@@ -62,13 +62,31 @@ static void draw(void){
 static microkit_msginfo vault(unsigned label,unsigned n){return microkit_ppcall(3,microkit_msginfo_new(label,n));}
 #ifdef FILES_FIXTURE
 static bool seed(const uint8_t*data,size_t n,const char*name){
+#ifdef MAP_LARGE_IMPORT
+ uint32_t*p=(void*)files_vault_transfer;memset(p,0,4096);*p=strlen(name);memcpy(p+1,name,*p);microkit_mr_set(0,n);if(microkit_msginfo_get_label(vault(0x45c,1))!=0x300)return false;
+ for(size_t base=0;base<n;){size_t part=n-base;if(part>1024*1024)part=1024*1024;
+  for(size_t off=0;off<part;){size_t take=part-off;if(take>FILES_CHUNK)take=FILES_CHUNK;memset(p,0,4096);*p=take;memcpy(p+1,data+base+off,take);microkit_mr_set(0,off);if(microkit_msginfo_get_label(vault(0x436,1))!=0x300)return false;off+=take;}
+  microkit_mr_set(0,part);if(microkit_msginfo_get_label(vault(0x45d,1))!=0x300)return false;base+=part;
+ }
+ return microkit_msginfo_get_label(vault(0x45e,0))==0x300;
+#else
  uint32_t*p=(void*)files_vault_transfer;
  for(size_t off=0;off<n;){size_t amount=n-off;if(amount>FILES_CHUNK)amount=FILES_CHUNK;memset(p,0,4096);*p=amount;memcpy(p+1,data+off,amount);microkit_mr_set(0,off);if(microkit_msginfo_get_label(vault(0x436,1))!=0x300)return false;off+=amount;}
  memset(p,0,4096);*p=strlen(name);memcpy(p+1,name,*p);microkit_mr_set(0,n);return microkit_msginfo_get_label(vault(0x44c,1))==0x300;
+#endif
 }
 #endif
+#ifdef MAP_LARGE_IMPORT
+#define FILES_NEXT 0x45a
+#define SAMPLE_NAME "liechtenstein-v1.nxregion"
+#define SAMPLE2_NAME "liechtenstein-v2.nxregion"
+#else
+#define FILES_NEXT 0x44a
+#define SAMPLE_NAME "gibraltar-v1.nxregion"
+#define SAMPLE2_NAME "gibraltar-v2.nxregion"
+#endif
 static void next_file(void){
- if(!listing)return;microkit_mr_set(0,cursor);microkit_msginfo r=vault(0x44a,1);
+ if(!listing)return;microkit_mr_set(0,cursor);microkit_msginfo r=vault(FILES_NEXT,1);
  if(microkit_msginfo_get_label(r)!=0x300){error=microkit_msginfo_get_label(r)!=0x30d;listing=false;draw();return;}
  uint64_t next=microkit_mr_get(0),id=microkit_mr_get(1),length=microkit_mr_get(2);uint32_t*p=(void*)files_vault_transfer;
  if(next<=cursor||*p==0||*p>120||length>FILES_LIMIT){error=true;listing=false;draw();return;}cursor=next;
@@ -110,7 +128,7 @@ void notified(microkit_channel ch){
  if(ch==1){uint64_t request=__atomic_load_n(&((struct files_request*)files_request)->open,__ATOMIC_ACQUIRE);
   if(request&&request!=serial){serial=request;files_revoke(&grant);memset(state()->name,0,128);opened=true;listing=true;error=more=false;count=first=0;cursor=0;pressed=~0u;memset(entries,0,sizeof(entries));publish(0);draw();
 #ifdef FILES_FIXTURE
-   if(!seeded){microkit_mr_set(0,0);microkit_msginfo r=vault(0x44a,1);if(microkit_msginfo_get_label(r)!=0x300){seeded=seed(files_sample,files_sample_end-files_sample,"gibraltar-v1.nxregion")&&seed(files_sample2,files_sample2_end-files_sample2,"gibraltar-v2.nxregion");}else seeded=true;}
+   if(!seeded){microkit_mr_set(0,0);microkit_msginfo r=vault(FILES_NEXT,1);if(microkit_msginfo_get_label(r)!=0x300){seeded=seed(files_sample,files_sample_end-files_sample,SAMPLE_NAME)&&seed(files_sample2,files_sample2_end-files_sample2,SAMPLE2_NAME);}else seeded=true;}
 #endif
   }
   if(listing&&opened)next_file();
@@ -122,7 +140,12 @@ microkit_msginfo protected(microkit_channel ch,microkit_msginfo m){
  if(label==FILES_RELEASE){files_revoke(&grant);publish(3);return microkit_msginfo_new(0,0);}
  if(label!=FILES_READ){state()->denied++;return microkit_msginfo_new(1,0);}
  // A read can straddle two encrypted attachment chunks (e.g. 4096-byte header).
- unsigned copied=0;while(copied<amount){uint64_t at=off+copied;microkit_mr_set(0,grant.id);microkit_mr_set(1,at/FILES_CHUNK);microkit_mr_set(2,UINT64_MAX);microkit_msginfo r=vault(0x438,3);uint32_t*p=(void*)files_vault_transfer;unsigned within=at%FILES_CHUNK,take=amount-copied;
+ unsigned copied=0;while(copied<amount){uint64_t at=off+copied;microkit_mr_set(0,grant.id);
+#ifdef MAP_LARGE_IMPORT
+  microkit_mr_set(1,at);microkit_mr_set(2,amount-copied);microkit_msginfo r=vault(0x45b,3);uint32_t*p=(void*)files_vault_transfer;unsigned within=0,take=amount-copied;
+#else
+  microkit_mr_set(1,at/FILES_CHUNK);microkit_mr_set(2,UINT64_MAX);microkit_msginfo r=vault(0x438,3);uint32_t*p=(void*)files_vault_transfer;unsigned within=at%FILES_CHUNK,take=amount-copied;
+#endif
   if(microkit_msginfo_get_label(r)!=0x300||*p>FILES_CHUNK||within>=*p){files_revoke(&grant);memset(out,0,4096);publish(4);return microkit_msginfo_new(1,0);}if(take>*p-within)take=*p-within;memcpy(out->bytes+copied,(uint8_t*)(p+1)+within,take);copied+=take;memset(p,0,4096);
  }
  out->length=copied;state()->reads++;microkit_notify(2);return microkit_msginfo_new(0,0);

@@ -14,9 +14,16 @@ static void import_reply(void){
     if(p->command==MAP_IMPORT_PROBE){memcpy(&import_preview,p->local_pack,sizeof(import_preview));import_state=2;}
     else if(p->command==MAP_IMPORT_READ){
         /* Decoding and capacity checks happen before the store may write. */
-        if(p->length!=import_preview.length||!map_load(candidate,(void*)map_store_bytes,p->length)){import_state=6;storage_error=MAP_STORE_CORRUPT;}
+        if(p->length!=import_preview.length||(
+#ifdef MAP_LARGE_IMPORT
+        import_preview.kind!=2&&
+#endif
+        !map_load(candidate,(void*)map_store_bytes,p->length))){import_state=6;storage_error=MAP_STORE_CORRUPT;}
         else {import_request(MAP_IMPORT_COMMIT);draw();return;}
     }else{
+#ifdef MAP_LARGE_IMPORT
+        if(import_preview.kind==2){region_names_ready=false;import_state=5;region_picker=false;recovering=false;storage_request(MAP_STORE_LOAD,import_preview.region);draw();return;}
+#endif
         struct offline_map *old=current_map;current_map=candidate;candidate=old;loaded_region=import_preview.region;requested_region=loaded_region;region_names_ready=false;search_rebuild();reset();import_state=5;region_picker=false;
         recovering=false;storage_request(MAP_STORE_COMMIT,loaded_region);
     }changed=true;draw();

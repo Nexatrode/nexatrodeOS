@@ -20,7 +20,7 @@ static inline bool map_search_catalogue_read(struct map_search_entry *out,unsign
         struct map_search_entry e;memcpy(&e,(const uint8_t*)bytes+16+i*sizeof(e),sizeof(e));
         if(!e.name[0]||!memchr(e.name,0,sizeof(e.name))||e.geometry>1||!isfinite(e.x)||!isfinite(e.y)||e.x<bounds[0]||e.y<bounds[1]||e.x>bounds[2]||e.y>bounds[3])return false;
     }
-    memcpy(out,(const uint8_t*)bytes+16,h[1]*sizeof(*out));*count=h[1];return true;
+    if(out)memcpy(out,(const uint8_t*)bytes+16,h[1]*sizeof(*out));*count=h[1];return true;
 }
 struct map_search {
     uint32_t index[MAP_MAX_FEATURES],result[MAP_SEARCH_RESULTS];

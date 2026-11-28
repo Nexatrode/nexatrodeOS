@@ -86,6 +86,9 @@ static void read_next(void) {
 #ifdef MAP_IMPORT
 #include "import_store.h"
 #ifdef MAP_FILES
+#ifdef MAP_LARGE_IMPORT
+#include "large_store.h"
+#endif
 #include "files_store.h"
 #endif
 #endif
@@ -94,13 +97,16 @@ static void complete(void) {
     uint16_t next=u[1];if(next==used){page()->io.empty_irqs++;return;}
     atomic_thread_fence(memory_order_seq_cst);
     uint32_t *entry=(void*)(dma+0x204+(used%8)*8);
-    unsigned expected=(phase==1||phase==2||phase==5||phase==8||phase==10||phase==12)?(unsigned)amount+1:1;
+    unsigned expected=(phase==1||phase==2||phase==5||phase==8||phase==10||phase==12||phase==32)?(unsigned)amount+1:1;
     if(!busy||(uint16_t)(next-used)!=1||entry[0]!=0||entry[1]!=expected||dma[0x310]!=0){online=false;if(busy)done(MAP_STORE_IO);return;}
     used=next;
     struct map_io_times *io=&page()->io;uint64_t waited=irq_at-submitted_at;io->wait_us+=waited;
     unsigned bin=waited<10?0:waited<50?1:waited<100?2:waited<500?3:waited<1000?4:waited<5000?5:waited<20000?6:7;io->bins[bin]++;
     if(waited>io->max_wait_us){io->max_wait_us=waited;io->worst[0]=submitted_at;io->worst[1]=irq_at;io->worst[2]=amount;io->worst[3]=phase;}
 #ifdef MAP_IMPORT
+    #ifdef MAP_LARGE_IMPORT
+    if(bundle_complete())return;
+    #endif
     if(local_complete())return;
     if(phase==2&&page()->command==MAP_IMPORT_READ&&import_cancelled()){import_ready=import_probed=false;done(MAP_STORE_CANCELLED);return;}
 #endif
@@ -123,6 +129,9 @@ static void complete(void) {
         uint8_t digest[32];map_sha256((void*)map_store_bytes,offset,digest);
         page()->hash_us=us()-hash_start;
         if(memcmp(digest,target_digest,32)){done(MAP_STORE_CORRUPT);return;}
+#ifdef MAP_LARGE_IMPORT
+        if(!bundle_directory_loaded()){done(MAP_STORE_CORRUPT);return;}
+#endif
 #ifdef MAP_IMPORT
         if(page()->command==MAP_IMPORT_READ)import_ready=true;
 #endif
@@ -168,6 +177,9 @@ void notified(microkit_channel channel) {
         if(!submit(1,MAP_PRIVATE_OFFSET+private_bank*4096,4096))done(MAP_STORE_IO);return;}
 #endif
 #ifdef MAP_IMPORT
+    #ifdef MAP_LARGE_IMPORT
+    if(bundle_request(p->command))return;
+    #endif
     if(local_request(p->command))return;
 #endif
     if(p->command==MAP_STORE_BOOT){phase=1;if(!submit(0,0,8192))done(MAP_STORE_IO);return;}
@@ -178,6 +190,12 @@ void notified(microkit_channel channel) {
 #ifdef MAP_IMPORT
         if(!local_regions[region].present){done(MAP_STORE_INVALID);return;}
         if(region!=2){target_length=local_regions[region].length;target_digest=local_regions[region].digest;if(local_regions[region].bank<2)target_offset=MAP_IMPORT_EXTENT(region,local_regions[region].bank);}
+#endif
+#ifdef MAP_LARGE_IMPORT
+        if(local_regions[region].present==2){
+            if(runtime_region!=region||(p->command!=MAP_STORE_SEARCH&&p->command!=MAP_STORE_PAGE)||(p->command==MAP_STORE_PAGE&&p->chunk>=MAP_PAGE_COUNT)){done(MAP_STORE_INVALID);return;}
+            chunk=p->command==MAP_STORE_PAGE?p->chunk:MAP_PAGE_COUNT;const struct map_segment*s=&runtime_directory.segments[chunk];target_length=s->length;target_offset=MAP_IMPORT_EXTENT(region,local_regions[region].bank)+s->offset;target_digest=s->digest;if(p->command==MAP_STORE_SEARCH)chunk=0;read_next();return;
+        }
 #endif
         if(p->command==MAP_STORE_SEARCH){
             if(region!=2){done(MAP_STORE_INVALID);return;}

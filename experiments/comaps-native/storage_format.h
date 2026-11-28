@@ -6,7 +6,11 @@
 #include <stddef.h>
 #include <stdbool.h>
 #ifdef MAP_IMPORT
+#ifdef MAP_LARGE_IMPORT
+#define MAP_PACK_BYTES (384u*1024*1024)
+#else
 #define MAP_PACK_BYTES (192u*1024*1024)
+#endif
 #define MAP_REGION_COUNT 4u
 #else
 #define MAP_PACK_BYTES (64u*1024*1024)
@@ -19,7 +23,7 @@
 #define MAP_FILE_LIMIT (8u*1024*1024)
 #define MAP_FILE_OFFSET(i) ((uint64_t)(i+1)*MAP_FILE_LIMIT)
 #define MAP_STORAGE_MAGIC 0x4e584d53544f5231ULL
-enum { MAP_STORE_BOOT=1, MAP_STORE_LOAD=2, MAP_STORE_COMMIT=3, MAP_PRIVATE_READ=4, MAP_PRIVATE_WRITE=5, MAP_STORE_PAGE=6, MAP_STORE_SEARCH=7, MAP_IMPORT_PROBE=8, MAP_IMPORT_READ=9, MAP_IMPORT_COMMIT=10 };
+enum { MAP_STORE_BOOT=1, MAP_STORE_LOAD=2, MAP_STORE_COMMIT=3, MAP_PRIVATE_READ=4, MAP_PRIVATE_WRITE=5, MAP_STORE_PAGE=6, MAP_STORE_SEARCH=7, MAP_IMPORT_PROBE=8, MAP_IMPORT_READ=9, MAP_IMPORT_COMMIT=10, MAP_STORE_DIRECTORY=11 };
 #define MAP_PRIVATE_OFFSET (1024u*1024u)
 enum { MAP_STORE_OK=0, MAP_STORE_IO=1, MAP_STORE_CORRUPT=2, MAP_STORE_INVALID=3, MAP_STORE_CAPACITY=4, MAP_STORE_CANCELLED=5 };
 /* Elapsed guest times include preemption. wait_us measures doorbell to
@@ -35,6 +39,9 @@ struct map_store_page {
     /* Public metadata only. Keep this handoff within its existing 4 KiB page. */
     uint8_t local_regions[4*136],local_pack[144];
     uint64_t catalog_generation,import_phase,cancel_sequence;
+#ifdef MAP_LARGE_IMPORT
+    uint64_t peak_buffered;
+#endif
 #endif
 };
 _Static_assert(sizeof(struct map_store_page)<=4096,"bounded storage handoff");

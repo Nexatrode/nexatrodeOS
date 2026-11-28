@@ -17,6 +17,7 @@ utm-notes-interruption-test = ["utm-dynamic-vault-lock"]
 utm-dynamic-vault-skip-evict = ["utm-dynamic-vault-lock"]
 utm-device-lock = []
 utm-maps-private = []
+utm-files-large = ["utm-files-picker"]
 utm-files-picker = ["utm-maps-vault-key", "utm-photo-reader"]
 # Disposable fixtures only: trusted picker may seed public sample packs.
 utm-files-picker-fixture = ["utm-files-picker", "storage-test"]

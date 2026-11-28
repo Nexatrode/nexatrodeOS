@@ -16,7 +16,7 @@ static inline bool map_page_append(struct offline_map *m,const uint8_t *data,siz
         if(!f.count||f.count>(length-at)/sizeof(struct map_point)||f.geometry>2||!f.type_count||f.type_count>8||!memchr(f.name,0,96))return false;
         if(f.geometry==0&&f.count!=1)return false;if(f.geometry==2&&f.count%3)return false;
         if(!isfinite(f.minx)||!isfinite(f.miny)||!isfinite(f.maxx)||!isfinite(f.maxy)||f.minx>f.maxx||f.miny>f.maxy)return false;
-        bool keep=!view||!(f.maxx<view[0]||f.maxy<view[1]||f.minx>view[2]||f.miny>view[3]);
+        bool keep=m&&(!view||!(f.maxx<view[0]||f.maxy<view[1]||f.minx>view[2]||f.miny>view[3]));
         if(keep&&(m->feature_count==MAP_MAX_FEATURES||f.count>MAP_MAX_POINTS-m->point_count)){m->error="viewport capacity · zoom in";return false;}
         for(unsigned j=0;j<f.count;j++){
             struct map_point p;memcpy(&p,data+at+j*sizeof(p),sizeof(p));

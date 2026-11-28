@@ -18,7 +18,18 @@ static bool files_read(uint64_t off,void*out,unsigned n){
  if(microkit_msginfo_get_label(r)||c->length!=n)return false;memcpy(out,c->bytes,n);return true;
 }
 static void files_step(void){
- if(!busy||!files_source||(phase!=16&&phase!=17))return;
+ if(!busy||!files_source)return;
+#ifdef MAP_LARGE_IMPORT
+ if(phase==30){bundle_source_step();return;}
+ if(phase==18){
+  if(import_cancelled()){import_probed=import_ready=false;done(MAP_STORE_CANCELLED);return;}
+  unsigned n=MAP_DIRECTORY_BYTES-files_offset;if(n>FILES_CHUNK)n=FILES_CHUNK;if(!files_read(4096+files_offset,bundle_directory_raw+files_offset,n)){done(MAP_STORE_INVALID);return;}files_offset+=n;
+  if(files_offset<MAP_DIRECTORY_BYTES)return;uint8_t hash[32];map_sha256(bundle_directory_raw,MAP_DIRECTORY_BYTES,hash);
+  if(memcmp(hash,import_pack.digest,32)||!map_directory_read(bundle_directory_raw,&bundle_directory)||bundle_directory.length!=import_pack.length||bundle_directory.version!=import_pack.version||memcmp(bundle_directory.identity,import_pack.identity,16)){done(MAP_STORE_CORRUPT);return;}
+  import_probed=true;region=import_pack.region;done(MAP_STORE_OK);return;
+ }
+#endif
+ if(phase!=16&&phase!=17)return;
  if(import_cancelled()){import_ready=import_probed=false;done(MAP_STORE_CANCELLED);return;}
  if(phase==16){unsigned n=4096-files_offset;if(n>FILES_CHUNK)n=FILES_CHUNK;
   if(!files_read(files_offset,files_header+files_offset,n)){done(MAP_STORE_INVALID);return;}files_offset+=n;
@@ -27,6 +38,9 @@ static void files_step(void){
   if(!map_local_pack_read(files_header,&import_pack)||!map_local_update_allowed(&import_pack,&local_regions[import_pack.region])){done(MAP_STORE_INVALID);return;}
   struct files_state*s=(void*)files_state;if(s->length!=4096+import_pack.length){done(MAP_STORE_INVALID);return;}
   for(unsigned i=0;i<4;i++)if(i!=import_pack.region&&local_regions[i].present&&!memcmp(local_regions[i].identity,import_pack.identity,16)){done(MAP_STORE_INVALID);return;}
+#ifdef MAP_LARGE_IMPORT
+  if(import_pack.kind==2){phase=18;page()->import_phase=phase;files_offset=0;return;}
+#endif
   import_probed=true;region=import_pack.region;done(MAP_STORE_OK);return;
  }
  unsigned n=import_pack.length-offset;if(n>FILES_CHUNK)n=FILES_CHUNK;

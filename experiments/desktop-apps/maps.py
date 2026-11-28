@@ -6,7 +6,7 @@ import subprocess
 import xml.etree.ElementTree as ET
 
 
-def build(root, out, inputs, run, *, mobile=False, storage=False, private=False, session=False, importing=False, files=False, files_fixture=False):
+def build(root, out, inputs, run, *, mobile=False, storage=False, private=False, session=False, importing=False, files=False, files_fixture=False, large=False):
     here=root/'experiments/comaps-native';base=root/'build/comaps'
     spec=importlib.util.spec_from_file_location('comaps_prepare',here/'prepare.py')
     preparation=importlib.util.module_from_spec(spec);spec.loader.exec_module(preparation)
@@ -16,6 +16,10 @@ def build(root, out, inputs, run, *, mobile=False, storage=False, private=False,
         assert storage and private
         spec=importlib.util.spec_from_file_location('maps_local_pack',here/'local_pack.py');local=importlib.util.module_from_spec(spec);spec.loader.exec_module(local)
         pin['storage_regions']=local.initialize(out,pin['storage_regions'])
+    if large:
+        assert files and importing
+        spec=importlib.util.spec_from_file_location('maps_paged_pack',here/'paged_pack.py');paged=importlib.util.module_from_spec(spec);spec.loader.exec_module(paged)
+        pin['storage_regions']=paged.initialize(out,pin['storage_regions'])
     board=inputs/'sdk/board/qemu_virt_aarch64_el1/smp-debug'
     sysroot=root/'build/netsurf-native/sysroot'
     stb=root/'build/netsurf-native/deps/stb'
@@ -28,6 +32,7 @@ def build(root, out, inputs, run, *, mobile=False, storage=False, private=False,
     if storage:flags+=['-DMAP_STORAGE=1']
     if importing:flags+=['-DMAP_IMPORT=1']
     if files:flags+=['-DMAP_FILES=1']
+    if large:flags+=['-DMAP_LARGE_IMPORT=1']
     if files_fixture:flags+=['-DMAP_FILES_VERIFY=1']
     crypto=[]
     if private:
