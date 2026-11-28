@@ -2,6 +2,8 @@ from pathlib import Path
 import re,subprocess,unittest
 ROOT=Path(__file__).resolve().parents[1];BASE='cf680e21'
 def without_credit_return(path,s):
+ from sunfish_elf_pool_wire_source_test import without_pool_wire
+ s=without_pool_wire(path,s)
  s=re.sub(r'/\* TX3_CREDIT_BEGIN \*/\n.*?/\* TX3_CREDIT_END \*/\n','',s,flags=re.S)
  if path=='rust/Cargo.toml':s=s.replace('sunfish-tx3-credit-return-turn = ["sunfish-tx3-own-return-turn"]\n','')
  if path=='rust/src/qcom_tx3_own_return.rs':

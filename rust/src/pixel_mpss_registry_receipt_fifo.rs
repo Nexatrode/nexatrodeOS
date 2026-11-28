@@ -1,7 +1,16 @@
 //! Exact RX_DONE visibility for the existing TX3 watch and first ELF reply.
 use super::*;
+/* POOL_WIRE_PANEL_BEGIN */
+#[cfg(feature="sunfish-elf-pool-wire-panel")]
+#[path="pixel_mpss_elf_pool_wire.rs"]
+mod elf_pool_wire;
+/* POOL_WIRE_PANEL_END */
 impl RuntimeDomain {
     pub(super) fn show_registry_receipt_fifo(&self,d:&Display,owner:&ModemOwner){
+/* POOL_WIRE_PANEL_BEGIN */
+        #[cfg(feature="sunfish-elf-pool-wire-panel")]
+        {self.show_elf_pool_wire(d,owner);return;}
+/* POOL_WIRE_PANEL_END */
         for n in 2..=28{d.replace_line(n,"");}d.replace_line(1,"REGISTRY RECEIPT FIFO");
 /* TX3_RETURN_BEGIN */
         #[cfg(feature="sunfish-tx3-own-return-turn")]
