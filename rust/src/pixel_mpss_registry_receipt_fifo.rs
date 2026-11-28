@@ -1,4 +1,9 @@
 //! Exact RX_DONE visibility for the existing TX3 watch and first ELF reply.
+/* RULESET_FIFO_BEGIN */
+#[cfg(feature="sunfish-ruleset-reply-fifo")]
+#[path="pixel_mpss_ruleset_reply_fifo.rs"]
+mod ruleset_reply_fifo;
+/* RULESET_FIFO_END */
 /* STARTUP_COVERAGE_BEGIN */
 #[cfg(feature="sunfish-startup-reply-coverage")]
 #[path="pixel_mpss_startup_reply_coverage.rs"]
@@ -17,6 +22,10 @@ mod elf_pool_wire;
 /* POOL_WIRE_PANEL_END */
 impl RuntimeDomain {
     pub(super) fn show_registry_receipt_fifo(&self,d:&Display,owner:&ModemOwner){
+/* RULESET_FIFO_BEGIN */
+        #[cfg(feature="sunfish-ruleset-reply-fifo")]
+        {self.show_ruleset_reply_fifo(d,owner);return;}
+/* RULESET_FIFO_END */
 /* FIRST_MCFG_BEGIN */
 /* STARTUP_COVERAGE_BEGIN */
         #[cfg(feature="sunfish-startup-reply-coverage")]

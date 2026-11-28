@@ -121,4 +121,5 @@ include!("sunfish_first_mcfg_cases.rs");
 include!("sunfish_startup_coverage_cases.rs");
 #[cfg(feature="sunfish-ruleset-service-handoff")]
 include!("sunfish_ruleset_handoff_cases.rs");
+include!("sunfish_ruleset_fifo_cases.rs");
 }

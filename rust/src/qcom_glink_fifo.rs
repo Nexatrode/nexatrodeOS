@@ -80,6 +80,13 @@ use crate::qcom_qmi_router::Context;
 mod efs_reply;
 #[cfg(feature="sunfish-efs-reply-fifo")]
 pub use efs_reply::EfsReplyFifo;
+/* RULESET_FIFO_BEGIN */
+#[cfg(feature="sunfish-ruleset-reply-fifo")]
+#[path="qcom_fifo_ruleset_reply.rs"]
+mod ruleset_reply;
+#[cfg(feature="sunfish-ruleset-reply-fifo")]
+pub use ruleset_reply::RulesetReplyFifo;
+/* RULESET_FIFO_END */
 /* RULESET_HANDOFF_BEGIN */
 #[cfg(feature="sunfish-ruleset-service-handoff")]
 #[path="qcom_fifo_ruleset_handoff.rs"]
@@ -1527,6 +1534,10 @@ struct Ring<I> {
     registration_reply_rx: Option<ServerCheckRxWindow>,
     #[cfg(feature = "sunfish-registry-post-reply-trace")]
     registry_reply: Option<RegistryReplyWindow>,
+/* RULESET_FIFO_BEGIN */
+    #[cfg(feature="sunfish-ruleset-reply-fifo")]
+    ruleset_reply: [Option<ruleset_reply::RulesetReplyWatch>;2],
+/* RULESET_FIFO_END */
 /* RECEIPT_FIFO_BEGIN */
     #[cfg(feature="sunfish-registry-receipt-fifo")]
     elf_reply: Option<elf_receipt::ElfReplyWatch>,
@@ -1668,6 +1679,11 @@ impl<I: Io> Ring<I> {
 
     #[cfg_attr(feature="sunfish-wrq-post-return-callers",track_caller)]
     fn sample(&mut self) -> Result<(), Error> {
+/* RULESET_FIFO_BEGIN */
+        #[cfg(feature="sunfish-ruleset-reply-fifo")]
+        let ruleset_start=self.ruleset_reply.iter().flatten().any(|w|!w.window.trace.finished)
+            .then_some(self.first_server_check_clock).flatten().map(|c|c());
+/* RULESET_FIFO_END */
 /* RECEIPT_FIFO_BEGIN */
         #[cfg(feature="sunfish-registry-receipt-fifo")]
         let elf_reply_start = self.elf_reply.as_ref().filter(|w| !w.window.trace.finished)
@@ -1816,6 +1832,16 @@ impl<I: Io> Ring<I> {
                 ring_distance(new[2], new[3], length), registry_reply_start,
                 self.first_server_check_clock.map(|clock| clock()));
         }
+/* RULESET_FIFO_BEGIN */
+        #[cfg(feature="sunfish-ruleset-reply-fifo")]
+        if let Some(length)=rx {
+            let end=self.ruleset_reply.iter().flatten().any(|w|!w.window.trace.finished)
+                .then_some(self.first_server_check_clock).flatten().map(|c|c());
+            for w in self.ruleset_reply.iter_mut().flatten().filter(|w|!w.window.trace.finished){
+                w.window.sample(consumed,ring_distance(old_rx_head,new[3],length),ring_distance(new[2],new[3],length),ruleset_start,end);
+            }
+        }
+/* RULESET_FIFO_END */
 /* EFS_REPLY_FIFO_BEGIN */
 #[cfg(feature="sunfish-efs-reply-fifo")]
         if let Some(w)=self.efs_reply.as_mut().filter(|w|!w.window.trace.finished)&&let Some(length)=rx{
@@ -2350,6 +2376,10 @@ impl<I: Io> Adapter<I> {
                 registration_reply_rx: None,
                 #[cfg(feature = "sunfish-registry-post-reply-trace")]
                 registry_reply: None,
+/* RULESET_FIFO_BEGIN */
+                #[cfg(feature="sunfish-ruleset-reply-fifo")]
+                ruleset_reply: [None,None],
+/* RULESET_FIFO_END */
 /* RECEIPT_FIFO_BEGIN */
                 #[cfg(feature="sunfish-registry-receipt-fifo")]
                 elf_reply: None,
@@ -3403,6 +3433,10 @@ impl<I: Io> Adapter<I> {
         let reserved_before = self.session.reserved_oack().map(|(oack, trace)| (oack, trace))
             .filter(|(oack, _)| oack.peer.port == 0x49 && oack.published_at.is_some());
         let notification = self.ring.record[0] == 13;
+/* RULESET_FIFO_BEGIN */
+        #[cfg(feature="sunfish-ruleset-reply-fifo")]
+        let ruleset_before=ruleset_reply::INDICES.map(|i|self.session.startup_prerequisites().reads[i].map(|r|(r.record_sequence(),r.flags)));
+/* RULESET_FIFO_END */
 /* EFS_REPLY_FIFO_BEGIN */
 #[cfg(feature="sunfish-efs-reply-fifo")]
         let efs_before=self.session.startup_prerequisites().reads[efs_reply::watched_index(&self.session)].map(|r|(r.record_sequence(),r.flags));
@@ -3446,6 +3480,10 @@ impl<I: Io> Adapter<I> {
 #[cfg(feature="sunfish-efs-reply-fifo")]
         self.observe_efs_reply_rx(efs_before,size);
 /* EFS_REPLY_FIFO_END */
+/* RULESET_FIFO_BEGIN */
+        #[cfg(feature="sunfish-ruleset-reply-fifo")]
+        self.observe_ruleset_reply_rx(ruleset_before,size);
+/* RULESET_FIFO_END */
         #[cfg(feature = "sunfish-first-wrq-spare-oack")]
         if matches!(event, Receive::Session(core::Event::ReceiveIntentRequest { .. }))
             && word(&self.ring.record, 4) == 108 && self.first_grant.request_108_at.is_none()
@@ -4050,6 +4088,10 @@ impl<I: Io> Adapter<I> {
                 self.ring.first_server_check_clock.map(|clock| clock())));
         }
         let mut failure = None;
+/* RULESET_FIFO_BEGIN */
+        #[cfg(feature="sunfish-ruleset-reply-fifo")]
+        let ruleset_waiting=ruleset_reply::INDICES.map(|i|self.session.startup_prerequisites().reads[i].is_some_and(|r|r.flags&24==8&&r.record_sequence().is_some()));
+/* RULESET_FIFO_END */
 /* EFS_REPLY_FIFO_BEGIN */
 #[cfg(feature="sunfish-efs-reply-fifo")]
         let efs_waiting=self.ring.efs_reply.is_none()&&self.session.startup_prerequisites().reads[efs_reply::watched_index(&self.session)].is_some_and(|r|r.flags&24==8&&r.record_sequence().is_some());
@@ -4263,6 +4305,10 @@ impl<I: Io> Adapter<I> {
 #[cfg(feature="sunfish-efs-reply-fifo")]
         if efs_waiting{self.arm_efs_reply_fifo();}
 /* EFS_REPLY_FIFO_END */
+/* RULESET_FIFO_BEGIN */
+        #[cfg(feature="sunfish-ruleset-reply-fifo")]
+        self.arm_ruleset_reply_fifo(ruleset_waiting,result);
+/* RULESET_FIFO_END */
 /* RECEIPT_FIFO_BEGIN */
         #[cfg(feature="sunfish-registry-receipt-fifo")]
         self.arm_elf_reply_fifo(result);
@@ -4678,6 +4724,10 @@ impl<I: Io> Adapter<I> {
         { self.ring.registration_reply_rx = None; }
         #[cfg(feature = "sunfish-registry-post-reply-trace")]
         { self.ring.registry_reply = None; }
+/* RULESET_FIFO_BEGIN */
+        #[cfg(feature="sunfish-ruleset-reply-fifo")]
+        {self.ring.ruleset_reply=[None,None];}
+/* RULESET_FIFO_END */
 /* RECEIPT_FIFO_BEGIN */
         #[cfg(feature="sunfish-registry-receipt-fifo")]
         { self.ring.elf_reply = None; }

@@ -219,6 +219,10 @@ impl<I: BootIo> BootTransport<I> {
                 registration_reply_rx: None,
                 #[cfg(feature = "sunfish-registry-post-reply-trace")]
                 registry_reply: None,
+/* RULESET_FIFO_BEGIN */
+                #[cfg(feature="sunfish-ruleset-reply-fifo")]
+                ruleset_reply: [None,None],
+/* RULESET_FIFO_END */
 /* RECEIPT_FIFO_BEGIN */
                 #[cfg(feature="sunfish-registry-receipt-fifo")]
                 elf_reply: None,

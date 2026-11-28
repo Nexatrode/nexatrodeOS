@@ -2,6 +2,8 @@ from pathlib import Path
 import re,subprocess,unittest
 ROOT=Path(__file__).resolve().parents[1];BASE='09893b10'
 def without_ruleset(path,s):
+ from sunfish_ruleset_fifo_source_test import without_ruleset_fifo
+ s=without_ruleset_fifo(path,s)
  s=re.sub(r'/\* RULESET_HANDOFF_BEGIN \*/\n.*?/\* RULESET_HANDOFF_END \*/\n','',s,flags=re.S)
  if path=='rust/Cargo.toml':s=s.replace('sunfish-ruleset-service-handoff = ["sunfish-startup-reply-coverage"]\n','')
  if path=='rust/src/pixel_mpss_startup_reply_coverage.rs':
