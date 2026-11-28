@@ -1,5 +1,10 @@
 //! Exact RX_DONE visibility for the existing TX3 watch and first ELF reply.
 use super::*;
+/* FIRST_MCFG_BEGIN */
+#[cfg(feature="sunfish-first-mcfg-response")]
+#[path="pixel_mpss_first_mcfg_response.rs"]
+mod first_mcfg_response;
+/* FIRST_MCFG_END */
 /* POOL_WIRE_PANEL_BEGIN */
 #[cfg(feature="sunfish-elf-pool-wire-panel")]
 #[path="pixel_mpss_elf_pool_wire.rs"]
@@ -7,6 +12,10 @@ mod elf_pool_wire;
 /* POOL_WIRE_PANEL_END */
 impl RuntimeDomain {
     pub(super) fn show_registry_receipt_fifo(&self,d:&Display,owner:&ModemOwner){
+/* FIRST_MCFG_BEGIN */
+        #[cfg(feature="sunfish-first-mcfg-response")]
+        {self.show_first_mcfg_response(d,owner);return;}
+/* FIRST_MCFG_END */
 /* POOL_WIRE_PANEL_BEGIN */
         #[cfg(feature="sunfish-elf-pool-wire-panel")]
         {self.show_elf_pool_wire(d,owner);return;}

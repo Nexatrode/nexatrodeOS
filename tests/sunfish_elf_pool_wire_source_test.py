@@ -2,6 +2,8 @@ from pathlib import Path
 import re,subprocess,unittest
 ROOT=Path(__file__).resolve().parents[1];BASE='30baf93e'
 def without_pool_wire(path,s):
+ from sunfish_first_mcfg_source_test import without_first_mcfg
+ s=without_first_mcfg(path,s)
  s=re.sub(r'/\* POOL_WIRE_PANEL_BEGIN \*/\n.*?/\* POOL_WIRE_PANEL_END \*/\n','',s,flags=re.S)
  if path=='rust/Cargo.toml':s=s.replace('sunfish-elf-pool-wire-panel = ["sunfish-tx3-credit-return-turn"]\n','')
  return s

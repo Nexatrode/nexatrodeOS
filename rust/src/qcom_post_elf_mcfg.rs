@@ -232,7 +232,11 @@ impl Session {
         let source=Address{node:word(&rx.bytes,8),port:word(&rx.bytes,12)};
         let local=word(&rx.bytes,28);let op=body.get(..2).map(|b|u16::from_be_bytes([b[0],b[1]])).unwrap_or(0);
         if after && cap.other.is_none() && local==0x5000 && matches!(op,1|2) && matches!(category(body),5..=8){cap.other=Some([category(body),source.port,body.len()as u32,u32::from(op)]);cap.revision=cap.revision.saturating_add(1);}
-        if after && cap.mcfg.is_none() && local==0x5000 && body.starts_with(b"\0\x01/readwrite/mcfg.tmp\0") {
+        if (after
+/* FIRST_MCFG_BEGIN */
+            || cfg!(feature="sunfish-first-mcfg-response")
+/* FIRST_MCFG_END */
+            ) && cap.mcfg.is_none() && local==0x5000 && body.starts_with(b"\0\x01/readwrite/mcfg.tmp\0") {
             cap.mcfg=Some(PostMcfgRequest{handle:h,slot:None,peer:source,bytes:body.len()as u32,flags:1,options:McfgOptionIds::read(body,true),file_before:None,server_result:None,
                 reply_opcode:u32::MAX,reply_number:u32::MAX,reply_bytes:0,reply_options:McfgOptionIds::default(),transfer_port:u32::MAX,remote_intent:u32::MAX,
                 received:self.intent_ack_clock.map(|c|c()),dispatched:None,queued:None,published:None,done:None,first_client:None,last_client:None,first_client_at:None,last_client_at:None,

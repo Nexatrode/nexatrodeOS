@@ -28,8 +28,10 @@ fn post_mcfg_protocol_identity_blocked_write_reuse_and_clockless() {
  #[cfg(feature="sunfish-post-elf-mcfg-trace")]assert!(s.post_elf_mcfg().unwrap().mcfg.is_none());
  let response=qcom_servreg::respond(qcom_servreg::Query{service_name:b"kernel/elf_loader",domain_offset:0});s.queue_reply(&elf,Reply::Success{optional_tlvs:response.optional_tlvs()}).unwrap();s.observe_elf_reply(&elf);
  let elf_id=full_data(&mut s,&mut wire);
- // A request accepted before matching ELF completion cannot become the target.
- let early=receive(&mut s,&mut wire,0x48,0x5000,STAT);s.finish_tftp_request(&early).unwrap();
+ // Parent captures after ELF completion. The earlier-binding child is covered separately;
+ // keep this legacy late-lifecycle schedule on an unrelated early path in that child.
+ let early_body=if cfg!(feature="sunfish-first-mcfg-response"){b"\0\x01/readwrite/ota_firewall/ruleset\0octet\0".as_slice()}else{STAT};
+ let early=receive(&mut s,&mut wire,0x48,0x5000,early_body);s.finish_tftp_request(&early).unwrap();
  #[cfg(feature="sunfish-post-elf-mcfg-trace")]assert!(s.post_elf_mcfg().unwrap().mcfg.is_none());
  assert_eq!(s.ingest(1,&control(14,2,elf_id)).unwrap(),Event::ReplyRxDone(elf));drain(&mut s,&mut wire);
  let h=receive(&mut s,&mut wire,0x4a,0x5000,STAT);s.finish_tftp_request(&h).unwrap();drain(&mut s,&mut wire);
@@ -115,4 +117,5 @@ include!("sunfish_tftp_arrival_order_cases.rs");
 
 #[cfg(feature="sunfish-elf-digest-outcome")]
 include!("sunfish_mbn_digest_cases.rs");
+include!("sunfish_first_mcfg_cases.rs");
 }
