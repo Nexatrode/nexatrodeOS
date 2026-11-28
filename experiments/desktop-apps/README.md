@@ -32,8 +32,12 @@ it does not measure physical touch-to-display latency.
 
 Maps cannot read other app memory, the network or the fixture vault. It receives
 no raw/global input. The optional four-app profile has a development-key disk
-for the existing services; it rejects `--locked`/`--wrapped-session` because
-Maps is not yet part of the curated lock and memory-cleanup group. No saved
+for the existing services. The optional `--locked --map-storage` profile adds
+Maps and its disk service to the curated restart group, using a composer built
+with `--desktop-session --desktop-maps`. That profile uses a fresh disk, a
+vault-derived Maps key and OS unlock instead of a separate Maps passphrase.
+The [shared Maps notes](../comaps-native/README.md#optional-desktop-os-unlock-profile)
+describe key delivery, disk reset and erasure boundaries. No saved
 wallet or chats are inputs. The default profile remains three apps. See the
 [map experiment](../comaps-native/README.md) for region provenance, notices and
 the deliberately limited renderer; search, routing and map downloads are absent.

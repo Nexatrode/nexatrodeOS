@@ -332,6 +332,34 @@ private test name/passphrase do not appear in the raw disk. Crypto unit tests
 cover envelope and record authentication, fallback and live-key zeroization;
 `tests/comaps_private_contract_test.py` rejects cross-app authority additions.
 
+## Optional desktop OS-unlock profile
+
+The disposable desktop can combine `--maps --map-storage --map-private` with
+`--wrapped-session` and a composer built with `--desktop-session --desktop-maps`.
+Maps and its disk service join the 16-service restart group. The vault releases
+only HMAC-SHA256(root key, `NexatrodeOS/app/maps/saved-places/v1`) to Maps' fixed
+capability endpoint after authenticated activation. A dedicated transfer page
+is cleared after use and on lock; map_store and sibling apps cannot read it.
+Opening Saved places requires no second passphrase in this profile.
+
+Full OS lock stops both Maps services, resets the dedicated VirtIO device before
+scrubbing its DMA/control pages, evicts the vault root key, and verifies erasure
+of the managed writable ELF, stack, IPC, heaps, surfaces and shared pages. MMIO
+registers are explicitly excluded from byte scrubbing. Unlock reconstructs both
+services and derives the same Maps key; the disk IRQ is re-armed after restart.
+The GPU cleanup covers all four app textures and decorations.
+
+Saved places use authenticated `NXMPS002` banks in this profile. The separate
+passphrase `NXMPS001` format remains available for existing desktop/mobile
+fixtures. The new profile refuses legacy private banks; it does not silently
+overwrite or migrate them. Use a fresh disposable stage and disks. Regular
+wallet/chat VMs and physical Pixel builds are not inputs to this experiment.
+`tests/maps_session_utm.py` exercises enrollment, automatic private-store access,
+wrong/correct OS unlock, manual/idle locking, lock during disk I/O and cold boot.
+It independently checks physical Maps private frames against the generated ELF
+and memory inventory. This is scoped software isolation and cleanup testing,
+not a whole-RAM/SIMD, host GPU-memory, hardware retry or rollback guarantee.
+
 ## Larger region and bounded spatial loading
 
 The three-region storage profile adds **Liechtenstein**, from the same pinned

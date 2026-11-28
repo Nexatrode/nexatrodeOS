@@ -75,6 +75,30 @@ impl DevelopmentCryptoProvider {
     /// synchronous eviction acknowledgement, including its failure control.
     #[cfg(feature = "utm-dynamic-vault-lock")]
     pub fn key_is_cleared(&self) -> bool { self.key.iter().all(|byte| *byte == 0) }
+
+    /// Fixed-purpose child key. Neither caller-provided contexts nor the root
+    /// key are exposed to an application.
+    #[cfg(feature = "utm-maps-session-lock")]
+    pub fn maps_key(&self) -> Option<zeroize::Zeroizing<[u8;32]>> {
+        use hmac::{Hmac,Mac};
+        if self.key_is_cleared() { return None; }
+        let mut mac=Hmac::<sha2::Sha256>::new_from_slice(&self.key).ok()?;
+        mac.update(b"NexatrodeOS/app/maps/saved-places/v1");
+        Some(zeroize::Zeroizing::new(mac.finalize().into_bytes().into()))
+    }
+}
+
+#[cfg(all(test,feature="utm-maps-session-lock"))]
+mod maps_tests {
+    use super::*;
+    #[test] fn maps_child_key_is_stable_distinct_and_evicted() {
+        let mut crypto=DevelopmentCryptoProvider::with_key([7;32]);
+        let first=crypto.maps_key().unwrap();
+        assert_ne!(*first,[7;32]);assert_eq!(*first,*crypto.maps_key().unwrap());
+        crypto.replace_key(&[8;32]);assert_ne!(*first,*crypto.maps_key().unwrap());
+        crypto.clear_key();assert!(crypto.maps_key().is_none());
+        crypto.replace_key(&[7;32]);assert_eq!(*first,*crypto.maps_key().unwrap());
+    }
 }
 
 #[cfg(feature = "development-crypto")]

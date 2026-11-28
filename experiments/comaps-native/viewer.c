@@ -156,6 +156,9 @@ static void profile(uint64_t start,uint64_t *phases,uint64_t rendered,uint64_t n
     unsigned cleared=1;const uint8_t *pv=(void*)&places;for(unsigned i=0;i<sizeof(places);i++)if(pv[i])cleared=0;
     for(unsigned i=0;i<sizeof(private_password);i++)if(private_password[i]||private_confirm[i])cleared=0;
     p[854]=cleared&&mp_cleared();p[855]=private_viewed;p[856]=private_ready;
+#ifdef MAP_SESSION_PRIVATE
+    p[857]=private_session_epoch;
+#endif
 #endif
     if(start){unsigned slot=frames%32;uint64_t data[14]={frames,input_events,input_at,start,phases[0],phases[1],phases[2],rendered,notified,zoom_level,(uint64_t)(int64_t)(cx*1e9),(uint64_t)(int64_t)(cy*1e9),(uint64_t)(units*1e12),0};
         for(unsigned i=0;i<14;i++)p[16+slot*14+i]=data[i];}

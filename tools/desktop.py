@@ -174,8 +174,10 @@ def main():
         for name in ('inputs', 'storage', 'shell_base', 'composer', 'output'):
             command += ['--'+name.replace('_', '-'), getattr(a, name)]
         if a.maps:
-            if a.locked:raise ValueError('Maps is not in the curated three-app lock group')
             command.append('--maps')
+            if a.locked:
+                if not a.map_storage:raise ValueError('locked Maps requires --map-storage')
+                command.append('--map-private')
         if a.map_storage:
             if not a.maps:raise ValueError('--map-storage requires --maps')
             command.append('--map-storage')

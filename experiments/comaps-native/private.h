@@ -40,7 +40,24 @@ static void private_begin(void){
     search_close();region_picker=false;private_viewed=0;private_clear_input();private_last_activity=us()/1000;
     if(mp_opened()){private_mode=1;private_status="Tap a place to open";}
     else if(!private_ready){private_mode=5;private_status="Loading encrypted saved places…";private_io(MAP_PRIVATE_READ,0);}
+#ifdef MAP_SESSION_PRIVATE
+    else {
+        uint8_t *page=(void*)map_session_key;private_wipe(page,4096);
+        microkit_msginfo reply=microkit_ppcall(5,microkit_msginfo_new(0x458,0));
+        unsigned length;memcpy(&length,page,4);
+        unsigned opened=0;
+        if(microkit_msginfo_get_label(reply)==0x300&&microkit_msginfo_get_count(reply)==1&&microkit_mr_get(0)&&length==32){
+            private_session_epoch=microkit_mr_get(0);
+            opened=mp_session_open(page+4,(void*)map_private_cipher,&places,&private_generation,&private_bank);
+        }
+        private_wipe(page,4096);
+        if(opened==2)places.magic=PRIVATE_MAGIC;
+        if(!opened||!private_valid()){mp_lock();private_wipe(&places,sizeof(places));private_mode=5;private_status="Saved places could not be opened";}
+        else {private_mode=1;private_status="Unlocked with device";printf("MAPPRIVATE|SESSION_OPEN|epoch=%llu|count=%u\n",(unsigned long long)private_session_epoch,places.count);private_add_pending();}
+    }
+#else
     else {unsigned status=mp_status((void*)map_private_cipher);private_mode=status==0?2:status==1?4:5;private_status=status==0?"Choose a separate passphrase (8+ characters)":status==1?"Enter your saved-places passphrase":"Saved-places storage is damaged";}
+#endif
     changed=true;
 }
 static void private_commit(bool enrollment){
@@ -122,7 +139,7 @@ static unsigned private_rows(void){int n=((int)BOTTOM-(TOP+62)-42)/48;return n<1
 static void private_draw(void){
     fill(0,TOP,W,BOTTOM-TOP,0x071521);last_layout.count=0;
     if(private_mode==1){
-        text(12,TOP+30,21,0xe9f7fb,"Saved places");text(W-79,TOP+29,14,0x92e3e0,"LOCK");text(W-32,TOP+31,25,0x92e3e0,"×");
+        text(12,TOP+30,21,0xe9f7fb,"Saved places");text(W-79,TOP+29,14,0x92e3e0,PRIVATE_LOCK_CAPTION);text(W-32,TOP+31,25,0x92e3e0,"×");
         if(!places.count)text(12,TOP+94,16,0x91b5c5,"Choose a map result, then Save");
         for(unsigned row=0;row<private_rows()&&row+private_offset<places.count;row++){
             unsigned i=row+private_offset;int y=TOP+62+row*48;struct saved_place *p=&places.items[i];

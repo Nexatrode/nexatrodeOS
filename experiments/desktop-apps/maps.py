@@ -6,7 +6,7 @@ import subprocess
 import xml.etree.ElementTree as ET
 
 
-def build(root, out, inputs, run, *, mobile=False, storage=False, private=False):
+def build(root, out, inputs, run, *, mobile=False, storage=False, private=False, session=False):
     here=root/'experiments/comaps-native';base=root/'build/comaps'
     spec=importlib.util.spec_from_file_location('comaps_prepare',here/'prepare.py')
     preparation=importlib.util.module_from_spec(spec);spec.loader.exec_module(preparation)
@@ -26,6 +26,7 @@ def build(root, out, inputs, run, *, mobile=False, storage=False, private=False)
     if private:
         assert storage
         flags+=['-DMAP_PRIVATE=1']
+        if session:flags+=['-DMAP_SESSION_PRIVATE=1']
         run('cargo','+nightly-2026-09-25','build','--locked','--offline','--release','-Zjson-target-spec','--config',root/'rust/.cargo/config.toml','--manifest-path',here/'private-crypto/Cargo.toml','--target',root/'rust/targets/aarch64-sel4-microkit.json','--target-dir',root/'build/maps-private-crypto')
         crypto=[root/'build/maps-private-crypto/aarch64-sel4-microkit/release/libmaps_private_crypto.a']
     for unit in ('viewer','mwm'):run('clang',*flags,'-c',here/(unit+'.c'),'-o',out/('maps-'+unit+'.o'))
@@ -67,28 +68,33 @@ def attach(system, manager, mapping, mr, channel, *, storage=False, private=Fals
 
 
 def validate(system):
-    domains={p.get('name'):p for p in system.findall('protection_domain')}
+    domains={p.get('name'):p for p in system.iter('protection_domain')}
     physical=sorted((int(m.get('phys_addr').replace('_',''),0),int(m.get('size').replace('_',''),0),m.get('name')) for m in system.findall('memory_region') if m.get('phys_addr'))
     for (start,size,name),(next_start,_,next_name) in zip(physical,physical[1:]):
         assert start+size<=next_start,('overlapping physical regions',name,next_name)
     app=domains['offline_map']
     stored='map_store' in domains
     private=system.find("memory_region[@name='map_private_cipher']") is not None
+    locked='lock_auth' in domains
     assert {m.get('mr'):m.get('perms') for m in app.findall('map')}==dict({
-        'map_frame':'rw','map_heap':'rw','map_input':'rw','map_observation':'rw','desktop_display_mode':'r'},**({'map_store_control':'rw','map_store_bytes':'r'} if stored else {}),**({'map_private_cipher':'rw'} if private else {}))
+        'map_frame':'rw','map_heap':'rw','map_input':'rw','map_observation':'rw','desktop_display_mode':'r'},**({'map_store_control':'rw','map_store_bytes':'r'} if stored else {}),**({'map_private_cipher':'rw'} if private else {}),**({'map_session_key':'rw'} if locked else {}))
     links={}
     for c in system.findall('channel'):
         a,b=list(c)
         for x,y in ((a,b),(b,a)):links[x.get('pd'),int(x.get('id'))]=(y.get('pd'),int(y.get('id')))
-    assert {i:peer for (pd,i),peer in links.items() if pd=='offline_map'}==({0:('desktop_manager',29),1:('desktop_manager',28)}|({2:('map_store',1)} if stored else {})|({3:('entropy_rng',5),4:('timer_driver',14)} if private else {}))
+    assert {i:peer for (pd,i),peer in links.items() if pd=='offline_map'}==({0:('desktop_manager',29),1:('desktop_manager',28)}|({2:('map_store',1)} if stored else {})|({3:('entropy_rng',5),4:('timer_driver',14)} if private else {})|({5:('vault',13)} if locked else {}))
     if stored:validate_storage(system)
     if private:validate_private(system)
     for name in ('chat_ui','wallet_ui','native_browser','wallet_app','simplex_agent','vault'):
         assert not {'map_frame','map_heap','map_input','map_observation'} & {m.get('mr') for m in domains[name].findall('map')}
     for name in ('desktop_manager','desktop_gpu'):
-        assert domains[name].find("map[@mr='map_frame']").get('perms')=='r'
+        assert domains[name].find("map[@mr='map_frame']").get('perms')==('rw' if locked and name=='desktop_manager' else 'r')
     assert domains['desktop_gpu'].find("map[@mr='map_input']") is None
-    assert 'lock_auth' not in domains,'Maps is not part of the curated three-app wrapped lock group'
+    if locked:
+        assert private and stored and app.get('parent') is None
+        assert app in domains['desktop_manager'].findall('protection_domain')
+        assert {n for n,p in domains.items() if p.find("map[@mr='map_session_key']") is not None}=={'offline_map','vault','desktop_manager'}
+        assert links['vault',13]==('offline_map',5)
 
 
 def attach_mobile(system, ui, mapping, mr, channel, *, storage=False, private=False):
@@ -111,7 +117,7 @@ def attach_mobile(system, ui, mapping, mr, channel, *, storage=False, private=Fa
 
 
 def validate_mobile(system):
-    domains={p.get('name'):p for p in system.findall('protection_domain')}
+    domains={p.get('name'):p for p in system.iter('protection_domain')}
     uses=lambda name:{m.get('mr'):m.get('perms') for m in domains[name].findall('map')}
     stored='map_store' in domains
     private=system.find("memory_region[@name='map_private_cipher']") is not None
@@ -147,7 +153,7 @@ def attach_storage(system, app, mapping, mr, channel):
     channel('offline_map',2,'map_store',1)
 
 def validate_storage(system):
-    domains={p.get('name'):p for p in system.findall('protection_domain')}
+    domains={p.get('name'):p for p in system.iter('protection_domain')}
     # Public hashing may use idle CPU, but it must remain preemptible by Maps
     # drawing and every interactive frontend. Keep a bounded reservation.
     service=domains['map_store'];app=domains['offline_map']
@@ -158,7 +164,7 @@ def validate_storage(system):
     assert {m.get('mr'):m.get('perms') for m in domains['map_store'].findall('map')}==expected
     private=set(expected)
     for name,pd in domains.items():
-        if name not in ('offline_map','map_store'):assert not private&{m.get('mr') for m in pd.findall('map')},name
+        if name not in ('offline_map','map_store') and not (name=='desktop_manager' and 'lock_auth' in domains):assert not private&{m.get('mr') for m in pd.findall('map')},name
     assert [(i.get('irq'),i.get('id')) for i in domains['map_store'].findall('irq')]==[('64','0')]
     links=[(e.get('pd'),e.get('id')) for c in system.findall('channel') for e in c if any(x.get('pd')=='map_store' for x in c)]
     assert sorted(links)==[('map_store','1'),('offline_map','2')]
@@ -175,9 +181,9 @@ def attach_private(system,app,mapping,mr,channel):
 
 
 def validate_private(system):
-    domains={p.get('name'):p for p in system.findall('protection_domain')}
+    domains={p.get('name'):p for p in system.iter('protection_domain')}
     owners={n for n,p in domains.items() if p.find("map[@mr='map_private_cipher']") is not None}
-    assert owners=={'offline_map','map_store'}
+    assert owners==({'offline_map','map_store','desktop_manager'} if 'lock_auth' in domains else {'offline_map','map_store'})
     assert all(domains[n].find("map[@mr='map_private_cipher']").get('perms')=='rw' for n in owners)
     for c in system.findall('channel'):
         ends=list(c)

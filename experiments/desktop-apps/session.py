@@ -11,6 +11,8 @@ from runtime_manifest import APPS, PUBLIC_APP_REGIONS
 
 NAMES=tuple(name for app in APPS.values() for name in (app['frontend'],*app['services']))
 assert len(NAMES)==14
+MAP_NAMES=('offline_map','map_store')
+def names(maps=False):return NAMES+(MAP_NAMES if maps else ())
 BASE=0x2000000000
 STRIDE=0x20000000
 
@@ -22,7 +24,8 @@ def program(path):
     return struct.unpack_from('<Q',data,24)[0],[struct.unpack_from('<II6Q',data,off+size*i) for i in range(count)]
 
 
-def attach(system,out,mapping,channel,mr):
+def attach(system,out,mapping,channel,mr,*,maps=False):
+    members=names(maps)
     domains={p.get('name'):p for p in system.iter('protection_domain')}
     manager=domains['desktop_manager'];manager.set('stack_size','0x40000')
     # Microkit PPC targets must outrank their callers. Keep the input manager's
@@ -35,10 +38,18 @@ def attach(system,out,mapping,channel,mr):
     domains['simplex_agent'].set('priority','95')
     cspace=ET.SubElement(manager,'cspace')
     ET.SubElement(cspace,'cap_vspace',slot='4',pd='desktop_manager')
+    excluded=PUBLIC_APP_REGIONS|({'map_disk_regs'} if maps else set())
+    if maps:
+        mr('map_session_key',4096)
+        mapping(domains['offline_map'],'map_session_key',0x79000000,'rw','map_session_key')
+        mapping(domains['vault'],'map_session_key',0x45002000,'rw','map_session_key')
+        channel('offline_map',5,'vault',13,True,False)
+        mapping(manager,'map_disk_regs',0x78003000,'rw',None)
+        manager.findall('map')[-1].set('cached','false')
     sizes={r.get('name'):int(r.get('size').replace('_',''),0) for r in system.findall('memory_region')}
-    owned={m.get('mr') for name in NAMES for m in domains[name].findall('map')} - PUBLIC_APP_REGIONS
+    owned={m.get('mr') for name in members for m in domains[name].findall('map')} - excluded
     boot=[];children=[]
-    for i,name in enumerate(NAMES):
+    for i,name in enumerate(members):
         pd=domains[name]
         image=pd.find('program_image').get('path');entry,segments=program(out/image)
         base=BASE+i*STRIDE
@@ -68,6 +79,7 @@ def attach(system,out,mapping,channel,mr):
             continue
         alias=(alias+0x1fffff)&~0x1fffff
         mapping(manager,name,alias,'rw',None);ranges.append((alias,size));aliases[name]=(alias,size);alias+=size
+        if name=='map_disk_dma':manager.findall('map')[-1].set('cached','false')
     for name,size,phys in [('desktop_lock_state',4096,0x5fb93000),('lock_display_ack',4096,0x5fb94000),
                            ('trio_session_state',4096,0x5fb95000),('trio_auth_frame',0x1000000,None),
                            ('trio_auth_heap',0x2000000,None),('trio_auth_input',4096,None),('device_lock_transfer',4096,None)]:
@@ -98,9 +110,10 @@ def attach(system,out,mapping,channel,mr):
     mapping(probe,'desktop_lock_state',0x50000000,'r','desktop_lock_state')
     channel('lock_probe',0,'desktop_manager',59,True,False)
     channel('desktop_manager',10,'lock_probe',1)
+    if maps:channel('lock_probe',2,'vault',14,True,False)
     # Extra shared pages are also erased but are never captured as boot data.
     header='''#pragma once
-#define SESSION_CHILD_COUNT 14u
+#define SESSION_CHILD_COUNT MEMBERSu
 #define SESSION_FIRST_CHILD 32u
 #define SESSION_SC_CAP_BASE 32u
 #define SESSION_NOTIFICATION_CAP_BASE 8UL
@@ -109,22 +122,24 @@ def attach(system,out,mapping,channel,mr):
 struct session_child { uintptr_t address;size_t pages;uintptr_t entry; };
 struct session_range { uintptr_t address;size_t bytes; };
 static const struct session_child session_children[]={
-'''+''.join(f'{{{base}UL,{pages},{entry}UL}},\n' for base,pages,entry in children)+'};\n'
+'''.replace('MEMBERS',str(len(members)))+''.join(f'{{{base}UL,{pages},{entry}UL}},\n' for base,pages,entry in children)+'};\n'
+    if maps:header+='#define SESSION_MAPS_REGS_ADDRESS 0x78003000UL\n'
     header+='static const struct session_range session_ranges[]={\n'+''.join(f'{{{address}UL,{size}}},\n' for address,size in ranges)+'};\n'
     header+=f'#define SESSION_RANGE_COUNT {len(ranges)}u\n#define SESSION_BOOT_RANGE_COUNT {len(boot)}u\n'
     (out/'session_layout.h').write_text(header)
-    (out/'session-layout.json').write_text(json.dumps(dict(children=dict(zip(NAMES,children)),private_shared=aliases,
+    (out/'session-layout.json').write_text(json.dumps(dict(children=dict(zip(members,children)),private_shared=aliases,
         boot_ranges=boot,ranges=ranges,saved_data_used=False,readonly_excluded=sorted(PUBLIC_APP_REGIONS)),indent=2)+'\n')
-    validate(system,aliases,ranges,boot)
+    validate(system,aliases,ranges,boot,maps=maps)
 
 
-def validate(system,aliases,ranges,boot):
+def validate(system,aliases,ranges,boot,*,maps=False):
     """Check actual assembled authority/erasure coverage before composition."""
     domains={p.get('name'):p for p in system.iter('protection_domain')}
     manager=domains['desktop_manager']
-    assert tuple(p.get('name') for p in manager.findall('protection_domain'))==NAMES
+    members=names(maps)
+    assert tuple(p.get('name') for p in manager.findall('protection_domain'))==members
     sizes={r.get('name'):int(r.get('size'),0) for r in system.findall('memory_region')}
-    owned={m.get('mr') for n in NAMES for m in domains[n].findall('map')}-PUBLIC_APP_REGIONS
+    owned={m.get('mr') for n in members for m in domains[n].findall('map')}-PUBLIC_APP_REGIONS-({'map_disk_regs'} if maps else set())
     assert owned==aliases.keys()
     assert not owned&{'device_lock_transfer','trio_auth_heap','trio_auth_frame','desktop_lock_state','lock_display_ack'}
     for name,(address,size) in aliases.items():
@@ -133,7 +148,7 @@ def validate(system,aliases,ranges,boot):
         assert int(maps[0].get('vaddr'),0)==address and size==sizes[name]
         assert (address,size) in ranges and (address,size) not in boot
     assert manager.find("map[@mr='device_lock_transfer']") is None
-    for i,name in enumerate(NAMES):
+    for i,name in enumerate(members):
         child=domains[name]
         assert int(child.get('id'))==32+i and child.get('passive')!='true'
         assert manager.find(f"cspace/cap_sc[@pd='{name}'][@slot='{32+i}']") is not None

@@ -11,6 +11,13 @@ void notified(microkit_channel channel) {
     atomic_thread_fence(memory_order_acquire);
     if(!r||(r&1)||r!=atomic_load(&s->revision)||(epoch==e&&phase==p))return;
     epoch=e;phase=p;
+#ifdef MAPS_SESSION_PROBE
+    microkit_msginfo key_reply=microkit_ppcall(2,microkit_msginfo_new(0x458,0));
+    if(microkit_msginfo_get_label(key_reply)==0x300||microkit_msginfo_get_count(key_reply)){
+        microkit_dbg_puts("TRIO_PROBE|FAIL|foreign Maps key accepted\n");return;
+    }
+    microkit_dbg_puts("MAPS_SESSION|FOREIGN_KEY_DENIED\n");
+#endif
     for(unsigned label=LOCK_UNLOCK;label<=LOCK_ABORT;++label){
         microkit_mr_set(0,epoch);
         microkit_msginfo reply=microkit_ppcall(0,microkit_msginfo_new(label,1));

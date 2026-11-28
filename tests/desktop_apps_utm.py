@@ -32,7 +32,8 @@ def main():
     a=p.parse_args()
     if a.map_storage and not a.maps:p.error('--map-storage requires --maps')
     if a.map_private and not a.map_storage:p.error('--map-private requires --map-storage')
-    if a.maps and (not (a.browser and a.virgl and a.desktop_resize) or a.wrapped_session):p.error('--maps requires --browser --virgl --desktop-resize and its unlocked disposable profile')
+    if a.maps and not (a.browser and a.virgl and a.desktop_resize):p.error('--maps requires --browser --virgl --desktop-resize')
+    if a.maps and a.wrapped_session and not a.map_private:p.error('locked Maps requires --map-storage --map-private')
     app_count=4 if a.maps else 3 if a.browser else 2
     if a.desktop_resize and not (a.browser and a.virgl):p.error('--desktop-resize requires --browser --virgl')
     if a.wrapped_session and not (a.browser and a.virgl and a.desktop_resize):p.error('--wrapped-session requires the full three-app resize profile')
@@ -68,7 +69,7 @@ def main():
     target=cargo('rust/Cargo.toml','storage-test,simplex-agent-vault,utm-slint-input,utm-photo-reader,utm-transcript-worker'+(',utm-maps-private' if a.map_private else ''),bins,'build/desktop-apps-backends')
     for b in bins:shutil.copyfile(target/(b+'.elf'),out/(b+'.elf'))
     if a.wrapped_session:
-        target=cargo('rust/Cargo.toml','storage-test,utm-simplex-live-test,utm-slint-input',['rust_vault_disk','rust_entropy_rng'],'build/desktop-apps-wrapped-backend')
+        target=cargo('rust/Cargo.toml','storage-test,utm-simplex-live-test,utm-slint-input'+(',utm-maps-session-lock' if a.maps else ''),['rust_vault_disk','rust_entropy_rng'],'build/desktop-apps-wrapped-backend')
         sections=subprocess.check_output(['llvm-readelf','-S',target/'rust_vault_disk.elf'],text=True,env=env)
         assert '.utm_vault_key' not in sections,'installation key forbidden in disposable lock'
         shutil.copyfile(target/'rust_vault_disk.elf',out/'rust_vault_disk.elf')
@@ -87,7 +88,7 @@ def main():
         desktop_browser.build(ROOT,out,inputs,ROOT/'build/netsurf-native',resize=a.desktop_resize)
     if a.maps:
         import maps as desktop_maps
-        map_pin=desktop_maps.build(ROOT,out,inputs,run,storage=a.map_storage,private=a.map_private)
+        map_pin=desktop_maps.build(ROOT,out,inputs,run,storage=a.map_storage,private=a.map_private,session=a.wrapped_session)
     # Only the public agent code/config is imported. Never the vault ELF.
     shutil.copyfile(inputs/'pds/agentstore_probe.elf',out/'agentstore_probe.elf')
     for b in ('blk_driver.elf','blk_virt.elf'):shutil.copyfile(storage/b,out/b)
@@ -258,15 +259,15 @@ def main():
     if a.wrapped_session:
         import session as desktop_session
         provenance=json.loads((a.composer.resolve().parents[2]/'provenance.json').read_text())
-        assert provenance.get('desktop_session') and provenance['service_names']==list(desktop_session.NAMES),'wrong managed composer catalog'
+        assert provenance.get('desktop_session') and provenance['service_names']==list(desktop_session.names(a.maps)),'wrong managed composer catalog'
         assert hashlib.sha256(a.composer.read_bytes()).hexdigest()==provenance['composer_sha256']
-        desktop_session.attach(system,out,mapping,channel,mr)
+        desktop_session.attach(system,out,mapping,channel,mr,maps=a.maps)
         run(*flags,'-I',out,'-DDESKTOP_DYNAMIC','-DDESKTOP_VIRGL','-DDESKTOP_TRIO_LOCK',f'-DLOCK_IDLE_MS={a.lock_idle_ms}',
             *(['-DTRIO_STARTUP_TRACE'] if a.gpu_verify else []),
             f'-DDESKTOP_APP_COUNT={app_count}','-DDESKTOP_SCALE=2u','-DSLINT_FRAME_WIDTH=2560u','-DSLINT_FRAME_HEIGHT=1600u','-DSLINT_FRAME_REGION_BYTES=0x1000000u',
             '-c',ROOT/'experiments/desktop-apps/manager.c','-o',out/'manager.o')
         run('ld.lld','-L',board/'lib',out/'manager.o','-lmicrokit','-T','microkit.ld','-o',out/'manager.elf')
-        run(*flags,'-c',ROOT/'experiments/desktop-apps/lock_probe.c','-o',out/'lock_probe.o')
+        run(*flags,*(['-DMAPS_SESSION_PROBE'] if a.maps else []),'-c',ROOT/'experiments/desktop-apps/lock_probe.c','-o',out/'lock_probe.o')
         run('ld.lld','-L',board/'lib',out/'lock_probe.o','-lmicrokit','-T','microkit.ld','-o',out/'lock_probe.elf')
     ET.indent(system);ET.ElementTree(system).write(out/'desktop-apps.system',encoding='utf-8',xml_declaration=True)
     from desktop_apps_manifest import validate
@@ -304,6 +305,7 @@ def main():
     manifest.update(wrapped_session=a.wrapped_session,lock_idle_ms=a.lock_idle_ms if a.wrapped_session else None,wallet_event_pump=a.wrapped_session)
     if a.wrapped_session:
         manifest['development_storage_key']=False
+        if a.maps:manifest['sources'].update({str(x.relative_to(ROOT)):sha(x) for x in [ROOT/'tests/maps_session_utm.py',ROOT/'tests/maps_session_contract_test.py',ROOT/'rust/src/vault_crypto.rs']})
         extra=[ROOT/'experiments/desktop-gpu/lock.h',ROOT/'experiments/desktop-lock/auth.rs',ROOT/'experiments/slint-notes/ui/lifecycle_lock.slint',ROOT/'experiments/desktop-simplex/session.h',ROOT/'experiments/desktop-simplex/composer_patch.py',ROOT/'experiments/desktop-integrated/build_composer.py',ROOT/'tests/desktop_trio_lock_input.py',ROOT/'tests/desktop_simplex_session_test.c',ROOT/'tests/desktop_simplex_stub/session_layout.h',ROOT/'tests/net/tests/desktop_network_lock_test.c']
         extra += [ROOT/'rust/src'/name for name in ('device_lock.rs','vault_disk.rs','vault_lifecycle.rs','vault_key_prototype.rs','wrapped_vault_bootstrap.rs','entropy_rng.rs','vault_protocol.rs','wallet_rpc_pump.rs')]
         extra += [ROOT/'experiments/ghc-microkit/build_wallet_scan_workers.sh']
@@ -312,7 +314,7 @@ def main():
         manifest['session_layout_sha256']=sha(out/'session_layout.h')
         manifest['composer_sha256']=sha(a.composer.resolve())
     if a.map_private:
-        manifest['maps_private_scope']='separate app-scoped passphrase; random wrapped key; two authenticated ciphertext banks; locks on hide and 60s idle; not full-session key eviction'
+        manifest['maps_private_scope']=('OS unlock; vault-derived Maps-only key; two authenticated ciphertext banks; scrubbed managed renderer and reset disk service on full lock' if a.wrapped_session else 'separate app-scoped passphrase; random wrapped key; two authenticated ciphertext banks; locks on hide and 60s idle; not full-session key eviction')
         manifest['sources'].update({str(x.relative_to(ROOT)):sha(x) for x in [ROOT/'rust/src/record_crypto.rs',ROOT/'rust/src/vault_key_prototype.rs',ROOT/'rust/src/entropy_rng.rs',ROOT/'tests/comaps_private_utm.py',ROOT/'tests/comaps_private_contract_test.py']})
     (out/'build.json').write_text(json.dumps(manifest,indent=2)+'\n')
 

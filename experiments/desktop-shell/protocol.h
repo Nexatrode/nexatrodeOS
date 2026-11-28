@@ -41,6 +41,17 @@ _Static_assert(DESKTOP_SCALE == 1 || DESKTOP_SCALE == 2, "supported desktop scal
 struct shell_window { int32_t x, y; uint32_t open, visible; };
 struct shell_state { uint32_t revision, top, focused, reserved; struct shell_window windows[DESKTOP_APP_COUNT]; };
 _Static_assert(sizeof(struct shell_state) == 16 + 16 * DESKTOP_APP_COUNT, "shell state ABI");
+/* Shared by locked and unlocked startup: a fourth app must be represented in
+ * the scene order even before any application window is visible. */
+static inline void shell_extra_windows(struct shell_state *s) {
+#if DESKTOP_APP_COUNT >= 3
+    s->windows[2]=(struct shell_window){340,152,0,0};s->reserved=0x321;
+#endif
+#if DESKTOP_APP_COUNT == 4
+    s->windows[3]=(struct shell_window){460,148,0,0};s->reserved=0x4321;
+#endif
+    (void)s;
+}
 static inline int32_t shell_clamp(int32_t value, int32_t low, int32_t high) { return value < low ? low : value > high ? high : value; }
 static inline void shell_position(struct shell_window *w, int32_t x, int32_t y) {
     w->x = shell_clamp(x, 12, SHELL_WIDTH - APP_WIDTH - 12);

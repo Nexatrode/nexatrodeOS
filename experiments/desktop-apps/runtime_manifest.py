@@ -31,7 +31,9 @@ def inventory(path, *, browser=True, maps=False):
         raise ValueError('duplicate domain')
     apps = {k: v for k, v in APPS.items() if browser or k != 'netsurf'}
     if maps: apps['maps'] = dict(frontend='offline_map', services=('map_store',) if 'map_store' in domains else ())
-    if maps and 'lock_auth' in domains: raise ValueError('Maps is outside the curated three-app lock group')
+    if maps and 'lock_auth' in domains:
+        children={p.get('name') for p in domains['desktop_manager'].findall('protection_domain')} if 'desktop_manager' in domains else set()
+        if not {'offline_map','map_store'}<=children:raise ValueError('Maps is outside the curated lock group')
     owner = {name: app for app, spec in apps.items()
              for name in (spec['frontend'], *spec['services'])}
     missing = set(owner) - domains.keys()
@@ -64,9 +66,11 @@ def inventory(path, *, browser=True, maps=False):
         members = [spec['frontend'], *spec['services']]
         touched = sorted(r for r, uses in mappings.items()
                          if any(u['domain'] in members for u in uses))
-        private = [r for r in touched if r not in PUBLIC_APP_REGIONS]
+        devices=[r for r in touched if r=='map_disk_regs']
+        private = [r for r in touched if r not in PUBLIC_APP_REGIONS and r not in devices]
         locked='lock_auth' in domains
         groups[app] = dict(frontend=spec['frontend'], services=list(spec['services']),
+            device_regions=devices,
             private_regions=private,
             public_readonly_regions=[r for r in touched if r in PUBLIC_APP_REGIONS],
             shared_private_bytes=sum(int(regions[r].get('size').replace('_', ''), 0) for r in private),

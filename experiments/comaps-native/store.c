@@ -115,6 +115,9 @@ void init(void) {
     set(0x30,0);if(reg(0x34)<8||reg(0x44))return;
     memset((void*)map_disk_dma,0,MAP_IO_DMA_BYTES);set(0x38,8);
     address(0x80,DMA_PA);address(0x90,DMA_PA+0x100);address(0xa0,DMA_PA+0x200);set(0x44,1);set(0x70,15);online=true;
+    /* A managed restart can follow a canceled, already-badged IRQ. Reset the
+     * device status and re-arm the seL4 IRQ after reconstructing its queue. */
+    set(0x64,reg(0x60));microkit_irq_ack(0);
     microkit_dbg_puts("MAPSTORE|READY|dedicated public disk\n");
 }
 void notified(microkit_channel channel) {

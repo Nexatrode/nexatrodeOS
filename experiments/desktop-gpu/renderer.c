@@ -249,7 +249,7 @@ static bool read_mode(void) {
 }
 #endif
 #ifdef DESKTOP_TRIO_LOCK
-_Static_assert(DESKTOP_APP_COUNT==3,"curated lock group is three apps");
+_Static_assert(DESKTOP_APP_COUNT==3||DESKTOP_APP_COUNT==4,"curated lock group");
 #include "lock.h"
 #endif
 static void prepare_frame(void) {

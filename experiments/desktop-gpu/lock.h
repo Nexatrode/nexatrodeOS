@@ -22,7 +22,7 @@ static bool lock_begin_frame(void) {
         lock_active=locked;lock_epoch=epoch;lock_stage=lock_targets=0;lock_erased=0;
         lock_auth_revision=0;lock_backdrop_ready=false;revisions[0]=0;scene_revision=0;
         buffer_stamp[0].valid=buffer_stamp[1].valid=false;
-        for(unsigned i=1;i<7;++i)revisions[i]=0;
+        for(unsigned i=1;i<GPU_TEXTURE_COUNT;++i)revisions[i]=0;
     }
     if(lock_w!=W||lock_h!=H){lock_w=W;lock_h=H;lock_targets=0;lock_auth_revision=0;lock_backdrop_ready=false;}
     if(lock_active&&lock_stage==1){
@@ -63,12 +63,12 @@ static bool lock_backdrop(void) {
     return true;
 }
 static bool lock_private_surface(unsigned i) {
-    size_t bytes=i<=3?APP_BYTES:DECOR_BYTES;
+    size_t bytes=i<=DESKTOP_APP_COUNT?APP_BYTES:DECOR_BYTES;
     lock_zero((uintptr_t)cache[i],bytes);
     volatile uint8_t *p=cache[i];
     for(size_t n=0;n<bytes;++n)if(p[n]){failed=true;microkit_dbg_puts("DESKTOP_GPU|FAIL|private cache erasure\n");return false;}
     lock_erased+=bytes;revisions[i]=0;
-    return upload(i,i<=3?AW:DW,(struct gpu_rect){0,0,i<=3?AW:DW,i<=3?APP_MAX_PIXEL_HEIGHT:MAX_DH});
+    return upload(i,i<=DESKTOP_APP_COUNT?AW:DW,(struct gpu_rect){0,0,i<=DESKTOP_APP_COUNT?AW:DW,i<=DESKTOP_APP_COUNT?APP_MAX_PIXEL_HEIGHT:MAX_DH});
 }
 static void lock_completed_frame(void) {
     if(!lock_active||!lock_epoch)return;

@@ -5,6 +5,10 @@
 compile_error!("the disposable wrapped-vault experiment must never use an installation vault key");
 
 mod vault_protocol;
+#[cfg(feature = "utm-maps-session-lock")]
+fn maps_key_page() -> *mut personal_os_rust_server::vault_blob_transfer::BlobTransferPage {
+    sel4_microkit::memory_region_symbol!(map_session_key: *mut personal_os_rust_server::vault_blob_transfer::BlobTransferPage).as_ptr()
+}
 #[cfg(feature = "utm-photo-reader")]
 mod vault_photo_access;
 
@@ -458,6 +462,8 @@ impl Vault {
 
     #[cfg(feature = "utm-wrapped-vault-experiment")]
     fn wrapped_clear(&mut self, erase_key: bool) {
+        #[cfg(feature = "utm-maps-session-lock")]
+        unsafe { core::slice::from_raw_parts_mut(maps_key_page().cast::<u8>(),4096).fill(0); }
         use zeroize::Zeroize;
         let was_unlocked = self.wrapped_unlocked;
         self.wrapped_unlocked = false;
@@ -2543,6 +2549,17 @@ impl Handler for Vault {
             && request.label() == vault_protocol::REQUEST_DEVICE_VAULT_STATUS
             && request.count() == 0 {
             return Ok(MessageInfo::new(if self.wrapped_unlocked { REPLY_OK } else { REPLY_DENIED }, 0));
+        }
+        #[cfg(feature = "utm-maps-session-lock")]
+        if channel == Channel::new(13) {
+            let page=unsafe { &mut *maps_key_page() };
+            page.set_payload(&[]);
+            if request.label()!=0x458 || request.count()!=0 || !self.wrapped_unlocked || self.lifecycle.phase()!=personal_os_rust_server::vault_lifecycle::Phase::Active {
+                return Ok(MessageInfo::new(REPLY_DENIED,0));
+            }
+            let Some(key)=self.crypto.maps_key() else { return Ok(MessageInfo::new(REPLY_DENIED,0)); };
+            page.set_payload(&*key);set_mr(0,self.lifecycle.epoch());
+            return Ok(MessageInfo::new(REPLY_OK,1));
         }
         #[cfg(feature = "utm-wrapped-vault-experiment")]
         if !self.wrapped_unlocked || channel == vault_protocol::OWNER_CHANNEL {

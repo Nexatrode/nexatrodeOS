@@ -74,6 +74,13 @@ static void trio_lock(bool force) {
     if(device_locked&&!force)return;
     device_locked=true;dynamic_active=false;lock_phase=TRIO_LOCKING;++lock_epoch;vault_lease_until=0;
     simplex_session_suspend();trio_drop_input();trio_publish();
+#ifdef SESSION_MAPS_REGS_ADDRESS
+    /* VirtIO reset acknowledges that queue/DMA activity has stopped. Reset
+     * before erasing any descriptor, store state or shared ciphertext page. */
+    volatile uint32_t *status=(void*)(SESSION_MAPS_REGS_ADDRESS+0x70);
+    *status=0;__atomic_thread_fence(__ATOMIC_SEQ_CST);
+    if(*status)fail("Maps disk reset incomplete",0);
+#endif
     (void)trio_vault(0x453,0,true);
     simplex_session_scrub();scrubbed_bytes=0;
     for(unsigned i=0;i<SESSION_RANGE_COUNT;++i)scrubbed_bytes+=session_ranges[i].bytes;
