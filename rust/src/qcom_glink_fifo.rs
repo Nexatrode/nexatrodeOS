@@ -80,6 +80,13 @@ use crate::qcom_qmi_router::Context;
 mod efs_reply;
 #[cfg(feature="sunfish-efs-reply-fifo")]
 pub use efs_reply::EfsReplyFifo;
+/* RULESET_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-ruleset-service-handoff")]
+#[path="qcom_fifo_ruleset_handoff.rs"]
+mod ruleset_handoff;
+#[cfg(feature="sunfish-ruleset-service-handoff")]
+pub use ruleset_handoff::RulesetWriterTrace;
+/* RULESET_HANDOFF_END */
 /* EFS_EARLY_TURN_BEGIN */
 #[cfg(feature="sunfish-efs-early-error-turn")]
 #[path="qcom_fifo_efs_early.rs"]

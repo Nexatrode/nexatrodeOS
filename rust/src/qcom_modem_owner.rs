@@ -6,6 +6,13 @@
 #[path="qcom_owner_efs_overlap.rs"]
 mod efs_overlap;
 /* EFS_REPLY_OVERLAP_END */
+/* RULESET_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-ruleset-service-handoff")]
+#[path="qcom_owner_ruleset_handoff.rs"]
+mod ruleset_handoff;
+#[cfg(feature="sunfish-ruleset-service-handoff")]
+pub use ruleset_handoff::RulesetHandoffTrace;
+/* RULESET_HANDOFF_END */
 /* EFS_SERVICE_HANDOFF_BEGIN */
 #[cfg(feature="sunfish-efs-service-handoff")]
 #[path="qcom_owner_efs_service.rs"]
@@ -1031,6 +1038,10 @@ pub struct Owner<I> {
     scheduled: bool,
     requests: [Option<RequestHandle>; MAX_REQUESTS],
     tftp_requests: [Option<TftpHandle>; MAX_REQUESTS],
+/* RULESET_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-ruleset-service-handoff")]
+    ruleset_handoff: ruleset_handoff::RulesetHandoff,
+/* RULESET_HANDOFF_END */
 /* EFS_SERVICE_HANDOFF_BEGIN */
 #[cfg(feature="sunfish-efs-service-handoff")]
     efs_service_enabled: bool,
@@ -1352,6 +1363,10 @@ impl<I: Io> Owner<I> {
             scheduled: false,
             requests: [None; MAX_REQUESTS],
             tftp_requests: [None; MAX_REQUESTS],
+/* RULESET_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-ruleset-service-handoff")]
+            ruleset_handoff: ruleset_handoff::RulesetHandoff::default(),
+/* RULESET_HANDOFF_END */
 /* EFS_SERVICE_HANDOFF_BEGIN */
 #[cfg(feature="sunfish-efs-service-handoff")]
             efs_service_enabled: false,
@@ -2667,6 +2682,12 @@ impl<I: Io> Owner<I> {
 #[cfg(feature="sunfish-efs-service-handoff")]
         let request=reply.request;
 /* EFS_SERVICE_HANDOFF_END */
+/* RULESET_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-ruleset-service-handoff")]
+        let ruleset_turn=self.ruleset_handoff.enabled&&!self.ruleset_handoff.writer_used&&!self.ruleset_handoff.closed&&self.efs_error_turn_used
+            &&self.ruleset_handoff.first==Some((reply.request,reply.meta.route.destination))
+            &&reply.bytes[..reply.meta.bytes]==*crate::qcom_tftp_server_check::MISSING_REPLY;
+/* RULESET_HANDOFF_END */
 /* EFS_EARLY_TURN_BEGIN */
 #[cfg(feature="sunfish-efs-early-error-turn")]
         let efs_turn=self.efs_error_turn_enabled&&!self.efs_error_turn_used&&reply.bytes[..reply.meta.bytes]==*crate::qcom_tftp_server_check::MISSING_REPLY&&!self.first_efs_error_closed&&self.first_efs_error_request==Some((reply.request,reply.meta.route.destination));
@@ -2720,6 +2741,13 @@ impl<I: Io> Owner<I> {
 #[cfg(feature="sunfish-efs-early-error-turn")]
                 if efs_turn{self.efs_error_turn_used=true;if let Err(error)=self.adapter.publish_efs_error_turn(self.generation){return Err(self.stop(error.into()));}}
 /* EFS_EARLY_TURN_END */
+/* RULESET_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-ruleset-service-handoff")]
+                if ruleset_turn {
+                    self.ruleset_handoff.writer_used=true;
+                    if let Err(error)=self.adapter.publish_ruleset_error_turn(self.generation,&mut self.ruleset_handoff.trace.writer){return Err(self.stop(error.into()));}
+                }
+/* RULESET_HANDOFF_END */
 /* EFS_SERVICE_HANDOFF_BEGIN */
 #[cfg(feature="sunfish-efs-service-handoff")]
                 if self.efs_ruleset_request==Some(request) { self.efs_ruleset_queued=true; }
@@ -3725,6 +3753,19 @@ impl<I: Io> Owner<I> {
             #[cfg(feature="sunfish-mcfg-close-cleanup")]
             self.adapter.set_mcfg_close_transfers(self.generation,self.mcfg_close_transfers)?;
             let rx = self.adapter.poll_receive(self.generation)?;
+/* RULESET_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-ruleset-service-handoff")]
+            if let Some((_,peer))=self.ruleset_handoff.first {
+                self.ruleset_handoff.closed|=match rx {
+                    Receive::Session(Event::QrtrControl(crate::qcom_qrtr_control::Event::ClientRemoved(port)))=>peer.port==port,
+                    #[cfg(feature="sunfish-mcfg-close-cleanup")]
+                    Receive::Session(Event::McfgClosePending{peer:closed})=>closed==peer,
+                    #[cfg(feature="sunfish-tftp-wlan-close-handoff")]
+                    Receive::Session(Event::FirmwareClosePending{peer:closed})=>closed==peer,
+                    _=>false,
+                };
+            }
+/* RULESET_HANDOFF_END */
 /* EFS_EARLY_TURN_BEGIN */
 #[cfg(feature="sunfish-efs-early-error-turn")]
             if let Some((_,peer))=self.first_efs_error_request{
@@ -3897,6 +3938,14 @@ impl<I: Io> Owner<I> {
                     let first_endpoint = self.adapter.tftp_endpoint_trace();
                     let (route, packet) = self.adapter.tftp_datagram(self.generation, &handle)?;
                     let opcode = if packet.len() >= 2 { u16::from_be_bytes([packet[0], packet[1]]) } else { 0 };
+/* RULESET_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-ruleset-service-handoff")]
+                    if self.ruleset_handoff.enabled&&self.ruleset_handoff.first.is_none()&&opcode==tftp::OP_RRQ
+                        &&route.source.port==crate::qcom_tftp_server_check::SERVICE_PORT
+                        &&packet[2..].split(|b|*b==0).next()==Some(b"/readwrite/ota_firewall/ruleset".as_slice()) {
+                        self.ruleset_handoff.first=Some((handle,route.destination));
+                    }
+/* RULESET_HANDOFF_END */
 /* EFS_SERVICE_HANDOFF_BEGIN */
 #[cfg(feature="sunfish-efs-service-handoff")]
                     if self.efs_service_enabled && self.efs_ruleset_request.is_none() && opcode==tftp::OP_RRQ && route.source.port==crate::qcom_tftp_server_check::SERVICE_PORT && packet[2..].split(|b|*b==0).next()==Some(b"/readwrite/ota_firewall/ruleset".as_slice()) { self.efs_ruleset_request=Some(handle); }

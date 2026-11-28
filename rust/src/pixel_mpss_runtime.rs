@@ -470,6 +470,10 @@ impl RuntimeDomain {
 #[cfg(feature="sunfish-efs-service-handoff")]
         owner.enable_efs_service_handoff();
 /* EFS_SERVICE_HANDOFF_END */
+/* RULESET_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-ruleset-service-handoff")]
+        owner.enable_ruleset_service_handoff();
+/* RULESET_HANDOFF_END */
 /* EFS_REPLY_OVERLAP_BEGIN */
 #[cfg(feature="sunfish-efs-reply-overlap")]
         owner.enable_efs_reply_overlap();
@@ -585,6 +589,17 @@ impl RuntimeDomain {
                     }
                 }
 /* EFS_SERVICE_HANDOFF_END */
+/* RULESET_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-ruleset-service-handoff")]
+                if let Some(progress)=owner.service_ruleset_handoff(&mut self.server_check,
+                    #[cfg(feature="sunfish-tftp-wlan-mux")] Some(&mut self.firmware), &mut self.router).map_err(|_|0x55u32)? {
+                    match progress {
+                        qcom_modem_owner::TftpServiceProgress::ResponseQueued => self.server_check_queued=self.server_check_queued.saturating_add(1),
+                        qcom_modem_owner::TftpServiceProgress::Ignored(_) => self.server_check_ignored=self.server_check_ignored.saturating_add(1),
+                        _=>{},
+                    }
+                }
+/* RULESET_HANDOFF_END */
                 #[cfg(feature = "sunfish-ipa-schedule-trace")]
                 self.ipa_schedule.observe(counter(), 5, ipa_schedule_milestones(owner));
                 #[cfg(feature = "sunfish-ipa-registration-prep-trace")]

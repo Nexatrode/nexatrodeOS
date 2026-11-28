@@ -816,6 +816,10 @@ impl<I: Io> Owner<I> {
             scheduled: false,
             requests: [None; MAX_REQUESTS],
             tftp_requests: [None; MAX_REQUESTS],
+/* RULESET_HANDOFF_BEGIN */
+#[cfg(feature="sunfish-ruleset-service-handoff")]
+            ruleset_handoff: ruleset_handoff::RulesetHandoff::default(),
+/* RULESET_HANDOFF_END */
 /* EFS_SERVICE_HANDOFF_BEGIN */
 #[cfg(feature="sunfish-efs-service-handoff")]
             efs_service_enabled: false,
