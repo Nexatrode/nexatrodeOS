@@ -3,8 +3,7 @@ import json,os,subprocess,tempfile,unittest
 from sunfish_registry_elf_pressure_panel_test import pressure_fixture_code
 from sunfish_tx3_elf_retry_panel_test import function
 ROOT=Path(__file__).resolve().parents[1]
-class Panel(unittest.TestCase):
- def test_actual_receipt_panel(self):
+def receipt_fixture_code():
   code=pressure_fixture_code()
   code=code.replace('struct Prior{','struct Prior{grant:Option<Grant>,').replace('Prior{queued_at:','Prior{grant:None,queued_at:')
   code=code.replace('struct ModemOwner{','struct ModemOwner{tx3_fifo:Option<Fifo>,elf_fifo:Option<ElfFifo>,')
@@ -16,6 +15,11 @@ class Panel(unittest.TestCase):
 #[derive(Clone,Copy,Default)]struct ElfFifo{remote_intent:u32,armed_at:Option<u64>,unread_at_arm:u32,core_done_at:Option<u64>,fifo:Fifo}
 #[path=PANEL]mod panel;
 ''')
+  return code
+
+class Panel(unittest.TestCase):
+ def test_actual_receipt_panel(self):
+  code=receipt_fixture_code()
   code+=r'''
  o.trace.queued_names=0x75;o.trace.completed_names=0x75;
  o.tx3_fifo=Some(Fifo{peer_tail_at:Some(140),completion:Some(Bounds{last_absent:Some(180),first_visible:Some(200),bytes_ahead:Some(96)}),finished:true,history_evictions:24});
